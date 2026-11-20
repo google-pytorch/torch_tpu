@@ -16,7 +16,7 @@ from torch.tpu.pallas import verifier
 
 # A TorchTPU @jax_op, with example arguments like torch.library.opcheck.
 report = verifier.verify(my_jax_op, (x, y))
-report.raise_for_errors()  # Raises VerificationError listing every finding.
+report.raise_for_errors()  # Pass fail_on_incomplete=True to reject bounded/skipped checks.
 
 # Any PyTorch callable, e.g. an nn.Module that calls @jax_op kernels.
 assert verifier.verify(model, (batch,)).passed
@@ -29,64 +29,153 @@ print(verifier.verify(my_pallas_fn, (spec,)))
 `verify(target, args, kwargs=None, *, mode=..., options=None)` detects what
 `target` is:
 
-*   **`@jax_op`**: op-contract, TPU-lowering, model-checking, autograd-parity,
-    and CPU-interpret checks.
-*   **Raw JAX function**: model-checking and CPU-interpret checks.
-*   **Other callables**: traced into an FX graph whose buffer donation and
-    aliasing are checked; every `@jax_op` call in the graph is then verified for
-    the shapes and dtypes it is called with.
+*   **`@jax_op`**: op-contract, TPU-lowering, model-checking, CPU TPU-interpret
+    sweep, and autograd-parity checks.
+*   **Raw JAX function**: TPU-lowering, model-checking, and CPU TPU-interpret
+    sweep checks.
+*   **Other callables**: traced into an FX graph (including nested `torch.cond`,
+    `while_loop`, and `scan` subgraphs plus joint forward+backward autograd
+    graphs) whose buffer donation and aliasing are checked; every `@jax_op` call
+    in the graph is then verified for the shapes, dtypes, and concrete small
+    integer/boolean inputs it is called with.
 
-`mode=VerificationMode.STATIC` skips everything that executes kernels (the CPU
-interpret sweep and autograd parity), which is much faster.
-`VerificationOptions` controls the autograd check, the unrolling bound, the
-solver time budget, the TPU generation of the lowering check, and the interpret
-sweep.
+`mode=VerificationMode.STATIC` skips everything that executes kernels (CPU
+TPU-interpret sweeps and autograd parity), which is much faster.
+`VerificationOptions` controls the autograd check (`check_autograd`), the
+unrolling bound (`max_unrolled_iterations`), the per-query CP-SAT solver timeout
+(`solver_timeout_seconds`, 5.0 seconds by default), the TPU generation of the
+lowering and static hardware checks (`tpu_version`), and the CPU TPU-interpret
+schedule/NaN-poisoning sweep (`interpret`).
 
-The lowering check lowers a `@jax_op` for TPU on the host, as TorchTPU does the
-first time the op runs. Ops without a TPU-typed mesh are lowered for
-`VerificationOptions.tpu_version` (when `None`, inferred from a bound/input TPU
-mesh or callable `supported_on` predicate, or `torch.tpu.TpuVersion.V7` by
-default); ops with a TPU mesh are lowered for the device kind of their mesh
-devices, so build the mesh with `torch.tpu.pallas.get_pallas_mesh`.
+The lowering check lowers a `@jax_op` or raw JAX Pallas function to Mosaic TPU
+MLIR on the host via `jax.export` (up to `mosaic-serde`, including Pallas's
+`func_op.verify()` MLIR dialect checks, without running `libtpu` layout or LLO
+passes). Pure non-Pallas raw JAX functions skip lowering. When a kernel has a
+concrete TPU-typed mesh (built with `torch.tpu.pallas.get_pallas_mesh` or a TPU
+`AbstractMesh`), its mesh `device_kind` governs contracts, lowering, and static
+hardware checks; otherwise `VerificationOptions.tpu_version` is used (or, when
+`None`, inferred from a bound/input TPU mesh or callable `supported_on`
+predicate, defaulting to `torch.tpu.TpuVersion.V7`).
 
 ## Checks
 
-Findings have a severity: errors fail the report, warnings and infos do not.
+Findings have a severity: errors fail the report, warnings and infos do not
+(unless `raise_for_errors(fail_on_incomplete=True)` is used to fail on
+`verification_incomplete` findings).
 
 <!-- mdformat off(reason: standard GFM table rendering in Critique and Code Search) -->
 
-| Category                   | Engines                 | Meaning                                                                                                  |
-| -------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- |
-| `use_after_donate`         | `fx_graph`, `autograd`  | A tensor (or a view of it) is used after being donated to a `@jax_op`, or saved for backward.            |
-| `aliased_donor_inputs`     | `contracts`, `fx_graph` | Two arguments of one call share storage while one of them is donated.                                    |
-| `donated_parameter`        | `contracts`, `fx_graph` | A module parameter, buffer, or captured tensor is donated and would be corrupted.                        |
-| `zero_output_silent_skip`  | `contracts`             | A `@jax_op` without outputs, which TorchTPU skips entirely.                                              |
-| `partition_spec_mismatch`  | `contracts`             | Mesh or `PartitionSpec` errors: unknown or repeated axes, rank or divisibility mismatches.               |
-| `fake_kernel_mismatch`     | `contracts`             | A custom `register_fake` output shape, dtype, or pytree disagrees with the `JaxCallable` runtime output. |
-| `lowering_failure`         | `lowering`              | The kernel fails Pallas TPU lowering, so it cannot run on TPU.                                           |
-| `autograd_parity_mismatch` | `autograd`              | A registered custom backward disagrees with the forward kernel.                                          |
-| `verification_incomplete`  | any                     | A part of the program that could not be fully verified.                                                  |
+| Category                        | Engines                    | Meaning                                                                                                                                                              |
+| ------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `use_after_donate`              | `fx_graph`, `autograd`     | A tensor (or a view of it) is used after being donated to a `@jax_op`, or saved for backward across donation.                                                        |
+| `aliased_donor_inputs`          | `contracts`, `fx_graph`    | Two arguments of one call share storage while one of them is donated.                                                                                                |
+| `donated_parameter`             | `contracts`, `fx_graph`    | A module parameter, buffer, or captured tensor is donated and would be corrupted.                                                                                    |
+| `zero_output_silent_skip`       | `contracts`                | A `@jax_op` without outputs, which TorchTPU skips entirely.                                                                                                          |
+| `partition_spec_mismatch`       | `contracts`                | Mesh or `PartitionSpec` errors: unknown or repeated axes, rank or divisibility mismatches.                                                                           |
+| `fake_kernel_mismatch`          | `contracts`                | A custom `register_fake` output shape, dtype, or pytree disagrees with the `JaxCallable` runtime output.                                                             |
+| `lowering_failure`              | `lowering`                 | The kernel fails Pallas TPU lowering, so it cannot run on TPU.                                                                                                       |
+| `autograd_parity_mismatch`      | `autograd`                 | A registered custom backward disagrees with the forward kernel.                                                                                                      |
+| `data_race`                     | `model_check`, `interpret` | Two accesses to overlapping memory, at least one a write, can happen at the same time.                                                                               |
+| `concurrent_dma_sem_sharing`    | `model_check`              | A race enabled by concurrent DMAs that signal the same semaphore.                                                                                                    |
+| `unthrottled_remote_overwrite`  | `model_check`              | A remote DMA can overwrite a buffer its receiver is still using.                                                                                                     |
+| `parallel_grid_conflict`        | `model_check`              | Grid iterations along a `parallel` axis access overlapping shared memory with at least one write.                                                                    |
+| `semaphore_deadlock`            | `model_check`              | No schedule lets every semaphore wait complete.                                                                                                                      |
+| `semaphore_nonzero_exit`        | `model_check`, `interpret` | A semaphore is not back at zero when the kernel exits.                                                                                                               |
+| `unwritten_output`              | `model_check`              | Part of an output is never written, is clobbered by an unwritten parallel tile, or is accumulated into before being initialized.                                     |
+| `out_of_bounds_access`          | `model_check`, `interpret` | A static or runtime ref slice, DMA slice, or `BlockSpec` `index_map` is out of bounds.                                                                               |
+| `invalid_device_id`             | `model_check`, `interpret` | A remote DMA or signal targets a device or core outside the mesh, or uses an invalid axis name or `device_id_type`.                                                  |
+| `low_precision_accumulation`    | `model_check`              | A low-precision `dot_general` without `preferred_element_type=jnp.float32`, or cross-step accumulation into a 16-bit `Ref` (warning).                                |
+| `hardware_constraint_violation` | `model_check`, `interpret` | Rules missed by `jax.export`: TensorCore HBM/CMEM/ANY scratch, SparseCore sync `ANY` loads/stores, non-consecutive revisits, DMA sem rules, or invalid wait counts. |
+| `nan_or_uninit_read`            | `interpret`                | Poisoned initial VMEM/scratch memory or an unwritten first-visit output region reaches an output (values that zero-filled memory avoids).                            |
+| `schedule_divergence`           | `interpret`                | Outputs differ across DMA schedules or grid orders.                                                                                                                  |
+| `verification_incomplete`       | any                        | A part of the program that could not be fully verified (see limitations).                                                                                            |
 
 <!-- mdformat on -->
+
+Concrete static race findings (`data_race`, `concurrent_dma_sem_sharing`,
+`unthrottled_remote_overwrite`) include a counterexample: the prefix of a
+concrete schedule, ordered by time, that leads to the conflicting accesses.
 
 ## Multi-chip kernels
 
 A `@jax_op` with a `mesh` (`jax.sharding.Mesh` or `jax.sharding.AbstractMesh`)
-or a raw `jax.shard_map` callable is checked for every device of the mesh. The
-CPU interpret sweep runs it on virtual CPU devices, which must be created before
-JAX initializes, for example with
-`XLA_FLAGS=--xla_force_host_platform_device_count=8` or
-`jax.config.update("jax_num_cpu_devices", 8)`.
+or a raw `jax.shard_map` callable is checked for every device of the mesh.
+Dynamic sweeps (`VerificationMode.FULL`) require enough virtual CPU devices for
+the mesh (for example via `XLA_FLAGS=--xla_force_host_platform_device_count=N`).
 
 ## TPU hosts
 
 `VerificationMode.STATIC` only traces and lowers kernels, which needs no JAX
 devices (provided user `supported_on` predicates do not query live backends).
-`VerificationMode.FULL` runs kernels on JAX CPU devices; unless `JAX_PLATFORMS`
-restricts it, creating them makes JAX initialize all of its backends, including
-TPU when libtpu is installed. In a process that uses the TPU through TorchTPU,
-use `VerificationMode.STATIC`, or run the full verification in a separate
-process such as a unit test.
+`VerificationMode.FULL` runs CPU TPU-interpret sweeps and autograd parity on JAX
+CPU devices; unless `JAX_PLATFORMS` restricts it, creating them makes JAX
+initialize all of its backends, including TPU when libtpu is installed. In a
+process that uses the TPU through TorchTPU, use `VerificationMode.STATIC`, or
+run the full verification in a separate process such as a unit test.
+
+## How the model checker works
+
+`jaxpr_model.py` traces the kernel without initializing a backend, locates every
+`pallas_call` and `mpmd_map` (`pl.kernel`), and unrolls each kernel across mesh
+devices, grid points, and control-flow primitives (`scan` / `fori_loop`,
+`while_loop`, `cond` / `pl.when`, and `run_scoped`). Concrete integer and
+Boolean scalars are propagated per unrolled step to resolve `BlockSpec`
+`index_map`s, `Ref` slices, DMA/semaphore operands, remote `device_id`s, and
+coordinate-compressed output write coverage.
+
+`smt_checker.py` gives every event an integer timestamp and encodes program
+order, async DMA causality (start < read done <= write done, with progressive
+byte-count signaling), and counting-semaphore semantics (a wait completes only
+once the signals before it cover its amount plus what earlier waits consumed) as
+difference and pseudo-Boolean constraints. If no schedule satisfies them, the
+kernel deadlocks. For each pair of conflicting accesses it asks whether some
+schedule lets them overlap.
+
+Pallas has no public API to inspect kernels, so `jaxpr_model.py` decodes the
+parameters of Pallas primitives in the jaxprs of the public `jax.make_jaxpr`,
+and reports `verification_incomplete` when they do not match. Everything else
+uses only public Pallas and JAX APIs.
+
+The constraints are decided by the Google OR-Tools CP-SAT solver
+(`ortools.sat.python.cp_model`), installed via `pip install "torch_tpu[verify]"`
+on Python `<3.15` (semaphore conservation and parallel-grid conflict checks run
+even without OR-Tools).
+
+## Limitations
+
+*   Model checking is bounded: loop iterations and scan steps past
+    `max_unrolled_iterations` (32 by default) are not unrolled, event traces are
+    recorded for up to `max_unrolled_iterations` grid points while static
+    bounds, device IDs, semaphore rules, and output coverage are checked across
+    up to 4096 grid points, and up to 2048 conflicting access pairs per kernel
+    model are checked within `solver_timeout_seconds` (5.0s per query by
+    default).
+*   Scalar-prefetch block indices and predicates are resolved at the provided
+    example inputs when small concrete integer or boolean arrays/tensors are
+    supplied, whereas abstract `ShapeDtypeStruct` scalar-prefetch inputs and
+    values computed from runtime data inside the kernel (dynamic slice offsets
+    or sizes, semaphore array indices, remote device ids, loop trip counts,
+    branch conditions) are not resolved; the affected checks are skipped or
+    approximated.
+*   Iterations of `parallel` grid axes are modeled as if each ran on its own
+    core, with its own scratch memory and semaphores, and `BlockSpec` transfers
+    are modeled at grid-step boundaries rather than overlapped across steps.
+*   Dynamic CPU TPU-interpret sweeps sample a finite set of schedules (2 DMA
+    modes × 2 PRNG seeds by default), simulate 1 thread per device outside
+    `pl.kernel` over a multi-core `TensorCoreMesh`, poison kernel VMEM buffers
+    at initial allocation (first visit), and require JAX >= 0.11.2 for
+    cross-device remote DMAs.
+*   The CPU TPU interpreter cannot abort a semaphore or DMA wait that never
+    completes, so kernels (including those called by a custom backward) only run
+    in CPU interpret mode when model checking proves that their waits can
+    complete: they have no waits, or their synchronization is fully modeled and
+    CP-SAT finds a schedule that completes every wait.
+*   `pl.pallas_call` and `pl.kernel` read `pltpu.force_tpu_interpret_mode` when
+    they are built, so kernels built before `verify` runs (for example at module
+    level) cannot run in CPU interpret mode and are reported as
+    `verification_incomplete`.
+*   VMEM and SMEM capacity are not checked.
+*   Every bounded or skipped check is reported as `verification_incomplete`.
 
 ## Tests
 

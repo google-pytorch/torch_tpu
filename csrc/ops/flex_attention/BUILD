@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# tudorpip
+# willfroom
+
 # flex_attention on TPU: a BlockMask-driven, block-skipping flash attention
 # kernel authored in Kiln.
 
@@ -44,6 +48,7 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

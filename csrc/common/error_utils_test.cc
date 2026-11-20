@@ -27,6 +27,7 @@
 #include <ios>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1665,6 +1666,58 @@ TEST_F(ErrorMessageGuidelinesDeathTest,
   }
 }
 
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsTorchPrefixedDtypeName) {
+  EXPECT_DEATH(
+      ThrowWithMessage("expected index dtype to be torch.int64, got int32"),
+      AllOf(HasSubstr("must write the PyTorch dtype names plainly"),
+            HasSubstr("Replace torch.int64 with int64")));
+  EXPECT_DEATH(ThrowWithMessage("expected dtype=torch.float32, got bfloat16"),
+               HasSubstr("Replace torch.float32 with float32"));
+  // On context prefix.
+  EXPECT_DEATH(ThrowWithMessage("failed to copy torch.float16 tensor: "
+                                "dimension size negative"),
+               HasSubstr("Replace torch.float16 with float16"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, ContainsQuotedDtypeName) {
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: 'int32'"),
+               AllOf(HasSubstr("must write the PyTorch dtype names plainly"),
+                     HasSubstr("Replace 'int32' with int32")));
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: \"float32\""),
+               HasSubstr("Replace \"float32\" with float32"));
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: `bool`"),
+               HasSubstr("Replace `bool` with bool"));
+  EXPECT_DEATH(ThrowWithMessage("unsupported input dtype: 'torch.int32'"),
+               HasSubstr("Replace 'torch.int32' with int32"));
+  // All the violations are listed.
+  EXPECT_DEATH(
+      ThrowWithMessage("expected 'int32' or \"float32\", got torch.bool"),
+      HasSubstr("Replace 'int32' with int32, \"float32\" with "
+                "float32, torch.bool with bool"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       TorchPrefixedOrQuotedDtypeNameIsReplacedWithPlainName) {
+  // The dtype names come from c10, so every PyTorch dtype is covered.
+  constexpr std::string_view kTorchNames[] = {
+      // go/keep-sorted start
+      "bfloat16",  "bool",          "complex128",  "complex32",
+      "complex64", "float16",       "float32",     "float4_e2m1fn_x2",
+      "float64",   "float8_e4m3fn", "float8_e5m2", "int16",
+      "int32",     "int4",          "int64",       "int8",
+      "qint8",     "uint16",        "uint8",
+      // go/keep-sorted end
+  };
+  for (const std::string_view torch : kTorchNames) {
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("unsupported dtype torch.", torch)),
+        HasSubstr(absl::StrCat("Replace torch.", torch, " with ", torch)));
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("unsupported dtype '", torch, "'")),
+        HasSubstr(absl::StrCat("Replace '", torch, "' with ", torch)));
+  }
+}
+
 TEST_F(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingChar) {
   EXPECT_DEATH(ThrowWithMessage("dimension size negative."),
                HasSubstr("end with either an alpha-numeric"));
@@ -1808,6 +1861,25 @@ TEST_F(ErrorMessageGuidelinesDeathTest, LegacyScalarTypeNameBeforeXlaError) {
                HasSubstr("Replace 'Float' with 'float32'"));
 }
 
+TEST_F(ErrorMessageGuidelinesPassTest,
+       TorchPrefixedOrQuotedDtypeNameOnXlaError) {
+  // The XLA compiler error is not under our control, so it may contain
+  // decorated dtype names.
+  EXPECT_THROW(
+      ThrowWithContextForXlaError(
+          /* context= */ "the task has failed",
+          /* xla_error_message= */ "the dtype cannot be 'torch.int32'"),
+      c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       TorchPrefixedOrQuotedDtypeNameBeforeXlaError) {
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile 'int32' tensor",
+                   /* xla_error_message= */ "unknown error"),
+               HasSubstr("Replace 'int32' with int32"));
+}
+
 TEST_F(ErrorMessageGuidelinesPassTest, TorchDtypeNames) {
   // The check is case-sensitive: the torch dtype names (e.g. "bool",
   // "bfloat16") are allowed, but not the legacy names (e.g. "Bool",
@@ -1829,6 +1901,23 @@ TEST_F(ErrorMessageGuidelinesPassTest,
                c10::Error);
   EXPECT_THROW(ThrowWithMessage("TorchTPU does not support Integer, Float8 or "
                                 "Int64 types"),
+               c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest,
+       TorchPrefixedOrQuotedDtypeNameLookalikesAreAllowed) {
+  // Only whole dtype names are matched, so C++ types and other identifiers
+  // that merely start with one (e.g. "int32_t", "torch.int32x") are not
+  // flagged.
+  EXPECT_THROW(ThrowWithMessage("expected 'int32_t' or torch.int32_t, got "
+                                "torch.int32x"),
+               c10::Error);
+  // Quoted strings that aren't exactly a dtype name are not flagged.
+  EXPECT_THROW(ThrowWithMessage("expected an 'int32 tensor' or \"bool mask\", "
+                                "got `torch.select` and 'tpu'"),
+               c10::Error);
+  // "torch." must be a whole word.
+  EXPECT_THROW(ThrowWithMessage("unsupported dtype my_torch.int32"),
                c10::Error);
 }
 
@@ -1987,6 +2076,62 @@ TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityLookalikesAreAllowed) {
                c10::Error);
 }
 
+// Throws an error with `message`, marked as holding the user's text if
+// `is_user_message`, the way an op kernel does.
+void ThrowWithMessageAndIsUserMessage(const std::string_view message,
+                                      const bool is_user_message) {
+  TT_KERNEL(OpName::kAdd, _,
+            (IgnoreInCacheKey(message, "test"),
+             IgnoreInCacheKey(is_user_message, "test")),
+            {
+              StatusBuilder builder = TT_ERROR(error::kInternal);
+              if (is_user_message) builder.SetIsUserMessage();
+              TT_THROW_IF_ERROR(builder << message);
+            });
+}
+
+// Throws an error with the message and "is user message" state of `status`,
+// the way an op kernel does.
+void ThrowStatus(const absl::Status& status) {
+  ThrowWithMessageAndIsUserMessage(status.message(),
+                                   internal::IsUserMessage(status));
+}
+
+// Returns an error whose message is marked as holding the user's text.
+absl::Status UserMessageError(const std::string_view message) {
+  return TT_ERROR(error::kInternal).SetIsUserMessage() << message;
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, UserMessage) {
+  EXPECT_THROW(ThrowStatus(UserMessageError("Value must be positive.")),
+               c10::Error);
+  StatusBuilder builder = TT_ERROR(error::kInternal);
+  builder.SetIsUserMessage();
+  EXPECT_THROW(ThrowStatus(builder << "Value must be positive."), c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, UserMessageWithAddedContext) {
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                      .SetPrepend()
+                  << "failed to copy: "),
+      c10::Error);
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                  << " Try again."),
+      c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, OverriddenUserMessage) {
+  // Overriding the message keeps the "is user message" state, so the
+  // replacement isn't checked.
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                      .SetOverride()
+                  << "Dimension size negative"),
+      c10::Error);
+}
+
 TEST_F(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {
   EXPECT_THROW(ThrowWithMessage("1D tensor is not supported"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("-1 is not a valid dimension"), c10::Error);
@@ -2074,8 +2219,19 @@ TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {
 TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceReturnsValueWhenSet) {
   setenv(kWorldSizeEnvVar, "8", 1);
   TT_ASSERT_OK_AND_ASSIGN(const auto val,
-                          (GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>()));
+                          (GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>()));
   EXPECT_EQ(val, 8);
+}
+
+TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceFailsOnInvalidValue) {
+  setenv(kNprocEnvVar, "not_an_int", 1);
+  const absl::Status status =
+      GetRequiredIntegerEnvOnce<kNprocEnvVar>().status();
+  EXPECT_EQ(status.code(), error::kFailedPrecondition);
+  EXPECT_THAT(status.message(),
+              HasSubstr("the NPROC environment variable is not set or is not "
+                        "a valid integer"));
+  unsetenv(kNprocEnvVar);
 }
 
 TEST(TranslateXlaTensorOomError, ReturnsOkStatusUnchanged) {
@@ -2107,6 +2263,65 @@ TEST(TranslateXlaTensorOomError, TranslatesInternalErrorWithAllocationSize) {
 TEST(TranslateXlaTensorOomError, ReturnsNonOomErrorUnchanged) {
   const absl::Status original(error::kInvalidArgument, "some other error");
   EXPECT_EQ(TranslateXlaTensorOomError(original, "float32", {2, 3}), original);
+}
+
+TEST(TranslateTtErrorToC10Error, ForwardsReturnValuesAndMemberPointers) {
+  struct Helper {
+    std::string stored = "hello";
+    int Add(int a, int b) const { return a + b; }
+    const std::string& Stored() const { return stored; }
+    void Set(std::string value) { stored = std::move(value); }
+  };
+
+  EXPECT_EQ(TranslateTtErrorToC10Error([](int x) { return x * 2; }, 21), 42);
+
+  Helper helper;
+  EXPECT_EQ(TranslateTtErrorToC10Error(&Helper::Add, helper, 10, 5), 15);
+
+  const std::string& out = TranslateTtErrorToC10Error(&Helper::Stored, helper);
+  EXPECT_EQ(&out, &helper.stored);
+
+  TranslateTtErrorToC10Error(&Helper::Set, helper, "updated");
+  EXPECT_EQ(helper.stored, "updated");
+}
+
+void ThrowTtErrorWithCode(absl::StatusCode code, std::string_view message) {
+  TT_THROW_IF_ERROR(TT_ERROR(code) << message);
+}
+
+TEST(TranslateTtErrorToC10Error, TranslatesTtErrorByStatusCode) {
+  EXPECT_THROW(
+      TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                 error::kResourceExhausted, "out of memory"),
+      c10::OutOfMemoryError);
+  EXPECT_THROW(TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                          error::kPythonIndexError,
+                                          "index is out of bounds"),
+               c10::IndexError);
+  EXPECT_THROW(TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                          error::kPythonNotImplementedError,
+                                          "operation is not implemented"),
+               c10::NotImplementedError);
+  try {
+    TranslateTtErrorToC10Error(&ThrowTtErrorWithCode, error::kInvalidArgument,
+                               "invalid argument value");
+    FAIL() << "Expected c10::Error";
+  } catch (const c10::OutOfMemoryError&) {
+    FAIL() << "Expected plain c10::Error, got c10::OutOfMemoryError";
+  } catch (const c10::IndexError&) {
+    FAIL() << "Expected plain c10::Error, got c10::IndexError";
+  } catch (const c10::NotImplementedError&) {
+    FAIL() << "Expected plain c10::Error, got c10::NotImplementedError";
+  } catch (const c10::Error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("invalid argument value"));
+  }
+}
+
+TEST(TranslateTtErrorToC10Error, PropagatesNonTtErrorUnchanged) {
+  const auto throw_non_tt = []() {
+    throw std::logic_error("other");  // Tests non-TtError passthrough.
+  };
+  EXPECT_THROW(TranslateTtErrorToC10Error(throw_non_tt), std::logic_error);
 }
 
 }  // namespace

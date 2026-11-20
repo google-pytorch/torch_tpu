@@ -17,10 +17,10 @@
 #ifndef TORCH_TPU_CSRC_OPS_LINALG_QR_LINALG_QR_KERNELS_H_
 #define TORCH_TPU_CSRC_OPS_LINALG_QR_LINALG_QR_KERNELS_H_
 
+#include <string_view>
 #include <tuple>
 
 #include "ATen/core/TensorBody.h"
-#include "c10/util/string_view.h"
 
 namespace torch_tpu {
 
@@ -29,7 +29,7 @@ std::tuple<at::Tensor&, at::Tensor&> AtenGeqrfA(const at::Tensor& self,
                                                 at::Tensor& a, at::Tensor& tau);
 
 std::tuple<at::Tensor&, at::Tensor&> AtenLinalgQrOut(const at::Tensor& self,
-                                                     c10::string_view mode,
+                                                     std::string_view mode,
                                                      at::Tensor& q,
                                                      at::Tensor& r);
 

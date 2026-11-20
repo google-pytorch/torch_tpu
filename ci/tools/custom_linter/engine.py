@@ -275,8 +275,6 @@ def normalize_path(path: pathlib.Path, root_dir: pathlib.Path) -> str:
     return path.as_posix()
 
 
-# TODO(b/581426770): Migrate description-only disable_tags to in-code
-# justifications so rules do not depend on exported commit-message tags.
 def is_rule_disabled(
     rule: custom_lint_metadata.Rule,
     commit: custom_lint_vcs.Commit,

@@ -34,6 +34,9 @@ absl::StatusOr<mlir::MlirOp> BuildFminShlo(mlir::MlirOp self,
                                            mlir::MlirOp other) {
   TT_ASSIGN_OR_RETURN((auto [self_, other_]),
                       ApplyBroadcastIfNeeded(self, other));
+  if (!IsFloatType(GetTensorTypeOrDie(self_))) {
+    return mlir::stablehlo::Min(self_, other_);
+  }
 
   mlir::MlirOp self_less = mlir::stablehlo::Compare(
       self_, other_, mlir::stablehlo::ComparisonDirection::LT);

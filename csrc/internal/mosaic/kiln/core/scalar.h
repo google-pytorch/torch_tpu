@@ -54,6 +54,7 @@ class Scalar final : public WithElementwiseOps<Scalar>,
 Scalar I32(Literal value);
 Scalar U32(Literal value);
 Scalar F32(Literal value);
+Scalar Bool(bool value);
 
 // Assumes that `value` is a multiple of `multiple` without emitting a runtime
 // check (Pallas `pl.multiple_of` / `tpu.assume_multiple`).

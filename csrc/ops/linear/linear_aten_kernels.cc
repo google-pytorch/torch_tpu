@@ -34,7 +34,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/DispatchKey.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/DimVector.h"
@@ -58,6 +57,7 @@
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
 #include "csrc/ops/unary.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -69,65 +69,150 @@
 #include "torch/csrc/autograd/functions/utils.h"
 #include "torch/csrc/autograd/generated/Functions.h"  // IWYU pragma: keep
 #include "torch/csrc/autograd/saved_variable.h"
-#include "torch/headeronly/core/DeviceType.h"
 
 namespace torch_tpu {
 namespace {
 
 // Builds a StableHLO `dot_general` operation with the given contracting
-// dimensions and precision config. Casts 64-bit integer inputs to `f64` before
-// the dot product and back to `i64` afterwards to work around XLA TPU backend
+// dimensions, precision config, and optional preferred result element type.
+// Casts 64-bit integer inputs to `f64` before the dot product and back to the
+// target integer type afterwards to work around XLA TPU backend
 // precision/performance limitations on `i64` dot products.
 mlir::MlirOp BuildDotGeneral(mlir::MlirOp lhs, mlir::MlirOp rhs,
-                             absl::Span<const int64_t> lhs_contracting,
-                             absl::Span<const int64_t> rhs_contracting,
-                             mlir::stablehlo::Precision precision) {
+                             const absl::Span<const int64_t> lhs_contracting,
+                             const absl::Span<const int64_t> rhs_contracting,
+                             const mlir::stablehlo::Precision precision,
+                             const std::optional<mlir::ElementType>
+                                 preferred_element_type = std::nullopt) {
   const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
   const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  const bool is_any_i64 = lhs_type.getElementType().isInteger(64) ||
+  const mlir::Type orig_lhs_elem_type = lhs_type.getElementType();
+  const bool is_any_i64 = orig_lhs_elem_type.isInteger(64) ||
                           rhs_type.getElementType().isInteger(64);
   if (is_any_i64) {
     lhs = mlir::stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
     rhs = mlir::stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
   }
 
-  auto dot_dimension_numbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &lhs.getContext(),
-      /*lhs_batching_dimensions=*/{},
-      /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/AsArrayRef(lhs_contracting),
-      /*rhs_contracting_dimensions=*/AsArrayRef(rhs_contracting));
+  const auto dot_dimension_numbers =
+      mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &lhs.getContext(),
+          /*lhs_batching_dimensions=*/{},
+          /*rhs_batching_dimensions=*/{},
+          /*lhs_contracting_dimensions=*/AsArrayRef(lhs_contracting),
+          /*rhs_contracting_dimensions=*/AsArrayRef(rhs_contracting));
   const mlir::stablehlo::Precision precisions[2] = {precision, precision};
-  auto precision_config =
+  const auto precision_config =
       mlir::stablehlo::PrecisionConfigAttr::get(&lhs.getContext(), precisions);
 
   mlir::MlirOp dot_result = mlir::stablehlo::DotGeneral(
-      lhs, rhs, dot_dimension_numbers, precision_config);
+      lhs, rhs, dot_dimension_numbers, precision_config,
+      is_any_i64 ? std::nullopt : preferred_element_type);
   if (is_any_i64) {
-    return mlir::stablehlo::ConvertElementType(dot_result,
-                                               mlir::ElementType::I64);
+    if (preferred_element_type.has_value()) {
+      return mlir::stablehlo::ConvertElementType(dot_result,
+                                                 *preferred_element_type);
+    }
+    return mlir::stablehlo::ConvertElementType(dot_result, orig_lhs_elem_type);
   }
   return dot_result;
 }
 
+// Adds `bias` to `dot_result` (an accumulator in `compute_dtype`) like
+// `aten::addmm` does: the bias is added in `compute_dtype` (e.g. `f32` for
+// `bf16` inputs, matching PyTorch's fused matmul epilogues), and the sum is
+// converted to `out_dtype` once.
+absl::StatusOr<mlir::MlirOp> AddBiasInComputeDtype(
+    mlir::MlirOp dot_result, mlir::MlirOp bias,
+    const mlir::ElementType compute_dtype, const mlir::ElementType out_dtype) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp bias_comp,
+                      CastIfNeeded(bias, compute_dtype));
+  TT_ASSIGN_OR_RETURN((auto [dot_bcast, bias_bcast]),
+                      ApplyBroadcastIfNeeded(dot_result, bias_comp));
+  return CastIfNeeded(mlir::stablehlo::Add(dot_bcast, bias_bcast), out_dtype);
+}
+
+// Rows of a TPU memory tile (`T(8,128)`, also used for bf16 as
+// `T(8,128)(2,1)`). Collapsing `[..., S, K]` into `[prod(...) * S, K]` can be a
+// free bitcast iff `S` is a multiple of this.
+constexpr int64_t kTpuSublaneTileRows = 8;
+
+// Returns whether `BuildLinearShlo` should collapse the leading dimensions of
+// an N-D (N >= 3) `input` into a 2-D matmul. When the collapse is a bitcast
+// (static shape, second-minor dim tile aligned), XLA:TPU optimizes the 2-D
+// matmul best: it sinks a following head-split reshape into the dot and fuses
+// per-head reductions (e.g. q/k RMSNorm statistics) into its epilogue, which it
+// does not do for the equivalent N-D `dot_general`. Otherwise (e.g. sequence
+// lengths 729 or 1500), the collapse would materialize relayout copies, so the
+// N-D `dot_general` is used.
+bool ShouldCollapseToMatmul(mlir::RankedTensorType input_type,
+                            int64_t weight_rank) {
+  // A zero-sized contracting dimension has nothing to collapse (and would make
+  // the collapsed row count 0 / 0), so it keeps the N-D dot_general.
+  if (weight_rank != 2 || input_type.getRank() < 3 ||
+      !input_type.hasStaticShape() || input_type.getShape().back() == 0) {
+    return false;
+  }
+  return input_type.getShape()[input_type.getRank() - 2] %
+             kTpuSublaneTileRows ==
+         0;
+}
+
 // Builds the StableHLO graph for `aten::linear`: y = input @ weight^T + bias.
-// Supports arbitrary input rank >= 1 and 1D or 2D weight without intermediate
-// reshapes by contracting `input`'s last dimension with `weight`'s last
-// dimension directly via `stablehlo.dot_general`.
+// Supports arbitrary input rank >= 1 and 1D or 2D weight by contracting
+// `input`'s last dimension with `weight`'s last dimension via
+// `stablehlo.dot_general`. N-D inputs are either contracted directly or
+// collapsed to a 2-D matmul (see `ShouldCollapseToMatmul`) if
+// `allow_collapse` (i.e. the input is contiguous). When `bias` is present,
+// accumulates and adds the bias in `InferComputationDtype(out_dtype)` (e.g.
+// `f32` for `bf16`/`f16`) before converting once to `out_dtype`.
 absl::StatusOr<mlir::MlirOp> BuildLinearShlo(
     mlir::MlirOp input, mlir::MlirOp weight, std::optional<mlir::MlirOp> bias,
-    mlir::stablehlo::Precision precision) {
-  const int64_t input_rank = GetTensorTypeOrDie(input).getRank();
+    const mlir::ElementType out_dtype,
+    const mlir::stablehlo::Precision precision, const bool allow_collapse) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const int64_t input_rank = input_type.getRank();
   const int64_t weight_rank = GetTensorTypeOrDie(weight).getRank();
-  const int64_t lhs_contracting[1] = {input_rank - 1};
-  const int64_t rhs_contracting[1] = {weight_rank - 1};
-
-  mlir::MlirOp dot_result = BuildDotGeneral(input, weight, lhs_contracting,
-                                            rhs_contracting, precision);
+  const Dimensions rhs_contracting = {weight_rank - 1};
+  std::optional<mlir::ElementType> compute_dtype;
   if (bias.has_value()) {
-    TT_ASSIGN_OR_RETURN(auto broadcasted,
-                        ApplyBroadcastIfNeeded(dot_result, *bias));
-    return mlir::stablehlo::Add(broadcasted[0], broadcasted[1]);
+    TT_ASSIGN_OR_RETURN(compute_dtype, InferComputationDtype(out_dtype));
+  }
+
+  if (allow_collapse && ShouldCollapseToMatmul(input_type, weight_rank)) {
+    const llvm::ArrayRef<int64_t> input_shape = input_type.getShape();
+    const int64_t k = input_shape.back();
+    const int64_t m = input_type.getNumElements() / k;
+    const int64_t n = GetTensorTypeOrDie(weight).getShape()[0];
+    const Dimensions lhs_contracting_2d = {1};
+    const bool bias_is_vector =
+        bias.has_value() && GetTensorTypeOrDie(*bias).getRank() <= 1;
+    mlir::MlirOp result = BuildDotGeneral(
+        mlir::stablehlo::Reshape(input, {m, k}), weight, lhs_contracting_2d,
+        rhs_contracting, precision, compute_dtype);
+    if (bias_is_vector) {
+      TT_ASSIGN_OR_RETURN(
+          result,
+          AddBiasInComputeDtype(result, *bias, *compute_dtype, out_dtype));
+    }
+    Dimensions output_shape(input_shape.begin(), input_shape.end() - 1);
+    output_shape.push_back(n);
+    result =
+        mlir::stablehlo::Reshape(result, AsArrayRef<int64_t>(output_shape));
+    if (bias.has_value() && !bias_is_vector) {
+      TT_ASSIGN_OR_RETURN(
+          result,
+          AddBiasInComputeDtype(result, *bias, *compute_dtype, out_dtype));
+    }
+    return result;
+  }
+
+  const Dimensions lhs_contracting = {input_rank - 1};
+  mlir::MlirOp dot_result =
+      BuildDotGeneral(input, weight, lhs_contracting, rhs_contracting,
+                      precision, compute_dtype);
+  if (bias.has_value()) {
+    return AddBiasInComputeDtype(dot_result, *bias, *compute_dtype, out_dtype);
   }
   return dot_result;
 }
@@ -269,29 +354,40 @@ ReturnType DispatchLinearImpl(const at::Tensor& input, const at::Tensor& weight,
                               OpParamCacheKeys param_keys,
                               Dispatch2Fn&& dispatch2_fn,
                               Dispatch3Fn&& dispatch3_fn) {
-  TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype_mlir,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
   const auto sanitized_bias = SanitizeOptionalTensor(bias);
   const bool has_bias = sanitized_bias.has_value();
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
+  // A non-contiguous input (e.g. `x.flatten(2).transpose(1, 2)`) is a
+  // transposed view; contracting it with an N-D `dot_general` lets XLA fold the
+  // transpose into the matmul, whereas collapsing it to 2-D forces a relayout.
+  const bool allow_collapse =
+      ConstTensor(input).maybe_is_contiguous().value_or(false);
+  TT_RETURN_IF_ERROR(
+      param_keys.SetParam("allow_collapse_to_matmul", allow_collapse));
 
   DispatchOpOptions<1> options{.out_dtype = output_dtype_mlir,
                                .out_dims = std::move(output_dims),
                                .op_param_cache_keys = std::move(param_keys)};
 
   if (has_bias) {
-    auto op_builder = [current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+    auto op_builder = [output_dtype_mlir, current_precision,
+                       allow_collapse](FixedSizeSpan<mlir::MlirOp, 3> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
       auto& [input_op, weight_op, bias_op] = inputs;
-      return BuildLinearShlo(input_op, weight_op, bias_op, current_precision);
+      return BuildLinearShlo(input_op, weight_op, bias_op, output_dtype_mlir,
+                             current_precision, allow_collapse);
     };
     return dispatch3_fn(std::move(op_builder), std::move(options));
   } else {
-    auto op_builder = [current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+    auto op_builder = [output_dtype_mlir, current_precision,
+                       allow_collapse](FixedSizeSpan<mlir::MlirOp, 2> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
       auto& [input_op, weight_op] = inputs;
       return BuildLinearShlo(input_op, weight_op, std::nullopt,
-                             current_precision);
+                             output_dtype_mlir, current_precision,
+                             allow_collapse);
     };
     return dispatch2_fn(std::move(op_builder), std::move(options));
   }
@@ -426,33 +522,21 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> LinearBackward(
                          std::move(grad_bias));
 }
 
-// Returns true if `tensor` is a Meta tensor or a `FakeTensor` (whose
-// underlying storage has `DeviceType::Meta`).
-bool IsMetaOrFakeTensor(const at::Tensor& tensor) {
-  return tensor.defined() &&
-         (tensor.is_meta() ||
-          (tensor.key_set().has(c10::DispatchKey::Python) &&
-           tensor.has_storage() &&
-           tensor.storage().device_type() == c10::DeviceType::Meta));
-}
-
-// Returns true if `tensor` is a Python wrapper tensor subclass (such as
-// `DTensor`) not backed by Meta storage. Distinguishes wrapper subclasses
-// (including storage-less subclasses) from `FakeTensor` (used by
-// `torch.compile` and `torch.export`), whose underlying storage has
-// `DeviceType::Meta`.
-bool IsPythonWrapperSubclass(const at::Tensor& tensor) {
-  return tensor.defined() && tensor.key_set().has(c10::DispatchKey::Python) &&
-         (!tensor.has_storage() ||
-          tensor.storage().device_type() != c10::DeviceType::Meta);
+// Returns true if `tensor` is an AOTAutograd `FunctionalTensor`, i.e. it is
+// recognized by `IsMetaOrFakeOrFunctionalTensor` but is neither a Meta tensor
+// nor a `FakeTensor` (whose storage has `DeviceType::Meta`).
+bool IsFunctionalTensor(const at::Tensor& tensor) {
+  return IsMetaOrFakeOrFunctionalTensor(tensor) && !tensor.is_meta() &&
+         tensor.has_storage() &&
+         tensor.storage().device_type() != c10::DeviceType::Meta;
 }
 
 // Creates an autograd `Node` smart pointer (`c10::intrusive_ptr<T>` in PyTorch
-// 2.12+ where `Node` inherits from `c10::intrusive_ptr_target`, or
+// 2.13+ where `Node` inherits from `c10::intrusive_ptr_target`, or
 // `std::shared_ptr<T>` with `torch::autograd::deleteNode` in earlier PyTorch
 // versions used by OSS builds).
-// TODO: b/576283069 - Simplify to `c10::make_intrusive<T>()` once minimum OSS
-// PyTorch is >= 2.12.0.
+// TODO: b/585211199 - Simplify to `c10::make_intrusive<T>()` once minimum OSS
+// PyTorch is >= 2.13.0, where `Node` is a `c10::intrusive_ptr_target`.
 template <typename T>
 auto MakeAutogradNode() {
   if constexpr (std::is_base_of_v<c10::intrusive_ptr_target, T>) {
@@ -481,9 +565,20 @@ at::Tensor AtenLinearAutograd(const at::Tensor& input, const at::Tensor& weight,
       torch::autograd::compute_requires_grad(*sanitized_bias) &&
       ValidateLinearInputs(input, weight, bias).ok();
   const bool is_meta_1d_weight =
-      weight.dim() == 1 &&
-      (IsMetaOrFakeTensor(input) || IsMetaOrFakeTensor(weight));
-  if (is_non_standard_grad_bias || is_meta_1d_weight ||
+      weight.dim() == 1 && (IsMetaOrFakeOrFunctionalTensor(input) ||
+                            IsMetaOrFakeOrFunctionalTensor(weight));
+  // Under `torch.compile` training (AOTAutograd traces the joint graph with
+  // `FunctionalTensor`s that require grad), keep the composite decomposition:
+  // with the native `linear_backward`, XLA:TPU picks worse layouts and fusions
+  // for some models (e.g. large-vocab projections and GELU backward), and the
+  // composite backward is well tuned. Only the inference forward (no grad
+  // required) uses the native lowering under `torch.compile`. Plain
+  // `FakeTensor`s that require grad (e.g. `torch._precompile` tracing) keep
+  // the native autograd path, as before.
+  const bool is_traced_training =
+      any_requires_grad &&
+      (IsFunctionalTensor(input) || IsFunctionalTensor(weight));
+  if (is_non_standard_grad_bias || is_meta_1d_weight || is_traced_training ||
       IsPythonWrapperSubclass(input) || IsPythonWrapperSubclass(weight) ||
       (has_bias && IsPythonWrapperSubclass(*sanitized_bias)) ||
       IsFunctorchActive() || torch::autograd::isFwGradDefined(input) ||

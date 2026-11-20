@@ -93,7 +93,7 @@ def set_launch_env(nproc_per_node: int) -> bool:
   repick_slicebuilder_ports = False
   if (
       _has_tpu_devices()
-      or env.get_str_env_once("JOB_COMPLETION_INDEX") is not None
+      or env.get_int_env_once("JOB_COMPLETION_INDEX") is not None
   ):
     # Imported lazily so GPU runs (TORCH_DEVICE_BACKEND_AUTOLOAD=0) never depend
     # on `torch.tpu`, which only exists once the TorchTPU backend is loaded.
@@ -297,7 +297,7 @@ def _is_single_host() -> bool:
   """Returns whether this is a single-host (non multi-host) TPU job."""
   hostnames = env.get_str_env_once("TPU_WORKER_HOSTNAMES", default_value="")
   return (
-      env.get_str_env_once("JOB_COMPLETION_INDEX") is None
+      env.get_int_env_once("JOB_COMPLETION_INDEX") is None
       and len([h for h in hostnames.split(",") if h]) <= 1
   )
 
@@ -362,10 +362,19 @@ def _gloo_worker_fn(
 ) -> None:
   """Runs `fn` inside a gloo default process group, then tears it down."""
   torch_dist.init_process_group(backend="gloo", init_method="env://")
+  # Wait for every rank to initialize before running `fn`, and wait for every
+  # rank to finish `fn` before tearing down the group. If `fn` raises on any
+  # rank, skip `destroy_process_group()` so the failing rank does not close its
+  # sockets on peers; if a peer failed in `fn` and exited, ignore the resulting
+  # socket-close error during teardown so `mp.spawn` reports the peer's
+  # exception from `fn`.
+  torch_dist.barrier()
+  fn(*args, **kwargs)
   try:
-    fn(*args, **kwargs)
-  finally:
+    torch_dist.barrier()
     torch_dist.destroy_process_group()
+  except RuntimeError as e:
+    logging.debug("Ignoring gloo teardown error: %s", e)
 
 
 def gloo_run(

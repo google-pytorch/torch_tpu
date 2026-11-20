@@ -50,6 +50,7 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/strip.h"
 #include "absl/strings/substitute.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
@@ -67,6 +68,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/eager_mode.h"
 #include "re2/re2.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -444,6 +446,64 @@ std::optional<std::string> ValidateNoLegacyScalarTypeName(
   return std::nullopt;
 }
 
+// Validates that the message writes the PyTorch dtype names plainly, i.e.
+// without the "torch." prefix and without quotes:
+//     - "int32" vs. "torch.int32"
+//     - "float32" vs. "'float32'", "\"float32\"" or "`float32`".
+//
+// Pre-conditions: The error message must not be empty.
+//
+// Backticks are rejected along with single and double quotes, since they are
+// just another way of quoting. Quotes are only flagged when they immediately
+// enclose a dtype name (optionally with the "torch." prefix), so quoted strings
+// that merely contain one (e.g. "'int32 tensor'") are not flagged. The dtype
+// names are matched as whole words, so identifiers that merely start with one
+// (e.g. "int32_t", "torch.int32x") are not flagged either.
+std::optional<std::string> ValidateNoPrefixedOrQuotedDtypeName(
+    const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kErrorMessageCheckPreconditionViolated;
+
+  // Captures the prefixed or quoted dtype name, e.g. "torch.int32" or
+  // "'int32'".
+  static const absl::NoDestructor<RE2> kPrefixedOrQuotedNamePattern([] {
+    const std::string names =
+        absl::StrJoin(GetLegacyToTorchDtypeNames(), "|",
+                      [](std::string* out, const auto& legacy_and_torch) {
+                        absl::StrAppend(out, legacy_and_torch.second);
+                      });
+    return absl::Substitute(
+        R"re(('(?:torch\.)?(?:$0)'|"(?:torch\.)?(?:$0)"|`(?:torch\.)?(?:$0)`)re"
+        R"re(|\btorch\.(?:$0)\b))re",
+        names);
+  }());
+  ABSL_CHECK(kPrefixedOrQuotedNamePattern->ok())  // CRASH_OK
+      << kErrorMessageCheckPreconditionViolated;
+
+  std::vector<std::string> replacements;
+  std::string_view input = message;
+  std::string_view prefixed_or_quoted;
+  while (RE2::FindAndConsume(&input, *kPrefixedOrQuotedNamePattern,
+                             &prefixed_or_quoted)) {
+    // Strip the quotes, if any, and then the "torch." prefix, if any.
+    std::string_view name = prefixed_or_quoted;
+    if (!absl::StartsWith(name, "torch.")) {
+      name = name.substr(1, name.size() - 2);
+    }
+    absl::ConsumePrefix(&name, "torch.");
+    replacements.push_back(absl::StrCat(prefixed_or_quoted, " with ", name));
+  }
+
+  if (!replacements.empty()) {
+    return absl::StrCat(
+        "The error message must write the PyTorch dtype names plainly, without "
+        "the 'torch.' prefix or quotes. Replace ",
+        absl::StrJoin(replacements, ", "), ".");
+  }
+  return std::nullopt;
+}
+
 // Validates that the message writes the dimensionality of tensors as "<N>D"
 // when it's a number (e.g. "0D", "5D"), and as "<n>-D" when it's a single
 // letter (e.g. "n-D", "N-D").
@@ -632,8 +692,12 @@ struct ContextPrefixSplit {
 class ErrorFormatChecker {
  public:
   // Checks that the message of `error` follows the guidelines. Crashes with an
-  // explanation of all violations if it doesn't.
+  // explanation of all violations if it doesn't. A message that holds text
+  // written by the user is reported as written, so it isn't checked.
   void Check(const TtError& error) {
+    if (internal::IsUserMessage(error.status())) {
+      return;
+    }
     violations_.clear();
     CheckMessage(error.status().message());
     if (!violations_.empty()) {
@@ -679,6 +743,11 @@ class ErrorFormatChecker {
     // from the OpenXLA project are not under our control.)
     if (!to_check.empty()) {
       AppendIfViolation(ValidateNoLegacyScalarTypeName(to_check));
+    }
+
+    // Likewise for the "torch." prefix and quotes around dtype names.
+    if (!to_check.empty()) {
+      AppendIfViolation(ValidateNoPrefixedOrQuotedDtypeName(to_check));
     }
 
     // The dimensionality format applies to the whole TorchTPU part of the

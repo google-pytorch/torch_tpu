@@ -89,7 +89,8 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
   ABSL_VLOG(1) << "[AtenCopyFrom] CPU -> TPU copy path for "
                << ToString(src, "src");
   if (src.numel() == 0) {
-    // Copying nothing is a no-op.
+    // Copying nothing is a no-op, but only if src is broadcastable to dest.
+    TT_RETURN_IF_ERROR(ValidateBroadcastableToDest(src, dest));
     return absl::OkStatus();
   }
 

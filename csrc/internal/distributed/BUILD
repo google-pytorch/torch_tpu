@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # jparkerh
-# cbasile-g
+# zacmustin
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 

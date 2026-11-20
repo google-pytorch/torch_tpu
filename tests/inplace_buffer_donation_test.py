@@ -214,6 +214,38 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       finally:
         execution_mode.disable_inplace_buffer_donation = False
 
+  def test_batch_norm_training_donates_running_stats_in_defer_never(self):
+    """Verifies training-mode batch norm updates the running stats in place."""
+    # 16 MB per running stat (4M float32 features).
+    num_features = 4 * 1024 * 1024
+
+    def training_step_extra_memory():
+      bn = torch.nn.BatchNorm1d(num_features, affine=False).to(self.device)
+      x = torch.randn(2, num_features, device=self.device)
+      # Warmup to compile and initialize runtime buffers
+      bn(x)
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      torch.accelerator.reset_peak_memory_stats()
+      base_mem = torch.accelerator.memory_allocated()
+      bn(x)
+      torch.accelerator.synchronize()
+      return torch.accelerator.max_memory_allocated() - base_mem
+
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      execution_mode.disable_inplace_buffer_donation = True
+      try:
+        extra_mem_without_donation = training_step_extra_memory()
+      finally:
+        execution_mode.disable_inplace_buffer_donation = False
+      extra_mem = training_step_extra_memory()
+
+    # Without donation, both 16 MB running stats are allocated again.
+    self.assertLessEqual(
+        extra_mem, extra_mem_without_donation - 24 * 1024 * 1024
+    )
+
   def test_fused_inplace_chain_donates_buffer_in_defer_and_fuse(self):
     """Verifies a deferred chain of in-place ops fuses and donates in DeferAndFuse."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
@@ -2319,6 +2351,17 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(x.cpu(), expected))
       self.assertTrue(torch.equal(res.cpu(), expected))
       self.assertTrue(torch.equal(v.cpu(), expected))
+
+  def test_fill_with_view_of_self_in_defer_never(self):
+    """Verifies fill_ with a fill value that is a view of the donated self."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      x.fill_(x[1])
+      self.assertTrue(torch.equal(x.cpu(), torch.tensor([2.0, 2.0, 2.0])))
+
+      y = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      y[0].fill_(y[2])
+      self.assertTrue(torch.equal(y.cpu(), torch.tensor([3.0, 2.0, 3.0])))
 
 
 if __name__ == "__main__":

@@ -166,6 +166,17 @@ while true; do
         device_id=$((i * TORCH_TPU_DEVICES_PER_CHIP))
         export TPU_VISIBLE_DEVICES=$device_id
         export TPU_VISIBLE_CHIPS=$device_id
+        if [ "$TORCH_TPU_DEVICES_PER_CHIP" -gt 1 ]; then
+          # Multi-device-per-chip TPUs (e.g. v7) index TPU_VISIBLE_CHIPS by
+          # TensorNode, which requires 4D single-device bounds so tests that
+          # initialize libtpu directly (e.g. C++ PJRT or JAX) don't stay in
+          # chip mode.
+          export TPU_HOST_BOUNDS="1,1,1,1"
+          export TPU_CHIPS_PER_HOST_BOUNDS="1,1,1,1"
+          export TPU_PROCESS_BOUNDS="1,1,1,1"
+          export TPU_CHIPS_PER_PROCESS_BOUNDS="1,1,1,1"
+          export ALLOW_MULTIPLE_LIBTPU_LOAD="${ALLOW_MULTIPLE_LIBTPU_LOAD:-1}"
+        fi
         echo "Running test $TEST_BINARY $* on accelerator $i"
         run_test "$@"
         exit $?

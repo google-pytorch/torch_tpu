@@ -103,7 +103,7 @@ namespace {
 using testing::MatchesRegex;
 
 CompilationCacheKey DummyKey(int key = 0) {
-  return CompilationCacheKey(GraphKey(ShapelessKey(key), DimensionsKey({})),
+  return CompilationCacheKey(GraphKey(ExtentlessKey(key), DimensionsKey({})),
                              CompileOptionsKey(0));
 }
 
@@ -419,10 +419,10 @@ TEST_F(CompilationCacheTest, DynamicCacheLayoutMismatch) {
   std::vector<Shape> input_shapes = {dynamic_shape};
   std::vector<Shape> output_shapes = {dynamic_shape};
 
-  ShapelessKey shapeless_key(111);
+  ExtentlessKey extentless_key(111);
   ShapeDynamismMetadata dynamism_metadata(input_shapes, output_shapes);
   DimensionsKey dimensions_key(dynamism_metadata);
-  GraphKey graph_key(shapeless_key, dimensions_key);
+  GraphKey graph_key(extentless_key, dimensions_key);
 
   CompilationCacheKey key1(graph_key, CompileOptionsKey(1));
   CompilationCacheKey key2(graph_key, CompileOptionsKey(2));
@@ -471,26 +471,33 @@ TEST_F(CompilationCacheTest, DynamicCacheLayoutMismatch) {
 }
 
 // A registered dummy kernel and a key that resolves to it through the registry
-// (same shapeless key, concrete dimensions).
+// (same extentless key, concrete dimensions).
 struct DummyKernelKeys {
   CompilationCacheKey kernel_key;
   CompilationCacheKey lookup_key;
 };
 
-// Registers a dummy kernel built by `build` under a key derived from `name`.
+// Returns a key that resolves through the registry to the kernels found by
+// graphs with `extentless_key` (same extentless key, concrete dimensions).
+CompilationCacheKey LookupKey(const ExtentlessKey& extentless_key) {
+  return CompilationCacheKey(GraphKey(extentless_key, DimensionsKey({1, 2, 3})),
+                             CompileOptionsKey({}));
+}
+
+// Registers a dummy kernel built by `build` under a key derived from `name`,
+// found by graphs with that key's extentless key or `additional_search_keys`.
 // The registry is process-wide and append-only, so each test uses its own name.
 DummyKernelKeys RegisterDummyKernelFor(
     std::string_view name,
     UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable,
-    const DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault) {
+    const DummyKernelLoading loading = DummyKernelLoading::kEnabledByDefault,
+    const absl::Span<const ExtentlessKey> additional_search_keys = {}) {
   CompilationCacheKey kernel_key(
-      GraphKey(ShapelessKey(Fingerprint(name)), DimensionsKey({})),
+      GraphKey(ExtentlessKey(Fingerprint(name)), DimensionsKey({})),
       CompileOptionsKey({}));
-  RegisterDummyKernel(kernel_key, build, loading);
-  CompilationCacheKey lookup_key(
-      GraphKey(kernel_key.graph_key().shapeless_key(),
-               DimensionsKey({1, 2, 3})),
-      CompileOptionsKey({}));
+  RegisterDummyKernel(kernel_key, build, loading, additional_search_keys);
+  CompilationCacheKey lookup_key =
+      LookupKey(kernel_key.graph_key().extentless_key());
   return {.kernel_key = std::move(kernel_key),
           .lookup_key = std::move(lookup_key)};
 }
@@ -592,6 +599,45 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
   ASSERT_TRUE(updated_stats.has_value());
   EXPECT_EQ(updated_stats->read_count, 2);
   EXPECT_GE(updated_stats->last_read, before_hit);
+
+  CompilationCache::ShutDown();
+}
+
+TEST_F(CompilationCacheTest, UnboundedDynamicKernelServesAllItsExtentlessKeys) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  // One kernel, found through two extentless keys.
+  const ExtentlessKey other_extentless_key(Fingerprint("otherextentlesskey"));
+  const auto [key, test_key] = RegisterDummyKernelFor(
+      "twoextentlesskeys", CreateDummyExecutable,
+      DummyKernelLoading::kEnabledByDefault, {other_extentless_key});
+
+  // The first lookup builds the kernel's executable.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel first,
+      cache.GetOrCompile(
+          test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
+  TT_ASSERT_OK_AND_ASSIGN(auto first_exec, first.fixed_shape_kernel.get());
+  EXPECT_TRUE(cache.IsExecutableReady(
+      key, CompilationCache::CacheEntryKind::kUnboundedDynamic));
+
+  // A lookup through the other extentless key is served the same executable.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel second,
+      cache.GetOrCompile(
+          LookupKey(other_extentless_key),
+          {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          MustNotBeCalled, std::make_unique<xla::CompileOptions>(),
+          UnboundedKernelPolicy::kAllow));
+  TT_ASSERT_OK_AND_ASSIGN(auto second_exec, second.fixed_shape_kernel.get());
+  EXPECT_TRUE(second.cache_hit);
+  EXPECT_EQ(second.unbounded_dynamic_kernel, first.unbounded_dynamic_kernel);
+  EXPECT_EQ(second_exec->GetLoadedExecutable(),
+            first_exec->GetLoadedExecutable());
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 
   CompilationCache::ShutDown();
 }

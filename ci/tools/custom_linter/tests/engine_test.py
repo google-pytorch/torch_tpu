@@ -512,6 +512,8 @@ def test_required_regexp_by_line() -> None:
 def test_required_regexp_entire_file() -> None:
   ok = 'load("//x")\n\ntorch_tpu_package_end()\n'
   assert not _check("CheckTorchTpuPackageEnd", ok, "csrc/BUILD")
+  suppressed = "# NO_TORCH_TPU_PACKAGE_END_OK=reason\nfoo()\n"
+  assert not _check("CheckTorchTpuPackageEnd", suppressed, "csrc/BUILD")
   bad = "torch_tpu_package_end()\nfoo()\n"
   assert _lines(_check("CheckTorchTpuPackageEnd", bad, "csrc/BUILD")) == [None]
 
@@ -638,6 +640,7 @@ _RULE_EXAMPLES: Final[Mapping[str, _RuleExample]] = {
     "CheckOpImplFilename": _RuleExample(
         path="csrc/ops/add/helper.cc",
         bad="x\n",
+        good="// ANY_OP_IMPL_FILENAME_OK=r\n",
         op=custom_lint_metadata.FileOperation.ADD,
     ),
     "CheckKernelMacro": _RuleExample(
@@ -653,15 +656,20 @@ _RULE_EXAMPLES: Final[Mapping[str, _RuleExample]] = {
     "CheckC10ToStringUsage": _RuleExample(
         path="csrc/a.cc",
         bad="c10::toString(x);\n",
-        good="c10::toString(x);  // C10_TOSTRING_OK\n",
+        good="c10::toString(x);  // C10_TOSTRING_OK=r\n",
     ),
     "CheckDeprecatedMutexLock": _RuleExample(
         path="csrc/a.cc",
         bad="MutexLock lock(&mu);\n",
+        good="MutexLock lock(&mu);  // DEPRECATED_MUTEX_LOCK_OK=r\n",
     ),
     "CheckIgnoreInCacheKeyLegacy": _RuleExample(
         path="csrc/a.cc",
         bad='IgnoreInCacheKey(x, "Legacy usage");\n',
+        good=(
+            'IgnoreInCacheKey(x, "Legacy usage");'
+            "  // IGNORE_IN_CACHE_KEY_LEGACY_OK=r\n"
+        ),
     ),
     "CheckIncludeBeforeCopyright": _RuleExample(
         path="csrc/a.cc",
@@ -939,6 +947,11 @@ _RULE_EXAMPLES: Final[Mapping[str, _RuleExample]] = {
         bad='flags.DEFINE_bool("x", False, "d")\n',
         good='flags.DEFINE_bool("x", False, "d")  # PYTHON_FLAG_OK=r\n',
     ),
+    "CheckMockSpec": _RuleExample(
+        path="tests/ops_test.py",
+        bad="m = mock.MagicMock()\n",  # NO_SPEC_OK=linter test
+        good="m = mock.MagicMock()  # NO_SPEC_OK=r\n",
+    ),
     "CheckAbslTestCase": _RuleExample(
         path="tests/ops_test.py",
         bad="class T(absltest.TestCase):\n",
@@ -974,6 +987,53 @@ _RULE_EXAMPLES: Final[Mapping[str, _RuleExample]] = {
 
 def test_all_project_rules_have_examples() -> None:
   assert set(_RULE_EXAMPLES) == set(_project_rules())
+
+
+@pytest.mark.parametrize(
+    ("code", "flagged"),
+    # The calls below are test data for CheckMockSpec itself.
+    [
+        ("m = mock.MagicMock()", True),  # NO_SPEC_OK=linter test
+        ("m = MagicMock(return_value=1)", True),  # NO_SPEC_OK=linter test
+        (
+            "m = mock.NonCallableMagicMock(name='x')",  # NO_SPEC_OK=linter test
+            True,
+        ),
+        ("m = mock.Mock()", True),  # NO_SPEC_OK=linter test
+        ("m = mock.NonCallableMock()", True),  # NO_SPEC_OK=linter test
+        ("m = mock.AsyncMock()", True),  # NO_SPEC_OK=linter test
+        ("m = mock.MagicMock(", True),  # NO_SPEC_OK=linter test
+        ("m = mock.MagicMock(spec=Foo)", False),
+        ("m = mock.MagicMock(spec_set=Foo, return_value=1)", False),
+        ("m = mock.MagicMock(torch.Tensor)", False),
+        ("m = mock.NonCallableMagicMock(Foo, name='x')", False),
+        ("m = mock.Mock(spec=Foo)", False),
+        ("m = mock.NonCallableMock(spec_set=Foo)", False),
+        ("m = mock.AsyncMock(Foo)", False),
+        ("m = mock.PropertyMock(return_value=1)", False),
+        ("m = mock.create_autospec(Foo)", False),
+        ("mock.patch.object(a, 'b', new_callable=mock.MagicMock)", False),
+        # Calls wrapped by the formatter.
+        ("m = mock.MagicMock(\n    spec=Foo, return_value=1\n)", False),
+        (
+            "m = mock.MagicMock(\n    Foo, a=1\n)",  # NO_SPEC_OK=linter test
+            False,
+        ),
+        ("m = mock.MagicMock(\n    return_value=1  # NO_SPEC_OK=r\n)", False),
+        (
+            "m = mock.MagicMock(\n    a=1,\n)",  # NO_SPEC_OK=linter test
+            True,
+        ),
+        ("m = mock.MagicMock(\n    name='x',\n    spec=Foo,\n)", True),
+        ("a = mock.MagicMock()\nb = mock.MagicMock(spec=Foo)", True),
+    ],
+)
+def test_mock_spec(code: str, flagged: bool) -> None:
+  path = "tests/ops_test.py"
+  content = code + "\n"
+  modified = {path: set(range(1, content.count("\n") + 1))}
+  violations = _check("CheckMockSpec", content, path, modified)
+  assert bool(violations) == flagged
 
 
 @pytest.mark.parametrize("rule_id", list(_RULE_EXAMPLES))

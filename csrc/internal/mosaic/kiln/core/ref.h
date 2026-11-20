@@ -130,6 +130,9 @@ class RefBase {
   // TODO: b/581411915 - Migrate to use absl::Span.
   ValueHandle AtImpl(llvm::ArrayRef<Indexer> indexers) const;
 
+  // Returns the memref value of `ref.Bitcast(dtype)`.
+  ValueHandle BitcastImpl(DType dtype) const;
+
  private:
   ValueHandle handle_;
   DType dtype_;
@@ -171,6 +174,15 @@ class TypedRef final : public internal::RefBase {
   TypedRef At(llvm::ArrayRef<Indexer> indexers) const {
     return TypedRef(AtImpl(indexers), dtype());
   }
+
+  // Views the ref's memory as `dtype` elements (Pallas `ref.bitcast`). Mosaic
+  // packs narrow elements of consecutive rows into 32-bit words, so between
+  // bitwidths the second-minor dimension, which must be static, scales: row g
+  // of the i32 view of a u8 ref holds the bytes of rows 4g to 4g+3. Does not
+  // support bool (i1) or 64-bit element types.
+  TypedRef Bitcast(DType dtype) const {
+    return TypedRef(BitcastImpl(dtype), dtype);
+  }
 };
 
 using VmemRef = TypedRef<MemorySpace::kVmem>;
@@ -205,7 +217,8 @@ class Ref final : public internal::RefBase {
     return TypedRefT(handle(), dtype());
   }
 
-  // Same as `TypedRef::operator()` and `TypedRef::At`, returning a `Ref`.
+  // Same as `TypedRef::operator()`, `TypedRef::At`, and `TypedRef::Bitcast`,
+  // returning a `Ref`.
   template <typename... Dims>
   Ref operator()(Dims&&... dims) const {
     return Ref(SliceImpl(std::forward<Dims>(dims)...), dtype());
@@ -213,6 +226,7 @@ class Ref final : public internal::RefBase {
   Ref At(llvm::ArrayRef<Indexer> indexers) const {
     return Ref(AtImpl(indexers), dtype());
   }
+  Ref Bitcast(DType dtype) const { return Ref(BitcastImpl(dtype), dtype); }
 };
 
 // Loads the whole of `src`, a VMEM ref with a static shape, as a tile. Slice

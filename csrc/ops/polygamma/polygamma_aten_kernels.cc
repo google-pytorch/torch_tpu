@@ -20,11 +20,13 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "c10/util/BFloat16.h"
 #include "c10/util/Half.h"
@@ -98,12 +100,36 @@ double GetEpsilon(mlir::ElementType type) {
   return std::numeric_limits<float>::epsilon();  // Default fallback
 }
 
-// Computes the Hurwitz Zeta function of x and q.
-// Reference: xla/hlo/builder/lib/math.cc:Zeta
-[[nodiscard]] mlir::MlirOp BuildZeta(mlir::MlirOp x, mlir::MlirOp q) {
-  mlir::ElementType computation_type = GetElementTypeOrDie(q);
+// Raises `base` to an integer exponent `exp` via binary exponentiation,
+// avoiding `stablehlo::Pow` which `X64Rewriter` expands into `exp(y * ln(|x|))`
+// (~3,000 HLO instructions per call on float64).
+[[nodiscard]] mlir::MlirOp BuildPosIntPower(mlir::MlirOp base, uint64_t exp) {
+  ABSL_CHECK_GT(exp, uint64_t{0})  // CRASH_OK=BuildZeta passes x_int >= 2.
+      << "expected positive exponent, got " << exp
+      << ". This is a TorchTPU bug.";
+  std::optional<mlir::MlirOp> result;
+  mlir::MlirOp power = base;
+  while (exp > 0) {
+    if ((exp & 1) != 0) {
+      result =
+          result.has_value() ? mlir::stablehlo::Mul(*result, power) : power;
+    }
+    exp >>= 1;
+    if (exp > 0) {
+      power = mlir::stablehlo::Mul(power, power);
+    }
+  }
+  return *result;
+}
 
+// Computes the Hurwitz Zeta function for integer order `x_int` (>= 2) at `q`.
+// Reference: xla/hlo/builder/lib/math.cc:Zeta
+[[nodiscard]] mlir::MlirOp BuildZeta(const uint64_t x_int, mlir::MlirOp q) {
+  const mlir::ElementType computation_type = GetElementTypeOrDie(q);
+
+  // 12-term Euler-Maclaurin asymptotic expansion matching Cephes/XLA Zeta.
   static constexpr int M = 12;
+  // 9 additional series terms (q, q + 1, ..., q + 9) before the tail at q + 10.
   static constexpr int N = 9;
   static constexpr int kTwoKMinusOne = 2 * M - 1;
 
@@ -126,58 +152,63 @@ double GetEpsilon(mlir::ElementType type) {
   };
 
   auto one_like_q = MakeConstantLike(q, 1.0);
-  auto neg_x = mlir::stablehlo::Neg(x);
 
-  // Calculating S part (N=9 iterations)
-  auto acc = q;
-  auto s = mlir::stablehlo::Pow(q, neg_x);
-  mlir::MlirOp neg_power;
-  for (int i = 0; i < N; ++i) {
-    acc = mlir::stablehlo::Add(acc, one_like_q);
-    neg_power = mlir::stablehlo::Pow(acc, neg_x);
-    s = mlir::stablehlo::Add(s, neg_power);
+  // Calculating S = sum_{k=0}^{N} (q + k)^(-x_int) using reciprocal integer
+  // powers: for x_int >= 2, |1 / (q + k)| overflows only when (q + k)^(-x_int)
+  // already overflows, while avoiding intermediate (q + k)^x_int overflow for
+  // large q.
+  auto inv_q = mlir::stablehlo::Div(one_like_q, q);
+  auto s = BuildPosIntPower(inv_q, x_int);
+  for (int i = 1; i <= N; ++i) {
+    auto i_cst = MakeConstantLike(q, static_cast<double>(i));
+    auto q_plus_i = mlir::stablehlo::Add(q, i_cst);
+    auto inv_term = mlir::stablehlo::Div(one_like_q, q_plus_i);
+    auto term_pow = BuildPosIntPower(inv_term, x_int);
+    s = mlir::stablehlo::Add(s, term_pow);
   }
-  acc = mlir::stablehlo::Add(acc, one_like_q);
-  neg_power = mlir::stablehlo::Pow(acc, neg_x);
+  auto tail_offset = MakeConstantLike(q, static_cast<double>(N + 1));
+  auto acc = mlir::stablehlo::Add(q, tail_offset);
+  auto inv_acc = mlir::stablehlo::Div(one_like_q, acc);
+  auto neg_power = BuildPosIntPower(inv_acc, x_int);
 
-  // Calculating I
-  auto x_minus_one = mlir::stablehlo::Subtract(x, one_like_q);
-  auto I_mul = mlir::stablehlo::Mul(neg_power, acc);
-  auto I_op = mlir::stablehlo::Div(I_mul, x_minus_one);
+  // Calculating I = neg_power * acc / (x_int - 1). Keep `neg_power * acc` so
+  // q = +inf produces 0 * inf = NaN for n > 1 matching PyTorch CPU semantics.
+  const double x_val = static_cast<double>(x_int);
+  auto i_mul = mlir::stablehlo::Mul(neg_power, acc);
+  mlir::MlirOp i_op = i_mul;
+  if (x_int != 2) {
+    auto x_minus_one_cst = MakeConstantLike(q, x_val - 1.0);
+    i_op = mlir::stablehlo::Div(i_mul, x_minus_one_cst);
+  }
 
-  // Calculating T via Horner's rule
-  auto one_cst = MakeConstantLike(acc, 1.0);
-  auto acc_square = mlir::stablehlo::Mul(acc, acc);
-  auto a_inverse_square = mlir::stablehlo::Div(one_cst, acc_square);
+  // Calculating T via Horner's rule.
+  auto a_inverse_square = mlir::stablehlo::Mul(inv_acc, inv_acc);
   auto horner_sum = MakeConstantLike(acc, 0.0);
 
   for (int i = 0; i < M - 1; ++i) {
-    auto c1_cst =
-        MakeConstantLike(x, static_cast<double>(kTwoKMinusOne - 1 - 2 * i));
-    auto c2_cst =
-        MakeConstantLike(x, static_cast<double>(kTwoKMinusOne - 2 - 2 * i));
-    auto term_1 = mlir::stablehlo::Add(x, c1_cst);
-    auto term_2 = mlir::stablehlo::Add(x, c2_cst);
-    auto factor = mlir::stablehlo::Mul(term_1, term_2);
-
+    const double factor_val =
+        (x_val + static_cast<double>(kTwoKMinusOne - 1 - 2 * i)) *
+        (x_val + static_cast<double>(kTwoKMinusOne - 2 - 2 * i));
+    auto factor_cst = MakeConstantLike(acc, factor_val);
     auto coeff_inv_cst = MakeConstantLike(acc, 1.0 / kZetaCoeffs[i]);
     auto sum_plus_coeff = mlir::stablehlo::Add(horner_sum, coeff_inv_cst);
-    auto horner_mul_1 = mlir::stablehlo::Mul(factor, a_inverse_square);
+    auto horner_mul_1 = mlir::stablehlo::Mul(factor_cst, a_inverse_square);
     horner_sum = mlir::stablehlo::Mul(horner_mul_1, sum_plus_coeff);
   }
 
   auto point_five = MakeConstantLike(neg_power, 0.5);
-  auto coeff_M_minus_one = MakeConstantLike(acc, 1.0 / kZetaCoeffs[M - 1]);
-  auto inner_sum = mlir::stablehlo::Add(coeff_M_minus_one, horner_sum);
-  auto x_div_acc = mlir::stablehlo::Div(x, acc);
-  auto T_mul = mlir::stablehlo::Mul(x_div_acc, inner_sum);
-  auto T_add = mlir::stablehlo::Add(point_five, T_mul);
-  auto T_op = mlir::stablehlo::Mul(neg_power, T_add);
+  auto coeff_m_minus_one = MakeConstantLike(acc, 1.0 / kZetaCoeffs[M - 1]);
+  auto inner_sum = mlir::stablehlo::Add(coeff_m_minus_one, horner_sum);
+  auto x_cst = MakeConstantLike(acc, x_val);
+  auto x_div_acc = mlir::stablehlo::Mul(x_cst, inv_acc);
+  auto t_mul = mlir::stablehlo::Mul(x_div_acc, inner_sum);
+  auto t_add = mlir::stablehlo::Add(point_five, t_mul);
+  auto t_op = mlir::stablehlo::Mul(neg_power, t_add);
 
-  auto s_plus_I = mlir::stablehlo::Add(s, I_op);
-  auto accurate_result = mlir::stablehlo::Add(s_plus_I, T_op);
+  auto s_plus_i = mlir::stablehlo::Add(s, i_op);
+  auto accurate_result = mlir::stablehlo::Add(s_plus_i, t_op);
 
-  double eps_val = GetEpsilon(computation_type);
+  const double eps_val = GetEpsilon(computation_type);
   auto eps_cst = MakeConstantLike(q, eps_val);
 
   auto abs_neg_power = mlir::stablehlo::Abs(neg_power);
@@ -185,15 +216,14 @@ double GetEpsilon(mlir::ElementType type) {
   auto threshold = mlir::stablehlo::Mul(abs_s, eps_cst);
   auto is_accurate_enough = mlir::stablehlo::Compare(
       abs_neg_power, threshold, mlir::stablehlo::ComparisonDirection::LT);
-  auto output = mlir::stablehlo::Select(is_accurate_enough, s, accurate_result);
-
-  return output;
+  return mlir::stablehlo::Select(is_accurate_enough, s, accurate_result);
 }
 
 // Computes the polygamma function of order n at self_op.
 // Reference: xla/hlo/builder/lib/math.cc:Polygamma
 absl::StatusOr<mlir::MlirOp> BuildPolygammaShlo(
-    mlir::MlirOp self_op, int64_t n, mlir::ElementType out_mlir_type) {
+    mlir::MlirOp self_op, const int64_t n,
+    const mlir::ElementType out_mlir_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
                       ConvertIfInteger(self_op, out_mlir_type));
 
@@ -201,8 +231,8 @@ absl::StatusOr<mlir::MlirOp> BuildPolygammaShlo(
     return BuildDigammaShlo(op, out_mlir_type);
   }
 
-  mlir::ElementType input_dtype = GetElementTypeOrDie(op);
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
+  const mlir::ElementType input_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
                       InferComputationDtype(input_dtype));
 
   mlir::MlirOp input_op = op;
@@ -210,20 +240,21 @@ absl::StatusOr<mlir::MlirOp> BuildPolygammaShlo(
     input_op = mlir::stablehlo::ConvertElementType(op, computation_type);
   }
 
+  const uint64_t n_plus_one = static_cast<uint64_t>(n) + 1;
+
   // 1. Direct path (x >= 0.0)
   // psi^(n)(x) = (-1)^(n+1) * n! * zeta(n+1, x)
-  double sign_val = (n % 2 == 0) ? -1.0 : 1.0;
-  double coeff_val = sign_val * std::tgamma(n + 1);
+  const double sign_val = (n % 2 == 0) ? -1.0 : 1.0;
+  const double coeff_val = sign_val * std::tgamma(n + 1);
   auto coeff_cst = MakeConstantLike(input_op, coeff_val);
-  auto n_plus_one_cst = MakeConstantLike(input_op, static_cast<double>(n + 1));
-  mlir::MlirOp zeta_op = BuildZeta(n_plus_one_cst, input_op);
+  mlir::MlirOp zeta_op = BuildZeta(n_plus_one, input_op);
   auto direct_op = mlir::stablehlo::Mul(coeff_cst, zeta_op);
 
   // 2. Reflection path (x < 0.0)
   // psi^(n)(x) = (-1)^n * psi^(n)(1-x) - pi^(n+1) * d^n/dx^n (cot(pi x))
   auto one = MakeConstantLike(input_op, 1.0);
   auto one_minus_x = mlir::stablehlo::Subtract(one, input_op);
-  mlir::MlirOp zeta_1_minus_x = BuildZeta(n_plus_one_cst, one_minus_x);
+  mlir::MlirOp zeta_1_minus_x = BuildZeta(n_plus_one, one_minus_x);
 
   // First term: (-1)^n * psi^(n)(1-x) = -n! * zeta(n+1, 1-x)
   double first_term_coeff = -std::tgamma(n + 1);

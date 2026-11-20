@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# rickeylev
+# gjh8
 # pganssle-google
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")

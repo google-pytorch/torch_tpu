@@ -2707,6 +2707,53 @@ def _build_glm_vl_multimodal_inputs(
     )
 
 
+def _build_hunyuan_vl_multimodal_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  image_size = _parse_image_size(ctx.config)
+  num_channels = _get_num_channels(ctx.config)
+  vision_config = ctx.config.get("vision_config")
+  patch_size = _cfg_int(vision_config, "patch_size", default=16)
+  spatial_merge_size = _cfg_int(vision_config, "spatial_merge_size", default=2)
+  patches_per_side = image_size // patch_size
+  merged_per_side = patches_per_side // spatial_merge_size
+  # Merged grid plus a separator per row and image begin/end tokens.
+  num_img_tokens = merged_per_side * (merged_per_side + 1) + 2
+
+  input_kwargs["pixel_values"] = ctx.randn(
+      ctx.batch_size * patches_per_side * patches_per_side,
+      num_channels * patch_size * patch_size,
+  )
+  input_kwargs["image_grid_thw"] = torch.tensor(
+      [[1, patches_per_side, patches_per_side]] * ctx.batch_size,
+      device=ctx.device,
+      dtype=torch.long,
+  )
+  img_token_id = _cfg_int(ctx.config, "image_token_id", default=120120)
+  text_cfg = ctx.config.get("text_config")
+  vocab_size = _safe_int(
+      ctx.config.get("src_vocab_size")
+      or ctx.config.get("vocab_size")
+      or (text_cfg.get("vocab_size") if text_cfg else None),
+      default=32000,
+      min_val=1,
+  )
+  cur_seq_len = _ensure_min_seq_len(
+      ctx,
+      input_kwargs,
+      needed_len=num_img_tokens + 4,
+      vocab_size=min(vocab_size, 50000),
+  )
+  valid_tokens = min(num_img_tokens, max(0, cur_seq_len - 1))
+  if valid_tokens > 0:
+    _inject_token_span(
+        input_kwargs["input_ids"], img_token_id, start=1, count=valid_tokens
+    )
+    input_kwargs["mm_token_type_ids"] = _mm_token_type_ids(
+        input_kwargs["input_ids"], start=1, count=valid_tokens
+    )
+
+
 def _build_kosmos_multimodal_inputs(
     ctx: InputContext, input_kwargs: MutableMapping[str, Any]
 ) -> None:
@@ -2823,6 +2870,10 @@ _MULTIMODAL_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
         _model_type_contains("glm_ocr", "glm4v"),
         _build_glm_vl_multimodal_inputs,
     ),
+    (
+        _model_type_contains("hunyuan_vl"),
+        _build_hunyuan_vl_multimodal_inputs,
+    ),
     (_model_type_contains("kosmos"), _build_kosmos_multimodal_inputs),
     (_model_type_contains("xclip"), _build_xclip_multimodal_inputs),
     (_model_type_contains("vilt"), _build_vilt_multimodal_inputs),
@@ -2898,6 +2949,9 @@ def _compute_num_image_tokens(
     return raw_tokens
   if "florence2" in ctx.model_type:
     return (image_size // 32) ** 2 + 1
+  if "fuyu" in ctx.model_type:
+    patch_size = _cfg_int(ctx.config, "patch_size", default=30)
+    return (image_size // patch_size) ** 2
   patch_size = _cfg_int(vision_config, "patch_size", default=14)
   return (image_size // patch_size) ** 2
 
@@ -2997,6 +3051,13 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
       elif "tvp" in ctx.type_str:
         input_kwargs["pixel_values"] = ctx.randn(
             batch_size, 1, num_channels, 448, 448
+        )
+      elif "fuyu" in ctx.model_type:
+        patch_size = _cfg_int(ctx.config, "patch_size", default=30)
+        input_kwargs["pixel_values"] = ctx.randn(
+            batch_size,
+            (image_size // patch_size) ** 2,
+            patch_size * patch_size * num_channels,
         )
       else:
         dummy_img = ctx.randn(

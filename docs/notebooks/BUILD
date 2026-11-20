@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# yilingyuan
-# chrishjones20
 # leehowes
 # zhanyong-wan
-# muditgokhale2
-# lukeboyer
+# chrishjones20
+# yilingyuan
+# lizlian
 # pgmoka
+# mkhanna15
 
 """Exported Colab/Jupyter notebooks for TorchTPU."""
 

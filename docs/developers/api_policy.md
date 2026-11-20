@@ -87,9 +87,9 @@ stable, and deprecated, the user code shouldn't need to be changed.
 
 *   To mark an environment variable:
     *   **internal**: name it `TORCH_TPU_INTERNAL_*`
-    *   **experimental** / **stable** / **deprecated**: add it to
-        `kEnvVarToStage` as `SymbolStage::Experimental()`,
-        `SymbolStage::Stable()`, or `SymbolStage::Deprecated()` in
+    *   **experimental** / **stable** / **deprecated**: add it to `kEnvVarInfo`
+        with `SymbolStage::Experimental()`, `SymbolStage::Stable()`, or
+        `SymbolStage::Deprecated()`, and its `EnvVarType`, in
         `torch_tpu/csrc/common/env_vars.h`.
 *   To mark a command-line flag:
     *   *All* flags must be **internal** and start with `torch_tpu_internal_`.

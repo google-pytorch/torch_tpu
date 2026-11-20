@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Verification passes for `@jax_op` contracts, TPU lowering, FX graphs, and autograd.
+"""Verification passes for `@jax_op` contracts, TPU lowering, FX, and autograd.
 
 This module implements the four PyTorch-boundary verification passes used by
 `torch.tpu.pallas.verifier`:
@@ -22,34 +22,48 @@ This module implements the four PyTorch-boundary verification passes used by
    `input_partition_specs` and `output_partition_specs` rank/axis/divisibility
    invariants, zero-output silent skip hazards, and custom `register_fake`
    shape/dtype/pytree agreement against `JaxCallable` runtime output buffers.
-2. `verify_tpu_lowering` (`Phase.LOWERING`): Lowers a `@jax_op` to Mosaic TPU
-   MLIR on the host via `jax.export` and `AbstractMesh`/`AbstractDevice`
-   without requiring a physical TPU.
+2. `verify_tpu_lowering` (`Phase.LOWERING`): Lowers a `@jax_op` or raw JAX
+   Pallas function to Mosaic TPU MLIR on the host via `jax.export` and
+   `AbstractMesh`/`AbstractDevice` without requiring a physical TPU.
 3. `verify_fx_graph` (`Phase.FX_GRAPH`): Traces arbitrary PyTorch callables or
    `nn.Module`s into an `fx.GraphModule` under `FakeTensorMode` and performs a
-   forward storage-provenance dataflow analysis to detect `use_after_donate`,
-   `aliased_donor_inputs`, and `donated_parameter` across views and tuples.
+   storage-provenance dataflow analysis across nested higher-order op (`cond`,
+   `while_loop`, `scan`) subgraphs and the joint forward+backward autograd
+   graph to detect `use_after_donate`, `aliased_donor_inputs`, and
+   `donated_parameter` across views and tuples.
 4. `verify_autograd_parity` (`Phase.AUTOGRAD`): Executes any custom backward
    registered via `op.register_autograd` on CPU TPU interpret mode and compares
-   its gradients against `jax.vjp` of the forward JAX function (or central
-   finite differences along Rademacher probes when `pallas_call`/`shard_map`
-   lacks forward JVP rules).
+   its gradients against `jax.vjp` when supported, else exact directional
+   `jax.jvp` (`pallas_call` registers a forward JVP rule even though it lacks a
+   VJP transpose rule), falling back to multi-shard central finite differences
+   when JVP is unsupported.
 """
 
 from __future__ import annotations
 
 import collections
-from collections.abc import Callable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence, Set
+from collections.abc import (
+    Callable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
+    Sequence,
+    Set as AbstractSet,
+)
 import contextlib
 import dataclasses
 import dis
+import enum
 import functools
 import inspect
 import math
 import operator
 import sys
+import threading
 import types
-from typing import Any
+from typing import Any, TypeAlias
 
 import jax
 from jax.experimental.pallas import tpu as pltpu
@@ -69,6 +83,91 @@ _CONTRACTS = findings.Phase.CONTRACTS
 _FX_GRAPH = findings.Phase.FX_GRAPH
 _AUTOGRAD = findings.Phase.AUTOGRAD
 _LOWERING = findings.Phase.LOWERING
+
+# Serializes CPU TPU interpret runs, which share the process-global state of
+# JAX's TPU interpreter (reset with `pltpu.reset_tpu_interpret_mode_state`).
+INTERPRET_LOCK = threading.RLock()
+
+# Guards ref-counted installation of temporary process-level wrappers while
+# `_THREAD_PATCH_STATE` keeps each active override strictly thread-local so
+# concurrent calls on other threads pass straight through unpatched.
+_PATCH_LOCK = threading.Lock()
+_THREAD_PATCH_STATE = threading.local()
+_JC_EXPORTED_PATCHES: dict[int, tuple[pallas_lib.JaxCallable, Any, int]] = {}
+_BACKWARD_BOUNDARY_OP: Any = None
+
+# Held while `jax_export_ignore_forward_compatibility`, a process-wide option,
+# is overridden by `ignore_export_forward_compatibility`.
+_EXPORT_FORWARD_COMPAT_LOCK = threading.RLock()
+
+# Returns why running a `@jax_op` (called with the given positional and keyword
+# arguments) in CPU TPU interpret mode might never finish, or None if it is
+# safe. JAX's TPU interpreter cannot abort a semaphore or DMA wait that is never
+# satisfied, and a stuck run would also hang interpreter exit.
+InterpretGate: TypeAlias = Callable[
+    [Any, Sequence[Any], Mapping[str, Any]], str | None
+]
+
+
+class InterpretRunSkipped(Exception):
+  """Raised instead of running a kernel that might block CPU TPU interpret."""
+
+
+# Why a kernel that Pallas rejects with `_PREBUILT_KERNEL_ERROR` was not run.
+PREBUILT_KERNEL_SKIP_REASON = (
+    "a pl.pallas_call or pl.kernel built outside the verified function keeps"
+    " interpret mode off; build it inside the function so that"
+    " pltpu.force_tpu_interpret_mode applies"
+)
+# Lowercase error that Pallas raises for kernels without interpret mode on CPU.
+# `pl.pallas_call` and `pl.kernel` read `pltpu.force_tpu_interpret_mode` when
+# they are built, not when they are called.
+_PREBUILT_KERNEL_ERROR = "only interpret mode is supported on cpu backend"
+
+
+def is_prebuilt_kernel_error(exc_text: str) -> bool:
+  """Returns whether `exc_text` reports a kernel built without interpret mode."""
+  return _PREBUILT_KERNEL_ERROR in exc_text.lower()
+
+
+def _get_backward_boundary_op() -> Any:
+  """Lazily registers a clone marker custom op at the fwd->bwd FX boundary."""
+  global _BACKWARD_BOUNDARY_OP
+  if _BACKWARD_BOUNDARY_OP is None:
+    with _PATCH_LOCK:
+      if _BACKWARD_BOUNDARY_OP is None:
+        op_def = torch.library.custom_op(
+            "pallas_verify::_backward_boundary",
+            lambda x: x.clone(),
+            mutates_args=(),
+            schema="(Tensor x) -> Tensor",
+        )
+        op_def.register_fake(lambda x: x.clone())
+        _BACKWARD_BOUNDARY_OP = (
+            torch.ops.pallas_verify._backward_boundary.default
+        )
+  return _BACKWARD_BOUNDARY_OP
+
+
+@contextlib.contextmanager
+def ignore_export_forward_compatibility() -> Iterator[None]:
+  """Exports with the newest lowering rules, as TPU execution uses them.
+
+  Sets the public `jax_export_ignore_forward_compatibility` option, which is
+  process-wide, so the lock is held for the whole block: other threads wait,
+  while nested entries on the holding thread restore values in LIFO order.
+
+  Yields:
+    None.
+  """
+  with _EXPORT_FORWARD_COMPAT_LOCK:
+    prev = jax.config.jax_export_ignore_forward_compatibility
+    jax.config.update("jax_export_ignore_forward_compatibility", True)
+    try:
+      yield
+    finally:
+      jax.config.update("jax_export_ignore_forward_compatibility", prev)
+
 
 # Longest lowering error message kept in a finding; Mosaic errors can embed
 # whole MLIR modules.
@@ -90,6 +189,29 @@ FLOAT8_TORCH_DTYPES: frozenset[torch.dtype] = frozenset({
 FLOAT8_JAX_DTYPES: frozenset[Any] = frozenset(
     pallas_lib.TORCH_TO_JAX_DTYPE_MAP[dt] for dt in FLOAT8_TORCH_DTYPES
 )
+QUANTIZED_FLOAT_TORCH_DTYPES: frozenset[torch.dtype] = (
+    FLOAT8_TORCH_DTYPES | frozenset({torch.float4_e2m1fn_x2})
+)
+QUANTIZED_FLOAT_JAX_DTYPES: frozenset[Any] = FLOAT8_JAX_DTYPES | frozenset(
+    {pallas_lib.TORCH_TO_JAX_DTYPE_MAP[torch.float4_e2m1fn_x2]}
+)
+INT_OR_BOOL_TORCH_DTYPES: frozenset[torch.dtype] = frozenset({
+    torch.bool,
+    torch.int8,
+    torch.uint8,
+    torch.int16,
+    torch.uint16,
+    torch.int32,
+    torch.uint32,
+    torch.int64,
+    torch.uint64,
+})
+
+
+def is_fake_tensor(val: Any) -> bool:
+  """Returns whether `val` is a PyTorch `FakeTensor`."""
+  return isinstance(val, fake_tensor.FakeTensor)
+
 
 MeshLike = jax.sharding.Mesh | jax.sharding.AbstractMesh
 
@@ -102,7 +224,21 @@ def _truncate(text: str, limit: int) -> str:
 
 def _is_missing_tpu_device_kind_error(exc: BaseException) -> bool:
   """Returns whether `exc` is JAX/Pallas's missing TPU generation error."""
-  return "Unsupported TPU device kind" in str(exc)
+  msg = str(exc)
+  return (
+      "Unsupported TPU device kind" in msg
+      or "SparseCore kernels are only supported on TPU" in msg
+  )
+
+
+def _is_non_pallas_host_trace_limitation(exc: BaseException) -> bool:
+  """Returns whether `exc` is a host-CPU or concrete-device trace limitation."""
+  lower = str(exc).lower()
+  return (
+      (isinstance(exc, NotImplementedError) and "not supported on cpu" in lower)
+      or "abstractmesh cannot be used when jaxpr contains primitives that require devices"
+      in lower
+  )
 
 
 # ==============================================================================
@@ -199,13 +335,17 @@ def _is_static_keyword_arg(
 
 
 def _get_donated_arg_indices(
-    jax_callable: pallas_lib.JaxCallable, num_pos_args: int
+    jax_callable: pallas_lib.JaxCallable,
+    num_pos_args: int,
+    *,
+    include_io_aliases: bool = True,
 ) -> set[int]:
   """Returns normalized 0-based argument indices donated by `jax_callable`."""
   # pylint: disable=protected-access
-  raw_indices = set(jax_callable._donate_argnums_set) | set(
-      jax_callable.input_output_aliases.keys()
-  )
+  raw_indices = set(jax_callable._donate_argnums_set)
+  io_alias_keys = set(jax_callable.input_output_aliases.keys())
+  if include_io_aliases:
+    raw_indices |= io_alias_keys
   bound_arity = max(num_pos_args, len(jax_callable._orig_params))
   # pylint: enable=protected-access
   normalized: set[int] = set()
@@ -214,6 +354,19 @@ def _get_donated_arg_indices(
       normalized.add(idx + bound_arity)
     else:
       normalized.add(idx)
+  if not include_io_aliases and io_alias_keys:
+    for idx in io_alias_keys:
+      norm_idx = idx + bound_arity if idx < 0 and bound_arity > 0 else idx
+      normalized.discard(norm_idx)
+  # Keyword-only parameters donated by name have no position, so the donor
+  # checks identify them by parameter index. `**kwargs` entries have no
+  # parameter index at all, so the donor checks can't see them.
+  # pylint: disable=protected-access
+  for name in jax_callable._donate_argnames:
+    param_idx = jax_callable._param_name_to_idx.get(name)
+    if param_idx is not None:
+      normalized.add(param_idx)
+  # pylint: enable=protected-access
   return normalized
 
 
@@ -246,7 +399,6 @@ _SKIP_MODULE_PREFIXES = (
 # to reference an underlying callable.
 _CALLABLE_WRAPPER_ATTRS = (
     "__wrapped__",
-    "_fun",
     "func",
     "f",
     "_fn",
@@ -771,6 +923,18 @@ def override_abstract_mesh(mesh: jax.sharding.AbstractMesh):
 
 
 @contextlib.contextmanager
+def tpu_export_mesh_context(mesh: jax.sharding.AbstractMesh):
+  """Binds `mesh` for TPU lowering while clearing any ambient CPU mesh."""
+  ambient_mesh = jax.sharding.get_mesh()
+  clear_ambient = not ambient_mesh.empty and not is_mock_tpu_mesh(ambient_mesh)
+  with (
+      jax.set_mesh(None) if clear_ambient else contextlib.nullcontext(),
+      override_abstract_mesh(mesh),
+  ):
+    yield
+
+
+@contextlib.contextmanager
 def cpu_interpret_mesh_context(cpu_mesh: jax.sharding.Mesh | None):
   """Binds `cpu_mesh` (or clears an ambient `AbstractMesh`) during CPU execution.
 
@@ -787,7 +951,8 @@ def cpu_interpret_mesh_context(cpu_mesh: jax.sharding.Mesh | None):
     # axis is manual while keeping the concrete CPU device assignment.
     ctx_mesh = (
         jax.sharding.Mesh(cpu_mesh.devices, cpu_mesh.axis_names)
-        if cpu_mesh is not None and getattr(cpu_mesh, "_any_axis_manual", False)
+        if cpu_mesh is not None
+        and jax.sharding.AxisType.Manual in cpu_mesh.axis_types
         else cpu_mesh
     )
     with set_mesh_fn(ctx_mesh):
@@ -796,12 +961,17 @@ def cpu_interpret_mesh_context(cpu_mesh: jax.sharding.Mesh | None):
     yield
 
 
+def _is_jax_jit_wrapper(fn: Any) -> bool:
+  """Returns whether `fn` is a `jax.jit` wrapper exposing its function."""
+  return isinstance(fn, jax.stages.Wrapped) and hasattr(fn, "__wrapped__")
+
+
 def _unwrap_jax_jit(fn: Any) -> Any:
-  """Unwraps `jax.jit` (`PjitFunction`) layers without stripping `shard_map`."""
+  """Unwraps `jax.jit` layers without stripping `shard_map`."""
   seen: set[int] = set()
-  while hasattr(fn, "_fun") and hasattr(fn, "lower") and id(fn) not in seen:
+  while _is_jax_jit_wrapper(fn) and id(fn) not in seen:
     seen.add(id(fn))
-    fn = getattr(fn, "_fun")
+    fn = fn.__wrapped__
   return fn
 
 
@@ -822,9 +992,6 @@ def _is_hashable_partial(obj: Any) -> bool:
 
 def _get_ambient_jax_mesh() -> MeshLike | None:
   """Returns the currently active concrete or abstract JAX mesh, if any."""
-  phys_mesh = jax._src.mesh.thread_resources.env.physical_mesh
-  if not phys_mesh.empty:
-    return phys_mesh
   get_mesh_fn = getattr(jax.sharding, "get_mesh", None)
   if get_mesh_fn is not None:
     try:
@@ -833,11 +1000,6 @@ def _get_ambient_jax_mesh() -> MeshLike | None:
       pub_mesh = None
     if pub_mesh is not None and not pub_mesh.empty:
       return pub_mesh
-  conc_fn = getattr(jax._src.mesh, "get_concrete_mesh", None)
-  if conc_fn is not None:
-    conc_mesh = conc_fn()
-    if not conc_mesh.empty:
-      return conc_mesh
   abs_mesh = jax.sharding.get_abstract_mesh()
   if not abs_mesh.empty:
     return abs_mesh
@@ -870,14 +1032,15 @@ def find_function_mesh(fn: Any) -> MeshLike | None:
     visited.add(obj_id)
 
     # Check shardings attached to a `jax.jit` (`PjitFunction`) wrapper.
-    if hasattr(obj, "_fun") and hasattr(obj, "lower"):
+    # TODO: read them through a public API once JAX exposes jit shardings.
+    if _is_jax_jit_wrapper(obj):
       jit_info = getattr(obj, "_jit_info", None)
       if jit_info is not None:
         for leaves_attr in ("in_shardings_leaves", "out_shardings_leaves"):
           found = _search(getattr(jit_info, leaves_attr, ()))
           if found is not None:
             return found
-      return _search(getattr(obj, "_fun"))
+      return _search(obj.__wrapped__)
 
     if _is_hashable_partial(obj):
       return (
@@ -930,33 +1093,58 @@ def find_function_mesh(fn: Any) -> MeshLike | None:
   return _search(fn) or _get_ambient_jax_mesh()
 
 
+def _retarget_mesh_for_tpu_export(
+    candidate: MeshLike,
+    tpu_version: findings.TpuVersion,
+    *,
+    explicit_to_auto: bool = False,
+) -> tuple[MeshLike, bool]:
+  """Retargets a CPU, device-less, or generic mock mesh to a TPU `AbstractMesh`."""
+  if candidate.size <= 0:
+    return candidate, False
+  cand_ver = _mesh_tpu_version(candidate)
+  is_cpu = not is_mock_tpu_mesh(candidate) or (
+      isinstance(candidate, jax.sharding.AbstractMesh)
+      and getattr(candidate.abstract_device, "platform", None) == "cpu"
+  )
+  raw_axis_types = getattr(candidate, "axis_types", None)
+  has_explicit = bool(
+      raw_axis_types
+      and any(at == jax.sharding.AxisType.Explicit for at in raw_axis_types)
+  )
+  needs_auto = explicit_to_auto and has_explicit
+  if not is_cpu and cand_ver is not None and not needs_auto:
+    return candidate, False
+  target_ver = cand_ver or tpu_version
+  mesh_shape = tuple(int(candidate.shape[ax]) for ax in candidate.axis_names)
+  axis_types = (
+      (jax.sharding.AxisType.Auto,) * len(candidate.axis_names)
+      if needs_auto
+      else raw_axis_types
+  )
+  return (
+      jax.sharding.AbstractMesh(
+          mesh_shape,
+          candidate.axis_names,
+          axis_types=axis_types,
+          abstract_device=abstract_tpu_device(target_ver),
+      ),
+      True,
+  )
+
+
 def _replace_mesh_if_mock(
     val: Any,
-    mesh_replacement: MeshLike,
+    mesh_replacement: MeshLike | None,
     memo: MutableMapping[int, tuple[Any, bool]] | None = None,
     *,
     clone_closures: bool = False,
+    include_cpu_meshes: bool = False,
+    retarget_tpu_version: findings.TpuVersion | None = None,
+    explicit_to_auto: bool = False,
     keep_alive: MutableSequence[Any] | None = None,
 ) -> tuple[Any, bool]:
-  """Recursively replaces matching non-CPU meshes in values and closures.
-
-  When verifying a multi-device kernel on CPU (or lowering an `AbstractMesh` op
-  with `abstract_device=None` for TPU), any closed-over or partial-bound mesh
-  matching `mesh_replacement`'s axis topology is swapped for `mesh_replacement`.
-
-  Args:
-    val: Object, pytree, or callable to rewrite.
-    mesh_replacement: Target `Mesh` or `AbstractMesh` with matching axes/shape.
-    memo: Optional `id(obj) -> (rewritten_obj, did_change)` memoization table.
-    clone_closures: If `True`, allocates new `types.CellType` closure cells on
-      functions so JAX/Pallas trace caches do not reuse traces from the old
-      mesh.
-    keep_alive: Optional list retaining temporary objects while `memo` is live
-      so Python does not reuse their `id()` addresses during traversal.
-
-  Returns:
-    A `(rewritten_val, did_change)` pair.
-  """
+  """Recursively replaces matching meshes in values, callables, and closures."""
   if memo is None:
     memo = {}
   if keep_alive is None:
@@ -981,7 +1169,8 @@ def _replace_mesh_if_mock(
     return out, changed
 
   def _rewrite_pjit(pjit_fn: Any) -> tuple[Any, bool]:
-    inner, changed = _rewrite(getattr(pjit_fn, "_fun"))
+    inner, changed = _rewrite(pjit_fn.__wrapped__)
+    # TODO: read the jit options through a public API once JAX exposes them.
     jit_info = getattr(pjit_fn, "_jit_info", None)
     jit_kwargs: dict[str, Any] = {}
     if jit_info is not None:
@@ -1051,34 +1240,74 @@ def _replace_mesh_if_mock(
       new_kwdefaults, kwdefs_changed = _rewrite_dict(fn.__kwdefaults__)
       changed = changed or kwdefs_changed
 
+    new_globals = fn.__globals__
+    mod_name = getattr(fn, "__module__", "") or ""
+    if not mod_name.startswith(_SKIP_MODULE_PREFIXES) and isinstance(
+        new_globals, dict
+    ):
+      copied_globals: dict[str, Any] | None = None
+      for gname in set(_iter_code_names(fn.__code__)):
+        if gname not in new_globals:
+          continue
+        gval = new_globals[gname]
+        if isinstance(
+            gval,
+            (
+                jax.sharding.Mesh,
+                jax.sharding.AbstractMesh,
+                jax.sharding.NamedSharding,
+            ),
+        ) or (
+            isinstance(gval, types.FunctionType)
+            and getattr(gval, "__module__", None) == mod_name
+        ):
+          replaced_gval, g_changed = _rewrite(gval)
+          if g_changed:
+            if copied_globals is None:
+              copied_globals = dict(new_globals)
+            copied_globals[gname] = replaced_gval
+            changed = True
+      if copied_globals is not None:
+        new_globals = copied_globals
+
     if not changed:
       return fn, False
     rebound = types.FunctionType(
-        fn.__code__, fn.__globals__, fn.__name__, new_defaults, new_cells
+        fn.__code__, new_globals, fn.__name__, new_defaults, new_cells
     )
     rebound.__kwdefaults__ = new_kwdefaults
     rebound.__annotations__ = dict(fn.__annotations__)
     rebound.__qualname__ = fn.__qualname__
     return rebound, True
 
+  def _rewrite_mesh_leaf(candidate: MeshLike) -> tuple[MeshLike, bool]:
+    if retarget_tpu_version is not None:
+      return _retarget_mesh_for_tpu_export(
+          candidate,
+          retarget_tpu_version,
+          explicit_to_auto=explicit_to_auto,
+      )
+    if (
+        mesh_replacement is None
+        or candidate is mesh_replacement
+        or candidate.size == 0
+    ):
+      return candidate, False
+    if not _matches_mesh_topology(candidate, mesh_replacement):
+      return candidate, False
+    if include_cpu_meshes or is_mock_tpu_mesh(candidate):
+      return mesh_replacement, True
+    return candidate, False
+
   def _rewrite(obj: Any) -> tuple[Any, bool]:
     # Base cases: Mesh, AbstractMesh, NamedSharding, and sharded ShapeDtypeStruct.
     if isinstance(obj, (jax.sharding.Mesh, jax.sharding.AbstractMesh)):
-      if (
-          obj is not mesh_replacement
-          and is_mock_tpu_mesh(obj)
-          and _matches_mesh_topology(obj, mesh_replacement)
-      ):
-        return mesh_replacement, True
-      return obj, False
+      return _rewrite_mesh_leaf(obj)
 
     if isinstance(obj, jax.sharding.NamedSharding):
-      if (
-          obj.mesh is not mesh_replacement
-          and is_mock_tpu_mesh(obj.mesh)
-          and _matches_mesh_topology(obj.mesh, mesh_replacement)
-      ):
-        return jax.sharding.NamedSharding(mesh_replacement, obj.spec), True
+      new_mesh, m_changed = _rewrite_mesh_leaf(obj.mesh)
+      if m_changed:
+        return jax.sharding.NamedSharding(new_mesh, obj.spec), True
       return obj, False
 
     if isinstance(obj, jax.ShapeDtypeStruct) and isinstance(
@@ -1098,7 +1327,7 @@ def _replace_mesh_if_mock(
     if obj_id in memo:
       return memo[obj_id]
 
-    if hasattr(obj, "_fun") and hasattr(obj, "lower"):
+    if _is_jax_jit_wrapper(obj):
       res = _rewrite_pjit(obj)
       memo[obj_id] = res
       return res
@@ -1128,8 +1357,41 @@ def _replace_mesh_if_mock(
       memo[obj_id] = res
       return res
 
+    if isinstance(obj, types.MethodType):
+      memo[obj_id] = (obj, False)
+      new_func, f_changed = _rewrite(obj.__func__)
+      new_self, s_changed = _rewrite(obj.__self__)
+      res = (
+          (types.MethodType(new_func, new_self), True)
+          if (f_changed or s_changed)
+          else (obj, False)
+      )
+      memo[obj_id] = res
+      return res
+
     if isinstance(obj, types.FunctionType):
       res = _rewrite_function(obj)
+      memo[obj_id] = res
+      return res
+
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+      memo[obj_id] = (obj, False)
+      updates: dict[str, Any] = {}
+      for field in dataclasses.fields(obj):
+        try:
+          fval = getattr(obj, field.name)
+        except Exception:  # pylint: disable=broad-exception-caught
+          continue
+        new_fval, f_changed = _rewrite(fval)
+        if f_changed:
+          updates[field.name] = new_fval
+      if updates:
+        try:
+          res = (dataclasses.replace(obj, **updates), True)
+        except Exception:  # pylint: disable=broad-exception-caught
+          res = (obj, False)
+      else:
+        res = (obj, False)
       memo[obj_id] = res
       return res
 
@@ -1151,37 +1413,46 @@ def _replace_mesh_if_mock(
 
 
 def replace_mock_meshes_in_pytree(
-    tree: Any, mesh_replacement: MeshLike | None
+    tree: Any,
+    mesh_replacement: MeshLike | None,
+    *,
+    include_cpu_meshes: bool = False,
+    retarget_tpu_version: findings.TpuVersion | None = None,
+    explicit_to_auto: bool = False,
 ) -> Any:
-  """Replaces matching non-CPU meshes and shardings in `tree`."""
-  if mesh_replacement is None:
+  """Replaces matching meshes and shardings in `tree`."""
+  if mesh_replacement is None and retarget_tpu_version is None:
     return tree
   return jax.tree.map(
-      lambda leaf: _replace_mesh_if_mock(leaf, mesh_replacement)[0],
+      lambda leaf: _replace_mesh_if_mock(
+          leaf,
+          mesh_replacement,
+          include_cpu_meshes=include_cpu_meshes,
+          retarget_tpu_version=retarget_tpu_version,
+          explicit_to_auto=explicit_to_auto,
+      )[0],
       tree,
   )
 
 
 def rebind_function_meshes(
     fn: Callable[..., Any],
-    mesh_replacement: MeshLike,
+    mesh_replacement: MeshLike | None,
     *,
     clone_closures: bool = False,
+    include_cpu_meshes: bool = False,
+    retarget_tpu_version: findings.TpuVersion | None = None,
+    explicit_to_auto: bool = False,
 ) -> Callable[..., Any]:
-  """Replaces closed-over, default, or partial-bound non-CPU meshes in `fn`.
-
-  Args:
-    fn: Target JAX callable (optionally wrapped in `jax.jit`).
-    mesh_replacement: Replacement `Mesh` or `AbstractMesh` with matching axes.
-    clone_closures: Whether to clone function closure cells to force fresh JAX
-      and Pallas trace caches.
-
-  Returns:
-    A callable unwrapped past outer `jax.jit` with matching meshes rebound.
-  """
+  """Replaces closed-over, default, global, or partial-bound meshes in `fn`."""
   unwrapped = _unwrap_jax_jit(fn)
   rebound, _ = _replace_mesh_if_mock(
-      unwrapped, mesh_replacement, clone_closures=clone_closures
+      unwrapped,
+      mesh_replacement,
+      clone_closures=clone_closures,
+      include_cpu_meshes=include_cpu_meshes,
+      retarget_tpu_version=retarget_tpu_version,
+      explicit_to_auto=explicit_to_auto,
   )
   return rebound
 
@@ -1322,12 +1593,15 @@ def _check_donor_aliasing_and_parameters(
   donated_set = _get_donated_arg_indices(jax_callable, len(norm_args))
   if not donated_set:
     return detected
+  invalidating_donated_set = _get_donated_arg_indices(
+      jax_callable, len(norm_args), include_io_aliases=False
+  )
 
   tensor_entries = _collect_jax_callable_tensor_args(
       jax_callable, norm_args, norm_kwargs
   )
 
-  # 1. Check whether any donated tensor shares storage with another input tensor.
+  # 1. Check whether any donated tensor shares storage with another input.
   for idx_a, (p_a, name_a, ten_a) in enumerate(tensor_entries):
     for p_b, name_b, ten_b in tensor_entries[idx_a + 1 :]:
       if (p_a in donated_set or p_b in donated_set) and _eager_tensors_alias(
@@ -1347,9 +1621,13 @@ def _check_donor_aliasing_and_parameters(
             )
         )
 
-  # 2. Check whether any donated tensor is a persistent `nn.Parameter`.
+  # 2. Check whether any invalidated donor tensor is an `nn.Parameter`.
+  # Note: `input_output_aliases` copies the output back into the input tensor
+  # rather than invalidating its PJRT buffer (`pallas.py:1396-1397`).
   for param_idx, name, tensor in tensor_entries:
-    if param_idx in donated_set and isinstance(tensor, torch.nn.Parameter):
+    if param_idx in invalidating_donated_set and isinstance(
+        tensor, torch.nn.Parameter
+    ):
       detected.append(
           findings.VerificationFinding(
               category=findings.FindingCategory.DONATED_PARAMETER,
@@ -1397,10 +1675,17 @@ def _validate_partition_spec_entry(
 
   axis_sizes = {ax: int(mesh.shape[ax]) for ax in mesh.axis_names}
   seen_axes: set[str] = set()
+  unconstrained = getattr(jax.sharding.PartitionSpec, "UNCONSTRAINED", None)
   for dim_idx, entry in enumerate(spec_tuple):
-    if entry is None:
+    if entry is None or (unconstrained is not None and entry is unconstrained):
       continue
-    axes = (entry,) if isinstance(entry, str) else tuple(entry)
+    axes = (
+        (entry,)
+        if isinstance(entry, str)
+        else tuple(ax for ax in entry if isinstance(ax, str))
+        if isinstance(entry, (tuple, list))
+        else ()
+    )
     shard_factor = 1
     for ax in axes:
       if ax not in axis_sizes:
@@ -1460,6 +1745,34 @@ def _validate_partition_spec_entry(
           )
       )
   return detected
+
+
+def _trailing_args_match_static_defaults(
+    jax_callable: pallas_lib.JaxCallable,
+    norm_args: Sequence[Any],
+    start_idx: int,
+) -> bool:
+  """Returns whether trailing `norm_args[start_idx:]` match static defaults."""
+  # pylint: disable=protected-access
+  orig_params = jax_callable._orig_params
+  # pylint: enable=protected-access
+  if start_idx >= len(norm_args):
+    return False
+  for idx in range(start_idx, len(norm_args)):
+    if not is_static_positional_arg(jax_callable, idx):
+      return False
+    if idx >= len(orig_params):
+      return False
+    default_val = orig_params[idx].default
+    if default_val is inspect.Parameter.empty:
+      return False
+    try:
+      matches = bool(norm_args[idx] == default_val)
+    except Exception:  # pylint: disable=broad-exception-caught
+      matches = norm_args[idx] is default_val
+    if not matches:
+      return False
+  return True
 
 
 def _check_mesh_and_input_specs(
@@ -1533,10 +1846,15 @@ def _check_mesh_and_input_specs(
       for i in range(len(norm_args))
       if not is_static_positional_arg(jax_callable, i)
   )
-  if len(in_specs) != len(norm_args):
+  if len(in_specs) != len(norm_args) and not (
+      len(in_specs) < len(norm_args)
+      and _trailing_args_match_static_defaults(
+          jax_callable, norm_args, len(in_specs)
+      )
+  ):
     # `pallas.jax_placeholders` zips `norm_args` with `input_partition_specs`
     # without `strict=True`, so omitting `None`/`PartitionSpec()` entries for
-    # static positional arguments silently drops trailing arguments!
+    # non-defaulted static positional arguments silently drops trailing args!
     if len(in_specs) == num_non_static and num_non_static != len(norm_args):
       detail = (
           f"input_partition_specs has length {len(in_specs)}, expected"
@@ -2002,62 +2320,286 @@ def _verify_fake_kernel_outputs(
   return detected
 
 
+def _ambient_tpu_abstract_mesh_for(
+    mesh: MeshLike | None,
+    tpu_version: findings.TpuVersion,
+    *,
+    explicit_to_auto: bool = False,
+) -> jax.sharding.AbstractMesh:
+  """Returns an `AbstractMesh` with a TPU `abstract_device` matching `mesh`."""
+  if mesh is None or mesh.size <= 0:
+    return abstract_tpu_mesh(tpu_version)
+  retargeted, changed = _retarget_mesh_for_tpu_export(
+      mesh, tpu_version, explicit_to_auto=explicit_to_auto
+  )
+  if changed and isinstance(retargeted, jax.sharding.AbstractMesh):
+    return retargeted
+  return (
+      mesh
+      if isinstance(mesh, jax.sharding.AbstractMesh)
+      else mesh.abstract_mesh
+  )
+
+
 def _prepare_tpu_export(
     jax_callable: pallas_lib.JaxCallable,
     jax_args: Sequence[Any],
     jax_kwargs: Mapping[str, Any],
     tpu_version: findings.TpuVersion,
-) -> tuple[Any, Sequence[Any], Mapping[str, Any], Any]:
-  """Prepares `(export_fn, jax_args, jax_kwargs, mesh_context)` for TPU lowering."""
+) -> tuple[
+    Any, Any, Sequence[Any], Mapping[str, Any], jax.sharding.AbstractMesh
+]:
+  """Prepares `(export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh)`."""
   export_fn = jax_callable.exported
+  jitted_fn = jax_callable.jit_fn
   mesh = jax_callable.mesh
 
   # Case 1: Single-device op (`mesh is None`) — bind a 1-chip AbstractMesh
-  # targeting `tpu_version` so `jax.export` knows the TPU generation.
+  # targeting `tpu_version` so Pallas lowering rules know the TPU generation.
   if mesh is None:
     return (
         export_fn,
+        jitted_fn,
         jax_args,
         jax_kwargs,
-        override_abstract_mesh(abstract_tpu_mesh(tpu_version)),
+        abstract_tpu_mesh(tpu_version),
     )
 
-  # Case 2: Multi-device op with an `AbstractMesh` whose `abstract_device` was
-  # left `None` — attach `abstract_tpu_device(tpu_version)` and rebind any
-  # closed-over references to the mesh before exporting.
-  if (
-      isinstance(mesh, jax.sharding.AbstractMesh)
-      and mesh.abstract_device is None
-  ):
-    tpu_mesh = mesh.update(abstract_device=abstract_tpu_device(tpu_version))
-    jax_args = replace_mock_meshes_in_pytree(jax_args, tpu_mesh)
-    jax_kwargs = replace_mock_meshes_in_pytree(jax_kwargs, tpu_mesh)
+  has_op_sharding = bool(
+      jax_callable.input_partition_specs or jax_callable.output_partition_specs
+  )
+  retargeted_mesh, mesh_retargeted = _retarget_mesh_for_tpu_export(
+      mesh, tpu_version, explicit_to_auto=not has_op_sharding
+  )
+
+  # Case 2: Multi-device op whose mesh lacks a TPU generation (`AbstractMesh`
+  # with `abstract_device=None`/CPU, or mock `_PallasDevice(device_kind="TPU")`)
+  # or requires Explicit->Auto adjustment — rebind closed-over meshes and export.
+  if mesh_retargeted:
+    jax_args = replace_mock_meshes_in_pytree(
+        jax_args,
+        retargeted_mesh,
+        include_cpu_meshes=True,
+        retarget_tpu_version=tpu_version,
+        explicit_to_auto=not has_op_sharding,
+    )
+    jax_kwargs = replace_mock_meshes_in_pytree(
+        jax_kwargs,
+        retargeted_mesh,
+        include_cpu_meshes=True,
+        retarget_tpu_version=tpu_version,
+        explicit_to_auto=not has_op_sharding,
+    )
     rebound_raw = rebind_function_meshes(
-        _unwrap_jax_jit(jax_callable.jit_fn), tpu_mesh, clone_closures=True
+        _unwrap_jax_jit(jax_callable.jit_fn),
+        retargeted_mesh,
+        clone_closures=True,
+        include_cpu_meshes=True,
+        retarget_tpu_version=tpu_version,
+        explicit_to_auto=not has_op_sharding,
     )
     jit_kwargs: dict[str, Any] = {
         "static_argnums": jax_callable.static_argnums,
-        "donate_argnums": jax_callable.donate_argnums,
+        # Unlike the op's `donate_argnums`, this set also has the positions
+        # `jax.jit` inferred from `donate_argnames`.
+        # pylint: disable-next=protected-access
+        "donate_argnums": tuple(jax_callable._donate_argnums_set),
         "keep_unused": True,
     }
     if jax_callable.static_argnames:
       jit_kwargs["static_argnames"] = jax_callable.static_argnames
-    with jax._src.config.export_ignore_forward_compatibility(True):
+    # pylint: disable-next=protected-access
+    donate_argnames = tuple(jax_callable._donate_argnames)
+    if donate_argnames:
+      # Keyword-only and `**kwargs` arguments can only be donated by name.
+      # Given both, `jax.jit` donates exactly what it resolved for the op.
+      jit_kwargs["donate_argnames"] = donate_argnames
+    jitted_fn = jax.jit(rebound_raw, **jit_kwargs)
+    with ignore_export_forward_compatibility():
       export_fn = jax.export.export(
-          jax.jit(rebound_raw, **jit_kwargs),
+          jitted_fn,
           platforms=["tpu"],
           disabled_checks=[jax.export.DisabledSafetyCheck.custom_call("ALL")],
       )
-    ctx = (
-        override_abstract_mesh(tpu_mesh)
-        if not jax.sharding.get_abstract_mesh().empty
-        else contextlib.nullcontext()
+    ambient_mesh = _ambient_tpu_abstract_mesh_for(
+        retargeted_mesh, tpu_version, explicit_to_auto=not has_op_sharding
     )
-    return export_fn, jax_args, jax_kwargs, ctx
+    return export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh
 
-  # Case 3: Concrete or mock `Mesh` (or `AbstractMesh` with `abstract_device`
-  # already set) — the mesh's devices already specify the target TPU generation.
-  return export_fn, jax_args, jax_kwargs, contextlib.nullcontext()
+  # Case 3: Concrete or mock `Mesh` (or `AbstractMesh`) whose devices already
+  # specify a TPU generation — still bind `mesh.abstract_mesh` during lowering
+  # because `shard_map` only activates `use_abstract_mesh` during tracing, not
+  # during MLIR lowering (`_run_scoped_lowering_rule`, `sync_copy`, etc.).
+  ambient_mesh = _ambient_tpu_abstract_mesh_for(mesh, tpu_version)
+  return export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh
+
+
+def _is_jax_array_placeholder(val: Any) -> bool:
+  """Returns whether `val` is a dynamic array/tensor leaf for JAX export."""
+  return isinstance(val, (jax.Array, jax.ShapeDtypeStruct, torch.Tensor))
+
+
+def _to_export_shape_dtype_struct(
+    val: Any,
+    tpu_version: findings.TpuVersion,
+    *,
+    explicit_to_auto: bool = False,
+) -> jax.ShapeDtypeStruct:
+  """Converts an array/tensor leaf into a `ShapeDtypeStruct` for TPU export."""
+  if isinstance(val, torch.Tensor):
+    if val.dtype == torch.float4_e2m1fn_x2 and val.ndim == 0:
+      raise ValueError(
+          "expected float4_e2m1fn_x2 tensor to be at least 1D, got 0D"
+      )
+    try:
+      return pallas_lib.jax_placeholder(val)
+    except NotImplementedError as exc:
+      raise ValueError(str(exc)) from exc
+  sharding = getattr(val, "sharding", None)
+  if isinstance(sharding, jax.sharding.NamedSharding):
+    retargeted_mesh, _ = _retarget_mesh_for_tpu_export(
+        sharding.mesh, tpu_version, explicit_to_auto=explicit_to_auto
+    )
+    return jax.ShapeDtypeStruct(
+        val.shape,
+        val.dtype,
+        sharding=jax.sharding.NamedSharding(retargeted_mesh, sharding.spec),
+    )
+  return jax.ShapeDtypeStruct(val.shape, val.dtype)
+
+
+def has_jit_named_sharding(fn: Any) -> bool:
+  """Returns whether `fn` is a `jax.jit` wrapper specifying `NamedSharding`s."""
+  if not _is_jax_jit_wrapper(fn):
+    return False
+  # TODO: read them through a public API once JAX exposes jit shardings.
+  jit_info = getattr(fn, "_jit_info", None)
+  if jit_info is None:
+    return False
+  for attr in ("in_shardings_leaves", "out_shardings_leaves"):
+    for s in getattr(jit_info, attr, ()):
+      if isinstance(s, jax.sharding.NamedSharding):
+        return True
+  return False
+
+
+def _prepare_raw_jax_tpu_export(
+    op_or_fn: Any,
+    example_args: Sequence[Any],
+    example_kwargs: Mapping[str, Any],
+    tpu_version: findings.TpuVersion,
+) -> tuple[
+    Any,
+    Any,
+    list[Any],
+    dict[str, Any],
+    jax.sharding.AbstractMesh,
+    bool,
+    bool,
+]:
+  """Prepares raw JAX TPU export function, dynamic specs, and ambient mesh."""
+  raw_args = list(example_args)
+  raw_kwargs = dict(example_kwargs)
+  found_mesh = find_function_mesh((op_or_fn, tuple(raw_args), raw_kwargs))
+  has_mesh = found_mesh is not None
+  mesh_has_tpu_kind = _mesh_tpu_version(found_mesh) is not None
+
+  leaves = jax.tree.leaves(
+      (tuple(raw_args), raw_kwargs), is_leaf=_is_jax_array_placeholder
+  )
+  has_arg_named_sharding = any(
+      isinstance(getattr(leaf, "sharding", None), jax.sharding.NamedSharding)
+      for leaf in leaves
+      if _is_jax_array_placeholder(leaf)
+  )
+  has_any_named_sharding = has_arg_named_sharding or has_jit_named_sharding(
+      op_or_fn
+  )
+  explicit_to_auto = not has_any_named_sharding
+
+  ambient_mesh = _ambient_tpu_abstract_mesh_for(
+      found_mesh, tpu_version, explicit_to_auto=explicit_to_auto
+  )
+
+  raw_args = replace_mock_meshes_in_pytree(
+      raw_args,
+      ambient_mesh,
+      include_cpu_meshes=True,
+      retarget_tpu_version=tpu_version,
+      explicit_to_auto=explicit_to_auto,
+  )
+  raw_kwargs = replace_mock_meshes_in_pytree(
+      raw_kwargs,
+      ambient_mesh,
+      include_cpu_meshes=True,
+      retarget_tpu_version=tpu_version,
+      explicit_to_auto=explicit_to_auto,
+  )
+  # Rewrite `op_or_fn` directly without pre-stripping `_unwrap_jax_jit` so any
+  # outer `@jax.jit` `in_shardings`, `out_shardings`, and `donate_argnums` stay
+  # intact via `_rewrite_pjit`.
+  target_fn, _ = _replace_mesh_if_mock(
+      op_or_fn,
+      ambient_mesh,
+      clone_closures=True,
+      include_cpu_meshes=True,
+      retarget_tpu_version=tpu_version,
+      explicit_to_auto=explicit_to_auto,
+  )
+
+  flat_leaves, treedef = jax.tree.flatten(
+      (tuple(raw_args), raw_kwargs), is_leaf=_is_jax_array_placeholder
+  )
+  dyn_specs: list[jax.ShapeDtypeStruct] = []
+  slot_map: list[tuple[bool, Any]] = []
+  for leaf in flat_leaves:
+    if _is_jax_array_placeholder(leaf):
+      slot_map.append((False, len(dyn_specs)))
+      dyn_specs.append(
+          _to_export_shape_dtype_struct(
+              leaf, tpu_version, explicit_to_auto=explicit_to_auto
+          )
+      )
+    else:
+      slot_map.append((True, leaf))
+
+  # If `target_fn` is already a top-level `jax.jit` function and all arguments
+  # are dynamic positional array specs, export `target_fn` directly so top-level
+  # `in_shardings`, `out_shardings`, and `donate_argnums` apply at entry.
+  is_direct_pjit = (
+      _is_jax_jit_wrapper(target_fn)
+      and not raw_kwargs
+      and len(raw_args) == len(dyn_specs)
+      and all(not is_static for is_static, _ in slot_map)
+  )
+  if is_direct_pjit:
+    jitted_fn = target_fn
+  else:
+
+    def _export_wrapper(*dyn_args: Any) -> Any:
+      rebuilt_leaves = [
+          val if is_static else dyn_args[val] for is_static, val in slot_map
+      ]
+      rebuilt_args, rebuilt_kwargs = treedef.unflatten(rebuilt_leaves)
+      return target_fn(*rebuilt_args, **rebuilt_kwargs)
+
+    jitted_fn = jax.jit(_export_wrapper, keep_unused=True)
+
+  with ignore_export_forward_compatibility():
+    export_fn = jax.export.export(
+        jitted_fn,
+        platforms=["tpu"],
+        disabled_checks=[jax.export.DisabledSafetyCheck.custom_call("ALL")],
+    )
+  return (
+      export_fn,
+      jitted_fn,
+      dyn_specs,
+      {},
+      ambient_mesh,
+      has_mesh,
+      mesh_has_tpu_kind,
+  )
 
 
 def verify_tpu_lowering(
@@ -2067,53 +2609,94 @@ def verify_tpu_lowering(
     *,
     tpu_version: findings.TpuVersion | None = None,
 ) -> findings.VerificationReport:
-  """Lowers a TorchTPU Pallas op for TPU on the host, without a TPU.
+  """Lowers a `@jax_op` or raw JAX Pallas function for TPU on the host.
 
-  This is the lowering TorchTPU performs the first time the op runs, so a
-  failure here means the op fails on TPU too, for example because of
-  unaligned block shapes or vector loads and stores on HBM refs.
+  Runs Pallas TPU lowering and Mosaic MLIR dialect verification
+  (`func_op.verify` plus `mosaic-serde` serialization) via `jax.export` without
+  requiring a physical TPU, catching unaligned block shapes, illegal
+  memory-space loads/stores, accumulator dtype violations, and invalid DMA or
+  semaphore operands directly in Mosaic.
 
   Args:
-    op_or_fn: A `@jax_op` or `JaxCallable`.
+    op_or_fn: A `@jax_op`, `JaxCallable`, or raw JAX function.
     example_args: Example positional arguments.
     example_kwargs: Example keyword arguments.
     tpu_version: Target `TpuVersion` to lower for, or `None` to infer from the
-      kernel. Ops with a mesh are lowered for the device kind of their mesh
+      kernel. Ops with a TPU mesh are lowered for the device kind of their mesh
       devices instead.
 
   Returns:
-    A report with a `LOWERING_FAILURE` error if lowering fails.
+    A `Phase.LOWERING` report: empty on success, containing a `LOWERING_FAILURE`
+    error on lowering failure, or containing a `VERIFICATION_INCOMPLETE` warning
+    when the TPU generation is unknown or tracing requires concrete devices.
   """
   resolved_tpu_version = infer_tpu_version(
       op_or_fn, tpu_version, example_args, example_kwargs
   )
   jax_callable = extract_jax_callable(op_or_fn)
-  if jax_callable is None:
-    return findings.VerificationReport()
   op_name = get_op_display_name(op_or_fn)
-
-  # pylint: disable=protected-access
-  norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
-      example_args, dict(example_kwargs or {})
-  )
-  jax_args, jax_kwargs = jax_callable._get_jax_placeholders(
-      norm_args, norm_kwargs
-  )
-  # pylint: enable=protected-access
-  export_fn, jax_args, jax_kwargs, target = _prepare_tpu_export(
-      jax_callable, jax_args, jax_kwargs, resolved_tpu_version
+  has_mesh = jax_callable is not None and jax_callable.mesh is not None
+  mesh_has_tpu_kind = (
+      jax_callable is not None
+      and _mesh_tpu_version(jax_callable.mesh) is not None
   )
 
   try:
-    # Matches the forward-compatibility mode TorchTPU lowers with.
-    with target, jax._src.config.export_ignore_forward_compatibility(True):
-      export_fn(*jax_args, **jax_kwargs)
+    if jax_callable is not None:
+      # pylint: disable=protected-access
+      norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
+          example_args, dict(example_kwargs or {})
+      )
+      jax_args, jax_kwargs = jax_callable._get_jax_placeholders(
+          norm_args, norm_kwargs
+      )
+      # pylint: enable=protected-access
+      export_fn, jitted_fn, jax_args, jax_kwargs, ambient_mesh = (
+          _prepare_tpu_export(
+              jax_callable, jax_args, jax_kwargs, resolved_tpu_version
+          )
+      )
+    else:
+      early_mesh = find_function_mesh(
+          (op_or_fn, tuple(example_args), dict(example_kwargs or {}))
+      )
+      has_mesh = early_mesh is not None
+      mesh_has_tpu_kind = _mesh_tpu_version(early_mesh) is not None
+      (
+          export_fn,
+          jitted_fn,
+          jax_args,
+          jax_kwargs,
+          ambient_mesh,
+          has_mesh,
+          mesh_has_tpu_kind,
+      ) = _prepare_raw_jax_tpu_export(
+          op_or_fn,
+          example_args,
+          dict(example_kwargs or {}),
+          resolved_tpu_version,
+      )
+    with ignore_export_forward_compatibility():
+      try:
+        with tpu_export_mesh_context(ambient_mesh):
+          export_fn(*jax_args, **jax_kwargs)
+      except ValueError as mesh_exc:
+        # If a function contains multiple `shard_map`s over distinct mesh
+        # shapes, trace with no outer `AbstractMesh` (each `shard_map` enters
+        # its own retargeted `AbstractMesh`) and bind `ambient_mesh` for MLIR
+        # lowering.
+        if "should match the mesh passed to shard_map" not in str(mesh_exc):
+          raise
+        with tpu_export_mesh_context(jax.sharding.AbstractMesh((), ())):
+          traced = jitted_fn.trace(*jax_args, **jax_kwargs)
+        with tpu_export_mesh_context(ambient_mesh):
+          traced.lower(lowering_platforms=("tpu",)).as_text()
   except Exception as exc:  # pylint: disable=broad-exception-caught
     message = _truncate(f"{exc}", _MAX_LOWERING_MESSAGE_CHARS)
     if _is_missing_tpu_device_kind_error(exc):
       finding = findings.VerificationFinding(
           category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
-          severity=findings.Severity.INFO,
+          severity=findings.Severity.WARNING,
           phase=_LOWERING,
           op_name=op_name,
           message=(
@@ -2123,9 +2706,24 @@ def verify_tpu_lowering(
           ),
       )
       return findings.report_of(_LOWERING, [finding])
-    target_desc = (
-        resolved_tpu_version.value if jax_callable.mesh is None else "its mesh"
-    )
+    if jax_callable is None and _is_non_pallas_host_trace_limitation(exc):
+      finding = findings.VerificationFinding(
+          category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+          severity=findings.Severity.WARNING,
+          phase=_LOWERING,
+          op_name=op_name,
+          message=(
+              "skipped TPU lowering because tracing requires concrete host/TPU"
+              f" devices ({type(exc).__name__}: {message})"
+          ),
+      )
+      return findings.report_of(_LOWERING, [finding])
+    if has_mesh and mesh_has_tpu_kind:
+      target_desc = "its mesh"
+    elif has_mesh:
+      target_desc = f"its mesh ({resolved_tpu_version.value})"
+    else:
+      target_desc = resolved_tpu_version.value
     finding = findings.VerificationFinding(
         category=findings.FindingCategory.LOWERING_FAILURE,
         severity=findings.Severity.ERROR,
@@ -2170,6 +2768,9 @@ _VIEW_FALLBACK_NAMES = frozenset({
     "transpose",
     "unbind",
     "unflatten",
+    "unsafe_chunk",
+    "unsafe_split",
+    "unsafe_split_with_sizes",
     "unsqueeze",
     "view",
     "view_as",
@@ -2197,6 +2798,16 @@ _METADATA_ONLY_FX_NAMES = frozenset({
 })
 
 
+def resolve_fx_attr(gm: fx.GraphModule, target_path: str) -> Any:
+  """Resolves a dotted `get_attr` path on `gm`, returning `None` if absent."""
+  curr: Any = gm
+  for part in target_path.split("."):
+    if not hasattr(curr, part):
+      return None
+    curr = getattr(curr, part)
+  return curr
+
+
 def _is_metadata_only_fx_node(node: fx.Node) -> bool:
   """Returns True if `node` only inspects tensor shape/dtype/device metadata."""
   if node.op not in ("call_function", "call_method"):
@@ -2205,7 +2816,21 @@ def _is_metadata_only_fx_node(node: fx.Node) -> bool:
   return target_name in _METADATA_ONLY_FX_NAMES
 
 
-def _iter_fx_nodes(value: Any) -> list[fx.Node]:
+def _is_set_inplace_fx_node(node: fx.Node) -> bool:
+  """Returns True if `node` is an in-place `Tensor.set_` storage rebind."""
+  if not node.args or not isinstance(node.args[0], fx.Node):
+    return False
+  if node.op == "call_method":
+    return str(node.target) == "set_"
+  if node.op == "call_function":
+    target_name = getattr(node.target, "__name__", str(node.target)).split(".")[
+        0
+    ]
+    return target_name == "set_"
+  return False
+
+
+def iter_fx_nodes(value: Any) -> list[fx.Node]:
   """Collects all `fx.Node` leaves inside nested tuples, lists, dicts, or slices."""
   found: list[fx.Node] = []
   for leaf in torch_pytree.tree_leaves(value):
@@ -2218,22 +2843,94 @@ def _iter_fx_nodes(value: Any) -> list[fx.Node]:
   return found
 
 
-def _fx_op_aliases_inputs(
+def _fx_op_per_return_aliases(
+    target: Any,
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any] | None = None,
+) -> dict[int, list[fx.Node]] | None:
+  """Maps tuple output indices to aliased input `fx.Node`s."""
+  kwargs = kwargs or {}
+  out_kw = kwargs.get("out")
+  if isinstance(out_kw, (tuple, list)) and len(out_kw) > 1:
+    per_ret = {idx: iter_fx_nodes(elem) for idx, elem in enumerate(out_kw)}
+    if any(per_ret.values()):
+      return per_ret
+
+  schema = getattr(target, "_schema", None)
+  if schema is None or len(schema.returns) <= 1:
+    return None
+
+  arg_by_alias_set: dict[frozenset[str], list[fx.Node]] = {}
+  for idx, schema_arg in enumerate(schema.arguments):
+    alias_info = getattr(schema_arg, "alias_info", None)
+    before_set = frozenset(getattr(alias_info, "before_set", ()) or ())
+    if not before_set or "*" in before_set:
+      continue
+    if idx < len(args):
+      val = args[idx]
+    elif schema_arg.name in kwargs:
+      val = kwargs[schema_arg.name]
+    else:
+      continue
+    nodes = iter_fx_nodes(val)
+    if nodes:
+      arg_by_alias_set.setdefault(before_set, []).extend(nodes)
+
+  if not arg_by_alias_set:
+    return None
+
+  per_ret_schema: dict[int, list[fx.Node]] = {}
+  for ret_idx, ret in enumerate(schema.returns):
+    ret_alias = getattr(ret, "alias_info", None)
+    ret_sets = frozenset(getattr(ret_alias, "before_set", ()) or ())
+    if not ret_sets:
+      continue
+    matched: list[fx.Node] = []
+    for aset, nodes in arg_by_alias_set.items():
+      if aset & ret_sets:
+        matched.extend(nodes)
+    if matched:
+      per_ret_schema[ret_idx] = matched
+  return per_ret_schema or None
+
+
+INPLACE_OPERATOR_TARGETS: frozenset[Any] = frozenset({
+    operator.iadd,
+    operator.iand,
+    operator.iconcat,
+    operator.ifloordiv,
+    operator.ilshift,
+    operator.imatmul,
+    operator.imod,
+    operator.imul,
+    operator.ior,
+    operator.ipow,
+    operator.irshift,
+    operator.isub,
+    operator.itruediv,
+    operator.ixor,
+})
+
+
+def fx_op_aliases_inputs(
     target: Any,
     args: Sequence[Any],
     kwargs: Mapping[str, Any] | None = None,
 ) -> list[fx.Node]:
-  """Returns input `fx.Node`s whose storage may be viewed or mutated by `target`."""
+  """Returns input `fx.Node`s whose storage may be viewed or mutated."""
   kwargs = kwargs or {}
   if target is getattr and len(args) >= 2:
     first, attr = args[0], args[1]
     if isinstance(first, fx.Node) and attr in _GETATTR_VIEW_NAMES:
       return [first]
+  if target in INPLACE_OPERATOR_TARGETS:
+    if args and isinstance(args[0], fx.Node):
+      return [args[0]]
 
   aliased_nodes: list[fx.Node] = []
   out_kw = kwargs.get("out")
   if out_kw is not None:
-    aliased_nodes.extend(_iter_fx_nodes(out_kw))
+    aliased_nodes.extend(iter_fx_nodes(out_kw))
 
   schema = getattr(target, "_schema", None)
   if schema is not None:
@@ -2250,7 +2947,7 @@ def _fx_op_aliases_inputs(
           val = kwargs[schema_arg.name]
         else:
           continue
-        aliased_nodes.extend(_iter_fx_nodes(val))
+        aliased_nodes.extend(iter_fx_nodes(val))
       if aliased_nodes:
         return aliased_nodes
 
@@ -2262,6 +2959,263 @@ def _fx_op_aliases_inputs(
     if isinstance(first, fx.Node):
       aliased_nodes.append(first)
   return aliased_nodes
+
+
+def _extract_root_nn_module(target: Any) -> torch.nn.Module | None:
+  """Returns the backing `nn.Module` if `target` is a module or bound method."""
+  if isinstance(target, torch.nn.Module):
+    return target
+  bound_self = getattr(target, "__self__", None)
+  if isinstance(bound_self, torch.nn.Module):
+    return bound_self
+  return None
+
+
+def _has_internal_overlap(t: torch.Tensor) -> bool:
+  """Returns True if `t` has expanded stride-0 internal memory overlap."""
+  return any(sz > 1 and st == 0 for sz, st in zip(t.size(), t.stride()))
+
+
+def _clone_tensor_for_trace(
+    t: torch.Tensor, *, keep_requires_grad: bool = False
+) -> torch.Tensor:
+  """Clones `t` for FX tracing, handling packed FP4 and inference tensors."""
+  if (
+      t.dtype == torch.float4_e2m1fn_x2
+      and t.device.type == "cpu"
+      and t.ndim > 0
+      and t.stride(-1) == 1
+  ):
+    return t.detach().view(torch.uint8).clone().view(torch.float4_e2m1fn_x2)
+  cloned = t.detach().clone()
+  if keep_requires_grad and t.requires_grad:
+    cloned.requires_grad_(True)
+  return cloned
+
+
+@contextlib.contextmanager
+def _preserve_module_state(target: Any) -> Iterator[None]:
+  """Snapshots and restores `nn.Module` attributes, buffers, and tensors."""
+  root_mod = _extract_root_nn_module(target)
+  if root_mod is None:
+    yield
+    return
+
+  snapshots: list[
+      tuple[
+          torch.nn.Module,
+          dict[str, Any],
+          dict[str, torch.nn.Parameter | None],
+          dict[str, torch.Tensor | None],
+      ]
+  ] = []
+  storage_backups: list[
+      tuple[torch.Tensor, Any, int, tuple[int, ...], tuple[int, ...]]
+  ] = []
+  data_backups: list[tuple[torch.Tensor, torch.Tensor]] = []
+  seen_tensors: set[int] = set()
+
+  for mod in root_mod.modules():
+    # pylint: disable=protected-access
+    params_copy = dict(mod._parameters)
+    buffers_copy = dict(mod._buffers)
+    # pylint: enable=protected-access
+    dict_copy = dict(mod.__dict__)
+    snapshots.append((mod, dict_copy, params_copy, buffers_copy))
+    for t in (
+        *params_copy.values(),
+        *buffers_copy.values(),
+        *dict_copy.values(),
+    ):
+      if (
+          isinstance(t, torch.Tensor)
+          and not isinstance(t, fake_tensor.FakeTensor)
+          and t.device.type == "cpu"
+          and not t.is_inference()
+          and id(t) not in seen_tensors
+      ):
+        seen_tensors.add(id(t))
+        storage_backups.append((
+            t,
+            t.untyped_storage(),
+            int(t.storage_offset()),
+            tuple(t.size()),
+            tuple(t.stride()),
+        ))
+        if (
+            0 < t.numel() <= 65536
+            and not _has_internal_overlap(t)
+            and t.dtype != torch.float4_e2m1fn_x2
+        ):
+          data_backups.append((t, t.detach().clone()))
+
+  try:
+    yield
+  finally:
+    for mod, dict_copy, params_copy, buffers_copy in snapshots:
+      mod.__dict__.clear()
+      mod.__dict__.update(dict_copy)
+      # pylint: disable=protected-access
+      mod._parameters.clear()
+      mod._parameters.update(params_copy)
+      mod._buffers.clear()
+      mod._buffers.update(buffers_copy)
+      # pylint: enable=protected-access
+    with torch.no_grad():
+      for t, orig_storage, orig_off, orig_size, orig_stride in storage_backups:
+        if t.is_inference():
+          continue
+        if (
+            t.untyped_storage().data_ptr() != orig_storage.data_ptr()
+            or int(t.storage_offset()) != orig_off
+            or tuple(t.size()) != orig_size
+            or tuple(t.stride()) != orig_stride
+        ):
+          t.set_(orig_storage, orig_off, orig_size, orig_stride)
+      for t, backup in data_backups:
+        if (
+            not t.is_inference()
+            and not _has_internal_overlap(t)
+            and t.shape == backup.shape
+            and t.dtype == backup.dtype
+            and not torch.equal(
+                t.detach().contiguous().reshape(-1).view(torch.uint8),
+                backup.contiguous().reshape(-1).view(torch.uint8),
+            )
+        ):
+          t.copy_(backup)
+
+
+def _should_retry_with_abstract_tpu_mesh(exc: BaseException) -> bool:
+  """Returns whether `exc` requires retrying under a synthetic TPU mesh."""
+  return (
+      isinstance(exc, (ValueError, RuntimeError))
+      and _is_missing_tpu_device_kind_error(exc)
+      and jax.sharding.get_abstract_mesh().empty
+  )
+
+
+def _trace_fx_with_tpu_mesh_fallback(
+    fn_to_trace: Callable[..., Any],
+    make_args: Callable[[], tuple[Any, ...]],
+    state_root: Any,
+    tpu_version: findings.TpuVersion | None,
+    example_args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+    *,
+    before_retry: Callable[[], None] | None = None,
+) -> fx.GraphModule:
+  """Traces `fn_to_trace` with `make_fx`, retrying under a target TPU mesh."""
+  try:
+    with _preserve_module_state(state_root):
+      return proxy_tensor.make_fx(
+          fn_to_trace, tracing_mode="fake", _allow_non_fake_inputs=True
+      )(*make_args())
+  except (ValueError, RuntimeError) as exc:
+    # TorchDynamo HOPs (`torch.cond`, `while_loop`, `scan`) wrap JAX's
+    # `ValueError('Unsupported TPU device kind: ...')` into
+    # `TorchRuntimeError` (`RuntimeError`), so check both types.
+    if not _should_retry_with_abstract_tpu_mesh(exc):
+      raise
+    if before_retry is not None:
+      before_retry()
+    resolved_version = infer_tpu_version(
+        state_root, tpu_version, example_args, kwargs
+    )
+    with (
+        _preserve_module_state(state_root),
+        override_abstract_mesh(abstract_tpu_mesh(resolved_version)),
+    ):
+      return proxy_tensor.make_fx(
+          fn_to_trace, tracing_mode="fake", _allow_non_fake_inputs=True
+      )(*make_args())
+
+
+def _make_eval_shape_fallback_exported(
+    jc: pallas_lib.JaxCallable, orig_exported: Any
+) -> Any:
+  """Returns a thread-gated `jc.exported` wrapper using `eval_shape`."""
+
+  def _wrapped_exported(*j_args: Any, **j_kwargs: Any) -> Any:
+    if int(getattr(_THREAD_PATCH_STATE, "eval_shape_fallback_depth", 0)) <= 0:
+      return orig_exported(*j_args, **j_kwargs)
+    try:
+      return orig_exported(*j_args, **j_kwargs)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      if _should_retry_with_abstract_tpu_mesh(exc):
+        raise
+      try:
+        out_struct = jax.eval_shape(jc.jit_fn, *j_args, **j_kwargs)
+      except Exception:  # pylint: disable=broad-exception-caught
+        # A kernel that cannot even be traced has no output shapes to infer.
+        raise exc from None
+      out_leaves, out_tree = jax.tree.flatten(out_struct)
+      out_avals = [
+          jax.core.ShapedArray(leaf.shape, leaf.dtype)
+          if hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+          else leaf
+          for leaf in out_leaves
+      ]
+      return types.SimpleNamespace(out_avals=out_avals, out_tree=out_tree)
+
+  return _wrapped_exported
+
+
+@contextlib.contextmanager
+def _eval_shape_fallback_for_jax_callables(roots: Any) -> Iterator[None]:
+  """Infers `jax_op` output shapes on this thread when TPU lowering fails.
+
+  The `JaxCallable.exported` wrapper is gated by `threading.local()` so
+  concurrent calls on other threads invoke the original `exported` method
+  unchanged.
+
+  Args:
+    roots: Root callable, args, and kwargs scanned for `JaxCallable` instances.
+
+  Yields:
+    None.
+  """
+  discovered: list[pallas_lib.JaxCallable] = []
+  seen_jc_ids: set[int] = set()
+  for obj in _collect_callable_objects(roots):
+    if isinstance(obj, pallas_lib.JaxCallable) and id(obj) not in seen_jc_ids:
+      seen_jc_ids.add(id(obj))
+      discovered.append(obj)
+
+  depth = int(getattr(_THREAD_PATCH_STATE, "eval_shape_fallback_depth", 0))
+  installed: list[pallas_lib.JaxCallable] = []
+  try:
+    _THREAD_PATCH_STATE.eval_shape_fallback_depth = depth + 1
+    with _PATCH_LOCK:
+      for jc in discovered:
+        jc_id = id(jc)
+        existing = _JC_EXPORTED_PATCHES.get(jc_id)
+        if existing is not None:
+          _JC_EXPORTED_PATCHES[jc_id] = (
+              existing[0],
+              existing[1],
+              existing[2] + 1,
+          )
+        else:
+          orig_exported = jc.exported
+          _JC_EXPORTED_PATCHES[jc_id] = (jc, orig_exported, 1)
+          jc.exported = _make_eval_shape_fallback_exported(jc, orig_exported)
+        installed.append(jc)
+    yield
+  finally:
+    _THREAD_PATCH_STATE.eval_shape_fallback_depth = depth
+    if installed:
+      with _PATCH_LOCK:
+        for jc in reversed(installed):
+          jc_id = id(jc)
+          entry = _JC_EXPORTED_PATCHES.get(jc_id)
+          if entry is None:
+            continue
+          if entry[2] <= 1:
+            jc.exported = entry[1]
+            del _JC_EXPORTED_PATCHES[jc_id]
+          else:
+            _JC_EXPORTED_PATCHES[jc_id] = (entry[0], entry[1], entry[2] - 1)
 
 
 def trace_to_fx_graph(
@@ -2276,10 +3230,6 @@ def trace_to_fx_graph(
     return fn_or_gm
   kwargs = dict(example_kwargs or {})
   kw_keys = tuple(kwargs.keys())
-  kw_vals = tuple(
-      v.detach().clone() if isinstance(v, torch.Tensor) else v
-      for v in kwargs.values()
-  )
   num_pos = len(example_args)
 
   def _bound(*all_args):
@@ -2287,30 +3237,30 @@ def trace_to_fx_graph(
     call_kwargs = dict(zip(kw_keys, all_args[num_pos:]))
     return fn_or_gm(*pos_args, **call_kwargs)
 
-  cloned_args = (
-      tuple(
-          a.detach().clone() if isinstance(a, torch.Tensor) else a
-          for a in example_args
-      )
-      + kw_vals
-  )
+  def _make_cloned_args() -> tuple[Any, ...]:
+    cloned_pos = tuple(
+        _clone_tensor_for_trace(a) if isinstance(a, torch.Tensor) else a
+        for a in example_args
+    )
+    cloned_kw = tuple(
+        _clone_tensor_for_trace(v) if isinstance(v, torch.Tensor) else v
+        for v in kwargs.values()
+    )
+    return cloned_pos + cloned_kw
+
   # Module parameters and buffers are real tensors that the trace captures as
-  # `get_attr` constants (`_allow_non_fake_inputs=True`).
-  try:
-    return proxy_tensor.make_fx(
-        _bound, tracing_mode="fake", _allow_non_fake_inputs=True
-    )(*cloned_args)
-  except ValueError as exc:
-    if (
-        not _is_missing_tpu_device_kind_error(exc)
-        or not jax.sharding.get_abstract_mesh().empty
-    ):
-      raise
-    resolved_version = infer_tpu_version(fn_or_gm, tpu_version)
-    with override_abstract_mesh(abstract_tpu_mesh(resolved_version)):
-      return proxy_tensor.make_fx(
-          _bound, tracing_mode="fake", _allow_non_fake_inputs=True
-      )(*cloned_args)
+  # `get_attr` constants (`_allow_non_fake_inputs=True`). Each `make_fx`
+  # attempt runs inside its own `_preserve_module_state` so lazy FakeTensor
+  # caches from a failed first trace are cleared before retrying.
+  with _eval_shape_fallback_for_jax_callables((fn_or_gm, example_args, kwargs)):
+    return _trace_fx_with_tpu_mesh_fallback(
+        _bound,
+        _make_cloned_args,
+        fn_or_gm,
+        tpu_version,
+        example_args,
+        kwargs,
+    )
 
 
 def match_placeholders_to_inputs(
@@ -2333,21 +3283,48 @@ def match_placeholders_to_inputs(
   return {}
 
 
+def _collect_gm_attr_storage_roots(
+    gm: fx.GraphModule,
+    ptr_to_root: MutableMapping[int, str],
+    *,
+    scope_prefix: str = "",
+) -> dict[fx.Node, set[str]]:
+  """Assigns storage root IDs to `get_attr` tensor nodes across `gm`."""
+  attr_roots: dict[fx.Node, set[str]] = {}
+  for node in gm.graph.nodes:
+    if node.op != "get_attr":
+      continue
+    attr_val = resolve_fx_attr(gm, str(node.target))
+    if isinstance(attr_val, fx.GraphModule):
+      continue
+    root_name = f"attr:{scope_prefix}{node.target}"
+    if isinstance(attr_val, torch.Tensor):
+      ptr = _tensor_storage_ptr(attr_val)
+      if ptr is not None:
+        root_name = ptr_to_root.setdefault(ptr, root_name)
+    attr_roots[node] = {root_name}
+  return attr_roots
+
+
 def _compute_placeholder_roots(
     placeholders: Sequence[fx.Node],
     example_args: Sequence[Any],
     example_kwargs: Mapping[str, Any] | None,
+    *,
+    ptr_to_root: MutableMapping[int, str] | None = None,
 ) -> dict[fx.Node, set[str]]:
   """Assigns storage root IDs to FX `placeholder` nodes.
 
   If two eager `torch.Tensor` arguments passed by the caller share underlying
-  storage, their corresponding FX placeholder nodes are assigned the same
-  canonical root ID so cross-argument aliasing is tracked through the graph.
+  storage (or alias a module buffer/parameter in `ptr_to_root`), their FX
+  placeholder nodes receive the same canonical root ID so cross-argument and
+  input-to-buffer aliasing is tracked through the graph.
 
   Args:
     placeholders: FX `placeholder` nodes in graph order.
     example_args: Positional example arguments passed to `verify_fx_graph`.
     example_kwargs: Keyword example arguments passed to `verify_fx_graph`.
+    ptr_to_root: Optional map from storage pointer to canonical root ID.
 
   Returns:
     Mapping from `placeholder` node to its single-element set of root IDs.
@@ -2358,44 +3335,64 @@ def _compute_placeholder_roots(
   if not matched_map:
     return {ph: {ph.name} for ph in placeholders}
 
-  matched_items = list(matched_map.items())
+  storage_map = ptr_to_root if ptr_to_root is not None else {}
   placeholder_roots: dict[fx.Node, set[str]] = {}
-  canonical_names: list[str] = []
-  for idx, (ph_node, val) in enumerate(matched_items):
+  for ph_node, val in matched_map.items():
     matched_name = (
         f"param:{ph_node.name}"
         if isinstance(val, torch.nn.Parameter)
         else ph_node.name
     )
     if isinstance(val, torch.Tensor):
-      for prev_idx in range(idx):
-        prev_val = matched_items[prev_idx][1]
-        if isinstance(prev_val, torch.Tensor) and _eager_tensors_alias(
-            val, prev_val
-        ):
-          matched_name = canonical_names[prev_idx]
-          break
-    canonical_names.append(matched_name)
+      ptr = _tensor_storage_ptr(val)
+      if ptr is not None:
+        matched_name = storage_map.setdefault(ptr, matched_name)
     placeholder_roots[ph_node] = {matched_name}
   return placeholder_roots
 
 
 def _check_stale_root_uses(
     node: fx.Node,
-    node_roots: Mapping[fx.Node, Set[str]],
+    node_roots: Mapping[fx.Node, AbstractSet[str]],
     invalidated_roots: Mapping[str, tuple[str, str]],
     *,
     jax_op_name: str | None = None,
+    used_nodes_override: Sequence[fx.Node] | None = None,
+    backward_pass: bool = False,
+    forward_invalidated_roots: AbstractSet[str] | None = None,
 ) -> list[findings.VerificationFinding]:
   """Checks whether `node` consumes any tensor derived from a donated buffer."""
   if jax_op_name is None and _is_metadata_only_fx_node(node):
     return []
   detected: list[findings.VerificationFinding] = []
-  for used_node in _iter_fx_nodes((node.args, node.kwargs)):
+  consumed = (
+      list(used_nodes_override)
+      if used_nodes_override is not None
+      else iter_fx_nodes((node.args, node.kwargs))
+  )
+  for used_node in consumed:
     stale = node_roots.get(used_node, set()) & invalidated_roots.keys()
     for root in sorted(stale):
       donor_op, donor_node = invalidated_roots[root]
-      if jax_op_name is not None:
+      if backward_pass:
+        op_name = jax_op_name if jax_op_name is not None else donor_op
+        consumer_desc = (
+            "autograd backward output"
+            if node.op == "output"
+            else f"autograd backward FX node '{node.name}' ({node.target})"
+        )
+        stage_desc = (
+            "donated in forward"
+            if forward_invalidated_roots is None
+            or root in forward_invalidated_roots
+            else "donated in autograd backward"
+        )
+        message = (
+            f"{consumer_desc} reads '{used_node.name}' (sharing storage with"
+            f" '{root}') after '{root}' was {stage_desc} to"
+            f" '{donor_node}' ({donor_op})"
+        )
+      elif jax_op_name is not None:
         op_name = jax_op_name
         message = (
             f"FX node '{node.name}' ({jax_op_name}) reads '{used_node.name}'"
@@ -2427,72 +3424,239 @@ def _check_stale_root_uses(
   return detected
 
 
-def verify_fx_graph(
-    fn_or_gm: Callable[..., Any],
-    example_args: Sequence[Any],
-    example_kwargs: Mapping[str, Any] | None = None,
+class HopKind(enum.Enum):
+  """Supported PyTorch higher-order operators with `fx.GraphModule` bodies."""
+
+  COND = "cond"
+  WHILE_LOOP = "while_loop"
+  SCAN = "scan"
+
+
+def classify_higher_order_op(target: Any) -> HopKind | None:
+  """Returns the `HopKind` of `target` by exact identity, or `None`."""
+  ho_ns = getattr(torch.ops, "higher_order", None)
+  if target is torch.cond or (
+      ho_ns is not None and target is getattr(ho_ns, "cond", None)
+  ):
+    return HopKind.COND
+  if target is getattr(torch, "while_loop", None) or (
+      ho_ns is not None and target is getattr(ho_ns, "while_loop", None)
+  ):
+    return HopKind.WHILE_LOOP
+  if ho_ns is not None and target is getattr(ho_ns, "scan", None):
+    return HopKind.SCAN
+  if isinstance(target, torch._ops.HigherOrderOperator):
+    hop_name = target.name()
+    if hop_name == "cond":
+      return HopKind.COND
+    if hop_name == "while_loop":
+      return HopKind.WHILE_LOOP
+    if hop_name == "scan":
+      return HopKind.SCAN
+  return None
+
+
+def extract_hop_operands(
+    node: fx.Node,
+    sub_gm_nodes: Mapping[fx.Node, fx.GraphModule],
+    num_placeholders: int,
+) -> list[Any]:
+  """Extracts the flat operand list passed to a higher-order op's subgraphs."""
+  last_gm_pos = -1
+  for idx, arg in enumerate(node.args):
+    if isinstance(arg, fx.Node) and arg in sub_gm_nodes:
+      last_gm_pos = idx
+  trailing = node.args[last_gm_pos + 1 :]
+  flattened: list[Any] = []
+  for item in trailing:
+    if isinstance(item, (tuple, list)):
+      flattened.extend(item)
+    else:
+      flattened.append(item)
+  if len(flattened) == num_placeholders:
+    return flattened
+  for item in reversed(trailing):
+    if isinstance(item, (tuple, list)) and len(item) == num_placeholders:
+      return list(item)
+  return flattened
+
+
+def _append_unique_hop_findings(
+    items: Sequence[findings.VerificationFinding],
+    seen_hop_keys: MutableSet[tuple[Any, ...]],
+    detected: MutableSequence[findings.VerificationFinding],
+) -> None:
+  """Appends findings from `items` whose dedup key is not in `seen_hop_keys`."""
+  for item in items:
+    key = (
+        item.category,
+        item.op_name,
+        item.source_location,
+        item.message,
+    )
+    if key not in seen_hop_keys:
+      seen_hop_keys.add(key)
+      detected.append(item)
+
+
+def _is_caller_visible_root(
+    root: str,
+    caller_visible_roots: AbstractSet[str],
+    ptr_to_root: Mapping[int, str],
+) -> bool:
+  """Returns whether `root` belongs to an enclosing caller or module scope."""
+  return (
+      root in caller_visible_roots
+      or root in ptr_to_root.values()
+      or root.startswith(("attr:", "param:"))
+  )
+
+
+def _strip_iter_tag(root: str) -> str:
+  """Normalizes `[@<iter_idx>]` iteration tags to `[@*]` for state keys."""
+  out_parts: list[str] = []
+  idx = 0
+  n = len(root)
+  while idx < n:
+    at_pos = root.find("@", idx)
+    if at_pos < 0:
+      out_parts.append(root[idx:])
+      break
+    close_pos = root.find("]", at_pos + 1)
+    if close_pos > at_pos + 1 and root[at_pos + 1 : close_pos].isdigit():
+      out_parts.append(root[idx : at_pos + 1])
+      out_parts.append("*")
+      idx = close_pos
+    else:
+      out_parts.append(root[idx : at_pos + 1])
+      idx = at_pos + 1
+  return "".join(out_parts)
+
+
+def _canonical_loop_state_key(
+    carry_roots: Sequence[AbstractSet[str]],
+    caller_visible_inv: Mapping[str, tuple[str, str]],
+    caller_visible_roots: AbstractSet[str],
+    ptr_to_root: Mapping[int, str],
+) -> tuple[Any, ...]:
+  """Builds an alpha-canonical loop state key for `(carry_roots, inv)`."""
+  local_ids: dict[str, int] = {}
+  slot_keys: list[tuple[tuple[Any, ...], ...]] = []
+  for slot in carry_roots:
+    items: list[tuple[Any, ...]] = []
+    for root in sorted(slot):
+      if _is_caller_visible_root(root, caller_visible_roots, ptr_to_root):
+        items.append(("caller", root))
+      else:
+        lid = local_ids.setdefault(root, len(local_ids))
+        items.append(("local", lid, _strip_iter_tag(root)))
+    slot_keys.append(tuple(items))
+  return (tuple(slot_keys), tuple(sorted(caller_visible_inv.keys())))
+
+
+def _subgraph_has_custom_backward(sub_gm: fx.GraphModule) -> bool:
+  """Returns whether `sub_gm` or any child `GraphModule` has custom backward."""
+  for mod in sub_gm.modules():
+    if not isinstance(mod, fx.GraphModule):
+      continue
+    for sub_node in mod.graph.nodes:
+      if sub_node.op != "call_function":
+        continue
+      op_def = resolve_custom_op_def(sub_node.target)
+      if (
+          op_def is not None
+          and getattr(op_def, "_backward_fn", None) is not None
+      ):
+        return True
+  return False
+
+
+def _analyze_fx_graph_module(
+    gm: fx.GraphModule,
+    placeholder_roots: Mapping[fx.Node, AbstractSet[str]],
+    initial_invalidated_roots: Mapping[str, tuple[str, str]],
+    ptr_to_root: MutableMapping[int, str],
     *,
-    tpu_version: findings.TpuVersion | None = None,
-) -> findings.VerificationReport:
-  """Verifies linear buffer donation and alias invariants in a PyTorch FX graph.
-
-  Because `@jax_op` registers `mutates_args=()` on its PyTorch custom op (so
-  Dynamo does not copy back donated inputs), PyTorch's functionalization pass
-  does not track buffer invalidation from `donate_argnums`. This pass performs
-  a forward storage-provenance analysis across the traced FX graph:
-
-  * Every FX node is mapped to the set of underlying storage root IDs it may
-    alias (`node_roots`).
-  * View operations (`view`, `reshape`, `slice`, `.T`, `.mT`, tensor slicing,
-    and in-place ops) propagate the storage roots of their input tensor(s).
-  * Tuple unpacking (`operator.getitem` on a multi-output op in `fresh_nodes`)
-    mints an independent root ID `f"{root}[{index}]"` per output element so
-    donating one output of a multi-output op does not invalidate its siblings.
-  * When a `@jax_op` donates an argument, all storage roots backing that
-    argument are added to `invalidated_roots`. Any subsequent read, in-place
-    mutation (such as `pool.copy_(result)`), or graph return of a node sharing
-    an invalidated root is flagged as `USE_AFTER_DONATE`.
+    backward_pass: bool = False,
+    backward_boundary_op: Any = None,
+    root_scope: str = "",
+    forward_invalidated_roots: AbstractSet[str] | None = None,
+) -> tuple[
+    list[findings.VerificationFinding],
+    dict[str, tuple[str, str]],
+    list[tuple[set[str], bool]],
+    bool,
+    bool,
+]:
+  """Runs storage-provenance dataflow over `gm` and any nested HOP subgraphs.
 
   Args:
-    fn_or_gm: A PyTorch callable, `nn.Module`, or pre-traced `fx.GraphModule`.
-    example_args: Example positional arguments.
-    example_kwargs: Example keyword arguments.
-    tpu_version: Target TPU generation used if tracing lowers an op.
+    gm: Traced `fx.GraphModule` to analyze.
+    placeholder_roots: Storage roots seeded for `gm`'s `placeholder` nodes.
+    initial_invalidated_roots: Caller-visible storage roots already donated
+      before `gm` executes, mapped to `(donor_op_name, donor_node_name)`.
+    ptr_to_root: Mutable map unifying storage pointers across module attributes
+      and concrete caller inputs.
+    backward_pass: Whether `gm` is already inside the autograd backward region.
+    backward_boundary_op: Optional marker op separating forward and backward
+      regions in a joint autograd FX graph.
+    root_scope: Hierarchical scope prefix isolating subgraph-local roots across
+      parent graphs, sibling branches, and loop iterations.
+    forward_invalidated_roots: Roots invalidated prior to the backward boundary
+      (for diagnostic messages in joint autograd graphs).
 
   Returns:
-    A `VerificationReport` for `Phase.FX_GRAPH`.
+    A 5-tuple `(detected, invalidated_roots, return_slots,
+    has_invalidating_donor, has_custom_backward)` containing emitted findings,
+    updated root invalidations, per-output `(roots, is_fresh)` provenance slots,
+    whether any `@jax_op` donated a non-aliased input, and whether any `@jax_op`
+    registered a custom autograd backward.
   """
-  gm = trace_to_fx_graph(
-      fn_or_gm, example_args, example_kwargs, tpu_version=tpu_version
-  )
+  scope_prefix = f"{root_scope}/" if root_scope else ""
   detected: list[findings.VerificationFinding] = []
-
-  # Provenance map: fx.Node -> set of underlying storage root identifiers.
   node_roots: dict[fx.Node, set[str]] = {}
-  # Invalidated root map: root_id -> (donating_op_name, donating_fx_node_name).
-  invalidated_roots: dict[str, tuple[str, str]] = {}
-  # Nodes whose outputs are newly allocated buffers (or tuples of new buffers)
-  # rather than views of existing inputs.
-  fresh_nodes: set[fx.Node] = set()
-
-  placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
-  placeholder_roots = _compute_placeholder_roots(
-      placeholders, example_args, example_kwargs
+  invalidated_roots: dict[str, tuple[str, str]] = dict(
+      initial_invalidated_roots
   )
+  fresh_nodes: set[fx.Node] = set()
+  per_return_roots: dict[fx.Node, dict[int, set[str]]] = {}
+  sub_gm_nodes: dict[fx.Node, fx.GraphModule] = {}
+  attr_roots = _collect_gm_attr_storage_roots(
+      gm, ptr_to_root, scope_prefix=scope_prefix
+  )
+  return_slots: list[tuple[set[str], bool]] = []
+  has_invalidating_donor = False
+  has_custom_backward = False
+  past_backward_boundary = backward_pass
+  fwd_inv_keys: AbstractSet[str] | None = forward_invalidated_roots
 
   for node in gm.graph.nodes:
+    if (
+        backward_boundary_op is not None
+        and node.op == "call_function"
+        and node.target is backward_boundary_op
+    ):
+      past_backward_boundary = True
+      fwd_inv_keys = frozenset(invalidated_roots.keys())
+      continue
+
+    emit_findings = backward_boundary_op is None or past_backward_boundary
+
     if node.op == "placeholder":
-      node_roots[node] = set(placeholder_roots.get(node, {node.name}))
+      default_ph_root = f"{scope_prefix}{node.name}"
+      node_roots[node] = set(placeholder_roots.get(node, {default_ph_root}))
       continue
 
     if node.op == "get_attr":
-      node_roots[node] = {f"attr:{node.target}"}
+      sub_val = resolve_fx_attr(gm, str(node.target))
+      if isinstance(sub_val, fx.GraphModule):
+        sub_gm_nodes[node] = sub_val
+        continue
+      node_roots[node] = set(
+          attr_roots.get(node, {f"attr:{scope_prefix}{node.target}"})
+      )
       continue
 
-    # `operator.getitem` is either unpacking an element from a multi-output op
-    # (minting a distinct buffer root per element) or slicing a tensor (a view).
-    # We propagate roots here without emitting a finding so that any downstream
-    # consumer or graph return of a stale slice reports `USE_AFTER_DONATE` once.
     if node.op == "call_function" and node.target is operator.getitem:
       container = node.args[0]
       index = node.args[1] if len(node.args) > 1 else None
@@ -2500,6 +3664,17 @@ def verify_fx_graph(
           container.meta.get("val") if isinstance(container, fx.Node) else None
       )
       if (
+          isinstance(container, fx.Node)
+          and container in per_return_roots
+          and isinstance(index, int)
+      ):
+        slot_map = per_return_roots[container]
+        if index in slot_map:
+          node_roots[node] = set(slot_map[index])
+        else:
+          node_roots[node] = {f"val:{scope_prefix}{container.name}[{index}]"}
+          fresh_nodes.add(node)
+      elif (
           isinstance(container, fx.Node)
           and container in fresh_nodes
           and isinstance(index, int)
@@ -2510,9 +3685,409 @@ def verify_fx_graph(
         node_roots[node] = {f"{r}[{index}]" for r in node_roots[container]}
         fresh_nodes.add(node)
       elif isinstance(container, fx.Node):
-        node_roots[node] = set(node_roots.get(container, {node.name}))
+        node_roots[node] = set(
+            node_roots.get(container, {f"val:{scope_prefix}{container.name}"})
+        )
       else:
-        node_roots[node] = {node.name}
+        node_roots[node] = {f"val:{scope_prefix}{node.name}"}
+      continue
+
+    if _is_set_inplace_fx_node(node):
+      if emit_findings:
+        detected.extend(
+            _check_stale_root_uses(
+                node,
+                node_roots,
+                invalidated_roots,
+                used_nodes_override=iter_fx_nodes((node.args[1:], node.kwargs)),
+                backward_pass=past_backward_boundary,
+                forward_invalidated_roots=fwd_inv_keys,
+            )
+        )
+      dst = node.args[0]
+      if len(node.args) >= 2 and isinstance(node.args[1], fx.Node):
+        src = node.args[1]
+        new_roots = set(node_roots.get(src, {f"val:{scope_prefix}{src.name}"}))
+      else:
+        new_roots = {f"set:{scope_prefix}{node.name}"}
+      node_roots[dst] = set(new_roots)
+      node_roots[node] = set(new_roots)
+      if len(node.args) >= 2 and node.args[1] in fresh_nodes:
+        fresh_nodes.add(dst)
+        fresh_nodes.add(node)
+      else:
+        fresh_nodes.discard(dst)
+      continue
+
+    # Higher-order ops (`torch.cond`, `while_loop`, `scan`, or unknown HOPs)
+    # referencing child `fx.GraphModule` attributes or arguments.
+    referenced_gms: list[fx.GraphModule] = []
+    if node.op == "call_function":
+      for leaf in torch_pytree.tree_leaves((node.args, node.kwargs)):
+        if isinstance(leaf, fx.Node) and leaf in sub_gm_nodes:
+          referenced_gms.append(sub_gm_nodes[leaf])
+        elif isinstance(leaf, fx.GraphModule):
+          referenced_gms.append(leaf)
+
+    if referenced_gms:
+      if emit_findings:
+        detected.extend(
+            _check_stale_root_uses(
+                node,
+                node_roots,
+                invalidated_roots,
+                backward_pass=past_backward_boundary,
+                forward_invalidated_roots=fwd_inv_keys,
+            )
+        )
+      child_gms = [
+          sub_gm_nodes[a]
+          for a in node.args
+          if isinstance(a, fx.Node) and a in sub_gm_nodes
+      ]
+      hop_kind = classify_higher_order_op(node.target)
+      valid_hop_arity = (
+          hop_kind in (HopKind.COND, HopKind.WHILE_LOOP) and len(child_gms) == 2
+      ) or (hop_kind is HopKind.SCAN and len(child_gms) == 1)
+      if hop_kind is None or not valid_hop_arity:
+        for rgm in referenced_gms:
+          if _subgraph_has_custom_backward(rgm):
+            has_custom_backward = True
+        if emit_findings:
+          detected.append(
+              findings.VerificationFinding(
+                  category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+                  severity=findings.Severity.INFO,
+                  phase=_FX_GRAPH,
+                  op_name=get_op_display_name(node.target),
+                  source_location=node.name,
+                  message=(
+                      f"FX node '{node.name}' calls unrecognized higher-order"
+                      f" op '{node.target}' with subgraph argument(s); buffer"
+                      " donation provenance across its subgraphs was not"
+                      " analyzed"
+                  ),
+              )
+          )
+        node_roots[node] = {f"out:{scope_prefix}{node.name}"}
+        fresh_nodes.add(node)
+        continue
+
+      caller_visible_roots: set[str] = set(invalidated_roots.keys())
+      caller_visible_roots.update(ptr_to_root.values())
+      for ph_rset in placeholder_roots.values():
+        caller_visible_roots.update(ph_rset)
+      for attr_rset in attr_roots.values():
+        caller_visible_roots.update(attr_rset)
+      for node_rset in node_roots.values():
+        caller_visible_roots.update(node_rset)
+
+      def _filter_inv(
+          inv_map: Mapping[str, tuple[str, str]],
+          vis: AbstractSet[str] = caller_visible_roots,
+      ) -> dict[str, tuple[str, str]]:
+        return {
+            k: v
+            for k, v in inv_map.items()
+            if _is_caller_visible_root(k, vis, ptr_to_root)
+        }
+
+      caller_visible_inv = dict(invalidated_roots)
+      branch_outcomes: list[
+          tuple[list[tuple[set[str], bool]], dict[str, tuple[str, str]]]
+      ] = []
+      seen_hop_keys: set[tuple[Any, ...]] = set()
+
+      if hop_kind is HopKind.COND:
+        for sub_idx, child_gm in enumerate(child_gms):
+          child_scope = f"{scope_prefix}{node.name}[{sub_idx}@0]"
+          child_phs = [n for n in child_gm.graph.nodes if n.op == "placeholder"]
+          operands = extract_hop_operands(node, sub_gm_nodes, len(child_phs))
+          child_ph_roots = {
+              ph: (
+                  set(
+                      node_roots.get(
+                          op_val, {f"val:{scope_prefix}{op_val.name}"}
+                      )
+                  )
+                  if isinstance(op_val, fx.Node)
+                  else {f"{child_scope}/{ph.name}"}
+              )
+              for ph, op_val in zip(child_phs, operands)
+          }
+          c_findings, c_inv, c_ret, c_donor, c_bwd = _analyze_fx_graph_module(
+              child_gm,
+              child_ph_roots,
+              invalidated_roots,
+              ptr_to_root,
+              backward_pass=past_backward_boundary,
+              root_scope=child_scope,
+              forward_invalidated_roots=fwd_inv_keys,
+          )
+          has_invalidating_donor = has_invalidating_donor or c_donor
+          has_custom_backward = has_custom_backward or c_bwd
+          if emit_findings:
+            _append_unique_hop_findings(c_findings, seen_hop_keys, detected)
+          caller_visible_inv.update(_filter_inv(c_inv))
+          if c_ret:
+            branch_outcomes.append((c_ret, dict(c_inv)))
+
+      elif hop_kind is HopKind.WHILE_LOOP:
+        cond_gm, body_gm = child_gms[0], child_gms[1]
+        cond_phs = [n for n in cond_gm.graph.nodes if n.op == "placeholder"]
+        cond_ops = extract_hop_operands(node, sub_gm_nodes, len(cond_phs))
+        body_phs = [n for n in body_gm.graph.nodes if n.op == "placeholder"]
+        body_ops = extract_hop_operands(node, sub_gm_nodes, len(body_phs))
+        num_while_carry = (
+            len(node.args[2])
+            if len(node.args) > 2 and isinstance(node.args[2], (tuple, list))
+            else len(body_ops)
+        )
+        cur_carry_roots: list[set[str]] = [
+            set(node_roots.get(op_val, {f"val:{scope_prefix}{op_val.name}"}))
+            if isinstance(op_val, fx.Node)
+            else {f"{scope_prefix}{node.name}[init]/{idx}"}
+            for idx, op_val in enumerate(body_ops[:num_while_carry])
+        ]
+        init_ret_slots = [
+            (
+                set(
+                    node_roots.get(op_val, {f"val:{scope_prefix}{op_val.name}"})
+                )
+                if isinstance(op_val, fx.Node)
+                else set(),
+                isinstance(op_val, fx.Node) and op_val in fresh_nodes,
+            )
+            for op_val in body_ops[:num_while_carry]
+        ]
+        max_iters = max(8, len(cur_carry_roots) + 2)
+        seen_states: set[tuple[Any, ...]] = set()
+
+        for iter_idx in range(max_iters):
+          state_key = _canonical_loop_state_key(
+              cur_carry_roots,
+              caller_visible_inv,
+              caller_visible_roots,
+              ptr_to_root,
+          )
+          if state_key in seen_states:
+            break
+          seen_states.add(state_key)
+
+          cond_scope = f"{scope_prefix}{node.name}[0@{iter_idx}]"
+          cond_ph_roots = {
+              ph: (
+                  set(cur_carry_roots[idx])
+                  if idx < len(cur_carry_roots)
+                  else (
+                      set(
+                          node_roots.get(
+                              op_val, {f"val:{scope_prefix}{op_val.name}"}
+                          )
+                      )
+                      if isinstance(op_val, fx.Node)
+                      else {f"{cond_scope}/{ph.name}"}
+                  )
+              )
+              for idx, (ph, op_val) in enumerate(zip(cond_phs, cond_ops))
+          }
+          c_findings, c_inv, _, c_donor, c_bwd = _analyze_fx_graph_module(
+              cond_gm,
+              cond_ph_roots,
+              caller_visible_inv,
+              ptr_to_root,
+              backward_pass=past_backward_boundary,
+              root_scope=cond_scope,
+              forward_invalidated_roots=fwd_inv_keys,
+          )
+          has_invalidating_donor = has_invalidating_donor or c_donor
+          has_custom_backward = has_custom_backward or c_bwd
+          if emit_findings:
+            _append_unique_hop_findings(c_findings, seen_hop_keys, detected)
+          caller_visible_inv.update(_filter_inv(c_inv))
+          if iter_idx == 0 and init_ret_slots:
+            branch_outcomes.append((init_ret_slots, dict(caller_visible_inv)))
+
+          body_scope = f"{scope_prefix}{node.name}[1@{iter_idx}]"
+          body_ph_roots = {
+              ph: (
+                  set(cur_carry_roots[idx])
+                  if idx < len(cur_carry_roots)
+                  else (
+                      set(
+                          node_roots.get(
+                              op_val, {f"val:{scope_prefix}{op_val.name}"}
+                          )
+                      )
+                      if isinstance(op_val, fx.Node)
+                      else {f"{body_scope}/{ph.name}"}
+                  )
+              )
+              for idx, (ph, op_val) in enumerate(zip(body_phs, body_ops))
+          }
+          b_findings, b_inv, b_ret, b_donor, b_bwd = _analyze_fx_graph_module(
+              body_gm,
+              body_ph_roots,
+              caller_visible_inv,
+              ptr_to_root,
+              backward_pass=past_backward_boundary,
+              root_scope=body_scope,
+              forward_invalidated_roots=fwd_inv_keys,
+          )
+          has_invalidating_donor = has_invalidating_donor or b_donor
+          has_custom_backward = has_custom_backward or b_bwd
+          if emit_findings:
+            _append_unique_hop_findings(b_findings, seen_hop_keys, detected)
+          caller_visible_inv.update(_filter_inv(b_inv))
+          if b_ret:
+            branch_outcomes.append((b_ret, dict(b_inv)))
+          for c_idx in range(len(cur_carry_roots)):
+            if c_idx < len(b_ret):
+              cur_carry_roots[c_idx] = set(b_ret[c_idx][0]) or {
+                  f"val:{body_scope}/const_{c_idx}"
+              }
+
+      elif hop_kind is HopKind.SCAN:
+        combine_gm = child_gms[0]
+        combine_phs = [
+            n for n in combine_gm.graph.nodes if n.op == "placeholder"
+        ]
+        combine_ops = extract_hop_operands(node, sub_gm_nodes, len(combine_phs))
+        num_scan_carry: int | None = (
+            len(node.args[1])
+            if len(node.args) > 1 and isinstance(node.args[1], (tuple, list))
+            else None
+        )
+        carry_limit = (
+            num_scan_carry if num_scan_carry is not None else len(combine_ops)
+        )
+        cur_carry_roots = [
+            set(node_roots.get(op_val, {f"val:{scope_prefix}{op_val.name}"}))
+            if isinstance(op_val, fx.Node)
+            else {f"{scope_prefix}{node.name}[init]/{idx}"}
+            for idx, op_val in enumerate(combine_ops[:carry_limit])
+        ]
+        max_iters = max(8, len(cur_carry_roots) + 2)
+        seen_states = set()
+
+        for iter_idx in range(max_iters):
+          state_key = _canonical_loop_state_key(
+              cur_carry_roots,
+              caller_visible_inv,
+              caller_visible_roots,
+              ptr_to_root,
+          )
+          if state_key in seen_states:
+            break
+          seen_states.add(state_key)
+
+          step_scope = f"{scope_prefix}{node.name}[0@{iter_idx}]"
+          step_ph_roots = {
+              ph: (
+                  set(cur_carry_roots[idx])
+                  if idx < len(cur_carry_roots)
+                  else (
+                      set(
+                          node_roots.get(
+                              op_val, {f"val:{scope_prefix}{op_val.name}"}
+                          )
+                      )
+                      if isinstance(op_val, fx.Node)
+                      else {f"{step_scope}/{ph.name}"}
+                  )
+              )
+              for idx, (ph, op_val) in enumerate(zip(combine_phs, combine_ops))
+          }
+          s_findings, s_inv, s_ret, s_donor, s_bwd = _analyze_fx_graph_module(
+              combine_gm,
+              step_ph_roots,
+              caller_visible_inv,
+              ptr_to_root,
+              backward_pass=past_backward_boundary,
+              root_scope=step_scope,
+              forward_invalidated_roots=fwd_inv_keys,
+          )
+          has_invalidating_donor = has_invalidating_donor or s_donor
+          has_custom_backward = has_custom_backward or s_bwd
+          if emit_findings:
+            _append_unique_hop_findings(s_findings, seen_hop_keys, detected)
+          caller_visible_inv.update(_filter_inv(s_inv))
+          if s_ret:
+            if num_scan_carry is not None:
+              # `scan` returns `(*final_carry, *ys_stacked)`: stacked `ys`
+              # outputs allocate fresh outer-dimension buffers, whereas carry
+              # slots return `next_carry`.
+              adjusted_ret = [
+                  slot if idx < num_scan_carry else (set(), True)
+                  for idx, slot in enumerate(s_ret)
+              ]
+              branch_outcomes.append((adjusted_ret, dict(s_inv)))
+            else:
+              branch_outcomes.append((s_ret, dict(s_inv)))
+          for c_idx in range(len(cur_carry_roots)):
+            if c_idx < len(s_ret):
+              cur_carry_roots[c_idx] = set(s_ret[c_idx][0]) or {
+                  f"val:{step_scope}/const_{c_idx}"
+              }
+
+      invalidated_roots.update(caller_visible_inv)
+
+      def _project_branch_root(
+          r: str,
+          branch_inv: Mapping[str, tuple[str, str]],
+          vis: AbstractSet[str] = caller_visible_roots,
+      ) -> str:
+        if not _is_caller_visible_root(r, vis, ptr_to_root):
+          return f"out:{scope_prefix}{node.name}:{r}"
+        if r in invalidated_roots and r not in branch_inv:
+          return f"survivor:{scope_prefix}{node.name}:{r}"
+        return r
+
+      max_slots = max((len(s) for s, _ in branch_outcomes), default=0)
+      out_node_root = f"out:{scope_prefix}{node.name}"
+      if max_slots == 1:
+        union_roots: set[str] = set()
+        all_fresh = True
+        for s, b_inv_map in branch_outcomes:
+          if s:
+            if s[0][1]:
+              union_roots.add(out_node_root)
+            else:
+              for r in s[0][0]:
+                union_roots.add(_project_branch_root(r, b_inv_map))
+              all_fresh = False
+        node_roots[node] = union_roots or {out_node_root}
+        if all_fresh:
+          fresh_nodes.add(node)
+      elif max_slots > 1:
+        slot_map: dict[int, set[str]] = {}
+        union_all: set[str] = set()
+        for slot_idx in range(max_slots):
+          slot_out_root = f"{out_node_root}[{slot_idx}]"
+          slot_roots: set[str] = set()
+          slot_all_fresh = True
+          for s, b_inv_map in branch_outcomes:
+            if slot_idx < len(s):
+              if s[slot_idx][1]:
+                slot_roots.add(slot_out_root)
+              else:
+                for r in s[slot_idx][0]:
+                  slot_roots.add(_project_branch_root(r, b_inv_map))
+                slot_all_fresh = False
+          if not slot_all_fresh and slot_roots:
+            slot_map[slot_idx] = slot_roots
+            union_all.update(slot_roots)
+          else:
+            union_all.add(slot_out_root)
+        if slot_map:
+          per_return_roots[node] = slot_map
+          node_roots[node] = union_all
+        else:
+          node_roots[node] = {out_node_root}
+          fresh_nodes.add(node)
+      else:
+        node_roots[node] = {out_node_root}
+        fresh_nodes.add(node)
       continue
 
     jax_callable = (
@@ -2521,60 +4096,86 @@ def verify_fx_graph(
         else None
     )
     if jax_callable is not None:
+      op_def = resolve_custom_op_def(node.target)
+      if (
+          op_def is not None
+          and getattr(op_def, "_backward_fn", None) is not None
+      ):
+        has_custom_backward = True
       op_name = get_op_display_name(node.target)
-      donated_set = _get_donated_arg_indices(jax_callable, len(node.args))
-
-      # 1. Check whether any input to this `@jax_op` was already donated earlier.
-      detected.extend(
-          _check_stale_root_uses(
-              node, node_roots, invalidated_roots, jax_op_name=op_name
-          )
+      donated_set = _get_donated_arg_indices(
+          jax_callable, len(node.args), include_io_aliases=True
       )
+      invalidating_donated_set = _get_donated_arg_indices(
+          jax_callable, len(node.args), include_io_aliases=False
+      )
+      if invalidating_donated_set:
+        has_invalidating_donor = True
+
+      # 1. Check whether any input to this `@jax_op` was already donated.
+      if emit_findings:
+        detected.extend(
+            _check_stale_root_uses(
+                node,
+                node_roots,
+                invalidated_roots,
+                jax_op_name=op_name,
+                backward_pass=past_backward_boundary,
+                forward_invalidated_roots=fwd_inv_keys,
+            )
+        )
 
       # 2. Collect non-static argument FX nodes and check for aliased donors.
       arg_fx_nodes: list[tuple[int, fx.Node]] = []
       for arg_idx, arg_val in enumerate(node.args):
         if not is_static_positional_arg(jax_callable, arg_idx):
-          for sub_node in _iter_fx_nodes(arg_val):
+          for sub_node in iter_fx_nodes(arg_val):
             arg_fx_nodes.append((arg_idx, sub_node))
       # pylint: disable=protected-access
       for kw_name, kw_val in node.kwargs.items():
         if not _is_static_keyword_arg(jax_callable, kw_name):
           kw_idx = jax_callable._param_name_to_idx.get(kw_name, -1)
-          for sub_node in _iter_fx_nodes(kw_val):
+          for sub_node in iter_fx_nodes(kw_val):
             arg_fx_nodes.append((kw_idx, sub_node))
       # pylint: enable=protected-access
 
-      for i_pos, (idx_a, n_a) in enumerate(arg_fx_nodes):
-        roots_a = node_roots.get(n_a, set())
-        for idx_b, n_b in arg_fx_nodes[i_pos + 1 :]:
-          shared = roots_a & node_roots.get(n_b, set())
-          if shared and (idx_a in donated_set or idx_b in donated_set):
-            detected.append(
-                findings.VerificationFinding(
-                    category=findings.FindingCategory.ALIASED_DONOR_INPUTS,
-                    severity=findings.Severity.ERROR,
-                    phase=_FX_GRAPH,
-                    op_name=op_name,
-                    source_location=node.name,
-                    message=(
-                        f"FX node '{node.name}' ({op_name}) receives aliased"
-                        f" arguments '{n_a.name}' (arg {idx_a}) and"
-                        f" '{n_b.name}' (arg {idx_b}) sharing root storage"
-                        f" {sorted(shared)} while donate_argnums="
-                        f"{tuple(sorted(donated_set))}"
-                    ),
-                )
-            )
+      if emit_findings:
+        stage_prefix = "autograd backward " if past_backward_boundary else ""
+        for i_pos, (idx_a, n_a) in enumerate(arg_fx_nodes):
+          roots_a = node_roots.get(n_a, set())
+          for idx_b, n_b in arg_fx_nodes[i_pos + 1 :]:
+            shared = roots_a & node_roots.get(n_b, set())
+            if shared and (idx_a in donated_set or idx_b in donated_set):
+              detected.append(
+                  findings.VerificationFinding(
+                      category=findings.FindingCategory.ALIASED_DONOR_INPUTS,
+                      severity=findings.Severity.ERROR,
+                      phase=_FX_GRAPH,
+                      op_name=op_name,
+                      source_location=node.name,
+                      message=(
+                          f"{stage_prefix}FX node '{node.name}' ({op_name})"
+                          f" receives aliased arguments '{n_a.name}'"
+                          f" (arg {idx_a}) and '{n_b.name}' (arg {idx_b})"
+                          f" sharing root storage {sorted(shared)} while"
+                          f" donate_argnums={tuple(sorted(donated_set))}"
+                      ),
+                  )
+              )
 
-      # 3. Invalidate all provenance roots backing donated arguments.
+      # 3. Invalidate provenance roots backing non-aliased donated arguments.
+      # `input_output_aliases` copies the output back into the input tensor
+      # rather than leaving its buffer dead (`pallas.py:1396-1397`).
       for arg_idx, sub_node in arg_fx_nodes:
-        if arg_idx not in donated_set:
+        if arg_idx not in invalidating_donated_set:
           continue
         for root in sorted(node_roots.get(sub_node, set())):
           invalidated_roots[root] = (op_name, node.name)
-          if root.startswith(("attr:", "param:")):
+          if emit_findings and root.startswith(("attr:", "param:")):
             root_label = root.split(":", 1)[1]
+            stage_prefix = (
+                "autograd backward " if past_backward_boundary else ""
+            )
             detected.append(
                 findings.VerificationFinding(
                     category=findings.FindingCategory.DONATED_PARAMETER,
@@ -2583,31 +4184,74 @@ def verify_fx_graph(
                     op_name=op_name,
                     source_location=node.name,
                     message=(
-                        f"FX node '{node.name}' ({op_name}) donates arg"
-                        f" {arg_idx} '{sub_node.name}', which is backed by"
-                        f" module state or a parameter '{root_label}';"
-                        " the kernel may reuse that buffer and corrupt it"
-                        " for later calls, so donate a clone() instead"
+                        f"{stage_prefix}FX node '{node.name}' ({op_name})"
+                        f" donates arg {arg_idx} '{sub_node.name}', which is"
+                        " backed by module state or a parameter"
+                        f" '{root_label}'; the kernel may reuse that buffer"
+                        " and corrupt it for later calls, so donate a clone()"
+                        " instead"
                     ),
                 )
             )
 
       # Output of `jax_op` is a newly materialized buffer (`mutates_args=()`).
-      node_roots[node] = {f"out:{node.name}"}
+      node_roots[node] = {f"out:{scope_prefix}{node.name}"}
       fresh_nodes.add(node)
       continue
 
     # Standard FX operation or `output` return node: check all consumed nodes.
-    detected.extend(_check_stale_root_uses(node, node_roots, invalidated_roots))
+    if emit_findings:
+      detected.extend(
+          _check_stale_root_uses(
+              node,
+              node_roots,
+              invalidated_roots,
+              backward_pass=past_backward_boundary,
+              forward_invalidated_roots=fwd_inv_keys,
+          )
+      )
+
+    if node.op == "output":
+      raw_ret = node.args[0] if node.args else None
+      ret_elems = (
+          list(raw_ret) if isinstance(raw_ret, (tuple, list)) else [raw_ret]
+      )
+      for elem in ret_elems:
+        if isinstance(elem, fx.Node):
+          return_slots.append((
+              set(node_roots.get(elem, {f"val:{scope_prefix}{elem.name}"})),
+              elem in fresh_nodes,
+          ))
+        else:
+          return_slots.append((set(), True))
+      continue
 
     if node.op == "call_function":
-      aliased_inputs = _fx_op_aliases_inputs(
-          node.target, node.args, node.kwargs
-      )
+      per_ret = _fx_op_per_return_aliases(node.target, node.args, node.kwargs)
+      if per_ret is not None:
+        slot_roots_map: dict[int, set[str]] = {}
+        merged_per_ret: set[str] = set()
+        for ret_idx, src_nodes in per_ret.items():
+          rset: set[str] = set()
+          for src_node in src_nodes:
+            rset.update(
+                node_roots.get(src_node, {f"val:{scope_prefix}{src_node.name}"})
+            )
+          if rset:
+            slot_roots_map[ret_idx] = rset
+            merged_per_ret.update(rset)
+        if slot_roots_map:
+          per_return_roots[node] = slot_roots_map
+          node_roots[node] = merged_per_ret
+          continue
+
+      aliased_inputs = fx_op_aliases_inputs(node.target, node.args, node.kwargs)
       if aliased_inputs:
         merged_roots: set[str] = set()
         for src_node in aliased_inputs:
-          merged_roots.update(node_roots.get(src_node, {src_node.name}))
+          merged_roots.update(
+              node_roots.get(src_node, {f"val:{scope_prefix}{src_node.name}"})
+          )
         node_roots[node] = merged_roots
         continue
     elif node.op == "call_method":
@@ -2617,11 +4261,265 @@ def verify_fx_graph(
       ):
         src = node.args[0] if node.args else None
         if isinstance(src, fx.Node):
-          node_roots[node] = set(node_roots.get(src, {src.name}))
+          node_roots[node] = set(
+              node_roots.get(src, {f"val:{scope_prefix}{src.name}"})
+          )
           continue
 
-    node_roots[node] = {f"val:{node.name}"}
+    node_roots[node] = {f"val:{scope_prefix}{node.name}"}
     fresh_nodes.add(node)
+
+  return (
+      detected,
+      invalidated_roots,
+      return_slots,
+      has_invalidating_donor,
+      has_custom_backward,
+  )
+
+
+def _is_unregistered_autograd_error(exc: BaseException) -> bool:
+  """Returns whether `exc` indicates an op with no registered backward."""
+  msg = str(exc)
+  return (
+      "no autograd formula was registered" in msg
+      or ("derivative for" in msg and "is not implemented" in msg)
+      or "does not require grad and does not have a grad_fn" in msg
+      or "element 0 of tensors does not require grad" in msg
+  )
+
+
+def _check_joint_autograd_donation(
+    callable_ref: Callable[..., Any],
+    example_args: Sequence[Any],
+    example_kwargs: Mapping[str, Any] | None,
+    *,
+    tpu_version: findings.TpuVersion | None = None,
+) -> list[findings.VerificationFinding]:
+  """Traces forward + backward to catch donations affecting backward."""
+  kwargs = dict(example_kwargs or {})
+  root_mod = _extract_root_nn_module(callable_ref)
+  has_grad_input = any(
+      isinstance(leaf, torch.Tensor) and leaf.requires_grad
+      for leaf in torch_pytree.tree_leaves((tuple(example_args), kwargs))
+  )
+  has_grad_param = root_mod is not None and any(
+      p.requires_grad for p in root_mod.parameters()
+  )
+  if not has_grad_input and not has_grad_param:
+    return []
+
+  kw_keys = tuple(kwargs.keys())
+  num_pos = len(example_args)
+
+  def _make_joint_args() -> tuple[Any, ...]:
+    cloned_pos = tuple(
+        _clone_tensor_for_trace(a, keep_requires_grad=True)
+        if isinstance(a, torch.Tensor)
+        else a
+        for a in example_args
+    )
+    cloned_kw = tuple(
+        _clone_tensor_for_trace(v, keep_requires_grad=True)
+        if isinstance(v, torch.Tensor)
+        else v
+        for v in kwargs.values()
+    )
+    return cloned_pos + cloned_kw
+
+  ran_backward = False
+
+  def _joint(*all_args: Any) -> Any:
+    nonlocal ran_backward
+    pos_args = all_args[:num_pos]
+    call_kwargs = dict(zip(kw_keys, all_args[num_pos:]))
+    with torch.enable_grad():
+      out = callable_ref(*pos_args, **call_kwargs)
+      diff_outs = [
+          t
+          for t in torch_pytree.tree_leaves(out)
+          if isinstance(t, torch.Tensor)
+          and t.requires_grad
+          and t.dtype not in QUANTIZED_FLOAT_TORCH_DTYPES
+          and (t.is_floating_point() or t.is_complex())
+      ]
+      grad_inputs = [
+          t
+          for t in torch_pytree.tree_leaves((pos_args, call_kwargs))
+          if isinstance(t, torch.Tensor) and t.requires_grad
+      ]
+      if root_mod is not None:
+        seen_ids = {id(t) for t in grad_inputs}
+        for p in root_mod.parameters():
+          if p.requires_grad and id(p) not in seen_ids:
+            seen_ids.add(id(p))
+            grad_inputs.append(p)
+      if not diff_outs or not grad_inputs:
+        return ()
+      # `make_fx` records every dispatched custom op linearly without running
+      # dead-code elimination, keeping this boundary marker in `joint_gm`.
+      _ = _get_backward_boundary_op()(diff_outs[0].detach())
+      cotangents = [torch.ones_like(t) for t in diff_outs]
+      try:
+        grads = torch.autograd.grad(
+            diff_outs,
+            grad_inputs,
+            cotangents,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        ran_backward = True
+        return grads
+      except RuntimeError as exc:
+        if not _is_unregistered_autograd_error(exc):
+          raise
+        collected_grads: list[torch.Tensor] = []
+        for idx, out_t in enumerate(diff_outs):
+          try:
+            part_grads = torch.autograd.grad(
+                [out_t],
+                grad_inputs,
+                [cotangents[idx]],
+                retain_graph=True,
+                allow_unused=True,
+            )
+          except RuntimeError as sub_exc:
+            if _is_unregistered_autograd_error(sub_exc):
+              continue
+            raise
+          ran_backward = True
+          collected_grads.extend(g for g in part_grads if g is not None)
+        return tuple(collected_grads)
+
+  def _reset_ran_backward() -> None:
+    nonlocal ran_backward
+    ran_backward = False
+
+  try:
+    with (
+        torch.inference_mode(False),
+        _eval_shape_fallback_for_jax_callables(
+            (callable_ref, example_args, kwargs)
+        ),
+    ):
+      joint_gm = _trace_fx_with_tpu_mesh_fallback(
+          _joint,
+          _make_joint_args,
+          callable_ref,
+          tpu_version,
+          example_args,
+          kwargs,
+          before_retry=_reset_ran_backward,
+      )
+  except Exception as exc:  # pylint: disable=broad-exception-caught
+    if _is_unregistered_autograd_error(exc):
+      return []
+    return [
+        findings.VerificationFinding(
+            category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+            severity=findings.Severity.WARNING,
+            phase=_FX_GRAPH,
+            op_name=get_op_display_name(callable_ref),
+            message=(
+                "could not trace joint forward+backward autograd graph for"
+                f" buffer donation checks ({type(exc).__name__}: {exc})"
+            ),
+        )
+    ]
+
+  if not ran_backward:
+    return []
+
+  joint_ptr_to_root: dict[int, str] = {}
+  _collect_gm_attr_storage_roots(joint_gm, joint_ptr_to_root)
+  joint_phs = [n for n in joint_gm.graph.nodes if n.op == "placeholder"]
+  joint_ph_roots = _compute_placeholder_roots(
+      joint_phs, example_args, kwargs, ptr_to_root=joint_ptr_to_root
+  )
+  joint_findings, _, _, _, _ = _analyze_fx_graph_module(
+      joint_gm,
+      joint_ph_roots,
+      {},
+      joint_ptr_to_root,
+      backward_boundary_op=_get_backward_boundary_op(),
+  )
+  return joint_findings
+
+
+def verify_fx_graph(
+    fn_or_gm: Callable[..., Any],
+    example_args: Sequence[Any],
+    example_kwargs: Mapping[str, Any] | None = None,
+    *,
+    tpu_version: findings.TpuVersion | None = None,
+    target_callable: Callable[..., Any] | None = None,
+) -> findings.VerificationReport:
+  """Verifies linear buffer donation and alias invariants in a PyTorch FX graph.
+
+  Because `@jax_op` registers `mutates_args=()` on its PyTorch custom op (so
+  Dynamo does not copy back donated inputs), PyTorch's functionalization pass
+  does not track buffer invalidation from `donate_argnums`. This pass performs
+  a forward storage-provenance analysis across the traced FX graph (including
+  nested `cond`, `while_loop`, and `scan` subgraphs and, when differentiable
+  inputs or parameters are present, the joint forward+backward autograd graph):
+
+  * Every FX node is mapped to the set of underlying storage root IDs it may
+    alias (`node_roots`), unifying aliased caller inputs and module buffers.
+  * View operations (`view`, `reshape`, `slice`, `.T`, `.mT`, tensor slicing,
+    and in-place ops) propagate the storage roots of their input tensor(s),
+    while `Tensor.set_` rebinds the destination node to its new source roots.
+  * Tuple unpacking (`operator.getitem` on a multi-output op in `fresh_nodes`
+    or per-return `out=(a, b)` ops) tracks independent storage roots per slot.
+  * When a `@jax_op` donates an argument via `donate_argnums`, all storage roots
+    backing that argument are added to `invalidated_roots`. Any subsequent read,
+    in-place copy (`pool.copy_(result)`), backward read of a saved activation,
+    or graph return of a node sharing an invalidated root is flagged as
+    `USE_AFTER_DONATE`.
+
+  Args:
+    fn_or_gm: A PyTorch callable, `nn.Module`, or pre-traced `fx.GraphModule`.
+    example_args: Example positional arguments.
+    example_kwargs: Example keyword arguments.
+    tpu_version: Target TPU generation used if tracing lowers an op.
+    target_callable: Optional original callable when `fn_or_gm` is already a
+      traced `fx.GraphModule`, enabling joint forward+backward tracing.
+
+  Returns:
+    A `VerificationReport` for `Phase.FX_GRAPH`.
+  """
+  gm = trace_to_fx_graph(
+      fn_or_gm, example_args, example_kwargs, tpu_version=tpu_version
+  )
+  ptr_to_root: dict[int, str] = {}
+  _collect_gm_attr_storage_roots(gm, ptr_to_root)
+  placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
+  placeholder_roots = _compute_placeholder_roots(
+      placeholders, example_args, example_kwargs, ptr_to_root=ptr_to_root
+  )
+  (
+      detected,
+      _,
+      _,
+      has_invalidating_donor,
+      has_custom_backward,
+  ) = _analyze_fx_graph_module(gm, placeholder_roots, {}, ptr_to_root)
+
+  callable_ref = (
+      target_callable
+      if target_callable is not None
+      else (None if isinstance(fn_or_gm, fx.GraphModule) else fn_or_gm)
+  )
+  if (
+      has_invalidating_donor or has_custom_backward
+  ) and callable_ref is not None:
+    detected.extend(
+        _check_joint_autograd_donation(
+            callable_ref,
+            example_args,
+            example_kwargs,
+            tpu_version=tpu_version,
+        )
+    )
 
   return findings.report_of(_FX_GRAPH, detected)
 
@@ -2631,11 +4529,20 @@ def verify_fx_graph(
 # ==============================================================================
 
 
+def _clone_cpu_tensor(tensor: torch.Tensor) -> torch.Tensor:
+  """Clones `tensor` onto CPU, handling packed `float4_e2m1fn_x2` safely."""
+  detached = tensor.detach().cpu()
+  if detached.dtype == torch.float4_e2m1fn_x2:
+    return detached.view(torch.uint8).clone().view(torch.float4_e2m1fn_x2)
+  return detached.clone()
+
+
 def tensor_to_numpy(tensor: torch.Tensor) -> tuple[np.ndarray, Any]:
   """Returns `(host_numpy_array, target_jax_dtype)` for a `torch.Tensor`.
 
   Args:
-    tensor: Input `torch.Tensor` (including `bfloat16` and `float8_*` dtypes).
+    tensor: Input `torch.Tensor` (including `bfloat16`, `float8_*`, and packed
+      `float4_e2m1fn_x2` dtypes).
 
   Returns:
     A `(numpy_array, jax_dtype)` pair ready to pass to `jnp.asarray`.
@@ -2646,14 +4553,33 @@ def tensor_to_numpy(tensor: torch.Tensor) -> tuple[np.ndarray, Any]:
     raise NotImplementedError(
         f"unsupported dtype for interpret: {detached.dtype}"
     )
+  if detached.dtype == torch.float4_e2m1fn_x2:
+    if detached.ndim == 0:
+      raise ValueError("0d float4_e2m1fn_x2 tensor is invalid")
+    if detached.numel() > 0 and detached.stride(-1) != 1:
+      raise ValueError(
+          "float4_e2m1fn_x2 tensor must be contiguous along its last dimension"
+      )
+    raw = detached.view(torch.uint8).contiguous().numpy()
+    unpacked = np.empty((*raw.shape[:-1], raw.shape[-1] * 2), dtype=np.uint8)
+    unpacked[..., 0::2] = raw & 0x0F
+    unpacked[..., 1::2] = (raw >> 4) & 0x0F
+    return unpacked.view(jax_dtype), jax_dtype
   if detached.dtype == torch.bfloat16:
     return detached.to(torch.float32).numpy(), jnp.bfloat16
   if detached.dtype in FLOAT8_TORCH_DTYPES:
     return (
-        detached.contiguous().view(torch.uint8).numpy().view(jax_dtype),
+        detached.view(torch.uint8).contiguous().numpy().view(jax_dtype),
         jax_dtype,
     )
   return detached.numpy(), jax_dtype
+
+
+@dataclasses.dataclass(frozen=True)
+class _OutputShards:
+  """Holds per-device `torch.Tensor` shards for a single `jax.Array` output."""
+
+  shards: tuple[torch.Tensor, ...]
 
 
 def build_sharded_cpu_array(
@@ -2662,38 +4588,76 @@ def build_sharded_cpu_array(
     spec: Any,
     *,
     distinguish_ranks: bool = False,
+    rank0_override: torch.Tensor | None = None,
 ) -> jax.Array:
-  """Builds a global sharded `jax.Array` on `cpu_mesh` from a local shard."""
+  """Builds a global sharded `jax.Array` on `cpu_mesh` from a local shard.
+
+  When `distinguish_ranks` is `True`, non-zero unique slices (`s_idx > 0`) of
+  inexact (floating, complex, or quantized-float) arrays receive deterministic
+  dyadic affine perturbations (`base * (1 + 0.5 * s_idx) + 0.125 * s_idx`),
+  while integer and boolean arrays are never offset (since index/offset metadata
+  is not shift-invariant). When `rank0_override` is supplied, every replica of
+  rank 0's logical slice (`s_idx == 0`) receives `rank0_override` so replicated
+  inputs maintain replica consistency across `cpu_mesh`.
+
+  Args:
+    local_tensor: Rank-0 local shard `torch.Tensor`.
+    cpu_mesh: Concrete CPU `jax.sharding.Mesh`.
+    spec: Optional `PartitionSpec` or partition tuple for this tensor.
+    distinguish_ranks: Whether to perturb distinct slices (`s_idx > 0`) for
+      inexact dtypes.
+    rank0_override: Optional replacement tensor for rank 0's logical slice.
+
+  Returns:
+    A sharded `jax.Array` placed across `cpu_mesh`.
+  """
   base_np, jax_dtype = tensor_to_numpy(local_tensor)
-  sharding = jax.sharding.NamedSharding(
-      cpu_mesh,
-      spec if spec is not None else jax.sharding.PartitionSpec(),
+  rank0_np = (
+      tensor_to_numpy(rank0_override)[0] if rank0_override is not None else None
   )
+  pspec = (
+      spec
+      if isinstance(spec, jax.sharding.PartitionSpec)
+      else jax.sharding.PartitionSpec(*(spec or ()))
+  )
+  sharding = jax.sharding.NamedSharding(cpu_mesh, pspec)
+  local_unpacked_shape = tuple(base_np.shape)
   global_shape = pallas_lib.get_global_shape(
-      tuple(local_tensor.shape), cpu_mesh, spec
+      local_unpacked_shape, cpu_mesh, pspec
   )
-  use_rank_offset = distinguish_ranks and global_shape != tuple(
-      local_tensor.shape
-  )
+  idx_map = sharding.devices_indices_map(global_shape)
+  slice_key_to_idx: dict[tuple[tuple[int | None, ...], ...], int] = {}
+  dev_slice_indices: list[int] = []
+  for dev in cpu_mesh.devices.flat:
+    key = tuple((s.start, s.stop, s.step) for s in idx_map[dev])
+    s_idx = slice_key_to_idx.setdefault(key, len(slice_key_to_idx))
+    dev_slice_indices.append(s_idx)
 
   per_device_arrays: list[jax.Array] = []
-  for flat_rank, dev in enumerate(cpu_mesh.devices.flat):
-    if use_rank_offset and np.issubdtype(base_np.dtype, np.floating):
-      shard_np = base_np + np.asarray(flat_rank * 0.25, dtype=base_np.dtype)
+  for dev, s_idx in zip(cpu_mesh.devices.flat, dev_slice_indices):
+    if s_idx == 0 and rank0_np is not None:
+      shard_np = rank0_np
     elif (
-        use_rank_offset
-        and jax_dtype in FLOAT8_JAX_DTYPES
+        distinguish_ranks
+        and s_idx > 0
+        and (
+            np.issubdtype(base_np.dtype, np.floating)
+            or np.issubdtype(base_np.dtype, np.complexfloating)
+        )
+    ):
+      scale = np.asarray(1.0 + 0.5 * s_idx, dtype=base_np.dtype)
+      bias = np.asarray(0.125 * s_idx, dtype=base_np.dtype)
+      shard_np = base_np * scale + bias
+    elif (
+        distinguish_ranks
+        and s_idx > 0
+        and jax_dtype in QUANTIZED_FLOAT_JAX_DTYPES
         and jax_dtype != jnp.float8_e8m0fnu.dtype
     ):
       shard_np = (
-          base_np.astype(np.float32) + np.float32(flat_rank * 0.25)
+          base_np.astype(np.float32) * np.float32(1.0 + 0.5 * s_idx)
+          + np.float32(0.125 * s_idx)
       ).astype(base_np.dtype)
-    elif (
-        use_rank_offset
-        and np.issubdtype(base_np.dtype, np.integer)
-        and base_np.dtype != np.bool_
-    ):
-      shard_np = base_np + np.asarray(flat_rank, dtype=base_np.dtype)
     else:
       shard_np = base_np
     per_device_arrays.append(
@@ -2722,6 +4686,17 @@ def _jax_to_torch_tensor(
   np_arr = np.asarray(target)
   if target.dtype == jnp.bfloat16:
     return torch.from_numpy(np_arr.astype(np.float32)).to(torch.bfloat16)
+  if target.dtype == jnp.float4_e2m1fn.dtype:
+    if np_arr.ndim == 0 or np_arr.shape[-1] % 2 != 0:
+      raise ValueError(
+          f"cannot pack float4_e2m1fn array of shape {np_arr.shape} into"
+          " float4_e2m1fn_x2; expected rank >= 1 and even last dimension"
+      )
+    raw_u8 = np.ascontiguousarray(np_arr).view(np.uint8)
+    packed = ((raw_u8[..., 1::2] & 0x0F) << 4) | (raw_u8[..., 0::2] & 0x0F)
+    return torch.from_numpy(np.ascontiguousarray(packed)).view(
+        torch.float4_e2m1fn_x2
+    )
   if target.dtype in FLOAT8_JAX_DTYPES:
     torch_dtype = pallas_lib.JAX_TO_TORCH_DTYPE_MAP[target.dtype]
     return torch.from_numpy(
@@ -2730,12 +4705,47 @@ def _jax_to_torch_tensor(
   return torch.from_numpy(np_arr.copy())
 
 
+def _jax_to_output_shards(arr: jax.Array, *, has_mesh: bool) -> _OutputShards:
+  """Converts all addressable shards of `arr` into an `_OutputShards` leaf."""
+  if has_mesh and arr.addressable_shards:
+    return _OutputShards(
+        tuple(_jax_to_torch_tensor(sh.data) for sh in arr.addressable_shards)
+    )
+  return _OutputShards((_jax_to_torch_tensor(arr),))
+
+
 def _run_jax_callable_on_cpu_interpret(
     jax_callable: pallas_lib.JaxCallable,
     args: Sequence[Any],
     kwargs: Mapping[str, Any],
+    *,
+    distinguish_ranks: bool = True,
+    return_all_shards: bool = False,
+    rank0_overrides: Mapping[int, torch.Tensor] | None = None,
 ) -> Any:
-  """Executes a single-chip or multi-chip `JaxCallable` on CPU interpret mode."""
+  """Executes a single-chip or multi-chip `JaxCallable` on CPU interpret mode.
+
+  Callers must ensure that the kernels cannot block on a semaphore or DMA wait
+  forever (see `InterpretGate`).
+
+  Args:
+    jax_callable: Target `JaxCallable` wrapper to execute.
+    args: Positional arguments (`torch.Tensor` leaves and static Python values).
+    kwargs: Keyword arguments passed to `jax_callable`.
+    distinguish_ranks: Whether sharded non-zero slices of inexact dtypes should
+      receive distinct deterministic values across `cpu_mesh`.
+    return_all_shards: When `True`, wraps each `jax.Array` output leaf in an
+      `_OutputShards` container holding all addressable shards instead of
+      returning only rank 0's local `torch.Tensor`.
+    rank0_overrides: Optional `id(tensor) -> replacement_tensor` map overriding
+      rank 0's logical slice (`s_idx == 0`) for perturbed inputs. Keying by
+      `id(tensor)` relies on `_normalize_invocation_args` (`Signature.bind`) and
+      `replace_mock_meshes_in_pytree` preserving `torch.Tensor` leaf identity.
+
+  Returns:
+    Output PyTree of `torch.Tensor` leaves (when `return_all_shards` is `False`)
+    or `_OutputShards` leaves (when `return_all_shards` is `True`).
+  """
   raw_fn, mesh_or_cpu_mesh = unwrap_raw_jax_fn(
       jax_callable, prefer_cpu_mesh=True
   )
@@ -2757,16 +4767,25 @@ def _run_jax_callable_on_cpu_interpret(
 
   def _to_jax_input(val: Any, spec: Any = None) -> Any:
     if isinstance(val, torch.Tensor):
+      override = (
+          rank0_overrides.get(id(val)) if rank0_overrides is not None else None
+      )
       if cpu_mesh is not None:
         return build_sharded_cpu_array(
-            val, cpu_mesh, spec, distinguish_ranks=True
+            val,
+            cpu_mesh,
+            spec,
+            distinguish_ranks=distinguish_ranks,
+            rank0_override=override,
         )
-      return _torch_to_jax_array(val, cpu0)
+      return _torch_to_jax_array(
+          override if override is not None else val, cpu0
+      )
     if isinstance(val, (list, tuple)):
       return type(val)(_to_jax_input(elem, spec) for elem in val)
     return val
 
-  with cpu_interpret_mesh_context(cpu_mesh):
+  with INTERPRET_LOCK, cpu_interpret_mesh_context(cpu_mesh):
     jax_args = [
         a
         if is_static_positional_arg(jax_callable, i)
@@ -2795,6 +4814,15 @@ def _run_jax_callable_on_cpu_interpret(
     finally:
       pltpu.reset_tpu_interpret_mode_state()
 
+    if return_all_shards:
+      return jax.tree.map(
+          lambda leaf: _jax_to_output_shards(
+              leaf, has_mesh=(cpu_mesh is not None)
+          )
+          if isinstance(leaf, jax.Array)
+          else leaf,
+          out,
+      )
     return jax.tree.map(
         lambda leaf: _jax_to_torch_tensor(
             leaf, local_shard=(cpu_mesh is not None)
@@ -2808,12 +4836,29 @@ def _run_jax_callable_on_cpu_interpret(
 class _CpuPallasInterpretDispatchMode(_python_dispatch.TorchDispatchMode):
   """Intercepts `@pallas.jax_op` calls below Autograd and runs them on CPU."""
 
+  def __init__(self, *, interpret_gate: InterpretGate) -> None:
+    super().__init__()
+    self._interpret_gate = interpret_gate
+    self.last_interpret_exception: Exception | None = None
+
   def __torch_dispatch__(self, func, types_unused, args=(), kwargs=None):
     del types_unused
     kwargs = kwargs or {}
     jax_callable = extract_jax_callable(func)
     if jax_callable is not None:
-      return _run_jax_callable_on_cpu_interpret(jax_callable, args, kwargs)
+      try:
+        skip_reason = self._interpret_gate(func, args, kwargs)
+        if skip_reason is not None:
+          raise InterpretRunSkipped(skip_reason)
+        return _run_jax_callable_on_cpu_interpret(
+            jax_callable,
+            args,
+            kwargs,
+            distinguish_ranks=True,
+        )
+      except Exception as exc:  # pylint: disable=broad-exception-caught
+        self.last_interpret_exception = exc
+        raise
     return func(*args, **kwargs)
 
 
@@ -2849,28 +4894,33 @@ def _collect_differentiable_inputs(
   def _is_diff_candidate(val: Any) -> bool:
     return (
         isinstance(val, torch.Tensor)
-        and val.dtype not in FLOAT8_TORCH_DTYPES
+        and val.dtype not in QUANTIZED_FLOAT_TORCH_DTYPES
         and (val.is_floating_point() or val.is_complex())
     )
+
+  def _sanitize_non_diff(val: Any) -> Any:
+    if isinstance(val, torch.Tensor) and val.is_inference():
+      return _clone_cpu_tensor(val)
+    return val
 
   for idx, arg in enumerate(example_args):
     if not is_static_positional_arg(jax_callable, idx) and _is_diff_candidate(
         arg
     ):
       has_complex = has_complex or arg.is_complex()
-      cloned = arg.detach().cpu().clone().requires_grad_(True)
+      cloned = _clone_cpu_tensor(arg).requires_grad_(True)
       pt_args.append(cloned)
       diff_slots.append(
           _DiffInputSlot(is_kwarg=False, key=idx, param_idx=idx, tensor=cloned)
       )
     else:
-      pt_args.append(arg)
+      pt_args.append(_sanitize_non_diff(arg))
 
   # pylint: disable=protected-access
   for k, arg in raw_kwargs.items():
     if not _is_static_keyword_arg(jax_callable, k) and _is_diff_candidate(arg):
       has_complex = has_complex or arg.is_complex()
-      cloned = arg.detach().cpu().clone().requires_grad_(True)
+      cloned = _clone_cpu_tensor(arg).requires_grad_(True)
       pt_kwargs[k] = cloned
       param_idx = jax_callable._param_name_to_idx.get(k, -1)
       diff_slots.append(
@@ -2882,9 +4932,14 @@ def _collect_differentiable_inputs(
           )
       )
     else:
-      pt_kwargs[k] = arg
+      pt_kwargs[k] = _sanitize_non_diff(arg)
   # pylint: enable=protected-access
   return diff_slots, pt_args, pt_kwargs, has_complex
+
+
+_DYADIC_COTANGENT_CHOICES = torch.tensor(
+    [-1.0, -0.5, 0.5, 1.0], dtype=torch.float32
+)
 
 
 def _build_normalized_cotangents(
@@ -2892,31 +4947,39 @@ def _build_normalized_cotangents(
     differentiable: Sequence[bool],
     rng: torch.Generator,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-  """Generates deterministic unit-L2-norm cotangents for `tensor_outs`."""
-  raw_cotangents = [
-      torch.randn(t.shape, dtype=torch.float32, generator=rng)
-      if is_diff
-      else torch.zeros(t.shape, dtype=torch.float32)
-      for t, is_diff in zip(tensor_outs, differentiable)
-  ]
-  cot_norm = (
-      float(sum(float((g * g).sum().item()) for g in raw_cotangents) ** 0.5)
-      or 1.0
-  )
-  cotangents_pt = [
-      (g / cot_norm).to(t.dtype)
-      if is_diff
-      else (
-          torch.zeros(t.shape, dtype=torch.uint8).view(t.dtype)
-          if t.dtype in FLOAT8_TORCH_DTYPES
-          else torch.zeros(t.shape, dtype=t.dtype)
+  """Generates deterministic O(1) dyadic cotangents for `tensor_outs`.
+
+  Entries are sampled from `(-1.0, -0.5, 0.5, 1.0)`, which are exact powers of
+  two in `bfloat16`, `float16`, `float32`, and `float64` and keep per-element
+  cotangent magnitudes >= 0.5 regardless of tensor size.
+
+  Args:
+    tensor_outs: Flat sequence of forward output tensors.
+    differentiable: Per-output mask for floating/complex differentiability.
+    rng: Seeded PyTorch random number generator.
+
+  Returns:
+    Tuple `(cotangents_pt, cotangents_f32)` in output dtype and `float32`.
+  """
+  cotangents_pt: list[torch.Tensor] = []
+  cotangents_f32: list[torch.Tensor] = []
+  for t, is_diff in zip(tensor_outs, differentiable):
+    if is_diff:
+      choice_idx = torch.randint(
+          0, 4, t.shape, generator=rng, dtype=torch.int64
       )
-      for g, t, is_diff in zip(raw_cotangents, tensor_outs, differentiable)
-  ]
-  cotangents_f32 = [
-      c.to(torch.float32) if is_diff else torch.zeros_like(g)
-      for c, g, is_diff in zip(cotangents_pt, raw_cotangents, differentiable)
-  ]
+      raw = _DYADIC_COTANGENT_CHOICES[choice_idx]
+      c_pt = raw.to(t.dtype)
+      cotangents_pt.append(c_pt)
+      cotangents_f32.append(c_pt.to(torch.float32))
+    else:
+      if t.dtype in QUANTIZED_FLOAT_TORCH_DTYPES:
+        cotangents_pt.append(
+            torch.zeros(t.shape, dtype=torch.uint8).view(t.dtype)
+        )
+      else:
+        cotangents_pt.append(torch.zeros(t.shape, dtype=t.dtype))
+      cotangents_f32.append(torch.zeros(t.shape, dtype=torch.float32))
   return cotangents_pt, cotangents_f32
 
 
@@ -2927,13 +4990,13 @@ def _try_analytical_jax_vjp(
     pt_kwargs: Mapping[str, Any],
     cotangents_pt: Sequence[torch.Tensor],
 ) -> Sequence[Any] | None:
-  """Computes `jax.vjp` gradients on CPU interpret mode if supported by the forward op."""
+  """Computes `jax.vjp` gradients on CPU interpret mode if supported."""
   raw_fwd_fn, cpu_mesh = unwrap_raw_jax_fn(jax_callable, prefer_cpu_mesh=True)
   if cpu_mesh is not None:
     return None
 
   cpu0 = jax.devices("cpu")[0]
-  with cpu_interpret_mesh_context(None):
+  with INTERPRET_LOCK, cpu_interpret_mesh_context(None):
     jax_primals = [
         _torch_to_jax_array(slot.tensor, cpu0) for slot in diff_slots
     ]
@@ -2951,8 +5014,6 @@ def _try_analytical_jax_vjp(
           call_pt_args, call_pt_kwargs
       )
       # pylint: enable=protected-access
-      norm_args = replace_mock_meshes_in_pytree(norm_args, cpu_mesh)
-      norm_kwargs = replace_mock_meshes_in_pytree(norm_kwargs, cpu_mesh)
       call_args = jax.tree.map(
           lambda v: _torch_to_jax_array(v, cpu0)
           if isinstance(v, torch.Tensor)
@@ -2967,7 +5028,10 @@ def _try_analytical_jax_vjp(
       )
       return jax.tree.map(
           lambda leaf: jax.lax.stop_gradient(leaf)
-          if isinstance(leaf, jax.Array) and leaf.dtype in FLOAT8_JAX_DTYPES
+          if (
+              isinstance(leaf, jax.Array)
+              and leaf.dtype in QUANTIZED_FLOAT_JAX_DTYPES
+          )
           else leaf,
           raw_fwd_fn(*call_args, **call_kwargs),
       )
@@ -2987,7 +5051,7 @@ def _try_analytical_jax_vjp(
               hasattr(out_leaf, "dtype")
               and not jnp.issubdtype(out_leaf.dtype, jnp.floating)
               and not jnp.issubdtype(out_leaf.dtype, jnp.complexfloating)
-              and out_leaf.dtype not in FLOAT8_JAX_DTYPES
+              and out_leaf.dtype not in QUANTIZED_FLOAT_JAX_DTYPES
           ):
             cot_leaves.append(np.zeros(g.shape, dtype=jax.dtypes.float0))
           else:
@@ -2996,13 +5060,7 @@ def _try_analytical_jax_vjp(
         ref_jax_grads = vjp_fn(jax_cotangents)
         jax.effects_barrier()
         return ref_jax_grads
-    except (
-        ValueError,
-        NotImplementedError,
-        TypeError,
-        AssertionError,
-        RuntimeError,
-    ):
+    except Exception:  # pylint: disable=broad-exception-caught
       return None
     finally:
       pltpu.reset_tpu_interpret_mode_state()
@@ -3032,10 +5090,14 @@ def _compare_vjp_gradients(
         torch.bfloat16,
         torch.float16,
     )
-    vjp_rtol = max(rtol, 2e-2 if is_low_prec else rtol)
-    vjp_atol = max(atol, 2e-2 if is_low_prec else atol)
+    vjp_rtol = max(rtol, 2e-2) if is_low_prec else rtol
+    vjp_atol = max(atol, 2e-2) if is_low_prec else atol
     if pt_grad is None:
-      ref_max = float(ref_pt_grad.abs().max().item())
+      ref_max = (
+          float(ref_pt_grad.abs().max().item())
+          if ref_pt_grad.numel() > 0
+          else 0.0
+      )
       if ref_max > vjp_atol:
         detected.append(
             findings.VerificationFinding(
@@ -3057,11 +5119,15 @@ def _compare_vjp_gradients(
         rtol=vjp_rtol,
         atol=vjp_atol,
     ):
-      max_diff = float(
-          (pt_grad.to(torch.float32) - ref_pt_grad.to(torch.float32))
-          .abs()
-          .max()
-          .item()
+      max_diff = (
+          float(
+              (pt_grad.to(torch.float32) - ref_pt_grad.to(torch.float32))
+              .abs()
+              .max()
+              .item()
+          )
+          if pt_grad.numel() > 0
+          else 0.0
       )
       detected.append(
           findings.VerificationFinding(
@@ -3079,12 +5145,200 @@ def _compare_vjp_gradients(
   return detected
 
 
+def _build_directional_probes(
+    x_base: torch.Tensor,
+    pt_grad: torch.Tensor | None,
+    rng: torch.Generator,
+) -> list[torch.Tensor]:
+  """Builds normalized-grad, Rademacher, and boundary/interior probes."""
+  numel = x_base.numel()
+  if numel == 0:
+    return []
+  x_f32 = x_base.to(torch.float32)
+  probes: list[torch.Tensor] = []
+  if pt_grad is not None and pt_grad.numel() > 0:
+    grad_f32 = pt_grad.detach().cpu().to(torch.float32)
+    grad_max = float(grad_f32.abs().max().item())
+    if grad_max > 1e-6:
+      probes.append(grad_f32 / grad_max)
+  for _ in range(4):
+    bits = torch.randint(0, 2, x_base.shape, generator=rng, dtype=torch.int64)
+    probes.append(bits.to(torch.float32) * 2.0 - 1.0)
+  center_flat = 0
+  for dim_size in x_base.shape:
+    center_flat = center_flat * dim_size + (dim_size // 2)
+  coord_indices = list(dict.fromkeys((0, center_flat, numel - 1)))
+  for flat_idx in coord_indices:
+    one_hot = torch.zeros_like(x_f32)
+    one_hot.view(-1)[flat_idx] = 1.0
+    probes.append(one_hot)
+  return probes
+
+
+def _try_directional_jax_jvp_slot(
+    jax_callable: pallas_lib.JaxCallable,
+    slot: _DiffInputSlot,
+    pt_grad: torch.Tensor | None,
+    base_args: Sequence[Any],
+    base_kwargs: Mapping[str, Any],
+    probes: Sequence[torch.Tensor],
+    cotangents_f32: Sequence[torch.Tensor],
+    differentiable: Sequence[bool],
+    op_name: str,
+    detected: MutableSequence[findings.VerificationFinding],
+    *,
+    is_low_prec: bool,
+    rtol: float,
+    atol: float,
+) -> bool:
+  """Evaluates exact directional `jax.jvp` on `probes` when supported.
+
+  Appends any detected `AUTOGRAD_PARITY_MISMATCH` finding to `detected` and
+  returns `True` when `jax.jvp` completed across `probes`, or `False` when
+  `jax.jvp` is unsupported and the caller should fall back to central FD.
+  """
+  if jax_callable.mesh is not None:
+    return False
+  raw_fwd_fn, cpu_mesh = unwrap_raw_jax_fn(jax_callable, prefer_cpu_mesh=True)
+  if cpu_mesh is not None:
+    return False
+
+  cpu0 = jax.devices("cpu")[0]
+  x_base = slot.tensor.detach().cpu()
+  orig_dtype = x_base.dtype
+  is_bf16 = orig_dtype == torch.bfloat16
+  jvp_rtol = max(rtol, 2e-2) if is_low_prec else rtol
+  jvp_atol = max(atol, 2e-2) if is_low_prec else atol
+  params = pltpu.InterpretParams(
+      dma_execution_mode="on_wait",
+      detect_races=False,
+      uninitialized_memory="zero",
+  )
+
+  with INTERPRET_LOCK, cpu_interpret_mesh_context(None):
+    x_primal = _torch_to_jax_array(x_base, cpu0)
+
+    def _slot_fwd(x_jax: jax.Array) -> Any:
+      call_args_pt = list(base_args)
+      call_kwargs_pt = dict(base_kwargs)
+      if slot.is_kwarg:
+        call_kwargs_pt[str(slot.key)] = x_jax
+      else:
+        call_args_pt[int(slot.key)] = x_jax
+      # pylint: disable=protected-access
+      norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
+          call_args_pt, call_kwargs_pt
+      )
+      # pylint: enable=protected-access
+      j_args = jax.tree.map(
+          lambda v: _torch_to_jax_array(v, cpu0)
+          if isinstance(v, torch.Tensor)
+          else v,
+          norm_args,
+      )
+      j_kwargs = jax.tree.map(
+          lambda v: _torch_to_jax_array(v, cpu0)
+          if isinstance(v, torch.Tensor)
+          else v,
+          norm_kwargs,
+      )
+      return jax.tree.map(
+          lambda leaf: jax.lax.stop_gradient(leaf)
+          if (
+              isinstance(leaf, jax.Array)
+              and leaf.dtype in QUANTIZED_FLOAT_JAX_DTYPES
+          )
+          else leaf,
+          raw_fwd_fn(*j_args, **j_kwargs),
+      )
+
+    try:
+      with jax.default_device(cpu0), pltpu.force_tpu_interpret_mode(params):
+        for probe_idx, v_f32 in enumerate(probes):
+          v_pt = v_f32.to(orig_dtype)
+          v_exact = v_pt.to(torch.float32)
+          v_norm = math.sqrt(float(v_exact.pow(2).sum().item()))
+          if v_norm == 0.0:
+            continue
+          v_jax = _torch_to_jax_array(v_pt, cpu0)
+          primal_out, jvp_out = jax.jvp(_slot_fwd, (x_primal,), (v_jax,))
+          jax.effects_barrier()
+          # Non-differentiable integer/bool `jax.Array` outputs produce `float0`
+          # numpy tangents (`literals.TypedNdArray`), NOT `jax.Array`s; filter
+          # by `isinstance(p_leaf, jax.Array)` to stay aligned with
+          # `differentiable` even when outputs include auxiliary non-array items.
+          jvp_leaves = [
+              t_leaf
+              for p_leaf, t_leaf in zip(
+                  jax.tree.leaves(primal_out), jax.tree.leaves(jvp_out)
+              )
+              if isinstance(p_leaf, jax.Array)
+          ]
+          if len(jvp_leaves) != len(differentiable):
+            return False
+          phi_jvp = 0.0
+          for u, leaf, is_diff in zip(
+              cotangents_f32, jvp_leaves, differentiable
+          ):
+            if not is_diff:
+              continue
+            if not isinstance(leaf, jax.Array):
+              return False
+            jt = _jax_to_torch_tensor(leaf).to(torch.float32)
+            phi_jvp += float((u * jt).sum().item())
+          jvp_dir = phi_jvp / v_norm
+          if pt_grad is None:
+            pt_dir = 0.0
+            grad_round_tol = 0.0
+          else:
+            pt_f32 = pt_grad.detach().cpu().to(torch.float32)
+            pt_dir = float((pt_f32 * v_exact).sum().item()) / v_norm
+            grad_round_tol = (
+                (2.0**-6 if is_bf16 else 2.0**-9)
+                * math.sqrt(float((pt_f32 * v_exact).pow(2).sum().item()))
+                / v_norm
+                if is_low_prec
+                else 0.0
+            )
+          abs_err = abs(pt_dir - jvp_dir)
+          eff_atol = max(jvp_atol, grad_round_tol)
+          if abs_err > eff_atol + jvp_rtol * abs(jvp_dir):
+            msg = (
+                "custom backward returned None for differentiable input arg"
+                f" {slot.param_idx} (jvp_ref_dir={jvp_dir:.4e})"
+                if pt_grad is None
+                else (
+                    f"custom PyTorch backward for arg {slot.param_idx}"
+                    " diverges from directional jax.jvp of forward Pallas"
+                    f" kernel on probe #{probe_idx} (backward_dir={pt_dir:.4e},"
+                    f" jvp_ref_dir={jvp_dir:.4e}, abs_err={abs_err:.4e})"
+                )
+            )
+            detected.append(
+                findings.VerificationFinding(
+                    category=findings.FindingCategory.AUTOGRAD_PARITY_MISMATCH,
+                    severity=findings.Severity.ERROR,
+                    phase=_AUTOGRAD,
+                    op_name=op_name,
+                    message=msg,
+                )
+            )
+            return True
+        return True
+    except Exception:  # pylint: disable=broad-exception-caught
+      return False
+    finally:
+      pltpu.reset_tpu_interpret_mode_state()
+
+
 def _compare_finite_difference_gradients(
     jax_callable: pallas_lib.JaxCallable,
     diff_slots: Sequence[_DiffInputSlot],
     pt_grads: Sequence[torch.Tensor | None],
     pt_args: Sequence[Any],
     pt_kwargs: Mapping[str, Any],
+    tensor_outs: Sequence[torch.Tensor],
+    cotangents_pt: Sequence[torch.Tensor],
     cotangents_f32: Sequence[torch.Tensor],
     differentiable: Sequence[bool],
     rng: torch.Generator,
@@ -3093,61 +5347,137 @@ def _compare_finite_difference_gradients(
     rtol: float,
     atol: float,
 ) -> list[findings.VerificationFinding]:
-  """Compares custom backward gradients against central finite differences.
+  """Compares custom backward gradients against `jax.jvp` or central FD.
 
-  Bare `pl.pallas_call` and multi-chip `jax.shard_map` primitives lack default
-  JAX JVP rules. For each differentiable input `x`, we probe the directional
-  derivative along:
-  1. The normalized custom backward gradient direction (which immediately
-     exposes wrong scale factors, sign errors, or transposed dimensions),
+  `pl.pallas_call` registers a forward JVP rule (`_pallas_call_jvp_rule`) even
+  though it lacks a transpose rule for `jax.vjp`. For single-device kernels we
+  first attempt exact directional `jax.jvp` along:
+  1. The normalized custom backward gradient direction,
   2. 4 random Rademacher (`+/-1`) directions, and
-  3. Up to 2 localized single-coordinate (`one-hot`) boundary directions (first
-     and last elements) so single-row or single-tile errors are not diluted by
-     `sqrt(numel)` averaging.
+  3. Up to 3 localized single-coordinate (`one-hot`) probes (first, interior
+     center, and last elements) to catch boundary and center tile bugs without
+     Rademacher `sqrt(numel)` dilution.
 
-  Perturbations `x_pos` and `x_neg` are rounded to `x.dtype` before evaluating
-  the forward kernel, and the directional projection uses the exact quantized
-  step `delta_x = (x_pos - x_neg) / 2` so low-precision (`bfloat16`/`float16`)
-  grid snapping is accounted for.
+  When `jax.jvp` is unsupported (e.g. `async_copy`/semaphore pipelines,
+  `input_output_aliases`, dynamic scalar prefetch, `mpmd_map`, or multi-device
+  `shard_map`), we fall back to central finite differences. On multi-device SPMD
+  meshes, we evaluate the total distributed objective `sum_r <u_r, y_r>` where
+  non-zero input and cotangent slices receive distinct dyadic per-slice values,
+  every replica of rank 0's input slice is perturbed consistently, and
+  replicated outputs sum across replicas.
+
+  Args:
+    jax_callable: Forward `JaxCallable` being differentiated.
+    diff_slots: Differentiable input tensor slots to check.
+    pt_grads: Custom PyTorch backward gradients per slot.
+    pt_args: Positional arguments passed to the op.
+    pt_kwargs: Keyword arguments passed to the op.
+    tensor_outs: Flat forward output tensors.
+    cotangents_pt: Cotangent vectors in output PyTorch dtype.
+    cotangents_f32: Cotangent vectors in `float32`.
+    differentiable: Per-output differentiability mask.
+    rng: Seeded PyTorch random number generator.
+    op_name: Operator name for reported findings.
+    rtol: Base relative tolerance.
+    atol: Base absolute tolerance.
+
+  Returns:
+    List of `AUTOGRAD_PARITY_MISMATCH` or `VERIFICATION_INCOMPLETE` findings.
   """
   detected: list[findings.VerificationFinding] = []
+  has_bf16_out = any(
+      t.dtype == torch.bfloat16
+      for t, d in zip(tensor_outs, differentiable)
+      if d
+  )
+  has_low_prec_out = has_bf16_out or any(
+      t.dtype == torch.float16 for t, d in zip(tensor_outs, differentiable) if d
+  )
+
   base_detached_args = [
-      a.detach().cpu() if isinstance(a, torch.Tensor) else a for a in pt_args
+      _clone_cpu_tensor(a) if isinstance(a, torch.Tensor) else a
+      for a in pt_args
   ]
   base_detached_kwargs = {
-      k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
+      k: _clone_cpu_tensor(v) if isinstance(v, torch.Tensor) else v
       for k, v in pt_kwargs.items()
   }
 
+  _, mesh_or_cpu_mesh = unwrap_raw_jax_fn(jax_callable, prefer_cpu_mesh=True)
+  cpu_mesh: jax.sharding.Mesh | None = (
+      mesh_or_cpu_mesh
+      if isinstance(mesh_or_cpu_mesh, jax.sharding.Mesh)
+      and not is_mock_tpu_mesh(mesh_or_cpu_mesh)
+      else None
+  )
+  # pylint: disable=protected-access
+  out_specs = pallas_lib._normalize_output_partition_specs(
+      jax_callable.output_partition_specs, len(tensor_outs)
+  )
+  # pylint: enable=protected-access
+  cotangent_shards_per_out: list[tuple[torch.Tensor, ...]] = []
+  for out_idx, (c_pt, c_f32, is_diff) in enumerate(
+      zip(cotangents_pt, cotangents_f32, differentiable)
+  ):
+    if not is_diff:
+      cotangent_shards_per_out.append(())
+      continue
+    if cpu_mesh is not None:
+      out_spec = (
+          out_specs[out_idx]
+          if out_specs is not None and out_idx < len(out_specs)
+          else None
+      )
+      cot_jax = build_sharded_cpu_array(
+          c_pt, cpu_mesh, out_spec, distinguish_ranks=True
+      )
+      cotangent_shards_per_out.append(
+          tuple(
+              _jax_to_torch_tensor(sh.data).to(torch.float32)
+              for sh in cot_jax.addressable_shards
+          )
+      )
+    else:
+      cotangent_shards_per_out.append((c_f32,))
+
   for slot, pt_grad in zip(diff_slots, pt_grads):
-    x_base = slot.tensor.detach().cpu()
+    x_base = (
+        base_detached_kwargs[str(slot.key)]
+        if slot.is_kwarg
+        else base_detached_args[int(slot.key)]
+    )
     orig_dtype = x_base.dtype
     x_f32 = x_base.to(torch.float32)
-    is_low_prec = orig_dtype in (torch.float16, torch.bfloat16)
-    eps = 6.25e-2 if is_low_prec else (2.0**-10)
-    rel_eps = (
-        2.0**-4
-        if orig_dtype == torch.bfloat16
-        else (2.0**-6 if orig_dtype == torch.float16 else 2.0**-10)
+    is_bf16 = orig_dtype == torch.bfloat16 or has_bf16_out
+    is_low_prec = (
+        orig_dtype in (torch.float16, torch.bfloat16) or has_low_prec_out
     )
+    probes = _build_directional_probes(x_base, pt_grad, rng)
+    if not probes:
+      continue
+
+    if _try_directional_jax_jvp_slot(
+        jax_callable,
+        slot,
+        pt_grad,
+        base_detached_args,
+        base_detached_kwargs,
+        probes,
+        cotangents_f32,
+        differentiable,
+        op_name,
+        detected,
+        is_low_prec=is_low_prec,
+        rtol=rtol,
+        atol=atol,
+    ):
+      continue
+
+    eps = 6.25e-2 if is_bf16 else (3.125e-2 if is_low_prec else 2.0**-10)
+    rel_eps = 2.0**-4 if is_bf16 else (2.0**-5 if is_low_prec else 2.0**-10)
     step = torch.maximum(torch.full_like(x_f32, eps), rel_eps * x_f32.abs())
     fd_atol = max(atol, 5e-2 if is_low_prec else 2e-3)
     fd_rtol = max(rtol, 5e-2 if is_low_prec else 5e-3)
-
-    probes: list[torch.Tensor] = []
-    if pt_grad is not None:
-      grad_f32 = pt_grad.detach().cpu().to(torch.float32)
-      grad_max = float(grad_f32.abs().max().item())
-      if grad_max > 1e-6:
-        probes.append(grad_f32 / grad_max)
-    for _ in range(4):
-      bits = torch.randint(0, 2, x_base.shape, generator=rng, dtype=torch.int64)
-      probes.append(bits.to(torch.float32) * 2.0 - 1.0)
-    numel = x_base.numel()
-    for flat_idx in (0, numel - 1) if numel > 1 else (0,) if numel == 1 else ():
-      one_hot = torch.zeros_like(x_f32)
-      one_hot.view(-1)[flat_idx] = 1.0
-      probes.append(one_hot)
 
     for probe_idx, v_f32 in enumerate(probes):
       x_pos = (x_f32 + step * v_f32).to(orig_dtype)
@@ -3169,23 +5499,22 @@ def _compare_finite_difference_gradients(
         )
         break
 
-      args_pos = list(base_detached_args)
-      args_neg = list(base_detached_args)
-      kwargs_pos = dict(base_detached_kwargs)
-      kwargs_neg = dict(base_detached_kwargs)
-      if slot.is_kwarg:
-        kwargs_pos[str(slot.key)] = x_pos
-        kwargs_neg[str(slot.key)] = x_neg
-      else:
-        args_pos[int(slot.key)] = x_pos
-        args_neg[int(slot.key)] = x_neg
-
       try:
         out_pos = _run_jax_callable_on_cpu_interpret(
-            jax_callable, args_pos, kwargs_pos
+            jax_callable,
+            base_detached_args,
+            base_detached_kwargs,
+            distinguish_ranks=True,
+            return_all_shards=True,
+            rank0_overrides={id(x_base): x_pos},
         )
         out_neg = _run_jax_callable_on_cpu_interpret(
-            jax_callable, args_neg, kwargs_neg
+            jax_callable,
+            base_detached_args,
+            base_detached_kwargs,
+            distinguish_ranks=True,
+            return_all_shards=True,
+            rank0_overrides={id(x_base): x_neg},
         )
       except Exception as exc:  # pylint: disable=broad-exception-caught
         detected.append(
@@ -3202,44 +5531,69 @@ def _compare_finite_difference_gradients(
         )
         return detected
 
-      pos_tensors = [
-          t for t in jax.tree.leaves(out_pos) if isinstance(t, torch.Tensor)
+      pos_leaves = [
+          leaf
+          for leaf in jax.tree.leaves(out_pos)
+          if isinstance(leaf, _OutputShards)
       ]
-      neg_tensors = [
-          t for t in jax.tree.leaves(out_neg) if isinstance(t, torch.Tensor)
+      neg_leaves = [
+          leaf
+          for leaf in jax.tree.leaves(out_neg)
+          if isinstance(leaf, _OutputShards)
       ]
 
       phi_diff = sum(
-          float((u * (p.to(torch.float32) - n.to(torch.float32))).sum().item())
-          for u, p, n, d in zip(
-              cotangents_f32, pos_tensors, neg_tensors, differentiable
+          sum(
+              float(
+                  (u_shard * (p.to(torch.float32) - n.to(torch.float32)))
+                  .sum()
+                  .item()
+              )
+              for u_shard, p, n in zip(
+                  u_shards, pos_leaf.shards, neg_leaf.shards
+              )
+          )
+          for u_shards, pos_leaf, neg_leaf, d in zip(
+              cotangent_shards_per_out, pos_leaves, neg_leaves, differentiable
           )
           if d
       )
       fd_dir = phi_diff / (2.0 * delta_norm)
-      pt_dir = (
-          0.0
-          if pt_grad is None
-          else float(
-              (pt_grad.detach().cpu().to(torch.float32) * delta_x).sum().item()
-          )
-          / delta_norm
-      )
+      if pt_grad is None:
+        pt_dir = 0.0
+        grad_round_tol = 0.0
+      else:
+        pt_f32 = pt_grad.detach().cpu().to(torch.float32)
+        pt_dir = float((pt_f32 * delta_x).sum().item()) / delta_norm
+        grad_round_tol = (
+            (2.0**-6 if is_bf16 else 2.0**-9)
+            * math.sqrt(float((pt_f32 * delta_x).pow(2).sum().item()))
+            / delta_norm
+            if is_low_prec
+            else 0.0
+        )
       abs_err = abs(pt_dir - fd_dir)
-      if abs_err > fd_atol + fd_rtol * abs(fd_dir):
+      eff_fd_atol = max(fd_atol, grad_round_tol)
+      if abs_err > eff_fd_atol + fd_rtol * abs(fd_dir):
+        msg = (
+            "custom backward returned None for differentiable input arg"
+            f" {slot.param_idx} (fd_ref_dir={fd_dir:.4e})"
+            if pt_grad is None
+            else (
+                f"custom PyTorch backward for arg {slot.param_idx} diverges"
+                " from central finite-difference directional JVP of forward"
+                f" Pallas kernel on probe #{probe_idx}"
+                f" (backward_dir={pt_dir:.4e}, fd_ref_dir={fd_dir:.4e},"
+                f" abs_err={abs_err:.4e})"
+            )
+        )
         detected.append(
             findings.VerificationFinding(
                 category=findings.FindingCategory.AUTOGRAD_PARITY_MISMATCH,
                 severity=findings.Severity.ERROR,
                 phase=_AUTOGRAD,
                 op_name=op_name,
-                message=(
-                    f"custom PyTorch backward for arg {slot.param_idx} diverges"
-                    " from central finite-difference directional JVP of"
-                    f" forward Pallas kernel on probe #{probe_idx}"
-                    f" (backward_dir={pt_dir:.4e}, fd_ref_dir={fd_dir:.4e},"
-                    f" abs_err={abs_err:.4e})"
-                ),
+                message=msg,
             )
         )
         break
@@ -3293,15 +5647,128 @@ def _check_saved_donated_inputs(
   return detected
 
 
+def _default_classify_interpret_exception(
+    exc: Exception,
+    op_name: str,
+    schedule_desc: str,
+    *,
+    has_revisit_any_output: bool = False,
+    revisit_verified_full_overwrite: bool = False,
+    phase: findings.Phase = _AUTOGRAD,
+) -> findings.VerificationFinding:
+  """Fallback CPU-interpret exception classifier for standalone autograd."""
+  del has_revisit_any_output, revisit_verified_full_overwrite
+  msg = str(exc).strip()
+  tail = msg.split("with exception:\n\n")[-1].strip()
+  lower = tail.lower()
+  if is_prebuilt_kernel_error(lower):
+    return findings.VerificationFinding(
+        category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+        severity=findings.Severity.INFO,
+        phase=phase,
+        op_name=op_name,
+        message=(
+            f"skipped {phase.value} check ({schedule_desc}) because"
+            f" {PREBUILT_KERNEL_SKIP_REASON}"
+        ),
+    )
+  if "race detected" in lower:
+    category = findings.FindingCategory.DATA_RACE
+  elif "out of bounds" in lower or "out-of-bounds" in lower:
+    category = findings.FindingCategory.OUT_OF_BOUNDS_ACCESS
+  elif "semaphore" in lower and (
+      "non-zero" in lower
+      or "nonzero" in lower
+      or "at kernel exit" in lower
+      or "!= 0" in lower
+  ):
+    category = findings.FindingCategory.SEMAPHORE_NONZERO_EXIT
+  elif "advanced indexers are not supported on tpu" in lower:
+    category = findings.FindingCategory.HARDWARE_CONSTRAINT_VIOLATION
+  elif (
+      "unrecognized axes in device_id" in lower
+      or "unsupported device id type" in lower
+      or "semaphore_signal with device_id" in lower
+  ):
+    category = findings.FindingCategory.INVALID_DEVICE_ID
+  else:
+    last_line = tail.splitlines()[-1].strip() if tail else ""
+    exc_name = type(exc).__name__
+    exc_summary = (
+        last_line
+        if last_line.startswith(f"{exc_name}:")
+        else (f"{exc_name}: {last_line}" if last_line else exc_name)
+    )
+    return findings.VerificationFinding(
+        category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+        severity=findings.Severity.WARNING,
+        phase=phase,
+        op_name=op_name,
+        message=(
+            f"skipped {phase.value} check because the interpreter raised"
+            f" ({schedule_desc}) {exc_summary}; the kernel may be invalid or"
+            " use features that the interpreter of this JAX version does not"
+            " support"
+        ),
+    )
+  return findings.VerificationFinding(
+      category=category,
+      severity=findings.Severity.ERROR,
+      phase=phase,
+      op_name=op_name,
+      message=f"CPU TPU interpret ({schedule_desc}) raised: {tail or msg}",
+  )
+
+
+def _skipped_autograd_report(
+    op_name: str,
+    reason: str,
+    prior: Sequence[findings.VerificationFinding] = (),
+) -> findings.VerificationReport:
+  """Returns a report noting that the autograd check did not run."""
+  return findings.report_of(
+      None,
+      [
+          *prior,
+          findings.VerificationFinding(
+              category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+              severity=findings.Severity.INFO,
+              phase=_AUTOGRAD,
+              op_name=op_name,
+              message=f"skipped autograd parity check because {reason}",
+          ),
+      ],
+  )
+
+
 def verify_autograd_parity(
     op_def: Any,
     example_args: Sequence[Any],
     example_kwargs: Mapping[str, Any] | None = None,
     *,
+    interpret_gate: InterpretGate,
     rtol: float = 1e-3,
     atol: float = 1e-3,
+    exception_classifier: (
+        Callable[..., findings.VerificationFinding] | None
+    ) = None,
 ) -> findings.VerificationReport:
-  """Checks a registered PyTorch custom autograd backward against the forward op."""
+  """Checks a registered PyTorch custom autograd backward against the forward op.
+
+  Args:
+    op_def: The `@jax_op` whose registered backward is checked.
+    example_args: Example positional arguments.
+    example_kwargs: Example keyword arguments.
+    interpret_gate: Decides whether a `@jax_op` (`op_def`, or one called by its
+      backward) may run in CPU TPU interpret mode; ops that it rejects are not
+      run, and the check is reported as incomplete.
+    rtol: Relative gradient tolerance.
+    atol: Absolute gradient tolerance.
+    exception_classifier: Maps CPU interpret exceptions to findings.
+
+  Returns:
+    A `Phase.AUTOGRAD` report.
+  """
   resolved = resolve_custom_op_def(op_def)
   if resolved is None or resolved._backward_fn is None:  # pylint: disable=protected-access
     return findings.VerificationReport()
@@ -3311,133 +5778,176 @@ def verify_autograd_parity(
     return findings.VerificationReport()
 
   op_name = resolved._qualname  # pylint: disable=protected-access
-  diff_slots, pt_args, pt_kwargs, has_complex = _collect_differentiable_inputs(
-      jax_callable, example_args, dict(example_kwargs or {})
-  )
-  if has_complex:
-    return findings.report_of(
-        _AUTOGRAD,
-        [
-            findings.VerificationFinding(
-                category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
-                severity=findings.Severity.INFO,
-                phase=_AUTOGRAD,
-                op_name=op_name,
-                message=(
-                    "skipped autograd parity check because complex-valued"
-                    " differentiable inputs are not supported"
-                ),
-            )
-        ],
-    )
-  if not diff_slots:
-    return findings.VerificationReport()
-
-  # 1. Run the PyTorch forward pass under CPU TPU-interpret dispatch and record
-  # any tensors saved by `setup_context` for backward.
-  saved_for_backward: list[torch.Tensor] = []
-  # pylint: disable=protected-access
-  orig_setup_context: Callable[..., Any] | None = getattr(
-      resolved, "_setup_context_fn", None
+  active_classifier = (
+      exception_classifier or _default_classify_interpret_exception
   )
 
-  def _wrapped_setup_context(*s_args: Any, **s_kwargs: Any) -> Any:
-    res = (
-        orig_setup_context(*s_args, **s_kwargs)
-        if callable(orig_setup_context)
-        else None
+  with torch.inference_mode(False), torch.enable_grad():
+    diff_slots, pt_args, pt_kwargs, has_complex = (
+        _collect_differentiable_inputs(
+            jax_callable, example_args, dict(example_kwargs or {})
+        )
     )
-    ctx = (
-        s_kwargs.get("ctx")
-        if "ctx" in s_kwargs
-        else (s_args[0] if s_args else None)
-    )
-    if ctx is not None:
-      for t in getattr(ctx, "to_save", None) or ():
-        if isinstance(t, torch.Tensor):
-          saved_for_backward.append(t)
-      for v in getattr(ctx, "__dict__", {}).values():
-        for leaf in torch_pytree.tree_leaves(v):
-          if isinstance(leaf, torch.Tensor):
-            saved_for_backward.append(leaf)
-    return res
-
-  try:
-    if orig_setup_context is not None:
-      resolved._setup_context_fn = _wrapped_setup_context
-    with _CpuPallasInterpretDispatchMode():
-      pt_out = resolved(*pt_args, **pt_kwargs)
-  except Exception as exc:  # pylint: disable=broad-exception-caught
-    return findings.report_of(
-        _AUTOGRAD,
-        [
-            findings.VerificationFinding(
-                category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
-                severity=findings.Severity.INFO,
-                phase=_AUTOGRAD,
-                op_name=op_name,
-                message=f"skipped autograd parity check ({exc})",
-            )
-        ],
-    )
-  finally:
-    if orig_setup_context is not None:
-      resolved._setup_context_fn = orig_setup_context
-  # pylint: enable=protected-access
-
-  saved_donor_findings = _check_saved_donated_inputs(
-      jax_callable, pt_args, pt_kwargs, saved_for_backward, op_name
-  )
-
-  tensor_outs = [
-      t for t in jax.tree.leaves(pt_out) if isinstance(t, torch.Tensor)
-  ]
-  # Integer, quantized FP8/E8M0, and non-dependent outputs have no continuous
-  # gradient: they receive zero cotangents and are excluded from `autograd.grad`.
-  differentiable = [
-      t.requires_grad
-      and t.dtype not in FLOAT8_TORCH_DTYPES
-      and not t.is_complex()
-      for t in tensor_outs
-  ]
-  if not any(differentiable):
-    return (
-        findings.report_of(_AUTOGRAD, saved_donor_findings)
-        if saved_donor_findings
-        else findings.VerificationReport()
-    )
-
-  # 2. Run the registered PyTorch custom backward with normalized cotangents.
-  rng = torch.Generator(device="cpu")
-  rng.manual_seed(2026)
-  cotangents_pt, cotangents_f32 = _build_normalized_cotangents(
-      tensor_outs, differentiable, rng
-  )
-  try:
-    with _CpuPallasInterpretDispatchMode():
-      pt_grads = torch.autograd.grad(
-          outputs=[t for t, d in zip(tensor_outs, differentiable) if d],
-          inputs=[slot.tensor for slot in diff_slots],
-          grad_outputs=[c for c, d in zip(cotangents_pt, differentiable) if d],
-          allow_unused=True,
+    if has_complex:
+      return findings.report_of(
+          _AUTOGRAD,
+          [
+              findings.VerificationFinding(
+                  category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+                  severity=findings.Severity.INFO,
+                  phase=_AUTOGRAD,
+                  op_name=op_name,
+                  message=(
+                      "skipped autograd parity check because complex-valued"
+                      " differentiable inputs are not supported"
+                  ),
+              )
+          ],
       )
-  except Exception as exc:  # pylint: disable=broad-exception-caught
-    return findings.report_of(
-        _AUTOGRAD,
-        [
-            *saved_donor_findings,
-            findings.VerificationFinding(
-                category=findings.FindingCategory.AUTOGRAD_PARITY_MISMATCH,
-                severity=findings.Severity.ERROR,
-                phase=_AUTOGRAD,
-                op_name=op_name,
-                message=(
-                    f"custom PyTorch backward raised {type(exc).__name__}:"
-                    f" {exc}"
-                ),
-            ),
-        ],
+    if not diff_slots:
+      return findings.VerificationReport()
+    skip_reason = interpret_gate(
+        op_def, example_args, dict(example_kwargs or {})
     )
+    if skip_reason is not None:
+      return _skipped_autograd_report(op_name, skip_reason)
+
+    # 1. Run the PyTorch forward pass under CPU TPU-interpret dispatch and
+    # record any tensors saved by `setup_context` for backward.
+    saved_for_backward: list[torch.Tensor] = []
+    fwd_dispatch = _CpuPallasInterpretDispatchMode(
+        interpret_gate=interpret_gate
+    )
+    # pylint: disable=protected-access
+    with INTERPRET_LOCK:
+      orig_setup_context: Callable[..., Any] | None = getattr(
+          resolved, "_setup_context_fn", None
+      )
+
+      def _wrapped_setup_context(*s_args: Any, **s_kwargs: Any) -> Any:
+        res = (
+            orig_setup_context(*s_args, **s_kwargs)
+            if callable(orig_setup_context)
+            else None
+        )
+        ctx = (
+            s_kwargs.get("ctx")
+            if "ctx" in s_kwargs
+            else (s_args[0] if s_args else None)
+        )
+        if ctx is not None:
+          for t in getattr(ctx, "to_save", None) or ():
+            if isinstance(t, torch.Tensor):
+              saved_for_backward.append(t)
+          for v in getattr(ctx, "__dict__", {}).values():
+            for leaf in torch_pytree.tree_leaves(v):
+              if isinstance(leaf, torch.Tensor):
+                saved_for_backward.append(leaf)
+        return res
+
+      try:
+        if orig_setup_context is not None:
+          resolved._setup_context_fn = _wrapped_setup_context
+        with fwd_dispatch:
+          pt_out = resolved(*pt_args, **pt_kwargs)
+      except Exception as exc:  # pylint: disable=broad-exception-caught
+        interp_exc = fwd_dispatch.last_interpret_exception or exc
+        if isinstance(interp_exc, InterpretRunSkipped):
+          return _skipped_autograd_report(op_name, str(interp_exc))
+        if is_prebuilt_kernel_error(str(interp_exc)):
+          return _skipped_autograd_report(op_name, PREBUILT_KERNEL_SKIP_REASON)
+        return findings.report_of(
+            _AUTOGRAD,
+            [
+                findings.VerificationFinding(
+                    category=findings.FindingCategory.VERIFICATION_INCOMPLETE,
+                    severity=findings.Severity.INFO,
+                    phase=_AUTOGRAD,
+                    op_name=op_name,
+                    message=f"skipped autograd parity check ({exc})",
+                )
+            ],
+        )
+      finally:
+        if orig_setup_context is not None:
+          resolved._setup_context_fn = orig_setup_context
+    # pylint: enable=protected-access
+
+    saved_donor_findings = _check_saved_donated_inputs(
+        jax_callable, pt_args, pt_kwargs, saved_for_backward, op_name
+    )
+
+    tensor_outs = [
+        t for t in jax.tree.leaves(pt_out) if isinstance(t, torch.Tensor)
+    ]
+    # Integer, quantized FP8/E8M0/FP4, and non-dependent outputs have no
+    # continuous gradient: they receive zero cotangents and are excluded from
+    # `autograd.grad`.
+    differentiable = [
+        t.requires_grad
+        and t.dtype not in QUANTIZED_FLOAT_TORCH_DTYPES
+        and not t.is_complex()
+        for t in tensor_outs
+    ]
+    if not any(differentiable):
+      return (
+          findings.report_of(_AUTOGRAD, saved_donor_findings)
+          if saved_donor_findings
+          else findings.VerificationReport()
+      )
+
+    # 2. Run the registered PyTorch custom backward with dyadic cotangents.
+    rng = torch.Generator(device="cpu")
+    rng.manual_seed(2026)
+    cotangents_pt, cotangents_f32 = _build_normalized_cotangents(
+        tensor_outs, differentiable, rng
+    )
+    bwd_dispatch = _CpuPallasInterpretDispatchMode(
+        interpret_gate=interpret_gate
+    )
+    try:
+      with INTERPRET_LOCK, bwd_dispatch:
+        pt_grads = torch.autograd.grad(
+            outputs=[t for t, d in zip(tensor_outs, differentiable) if d],
+            inputs=[slot.tensor for slot in diff_slots],
+            grad_outputs=[
+                c for c, d in zip(cotangents_pt, differentiable) if d
+            ],
+            allow_unused=True,
+        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      interp_exc = bwd_dispatch.last_interpret_exception
+      if isinstance(interp_exc, InterpretRunSkipped):
+        return _skipped_autograd_report(
+            op_name, str(interp_exc), saved_donor_findings
+        )
+      if interp_exc is not None and is_prebuilt_kernel_error(str(interp_exc)):
+        return _skipped_autograd_report(
+            op_name, PREBUILT_KERNEL_SKIP_REASON, saved_donor_findings
+        )
+      if interp_exc is not None or isinstance(exc, NotImplementedError):
+        classified = active_classifier(
+            interp_exc or exc, op_name, "custom backward", phase=_AUTOGRAD
+        )
+        return findings.report_of(
+            _AUTOGRAD, [*saved_donor_findings, classified]
+        )
+      return findings.report_of(
+          _AUTOGRAD,
+          [
+              *saved_donor_findings,
+              findings.VerificationFinding(
+                  category=findings.FindingCategory.AUTOGRAD_PARITY_MISMATCH,
+                  severity=findings.Severity.ERROR,
+                  phase=_AUTOGRAD,
+                  op_name=op_name,
+                  message=(
+                      f"custom PyTorch backward raised {type(exc).__name__}:"
+                      f" {exc}"
+                  ),
+              ),
+          ],
+      )
 
   shape_errors = [
       findings.VerificationFinding(
@@ -3457,9 +5967,13 @@ def verify_autograd_parity(
   if shape_errors:
     return findings.report_of(_AUTOGRAD, [*saved_donor_findings, *shape_errors])
 
-  # 3. Compare against analytical `jax.vjp` if supported, else finite differences.
+  # 3. Compare against analytical `jax.vjp` if supported, else `jax.jvp` / FD.
   ref_jax_grads = _try_analytical_jax_vjp(
-      jax_callable, diff_slots, pt_args, pt_kwargs, cotangents_pt
+      jax_callable,
+      diff_slots,
+      pt_args,
+      pt_kwargs,
+      cotangents_pt,
   )
   if ref_jax_grads is not None:
     detected = _compare_vjp_gradients(
@@ -3479,6 +5993,8 @@ def verify_autograd_parity(
         pt_grads,
         pt_args,
         pt_kwargs,
+        tensor_outs,
+        cotangents_pt,
         cotangents_f32,
         differentiable,
         rng,

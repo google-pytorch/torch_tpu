@@ -290,7 +290,7 @@ GraphKey AnnotateGraphKeyWithArgumentLayouts(
     const GraphKey& graph_key,
     absl::Span<const CustomLayout> argument_layouts) {
   if (argument_layouts.empty()) return graph_key;
-  FingerprintType fp = graph_key.shapeless_key().key();
+  FingerprintType fp = graph_key.extentless_key().key();
   for (const CustomLayout& layout : argument_layouts) {
     if (!layout.minor_to_major.empty()) {
       fp = FingerprintCat(fp, FingerprintCat(layout.minor_to_major));
@@ -302,7 +302,7 @@ GraphKey AnnotateGraphKeyWithArgumentLayouts(
       fp = FingerprintCat(fp, 0);
     }
   }
-  return GraphKey(ShapelessKey(fp), graph_key.dimensions_key());
+  return GraphKey(ExtentlessKey(fp), graph_key.dimensions_key());
 }
 
 GraphKey AnnotateGraphKeyWithDonatedInputs(
@@ -313,8 +313,8 @@ GraphKey AnnotateGraphKeyWithDonatedInputs(
   normalized_donated_inputs.erase(std::unique(normalized_donated_inputs.begin(),
                                               normalized_donated_inputs.end()),
                                   normalized_donated_inputs.end());
-  return GraphKey(ShapelessKey(FingerprintCat(graph_key.shapeless_key().key(),
-                                              normalized_donated_inputs)),
+  return GraphKey(ExtentlessKey(FingerprintCat(graph_key.extentless_key().key(),
+                                               normalized_donated_inputs)),
                   graph_key.dimensions_key());
 }
 

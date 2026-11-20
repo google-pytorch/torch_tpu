@@ -18,7 +18,7 @@
 # zhanyong-wan
 
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -150,6 +150,32 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "kiln_utils",
+    srcs = ["kiln_utils.cc"],
+    hdrs = ["kiln_utils.h"],
+    deps = [
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//csrc/internal/mosaic/kiln",
+        "@com_google_absl//absl/status:statusor",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "kiln_utils_test",
+    srcs = ["kiln_utils_test.cc"],
+    deps = [
+        ":kiln_utils",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/internal/mosaic/kiln",
+        "@com_google_absl//absl/status:status_matchers",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 

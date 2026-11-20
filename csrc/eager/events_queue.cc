@@ -1153,8 +1153,7 @@ absl::Status InsertGraphBreak(
     MaterializationReason reason, GraphSplitMode mode) {
   const EagerMode eager_mode = GetEagerMode();
   if (eager_mode == EagerMode::kInternalCompileFxGraph) {
-    return TT_ERROR(  // ERROR_COV_INFEASIBLE=hits error in tpu_to_cpu first
-               error::kFailedPrecondition)
+    return TT_ERROR(error::kFailedPrecondition)
            << "cannot materialize tensors during an FX trace.\nData-dependent "
               "ops must have graph breaks inserted in the FX graph before "
               "tracing";

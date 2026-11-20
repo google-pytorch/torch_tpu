@@ -16,6 +16,7 @@
 
 #include "csrc/ops/norm/norm_aten_kernels.h"
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -54,14 +55,48 @@ namespace {
 
 absl::Status ValidateNormOutDtype(const at::Tensor& self, const at::Tensor& out,
                                   std::optional<at::ScalarType> dtype) {
-  TT_RET_CHECK(c10::isFloatingType(self.scalar_type()) ||
-                   c10::isComplexType(self.scalar_type()),
-               error::kPythonNotImplementedError)
+  const at::ScalarType self_dtype = self.scalar_type();
+  TT_RET_CHECK(
+      c10::isFloatingType(self_dtype) || c10::isComplexType(self_dtype),
+      error::kPythonNotImplementedError)
       << "expected the input dtype to be floating point or complex, got "
-      << ToString(self.scalar_type());
-  at::ScalarType expected_dtype =
-      dtype.value_or(c10::toRealValueType(self.scalar_type()));
+      << ToString(self_dtype);
+  if (dtype.has_value()) {
+    const at::ScalarType target_dtype = *dtype;
+    TT_RET_CHECK(
+        c10::isFloatingType(target_dtype) || c10::isComplexType(target_dtype),
+        error::kInvalidArgument)
+        << "expected dtype to be floating point or complex, got "
+        << ToString(target_dtype);
+    TT_RET_CHECK(
+        c10::isComplexType(self_dtype) == c10::isComplexType(target_dtype),
+        error::kInvalidArgument)
+        << "expected dtype to match complexness of input ("
+        << ToString(self_dtype) << "), got " << ToString(target_dtype);
+    TT_RET_CHECK(c10::promoteTypes(self_dtype, target_dtype) == target_dtype,
+                 error::kInvalidArgument)
+        << "expected dtype to be safely castable from " << ToString(self_dtype)
+        << " without narrowing, got " << ToString(target_dtype);
+  }
+  const at::ScalarType expected_dtype =
+      c10::toRealValueType(dtype.value_or(self_dtype));
   return ValidateOutDtype(out, expected_dtype, /*allow_out_dtype_cast=*/false);
+}
+
+// Rejects reducing zero-length dimensions for ord < 0 or ord == inf, as
+// min/max-style reductions have no identity over zero elements (mirroring
+// upstream linalg.vector_norm).
+absl::Status ValidateNonEmptyNormReduction(
+    const at::Tensor& self, double ord,
+    absl::Span<const int64_t> canonical_dims) {
+  if (self.numel() == 0 && (ord < 0.0 || ord == INFINITY)) {
+    for (const int64_t d : canonical_dims) {
+      TT_RET_CHECK(self.size(d) != 0, error::kInvalidArgument)
+          << "expected non-empty reduction dimension for ord " << ord
+          << ", got size 0 along dim " << d;
+    }
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<mlir::MlirOp> BuildZeroNormShlo(
@@ -107,6 +142,7 @@ absl::Status PNormOut(const at::Tensor& self, PromotedScalar& promoted_ord,
       keepdim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
   TT_ASSIGN_OR_RETURN(const Dimensions canonical_dims,
                       CanonicalizeDims(self, dim));
+  TT_RETURN_IF_ERROR(ValidateNonEmptyNormReduction(self, ord, canonical_dims));
 
   const Dimensions output_dims =
       GetSizesAfterReduction(self.sizes(), reduction_mode, canonical_dims);

@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -349,6 +350,17 @@ class TtError : public std::runtime_error {
 
 // Translates a TtError to a c10::Error or one of its subclasses and throws it.
 [[noreturn]] void TranslateToC10ErrorAndThrow(const TtError& e);
+
+// Invokes `fn(args...)`, translating any thrown TtError into the c10::Error
+// subclass that PyTorch maps to the matching Python exception type.
+template <typename Fn, typename... Args>
+decltype(auto) TranslateTtErrorToC10Error(Fn&& fn, Args&&... args) {
+  try {
+    return std::invoke(std::forward<Fn>(fn), std::forward<Args>(args)...);
+  } catch (const TtError& e) {
+    TranslateToC10ErrorAndThrow(e);
+  }
+}
 
 // =============================================================================
 // Macros for reporting errors in torch_tpu C++ code.
@@ -1217,19 +1229,19 @@ template <const char* env_name>
 }
 
 // Returns the integer value of the environment variable with the given name, or
-// an error if it is not set or cannot be parsed as an integer.
+// an error if it is not set or cannot be parsed as an integer. In the latter
+// case, GetIntegerEnvOnce() also warns about the invalid value.
 //
 // This function is memoized, so the environment variable is only read once.
-template <typename IntType, const char* env_name>
-[[nodiscard]] const absl::StatusOr<IntType>& GetRequiredIntegerEnvOnce() {
-  static const absl::NoDestructor<absl::StatusOr<IntType>> env_var(
-      []() -> absl::StatusOr<IntType> {
-        const auto& raw_val = GetEnvOnce<env_name>();
-        TT_RET_CHECK(raw_val.has_value(), error::kFailedPrecondition)
-            << "the " << env_name << " environment variable is not set";
-        const auto int_val = GetIntegerEnvOnce<IntType, env_name>();
+template <const char* env_name>
+[[nodiscard]] const absl::StatusOr<EnvVarIntType<env_name>>&
+GetRequiredIntegerEnvOnce() {
+  static const absl::NoDestructor<absl::StatusOr<EnvVarIntType<env_name>>>
+      env_var([]() -> absl::StatusOr<EnvVarIntType<env_name>> {
+        const auto int_val = GetIntegerEnvOnce<env_name>();
         TT_RET_CHECK(int_val.has_value(), error::kFailedPrecondition)
-            << "Failed to parse " << env_name << ": " << *raw_val;
+            << "the " << env_name
+            << " environment variable is not set or is not a valid integer";
         return *int_val;
       }());
   return *env_var;

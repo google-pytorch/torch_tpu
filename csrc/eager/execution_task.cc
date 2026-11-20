@@ -33,6 +33,7 @@
 #include "absl/base/optimization.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/absl_vlog_is_on.h"
 #include "absl/status/status.h"
@@ -62,6 +63,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/shape.h"
 
 namespace torch_tpu {
 
@@ -455,15 +457,31 @@ absl::StatusOr<PjRtBufferPointers> RunSequentialExecutables(
     absl::Span<const SharedLoadedExecutableWithMetadata> executables,
     std::vector<xla::PjRtBuffer*> argument_buffers,
     absl::Span<const Shape> logical_output_shapes, std::string_view task_name,
-    ArgumentLayoutValidation layout_validation) {
+    const ArgumentLayoutValidation layout_validation,
+    absl::Span<const xla::Shape* absl_nullable const> known_argument_shapes) {
   std::vector<PjRtBufferPointers> intermediate_results;
-  for (auto& executable : executables) {
-    TT_ASSIGN_OR_RETURN(PjRtBufferPointers results,
-                        Execute(executable, std::move(argument_buffers),
-                                logical_output_shapes, layout_validation),
-                        _.SetPrepend()
-                            << "failed to enqueue execution for task_name="
-                            << task_name << ": ");
+  absl::InlinedVector<const xla::Shape* absl_nullable, 64> stage_known_shapes;
+  for (const SharedLoadedExecutableWithMetadata& executable : executables) {
+    TT_ASSIGN_OR_RETURN(
+        PjRtBufferPointers results,
+        Execute(executable, std::move(argument_buffers), logical_output_shapes,
+                layout_validation, known_argument_shapes),
+        _.SetPrepend() << "failed to enqueue execution for task_name="
+                       << task_name << ": ");
+    // Subsequent stages (e.g. fixed-shape kernel after preamble, or postamble)
+    // consume `results` from the current stage 1-for-1.
+    stage_known_shapes.clear();
+    const absl::Span<const xla::Shape> stage_output_shapes =
+        executable->output_device_shapes();
+    if (layout_validation == ArgumentLayoutValidation::kValidate &&
+        &executable != &executables.back() &&
+        stage_output_shapes.size() == results.size()) {
+      stage_known_shapes.reserve(stage_output_shapes.size());
+      for (const xla::Shape& shape : stage_output_shapes) {
+        stage_known_shapes.push_back(&shape);
+      }
+    }
+    known_argument_shapes = stage_known_shapes;
     argument_buffers.clear();
     argument_buffers.reserve(results.size());
     for (const auto& result : results) {
@@ -593,20 +611,31 @@ ExecutionTask::GetArgumentBuffers() {
 }
 
 absl::Status ExecutionTask::SetOutputNodesAsMaterialized(
-    PjRtBufferPointers results) {
+    PjRtBufferPointers results,
+    const absl_nullable std::shared_ptr<const std::vector<xla::Shape>>&
+        output_device_shapes) {
   tsl::profiler::TraceMe trace("SetOutputNodesAsMaterialized");
   ABSL_VLOG(1) << "[SetOutputNodesAsMaterialized] Starting";
+  // Use `output_device_shapes` only when it has one shape per result (e.g. it
+  // is null when layouts aren't reported or an `output_transform` rewrites
+  // outputs), which also keeps `device_shapes_offset` in range.
+  const std::shared_ptr<const std::vector<xla::Shape>> task_output_shapes =
+      output_device_shapes != nullptr &&
+              output_device_shapes->size() == results.size()
+          ? output_device_shapes
+          : nullptr;
   PjRtBufferPointers buffers_to_assign;
   buffers_to_assign.reserve(outputs_.size());
-  auto i = 0;
+  size_t i = 0;
   while (i < outputs_.size()) {
     ABSL_VLOG(1) << "[AssignMaterializedBuffers] Assigning materialized "
                     "buffers for node "
                  << i;
     auto* absl_nonnull node = outputs_[i].device_buffer_list().get();
+    const size_t node_size = static_cast<size_t>(node->size());
     buffers_to_assign.clear();
-    buffers_to_assign.reserve(node->size());
-    if (i + node->size() > results.size()) {
+    buffers_to_assign.reserve(node_size);
+    if (i + node_size > results.size()) {
       ABSL_VLOG(1)
           << "[AssignMaterializedBuffers] Not enough results to materialize "
              "node "
@@ -614,16 +643,18 @@ absl::Status ExecutionTask::SetOutputNodesAsMaterialized(
       return TT_ERROR(error::kFailedPrecondition)
              << "Not enough results to materialize node " << node;
     }
-    for (auto j = 0; j < node->size(); ++j) {
+    for (size_t j = 0; j < node_size; ++j) {
       ABSL_VLOG(1)
           << "[AssignMaterializedBuffers] Assigning materialized buffer for "
              "node "
           << node << " index " << j;
       buffers_to_assign.push_back(std::move(results[i + j]));
     }
-    TT_RETURN_IF_ERROR(node->SetAsMaterialized(std::move(buffers_to_assign)))
+    TT_RETURN_IF_ERROR(node->SetAsMaterialized(std::move(buffers_to_assign),
+                                               task_output_shapes,
+                                               /*device_shapes_offset=*/i))
         << "Failed to set node " << node << " as materialized";
-    i += node->size();
+    i += node_size;
   }
   ABSL_VLOG(1) << "[AssignMaterializedBuffers] Assigned materialized buffers "
                   "for nodes";
@@ -656,6 +687,15 @@ absl::Status ExecutionTask::RunInternal() {
   ABSL_VLOG(1) << "[ExecutionTask::Run] Retrieved " << argument_buffers.size()
                << " argument buffers for task_name=" << task_name;
 
+  absl::InlinedVector<const xla::Shape* absl_nullable, 64>
+      known_argument_shapes;
+  if (layout_validation_ == ArgumentLayoutValidation::kValidate) {
+    known_argument_shapes.reserve(arguments_.size());
+    for (const DeviceBufferRef& argument : arguments_) {
+      known_argument_shapes.push_back(argument.known_device_shape());
+    }
+  }
+
   std::vector<Shape> output_shapes;
   if (llvm::any_of(
           cached_executables,
@@ -671,12 +711,15 @@ absl::Status ExecutionTask::RunInternal() {
   TT_ASSIGN_OR_RETURN(
       PjRtBufferPointers final_results,
       RunSequentialExecutables(cached_executables, std::move(argument_buffers),
-                               output_shapes, task_name, layout_validation_),
+                               output_shapes, task_name, layout_validation_,
+                               known_argument_shapes),
       TranslateXlaTensorOomError(_, ToString(output.element_type()),
                                  output.dimensions()));
 
   // Assign the final results to the output nodes.
-  TT_RETURN_IF_ERROR(SetOutputNodesAsMaterialized(std::move(final_results)));
+  TT_RETURN_IF_ERROR(SetOutputNodesAsMaterialized(
+      std::move(final_results),
+      cached_executables.back()->shared_output_device_shapes()));
 
   ABSL_VLOG(1) << "[ExecutionTask::Run] ExecuteMaterializationJob "
                   "succeeded for task_name="

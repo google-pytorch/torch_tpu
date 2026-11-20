@@ -27,7 +27,6 @@ from torch import distributed as dist
 from torch_tpu._internal import pallas
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
-from tests import oss_utils
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
@@ -464,7 +463,11 @@ def _test_sparsecore_vector_subcore_dma(
       pltpu.async_copy(x_hbm_ref, x_vmem_ref, dma_sem).wait()
       pltpu.async_copy(y_hbm_ref, y_vmem_ref, dma_sem).wait()
       o_vmem_ref[...] = x_vmem_ref[...] + y_vmem_ref[...]
-      pltpu.async_copy(o_vmem_ref, o_hbm_ref, dma_sem).wait()
+      # Push streams (VMEM -> HBM on VectorSubcoreMesh) ignore destination
+      # semaphores and emit SparseCorePushStreamWarning in JAX >= 0.12.0 unless
+      # `sem=None` is passed; older JAX rejects `sem=None`.
+      out_sem = None if jax.__version_info__ >= (0, 12, 0) else dma_sem
+      pltpu.async_copy(o_vmem_ref, o_hbm_ref, sem=out_sem).wait()
 
     return kernel(x, y)
 
@@ -488,11 +491,25 @@ def _test_sparsecore_vector_subcore_dma(
   utils.assert_close(actual, expected_reduced)
 
 
-def _test_sparsecore_vector_subcore_remote_dma(
+def _test_sparsecore_remote_dma(
     test_case: continuous_test_utils.TpuMultiProcContinuousTest,
 ):
-  if torch.tpu.get_device_properties().sparse_cores_per_device == 0:
+  props = torch.tpu.get_device_properties()
+  if props.sparse_cores_per_device == 0:
     test_case.skipTest("SparseCore is not supported on this TPU device.")
+
+  # Cross-chip remote DMAs cannot use vector subcore (tile) sync flags on
+  # pre-v8i SparseCores, while TPU v8i only supports VectorSubcoreMesh.
+  if props.name == "TPU v8i":
+    sc_mesh = plsc.VectorSubcoreMesh(
+        core_axis_name="core",
+        subcore_axis_name="subcore",
+    )
+  else:
+    sc_mesh = plsc.ScalarSubcoreMesh(
+        axis_name="core",
+        num_cores=plsc.get_sparse_core_info().num_cores,
+    )
 
   device = torch.device("tpu")
   rank = dist.get_rank()
@@ -501,11 +518,6 @@ def _test_sparsecore_vector_subcore_remote_dma(
   pallas_mesh = pallas.get_default_pallas_mesh()
 
   def sc_remote_copy_jax(x_global: jax.Array) -> jax.Array:
-    sc_mesh = plsc.VectorSubcoreMesh(
-        core_axis_name="core",
-        subcore_axis_name="subcore",
-    )
-
     def shard_kernel(x_local: jax.Array) -> jax.Array:
       @pl.kernel(
           out_type=jax.ShapeDtypeStruct(x_local.shape, x_local.dtype),
@@ -516,13 +528,14 @@ def _test_sparsecore_vector_subcore_remote_dma(
           ],
       )
       def rcopy_kernel(x_hbm_ref, o_hbm_ref, send_sem, recv_sem):
-        core_id = jax.lax.axis_index("core")
-        subcore_id = jax.lax.axis_index("subcore")
+        is_primary = jax.lax.axis_index("core") == 0
+        if isinstance(sc_mesh, plsc.VectorSubcoreMesh):
+          is_primary = is_primary & (jax.lax.axis_index("subcore") == 0)
         my_rank = jax.lax.axis_index("rank")
         num_ranks = jax.lax.axis_size("rank")
         next_rank = jax.lax.rem(my_rank + 1, num_ranks)
 
-        @pl.when((core_id == 0) & (subcore_id == 0))
+        @pl.when(is_primary)
         def _():
           desc = pltpu.make_async_remote_copy(
               src_ref=x_hbm_ref,
@@ -598,13 +611,8 @@ class TestPallasCommunicationKernels(
   def test_sparsecore_vector_subcore_dma(self):
     _test_sparsecore_vector_subcore_dma(self)
 
-  @absltest.skipIf(
-      oss_utils.is_oss(),
-      "TODO(b/583954854): Fails on OSS TPU v6e (GlobalAllocationAssignment"
-      " smem alloca in TEC) and times out on TPU v7x.",
-  )
-  def test_sparsecore_vector_subcore_remote_dma(self):
-    _test_sparsecore_vector_subcore_remote_dma(self)
+  def test_sparsecore_remote_dma(self):
+    _test_sparsecore_remote_dma(self)
 
 
 if __name__ == "__main__":

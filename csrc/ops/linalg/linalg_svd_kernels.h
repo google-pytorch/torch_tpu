@@ -18,10 +18,10 @@
 #define TORCH_TPU_CSRC_OPS_LINALG_LINALG_SVD_KERNELS_H_
 
 #include <optional>
+#include <string_view>
 #include <tuple>
 
 #include "ATen/core/TensorBody.h"
-#include "c10/util/string_view.h"
 
 namespace torch_tpu {
 
@@ -46,7 +46,7 @@ namespace torch_tpu {
 //   vh: Output tensor for right singular vectors Vh.
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgSvdU(
     const at::Tensor& self, bool full_matrices, bool compute_uv,
-    std::optional<c10::string_view> driver, at::Tensor& u, at::Tensor& s,
+    std::optional<std::string_view> driver, at::Tensor& u, at::Tensor& s,
     at::Tensor& vh);
 
 }  // namespace torch_tpu

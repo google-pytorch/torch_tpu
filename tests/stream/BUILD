@@ -14,8 +14,10 @@
 
 # Domain experts for this package:
 # benawilson
+# salkan0
 # yilingyuan
-# haifeng-jin
+# cbasile-g
+# jparkerh
 
 load(
     "//build_files:build_defs.bzl",
@@ -137,6 +139,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests/distributed:continuous_test_utils",
         "//tests/distributed:distributed_utils",

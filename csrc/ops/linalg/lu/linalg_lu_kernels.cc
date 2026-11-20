@@ -396,10 +396,8 @@ absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
   return {{lu, pivots}};
 }
 
-// Applies permutation represented by `pivots` in-place to either rows or
-// columns of `tensor`. If inverse=true, applies the inverse permutation.
-absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
-                                bool to_rows, bool inverse) {
+absl::Status ValidatePivotsShape(const at::Tensor& tensor,
+                                 const at::Tensor& pivots, int64_t size) {
   int rank = tensor.dim();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Error is caught before this check.
       rank >= 2, error::kInvalidArgument)
@@ -407,7 +405,6 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
   TT_RET_CHECK(pivots.dim() == rank - 1, error::kInvalidArgument)
       << "expected pivots to have one less dimension than the tensor, got "
       << pivots.dim() << " and " << rank;
-  const int size = to_rows ? tensor.size(-2) : tensor.size(-1);
   // TODO: PyTorch actually expects: pivots.size(-1) >= size
   // Otherwise, it accesses out-of-bounds memory.
   //
@@ -424,6 +421,15 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
   TT_RET_CHECK(tensor_batch_dims == pivots_batch_dims, error::kInvalidArgument)
       << "expected pivots and tensor to have the same batch dimensions, got "
       << ToString(tensor_batch_dims) << " and " << ToString(pivots_batch_dims);
+  return absl::OkStatus();
+}
+
+// Applies permutation represented by `pivots` in-place to either rows or
+// columns of `tensor`. If inverse=true, applies the inverse permutation.
+absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
+                                bool to_rows, bool inverse) {
+  const int64_t size = to_rows ? tensor.size(-2) : tensor.size(-1);
+  TT_RETURN_IF_ERROR(ValidatePivotsShape(tensor, pivots, size));
 
   if (tensor.numel() == 0 || pivots.numel() == 0) {
     return absl::OkStatus();
@@ -458,6 +464,159 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
   const at::Tensor permuted =
       at::gather(tensor_flat, to_rows ? 1 : 2, gather_indices);
   tensor.copy_(permuted.reshape(tensor.sizes()));
+  return absl::OkStatus();
+}
+
+absl::Status ValidateLuUnpackInputs(const at::Tensor& lu_data,
+                                    const at::Tensor& lu_pivots,
+                                    bool unpack_pivots, const at::Tensor& p,
+                                    const at::Tensor& l, const at::Tensor& u) {
+  TT_RET_CHECK(IsPrivateUse1Device(p) && IsPrivateUse1Device(l) &&
+                   IsPrivateUse1Device(u),
+               error::kInvalidArgument)
+      << "expected all output tensors to be on "
+      << GetPrivateUse1DeviceDebugName() << ", got " << p.device() << ", "
+      << l.device() << ", and " << u.device();
+  TT_RET_CHECK(lu_data.dim() >= 2, error::kInvalidArgument)
+      << "expected lu_data to have at least 2 dimensions, got "
+      << lu_data.dim();
+  TT_RETURN_IF_ERROR(ValidateOutDtype(p, lu_data.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(l, lu_data.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(u, lu_data.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  if (unpack_pivots) {
+    TT_RET_CHECK(lu_pivots.scalar_type() == at::kInt, error::kInvalidArgument)
+        << "expected lu_pivots dtype to be int32, got "
+        << ToString(lu_pivots.scalar_type());
+    TT_RET_CHECK(lu_pivots.dim() >= 1, error::kInvalidArgument)
+        << "expected lu_pivots to have at least 1 dimension, got "
+        << lu_pivots.dim();
+    Dimensions expected_pivots_dims(lu_data.sizes().begin(),
+                                    lu_data.sizes().end() - 2);
+    expected_pivots_dims.push_back(
+        std::min(lu_data.size(-2), lu_data.size(-1)));
+    TT_RET_CHECK(CopyIntVector(lu_pivots.sizes()) == expected_pivots_dims,
+                 error::kInvalidArgument)
+        << "expected lu_pivots to have shape " << ToString(expected_pivots_dims)
+        << ", got " << ToString(lu_pivots.sizes());
+  }
+  return absl::OkStatus();
+}
+
+absl::Status UnpackLuData(const at::Tensor& lu_data, bool unpack_data,
+                          const Dimensions& batch_dims, int64_t m, int64_t n,
+                          int64_t k, at::Tensor& l, at::Tensor& u) {
+  if (!unpack_data) {
+    TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(l, {0}));
+    TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(u, {0}));
+    return absl::OkStatus();
+  }
+  const at::Tensor lu_src = (lu_data.is_alias_of(l) || lu_data.is_alias_of(u))
+                                ? lu_data.clone()
+                                : lu_data;
+  Dimensions l_dims = batch_dims;
+  l_dims.reserve(l_dims.size() + 2);
+  l_dims.push_back(m);
+  l_dims.push_back(k);
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(l, l_dims));
+
+  Dimensions u_dims = batch_dims;
+  u_dims.reserve(u_dims.size() + 2);
+  u_dims.push_back(k);
+  u_dims.push_back(n);
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(u, u_dims));
+
+  l.zero_();
+  u.zero_();
+  if (k > 0) {
+    l.add_(at::tril(lu_src.narrow(-1, 0, k), /*diagonal=*/-1));
+    l.add_(at::eye(m, k, lu_src.options()));
+    u.add_(at::triu(lu_src.narrow(-2, 0, k), /*diagonal=*/0));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status UnpackLuPivots(const at::Tensor& lu_pivots, bool unpack_pivots,
+                            const Dimensions& batch_dims, int64_t m,
+                            at::Tensor& p) {
+  if (!unpack_pivots) {
+    TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(p, {0}));
+    return absl::OkStatus();
+  }
+  Dimensions p_dims = batch_dims;
+  p_dims.reserve(p_dims.size() + 2);
+  p_dims.push_back(m);
+  p_dims.push_back(m);
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(p, p_dims));
+
+  // Build permutation matrix from pivots.
+  // pivots[..., i] = j means that in the i-th step of the algorithm, the i-th
+  // row was swapped with the j-th row. (So j >= i).
+  if (p.numel() > 0) {
+    p.copy_(at::eye(m, p.options()));
+  }
+  return ApplyPivotsInPlace(p, lu_pivots, /*to_rows=*/true, /*inverse=*/false);
+}
+
+absl::Status ValidateLuSolveDtypesAndDevice(const at::Tensor& lu,
+                                            const at::Tensor& pivots,
+                                            const at::Tensor& b,
+                                            const at::Tensor& out) {
+  TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
+      << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << out.device();
+  TT_RETURN_IF_ERROR(ValidateLuSupportedDtype(lu));
+  TT_RET_CHECK(lu.scalar_type() == b.scalar_type(), error::kInvalidArgument)
+      << "expected lu and b to have the same dtype, got "
+      << ToString(lu.scalar_type()) << " and " << ToString(b.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, b.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RET_CHECK(pivots.scalar_type() == at::kInt, error::kInvalidArgument)
+      << "expected pivots dtype to be int32, got "
+      << ToString(pivots.scalar_type());
+  return absl::OkStatus();
+}
+
+absl::Status ValidateLuSolveShapes(const at::Tensor& lu,
+                                   const at::Tensor& pivots,
+                                   const at::Tensor& b, bool left) {
+  TT_RET_CHECK(lu.dim() >= 2, error::kInvalidArgument)
+      << "expected lu to have at least 2 dimensions, got " << lu.dim();
+  TT_RET_CHECK(lu.size(-2) == lu.size(-1), error::kInvalidArgument)
+      << "expected lu to be square, got " << lu.size(-2) << " and "
+      << lu.size(-1);
+  TT_RET_CHECK(pivots.dim() >= 1, error::kInvalidArgument)
+      << "expected pivots to have at least 1 dimension, got " << pivots.dim();
+  // TODO: PyTorch checks that `b` is able to be broadcasted into `lu`
+  // batch dimensions.
+  //
+  // See link below:
+  // https://github.com/pytorch/pytorch/blob/b323a6e5a358588d36e6f797ac81d89bf199546c/aten/src/ATen/native/BatchLinearAlgebra.cpp#L684
+  TT_RET_CHECK(b.dim() == lu.dim(), error::kInvalidArgument)
+      << "expected b to have the same number of dimensions as lu (" << lu.dim()
+      << "), got " << b.dim();
+  TT_RET_CHECK(
+      b.sizes().slice(0, b.dim() - 2) == lu.sizes().slice(0, lu.dim() - 2),
+      error::kInvalidArgument)
+      << "expected b and lu to have the same batch dimensions, got "
+      << ToString(b.sizes().slice(0, b.dim() - 2)) << " and "
+      << ToString(lu.sizes().slice(0, lu.dim() - 2));
+  if (left) {
+    TT_RET_CHECK(b.size(-2) == lu.size(-2), error::kInvalidArgument)
+        << "expected b second-to-last dimension to match the second-to-last "
+           "dimension of lu ("
+        << lu.size(-2) << ") when left=True, got " << b.size(-2);
+  } else {
+    TT_RET_CHECK(b.size(-1) == lu.size(-1), error::kInvalidArgument)
+        << "expected b last dimension to match the last dimension of lu ("
+        << lu.size(-1) << ") when left=False, got " << b.size(-1);
+  }
+  TT_RETURN_IF_ERROR(ValidatePivotsShape(lu, pivots, lu.size(-1)));
+  TT_RET_CHECK(pivots.size(-1) == lu.size(-1), error::kInvalidArgument)
+      << "expected pivots size to match the size of the matrix (" << lu.size(-1)
+      << "), got " << pivots.size(-1);
   return absl::OkStatus();
 }
 
@@ -535,72 +694,19 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
       (lu_data, lu_pivots, IgnoreInCacheKey(unpack_data, "Doesn't affect SHLO"),
        IgnoreInCacheKey(unpack_pivots, "Doesn't affect SHLO"), p, l, u),
       {
-        if (unpack_data || unpack_pivots) {
-          TT_CHECK_THROW(lu_data.dim() >= 2, error::kInvalidArgument)
-              << "expected lu_data to have at least 2 dimensions, got "
-              << lu_data.dim();
-        }
+        TT_THROW_IF_ERROR(
+            ValidateLuUnpackInputs(lu_data, lu_pivots, unpack_pivots, p, l, u));
 
-        int64_t m = lu_data.size(-2);
-        int64_t n = lu_data.size(-1);
-        int64_t k = std::min(m, n);
+        const int64_t m = lu_data.size(-2);
+        const int64_t n = lu_data.size(-1);
+        const int64_t k = std::min(m, n);
         Dimensions batch_dims =
             CopyIntVector(lu_data.sizes().slice(0, lu_data.dim() - 2));
 
-        if (unpack_pivots) {
-          TT_THROW_IF_ERROR(ValidateOutDtype(p, lu_data.scalar_type(),
-                                             /*allow_out_dtype_cast=*/false));
-        }
-        if (unpack_data) {
-          TT_THROW_IF_ERROR(ValidateOutDtype(l, lu_data.scalar_type(),
-                                             /*allow_out_dtype_cast=*/false));
-          TT_THROW_IF_ERROR(ValidateOutDtype(u, lu_data.scalar_type(),
-                                             /*allow_out_dtype_cast=*/false));
-        }
-
-        if (unpack_data) {
-          Dimensions l_dims = batch_dims;
-          l_dims.reserve(l_dims.size() + 2);
-          l_dims.push_back(m);
-          l_dims.push_back(k);
-          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(l, l_dims));
-
-          Dimensions u_dims = batch_dims;
-          u_dims.reserve(u_dims.size() + 2);
-          u_dims.push_back(k);
-          u_dims.push_back(n);
-          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(u, u_dims));
-
-          l.zero_();
-          u.zero_();
-          if (k > 0) {
-            l.add_(at::tril(lu_data.narrow(-1, 0, k), /*diagonal=*/-1));
-            l.add_(at::eye(m, k, lu_data.options()));
-            u.add_(at::triu(lu_data.narrow(-2, 0, k), /*diagonal=*/0));
-          }
-        }
-
-        if (unpack_pivots) {
-          TT_CHECK_THROW(lu_pivots.dim() >= 1, error::kInvalidArgument)
-              << "expected lu_pivots to have at least 1 dimension, got "
-              << lu_pivots.dim();
-
-          Dimensions p_dims = batch_dims;
-          p_dims.reserve(p_dims.size() + 2);
-          p_dims.push_back(m);
-          p_dims.push_back(m);
-          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(p, p_dims));
-
-          // Build permutation matrix from pivots.
-          // pivots[..., i] = j means that in the i-th step of the
-          // algorithm, the i-th row was swapped with the j-th row. (So j
-          // >= i).
-          if (p.numel() > 0) {
-            p.copy_(at::eye(m, p.options()));
-          }
-          TT_THROW_IF_ERROR(ApplyPivotsInPlace(p, lu_pivots, /*to_rows=*/true,
-                                               /*inverse=*/false));
-        }
+        TT_THROW_IF_ERROR(
+            UnpackLuData(lu_data, unpack_data, batch_dims, m, n, k, l, u));
+        TT_THROW_IF_ERROR(
+            UnpackLuPivots(lu_pivots, unpack_pivots, batch_dims, m, p));
         return {p, l, u};
       });
 }
@@ -611,37 +717,12 @@ at::Tensor& AtenLinalgLuSolveOut(const at::Tensor& lu, const at::Tensor& pivots,
   TT_KERNEL(
       OpName::kLinalgLuSolveOut, param_keys,
       (lu, pivots, b, left, adjoint, out), {
-        TT_THROW_IF_ERROR(ValidateOutDtype(out, b.scalar_type(),
-                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateLuSolveDtypesAndDevice(lu, pivots, b, out));
+        TT_THROW_IF_ERROR(ValidateLuSolveShapes(lu, pivots, b, left));
+        const at::Tensor lu_src = out.is_alias_of(lu) ? lu.clone() : lu;
         TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, b.sizes()));
-        TT_CHECK_THROW(lu.dim() >= 2, error::kInvalidArgument)
-            << "expected lu to have at least 2 dimensions, got " << lu.dim();
-        TT_CHECK_THROW(lu.size(-2) == lu.size(-1), error::kInvalidArgument)
-            << "expected lu to be square, got " << lu.size(-2) << " and "
-            << lu.size(-1);
-        TT_CHECK_THROW(pivots.dim() >= 1, error::kInvalidArgument)
-            << "expected pivots to have at least 1 dimension, got "
-            << pivots.dim();
-        // TODO: PyTorch checks that `b` is able to be broadcasted into `lu`
-        // batch dimensions.
-        //
-        // See link below:
-        // https://github.com/pytorch/pytorch/blob/b323a6e5a358588d36e6f797ac81d89bf199546c/aten/src/ATen/native/BatchLinearAlgebra.cpp#L684
-        TT_CHECK_THROW(b.dim() == lu.dim(), error::kInvalidArgument)
-            << "expected b to have the same number of dimensions as lu ("
-            << lu.dim() << "), got " << b.dim();
-        if (left) {
-          TT_CHECK_THROW(b.size(-2) == lu.size(-2), error::kInvalidArgument)
-              << "expected b second-to-last dimension to match the "
-                 "second-to-last dimension of lu ("
-              << lu.size(-2) << ") when left=True, got " << b.size(-2);
-        } else {
-          TT_CHECK_THROW(b.size(-1) == lu.size(-1), error::kInvalidArgument)
-              << "expected b last dimension to match the last dimension of lu ("
-              << lu.size(-1) << ") when left=False, got " << b.size(-1);
-        }
 
-        if (lu.numel() == 0 || b.numel() == 0) return out;
+        if (lu_src.numel() == 0 || b.numel() == 0) return out;
 
         // Note: the four cases we are dealing with here are
         // 1. left=True, adjoint=False: P L U X = B
@@ -665,7 +746,7 @@ at::Tensor& AtenLinalgLuSolveOut(const at::Tensor& lu, const at::Tensor& pivots,
         };
 
         const auto solve_triangular_step =
-            [lu, left, adjoint, &param_keys = param_keys](
+            [lu_src, left, adjoint, &param_keys = param_keys](
                 at::Tensor& t, bool upper, bool unitriangular,
                 std::string_view step_name) -> absl::Status {
           TT_ASSIGN_OR_RETURN(mlir::ElementType out_dtype,
@@ -678,7 +759,7 @@ at::Tensor& AtenLinalgLuSolveOut(const at::Tensor& lu, const at::Tensor& pivots,
                                             .left = left,
                                             .unitriangular = unitriangular,
                                             .adjoint = adjoint}),
-              {lu, t}, t,
+              {lu_src, t}, t,
               {.out_dtype = out_dtype,
                .out_dims = t.sizes(),
                .op_param_cache_keys = std::move(step_keys)});

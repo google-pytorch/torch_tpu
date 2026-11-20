@@ -16,9 +16,11 @@
 
 #include "csrc/experimental/precompiled_kernels/nonzero_indices.h"
 
+#include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -31,17 +33,12 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/experimental/precompiled_kernels/kernel_utils.h"
-#include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "xla/client/executable_build_options.h"
-#include "xla/hlo/builder/xla_computation.h"
-#include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -52,19 +49,21 @@
 namespace torch_tpu {
 namespace {
 
-// Identifies a precompiled nonzero indices kernel. The value is used as the
-// `id_key` of the kernel's `CompilationCacheKey`, which is persisted in the
-// names of the tier-2 cache entries, so values must be explicit, non-negative,
-// and must never be reused or renumbered. -1 is reserved for keys that don't
-// identify a dynamic kernel.
+// Identifies a precompiled nonzero indices kernel. Kernels of different input
+// ranks are told apart by their shapeless keys, so they may share an id. The
+// value is used as the `id_key` of the kernel's `CompilationCacheKey`, which is
+// persisted in the names of the tier-2 cache entries, so values must be
+// explicit, non-negative, and must never be reused or renumbered. -1 is
+// reserved for keys that don't identify a dynamic kernel.
 enum class NonzeroKernelId : int {
   // The nonzero indices kernel for 2D inputs.
   kNonzeroKGreaterThan2 = 1,
-  // The nonzero indices kernels for 1D inputs, named by input tile.
-  kNonzeroInputTile1024 = 2,
-  kNonzeroInputTile512 = 3,
-  kNonzeroInputTile256 = 4,
-  kNonzeroInputTile128 = 5,
+  // The nonzero indices kernels named by the minor dimension of their input
+  // tile: 1D inputs, and 3D to 8D inputs with kNonzeroInputMinorTile128.
+  kNonzeroInputMinorTile1024 = 2,
+  kNonzeroInputMinorTile512 = 3,
+  kNonzeroInputMinorTile256 = 4,
+  kNonzeroInputMinorTile128 = 5,
 };
 
 using kiln::Scalar;
@@ -84,6 +83,13 @@ constexpr int64_t kLaneShift = 7;     // kLanes == 1 << kLaneShift
 constexpr int64_t kTileShift = 10;    // kTile == 1 << kTileShift
 constexpr int64_t kWindowShift = 14;  // kWindow == 1 << kWindowShift
 
+// Storage rows per 128 coordinate tuples in each word plane of the S64[K,rank]
+// output: the second-minor tile of its layout {0,1:T(P,128)}, which rounds the
+// rank up to a power of two.
+constexpr int64_t TileRows(int64_t rank) {
+  return static_cast<int64_t>(std::bit_ceil(static_cast<uint64_t>(rank)));
+}
+
 // Index phase of nonzero for a rank-two F32 input: write the (row, column)
 // coordinates of every nonzero element, in input row-major order, into the
 // caller's native S64[K,2] allocation. The caller already knows K, so nothing
@@ -92,7 +98,9 @@ constexpr int64_t kWindowShift = 14;  // kWindow == 1 << kWindowShift
 // elements, since every one found is written.
 //
 // A rank-one F32 input is handled as the single row of a rank-two input, and
-// only its column coordinates are written, into an S64[K,1] allocation.
+// only its column coordinates are written, into an S64[K,1] allocation. An
+// input of rank 3 to 8 is handled as its [M,N] slices in row-major order, in
+// one loop whose index is split into the leading coordinates.
 //
 // This is a stream compaction: each nonzero's rank is computed directly and the
 // element is routed to it, at a fixed number of vector operations per input
@@ -127,10 +135,9 @@ constexpr int64_t kWindowShift = 14;  // kWindow == 1 << kWindowShift
 //      at position 3 behind two, so round 0 moves a to slot 0 and round 1
 //      moves b to slot 1.
 //
-//   4. Emit. Append copies the compacted row and column coordinates into
-//      staging planes at the current output offset and flushes to HBM once
-//      1024 coordinates have accumulated (only columns for a rank-one input).
-//      Only this step touches HBM.
+//   4. Emit. Append copies the compacted coordinates into staging planes at
+//      the current output offset and flushes to HBM once 1024 nonzeros have
+//      accumulated. Only this step touches HBM.
 //
 // Input arrives by DMA eight physical rows at a time, but compaction always
 // visits logical rows in order, so the output never needs reordering. A row
@@ -144,8 +151,10 @@ constexpr int64_t kWindowShift = 14;  // kWindow == 1 << kWindowShift
 // nonnegative and fit in a low word, so ZeroHighWords clears the high plane
 // once and nothing writes it again. Every 128 pairs occupy two consecutive
 // storage rows: 128 row indices, then their 128 column indices. For a rank-one
-// input, every 128 indices occupy one storage row. Every write lands inside
-// the allocation's ordinary tile padding, so the caller need not over-allocate.
+// input, every 128 indices occupy one storage row. Above rank two, every 128
+// tuples occupy TileRows(rank) storage rows, one per coordinate and then tile
+// padding. Every write lands inside the allocation's ordinary tile padding, so
+// the caller need not over-allocate.
 //
 // Written in Kiln, so a `kiln::Scalar` or `kiln::Tile` is a device value and
 // `kiln::For` / `kiln::If` emit device control flow; the C++ runs once at
@@ -194,9 +203,10 @@ class NonzeroKernel {
   NonzeroKernel(kiln::HbmRef x, kiln::HbmRef output)
       : x_(x),
         output_(output),
-        stage_rows_(kiln::AllocaVmem(kiln::i32(2 * kSublanes, kLanes))),
-        stage_cols_(kiln::AllocaVmem(kiln::i32(2 * kSublanes, kLanes))),
-        packed_(kiln::AllocaVmem(kiln::i32(kSlots, 2 * kSublanes, kLanes))),
+        tile_rows_(TileRows(x.rank())),
+        stage_(kiln::AllocaVmem(kiln::i32(x.rank(), 2 * kSublanes, kLanes))),
+        packed_(kiln::AllocaVmem(
+            kiln::i32(kSlots, tile_rows_ * kSublanes, kLanes))),
         fill_(kiln::AllocaSmem(kiln::i32())),
         flush_count_(kiln::AllocaSmem(kiln::i32())),
         flush_sems_(kiln::AllocaDmaSemaphore({kSlots})),
@@ -205,14 +215,14 @@ class NonzeroKernel {
         pos_(sublane_ * kLanes + lane_),
         tri_(Triangle()),
         // A rank-one input is a single row.
-        m_(x.rank() == 2 ? x.Dim(0) : kiln::I32(1)),
+        m_(x.rank() == 1 ? kiln::I32(1) : x.Dim(x.rank() - 2)),
         n_(x.Dim(x.rank() - 1)) {}
 
   void Build() {
     kiln::Store(fill_, kiln::I32(0));
     kiln::Store(flush_count_, kiln::I32(0));
-    kiln::Store(stage_rows_, kiln::Zeros(kiln::i32(2 * kSublanes, kLanes)));
-    kiln::Store(stage_cols_, kiln::Zeros(kiln::i32(2 * kSublanes, kLanes)));
+    kiln::Store(stage_,
+                kiln::Zeros(kiln::i32(x_.rank(), 2 * kSublanes, kLanes)));
     ZeroHighWords();
     ProcessInput();
     FinishOutput();
@@ -229,9 +239,8 @@ class NonzeroKernel {
     const Scalar rows = output_.Dim(0);
     const Scalar half = rows >> 1;
     const Scalar end = rows - (half & (kZeroRows - 1));
-    // Borrow a flush buffer as a zero source before any flush runs.
-    kiln::VmemRef zeros = packed_(0);
-    kiln::Store(zeros, kiln::Zeros(kiln::i32(2 * kSublanes, kLanes)));
+    // Borrow a zeroed staging plane as a zero source before anything is staged.
+    const kiln::VmemRef zeros = stage_(0);
     kiln::For(half, end, kZeroRows, [this, &zeros](Scalar q) {
       kiln::SyncCopy(zeros, OutputRows(q, kZeroRows));
     });
@@ -240,25 +249,39 @@ class NonzeroKernel {
     });
   }
 
-  // Scan row windows when a row exceeds scratch or the input is rank one;
-  // otherwise scan row blocks.
+  // Scan a rank-one input by row windows. Otherwise scan each [M,N] slice in
+  // row-major order, with its leading indices in `lead_`.
   void ProcessInput() {
     if (x_.rank() == 1) {
       ProcessWideRows();
       return;
     }
-    kiln::If(
-        n_ > kWindow, [this] { ProcessWideRows(); },
-        [this] {
-          const Window w = MakeWindow(kiln::I32(0), n_);
-          const Scalar row_blocks = (m_ + (kSublanes - 1)) >> kSublaneShift;
-          kiln::EmitPipeline(
-              0, row_blocks,
-              {InputBlocks([this, w](Scalar rb) { return BlockRows(w, rb); })},
-              /*outputs=*/{}, [this, &w](const kiln::PipelineStep& s) {
-                ProcessBlock(w, s.inputs[0].ref, s.step << kSublaneShift);
-              });
-        });
+    // Each slice fills at least one 4 KiB tile of HBM, so this fits in S32.
+    Scalar slices = kiln::I32(1);
+    for (int64_t axis = 0; axis < x_.rank() - 2; ++axis) {
+      slices = slices * x_.Dim(axis);
+    }
+    kiln::For(slices, [this](Scalar slice) {
+      // Split the slice index into leading indices, innermost first.
+      lead_.clear();
+      for (int64_t axis = x_.rank() - 3; axis >= 0; --axis) {
+        lead_.insert(lead_.begin(), slice % x_.Dim(axis));
+        slice = slice / x_.Dim(axis);
+      }
+      kiln::If(
+          n_ > kWindow, [this] { ProcessWideRows(); },
+          [this] {
+            const Window w = MakeWindow(kiln::I32(0), n_);
+            const Scalar row_blocks = (m_ + (kSublanes - 1)) >> kSublaneShift;
+            kiln::EmitPipeline(
+                0, row_blocks, {InputBlocks([this, w](Scalar rb) {
+                  return BlockRows(w, rb);
+                })},
+                /*outputs=*/{}, [this, &w](const kiln::PipelineStep& s) {
+                  ProcessBlock(w, s.inputs[0].ref, s.step << kSublaneShift);
+                });
+          });
+    });
   }
 
   // Above kWindow columns, scan each row window by window to preserve order.
@@ -289,23 +312,27 @@ class NonzeroKernel {
   }
 
   // Input stream whose step `s` holds `region(s)` of the input, prefetched
-  // while step `s - 1` is compacted.
+  // while step `s - 1` is compacted, with the leading dimensions squeezed out.
   kiln::PipelineOperand InputBlocks(
       absl::AnyInvocable<kiln::BlockRegion(Scalar) const> region) {
-    const kiln::Dimensions block_shape =
-        x_.rank() == 2 ? kiln::Dimensions{kSublanes, kWindow}
-                       : kiln::Dimensions{kWindow};
+    kiln::BlockShape block_shape = x_.rank() == 1
+                                       ? kiln::BlockShape{kWindow}
+                                       : kiln::BlockShape{kSublanes, kWindow};
+    block_shape.insert(block_shape.begin(), lead_.size(), kiln::squeezed);
     return {.hbm = x_, .block_shape = block_shape, .region = std::move(region)};
   }
 
-  // Eight-row block `rb` of the input, over the columns of `w` (or the window
-  // alone when the input is rank one).
+  // Eight-row block `rb` of the [M,N] slice at `lead_`, over the columns of
+  // `w` (or the window alone when the input is rank one).
   kiln::BlockRegion BlockRows(const Window& w, Scalar rb) const {
-    if (x_.rank() == 2) {
-      return {.offsets = {rb * kSublanes, w.base},
-              .sizes = {kSublanes, w.n_pad}};
+    if (x_.rank() == 1) {
+      return {.offsets = {w.base}, .sizes = {w.n_pad}};
     }
-    return {.offsets = {w.base}, .sizes = {w.n_pad}};
+    kiln::BlockRegion region = {.offsets = {rb * kSublanes, w.base},
+                                .sizes = {kSublanes, w.n_pad}};
+    region.offsets.insert(region.offsets.begin(), lead_.begin(), lead_.end());
+    region.sizes.insert(region.sizes.begin(), lead_.size(), 1);
+    return region;
   }
 
   // Consume rows in logical order, independent of physical input tiling.
@@ -322,9 +349,9 @@ class NonzeroKernel {
                      Scalar row_in_block, Scalar row) {
     const Scalar offset = tile_idx * kTile;
     const kiln::VmemRef segment =
-        x_.rank() == 2
-            ? block(kiln::Slice(row_in_block, 1), kiln::Slice(offset, kTile))
-            : block(kiln::Slice(offset, kTile));
+        x_.rank() == 1
+            ? block(kiln::Slice(offset, kTile))
+            : block(kiln::Slice(row_in_block, 1), kiln::Slice(offset, kTile));
     const Tile values = kiln::Load(segment).Reshape({kSublanes, kLanes});
     const Scalar col0 = w.base + offset;
     const Tile flags = NonzeroFlags(values, row, col0);
@@ -402,53 +429,62 @@ class NonzeroKernel {
              [this, fill] { Flush((fill >> kTileShift) << kSublaneShift); });
   }
 
-  // Masked store of live coordinates into staging rows starting at `first`.
+  // Masked store of live coordinates into staging rows starting at `first`:
+  // the leading indices, the row (above rank one), then the column.
   void Stage(Scalar first, Tile words, const Stream& stream) {
     const Tile live = (words & kAlive) != 0;
     const int64_t rows = words.dims()[0];
-    kiln::Store(stage_rows_(kiln::Slice(first, rows)), words.Splat(stream.row),
-                {.mask = live});
-    kiln::Store(stage_cols_(kiln::Slice(first, rows)),
-                stream.col0 + (words & (kTile - 1)), {.mask = live});
+    std::vector<Tile> coordinates;
+    coordinates.reserve(x_.rank());
+    for (const Scalar& index : lead_) {
+      coordinates.push_back(words.Splat(index));
+    }
+    if (x_.rank() != 1) {
+      coordinates.push_back(words.Splat(stream.row));
+    }
+    coordinates.push_back(stream.col0 + (words & (kTile - 1)));
+    for (size_t c = 0; c < coordinates.size(); ++c) {
+      kiln::Store(stage_(c, kiln::Slice(first, rows)), coordinates[c],
+                  {.mask = live});
+    }
   }
 
-  // DMA descriptor from flush `slot` to the `rank * 8` output rows at
-  // `rank * q`. `Wait()` only depends on the semaphore and transfer size, so
-  // any `q` suffices.
+  // DMA descriptor from flush `slot` to the `tile_rows_ * 8` output rows at
+  // `tile_rows_ * q`. `Wait()` only depends on the semaphore and transfer size,
+  // so any `q` suffices.
   kiln::AsyncCopyDescriptor FlushCopy(kiln::IndexArg slot, Scalar q) {
-    const int64_t rows = x_.rank() * kSublanes;
+    const int64_t rows = tile_rows_ * kSublanes;
     return kiln::MakeAsyncCopy(packed_(slot, kiln::Slice(0, rows)),
-                               OutputRows(x_.rank() * q, rows),
+                               OutputRows(tile_rows_ * q, rows),
                                flush_sems_(slot));
   }
 
-  // Interleave 1024 staged (row, col) pairs, or copy 1024 indices for a
-  // rank-one input, to HBM and shift overflow down.
+  // Interleave 1024 staged tuples, or copy 1024 indices for a rank-one input,
+  // to HBM and shift overflow down.
   void Flush(Scalar q) {
     const Scalar flushes = kiln::Load(flush_count_);
     const Scalar slot = flushes & (kSlots - 1);
     const kiln::AsyncCopyDescriptor copy = FlushCopy(slot, q);
     kiln::If(flushes >= kSlots, [&copy] { copy.Wait(); });
     kiln::VmemRef packed = packed_(slot);
-    if (x_.rank() == 2) {
-      for (int r = 0; r < kSublanes; ++r) {
-        kiln::Store(packed(kiln::Slice(2 * r, 1)),
-                    kiln::Load(stage_rows_(kiln::Slice(r, 1))));
-        kiln::Store(packed(kiln::Slice(2 * r + 1, 1)),
-                    kiln::Load(stage_cols_(kiln::Slice(r, 1))));
-      }
-    } else {
+    if (x_.rank() == 1) {
       kiln::Store(packed(kiln::Slice(0, kSublanes)),
-                  kiln::Load(stage_cols_(kiln::Slice(0, kSublanes))));
+                  kiln::Load(stage_(0, kiln::Slice(0, kSublanes))));
+    } else {
+      for (int r = 0; r < kSublanes; ++r) {
+        for (int c = 0; c < x_.rank(); ++c) {
+          kiln::Store(packed(kiln::Slice(tile_rows_ * r + c, 1)),
+                      kiln::Load(stage_(c, kiln::Slice(r, 1))));
+        }
+      }
     }
     copy.Start();
     kiln::Store(flush_count_, flushes + 1);
-    for (kiln::VmemRef stage : {stage_rows_, stage_cols_}) {
-      kiln::Store(stage(kiln::Slice(0, kSublanes)),
-                  kiln::Load(stage(kiln::Slice(kSublanes, kSublanes))));
-      kiln::Store(stage(kiln::Slice(kSublanes, kSublanes)),
-                  kiln::Zeros(kiln::i32(kSublanes, kLanes)));
-    }
+    kiln::Store(
+        stage_(kiln::all, kiln::Slice(0, kSublanes)),
+        kiln::Load(stage_(kiln::all, kiln::Slice(kSublanes, kSublanes))));
+    kiln::Store(stage_(kiln::all, kiln::Slice(kSublanes, kSublanes)),
+                kiln::Zeros(kiln::i32(x_.rank(), kSublanes, kLanes)));
   }
 
   // Drain in-flight flushes and write any remaining partial stage rows.
@@ -461,25 +497,25 @@ class NonzeroKernel {
     const Scalar q = (count >> kTileShift) << kSublaneShift;
     const Scalar rows = ((count & (kTile - 1)) + (kLanes - 1)) >> kLaneShift;
     kiln::For(rows, [this, q](Scalar r) {
-      const Scalar out = x_.rank() * (q + r);
-      if (x_.rank() == 2) {
-        kiln::SyncCopy(stage_rows_(kiln::Slice(r, 1)), OutputRows(out, 1));
+      const Scalar out = tile_rows_ * (q + r);
+      for (int c = 0; c < x_.rank(); ++c) {
+        kiln::SyncCopy(stage_(c, kiln::Slice(r, 1)), OutputRows(out + c, 1));
       }
-      kiln::SyncCopy(stage_cols_(kiln::Slice(r, 1)),
-                     OutputRows(out + (x_.rank() - 1), 1));
     });
   }
 
-  kiln::HbmRef x_;       // F32[M,N] or F32[N] input
-  kiln::HbmRef output_;  // S32 view of native S64 storage
-  // (16, 128) coordinate planes; rows are staged but unused for rank one.
-  kiln::VmemRef stage_rows_, stage_cols_;
-  kiln::VmemRef packed_;             // (kSlots, 16, 128) flush slots
-  kiln::SmemRef fill_;               // Total appended coordinates
-  kiln::SmemRef flush_count_;        // Flushes issued
+  kiln::HbmRef x_;             // F32 input of rank 1 to 8
+  kiln::HbmRef output_;        // S32 view of native S64 storage
+  const int64_t tile_rows_;    // Storage rows per 128 tuples; see TileRows
+  kiln::VmemRef stage_;        // (rank, 16, 128) coordinate planes
+  kiln::VmemRef packed_;       // (kSlots, tile_rows_ * 8, 128) flush slots
+  kiln::SmemRef fill_;         // Total appended coordinates
+  kiln::SmemRef flush_count_;  // Flushes issued
   kiln::SemaphoreArray flush_sems_;  // Flush DMA completion per slot
   Tile lane_, sublane_, pos_, tri_;  // Constant vectors
-  Scalar m_, n_;                     // Runtime input extents
+  Scalar m_, n_;                     // Runtime extents of an [M,N] slice
+  // Leading indices of the [M,N] slice being emitted.
+  std::vector<Scalar> lead_;
 };
 
 // Define the Mosaic memrefs: input, private destination and aliased result.
@@ -500,10 +536,10 @@ absl::StatusOr<kiln::Kernel> BuildNonzeroIndices(int64_t rank) {
                             });
 }
 
-// Returns an unbounded-dynamic shape of the tile's rank with a row-major
-// tiled layout.
-xla::Shape MakeUnbounded(const xla::PrimitiveType type, const xla::Tile& tile) {
-  const int64_t rank = tile.dimensions().size();
+// Returns an unbounded-dynamic shape of rank `rank` with a row-major layout
+// tiled by `tile`.
+xla::Shape MakeUnbounded(const xla::PrimitiveType type, const int64_t rank,
+                         const xla::Tile& tile) {
   xla::Shape shape = xla::ShapeUtil::MakeShape(
       type, Dimensions(rank, xla::Shape::kUnboundedSize),
       std::vector<bool>(rank, true));
@@ -513,26 +549,27 @@ xla::Shape MakeUnbounded(const xla::PrimitiveType type, const xla::Tile& tile) {
 
 // Maps the logical S64[K,D] destination onto the S32[R,128] view the Mosaic
 // kernel was compiled against; see the buffer contract in the header. Both
-// occupy 1024 * D * ceil(K/128) bytes.
+// occupy 1024 * TileRows(D) * ceil(K/128) bytes.
 absl::StatusOr<xla::Shape> DestinationPhysicalShape(const Shape& logical,
                                                     const xla::Layout& layout) {
-  const int64_t rows =
-      2 * logical.dimensions()[1] * ((logical.dimensions()[0] + 127) / 128);
+  const int64_t rows = 2 * TileRows(logical.dimensions()[1]) *
+                       ((logical.dimensions()[0] + 127) / 128);
   xla::Shape shape = xla::ShapeUtil::MakeShape(xla::S32, {rows, 128});
   *shape.mutable_layout() = layout;
   return shape;
 }
 
 // Bitcasts the kernel's only result, the S32[R,128] destination, back to the
-// logical S64[K,D]{0,1:T(D,128)} output; see the buffer contract in the
-// header.
+// logical S64[K,D]{0,1:T(P,128)} output, P = TileRows(D); see the buffer
+// contract in the header.
 absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
 BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
                         const absl::Span<const Shape> logical_output_shapes) {
   const Shape& logical = logical_output_shapes[0];
   // The kernel's documented destination layout; see the buffer contract in
-  // the header. K > D keeps XLA's default S64[K,D] layout at {0,1:T(D,128)}.
-  const xla::Layout layout({0, 1}, {xla::Tile({logical.dimensions()[1], 128})});
+  // the header. K > P keeps XLA's default S64[K,D] layout at {0,1:T(P,128)}.
+  const xla::Layout layout(
+      {0, 1}, {xla::Tile({TileRows(logical.dimensions()[1]), 128})});
   const Dimensions dims = logical.dimensions();
   TT_ASSIGN_OR_RETURN(
       results[0],
@@ -549,16 +586,20 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
 // layout.
 template <int kRank, int64_t kTileMinorDim>
 xla::Layout NonzeroInputLayout() {
-  return kRank == 2 ? xla::Layout({1, 0}, {xla::Tile({8, kTileMinorDim})})
-                    : xla::Layout({0}, {xla::Tile({kTileMinorDim})});
+  Indices minor_to_major(kRank);
+  std::iota(minor_to_major.rbegin(), minor_to_major.rend(), 0);
+  return xla::Layout(minor_to_major,
+                     {kRank == 1 ? xla::Tile({kTileMinorDim})
+                                 : xla::Tile({8, kTileMinorDim})});
 }
 
 // Returns the parameters for the nonzero indices kernel.
 template <int kRank, int64_t kTileMinorDim>
 std::vector<xla::Shape> NonzeroParameters() {
   const xla::Shape input = MakeUnbounded(
-      xla::F32, NonzeroInputLayout<kRank, kTileMinorDim>().tiles()[0]);
-  const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
+      xla::F32, kRank, NonzeroInputLayout<kRank, kTileMinorDim>().tiles()[0]);
+  const xla::Shape output_view =
+      MakeUnbounded(xla::S32, /*rank=*/2, xla::Tile({1, 128}));
   xla::Shape output_dims = xla::ShapeUtil::MakeShape(xla::S32, {2});
   *output_dims.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
   xla::Shape input_dims = xla::ShapeUtil::MakeShape(xla::S32, {kRank});
@@ -570,7 +611,7 @@ std::vector<xla::Shape> NonzeroParameters() {
 // kernel.
 template <int kRank, int64_t kTileMinorDim>
 UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
-  // One logical input, the F32[M,N] or F32[N] payload. The S64[K,kRank]
+  // One logical input, the F32[...,M,N] or F32[N] payload. The S64[K,kRank]
   // destination is a donated output: `Execute` allocates it directly in the
   // S32[R,128] view the kernel was compiled against, so callers never see the
   // physical view.
@@ -600,25 +641,17 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
       .is_compatible =
           [](absl::Span<const Shape> input_shapes,
              absl::Span<const Shape> output_shapes) {
-            // The on-device layouts of the kernel's buffer contract.
-            const std::vector<xla::Layout> expected_input_layouts = {
-                NonzeroInputLayout<kRank, kTileMinorDim>()};
-            const std::vector<xla::Layout> expected_output_layouts = {
-                xla::Layout({0, 1}, {xla::Tile({kRank, 128})})};
-            // Resolved from the device defaults and any custom layouts on the
-            // shapes.
-            const absl::StatusOr<std::vector<xla::Layout>> input_layouts =
-                ResolveXlaLayouts(input_shapes);
-            const absl::StatusOr<std::vector<xla::Layout>> output_layouts =
-                ResolveXlaLayouts(output_shapes);
-
-            // The shapeless key already fixes the number, ranks and dtypes of
+            // The extentless key already fixes the number, ranks and dtypes of
             // the operands: one rank-kRank F32 input and one rank-2 S64
-            // output.
+            // output. The layouts are those of the kernel's buffer contract.
             return output_shapes[0].dimensions()[1] == kRank &&
-                   input_layouts.ok() && output_layouts.ok() &&
-                   *input_layouts == expected_input_layouts &&
-                   *output_layouts == expected_output_layouts;
+                   HasDeviceLayouts(
+                       input_shapes,
+                       {NonzeroInputLayout<kRank, kTileMinorDim>()}) &&
+                   HasDeviceLayouts(
+                       output_shapes,
+                       {xla::Layout({0, 1},
+                                    {xla::Tile({TileRows(kRank), 128})})});
           },
   };
   return dynamic_meta;
@@ -630,30 +663,18 @@ template <int kRank, int64_t kTileMinorDim>
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options) {
-  const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
-  const std::vector<xla::Shape> parameters =
-      NonzeroParameters<kRank, kTileMinorDim>();
+  const xla::Shape output_view =
+      MakeUnbounded(xla::S32, /*rank=*/2, xla::Tile({1, 128}));
   TT_ASSIGN_OR_RETURN(kiln::Kernel kernel, BuildNonzeroIndices(kRank));
-  TT_ASSIGN_OR_RETURN(const std::string serialized_kernel,
-                      std::move(kernel).Serialize());
-  TT_ASSIGN_OR_RETURN(
-      const std::unique_ptr<xla::HloModule> hlo,
-      BuildMosaicCustomCall(serialized_kernel, parameters, output_view,
-                            {2, 3, -1, -1}, /*aliased_parameter=*/1));
-  xla::ExecutableBuildOptions& build =
-      compile_options->executable_build_options;
-  build.set_run_backend_only(true);
-  build.set_result_layout(hlo->entry_computation_layout().result_shape());
-  compile_options->argument_layouts = parameters;
-  const xla::XlaComputation computation(hlo->ToProto());
-  return AdaptXlaError(
-      client.CompileAndLoad(computation, std::move(*compile_options)),
-      /*context=*/"failed to compile the nonzero indices kernel");
+  return CompileMosaicKernel(
+      client, std::move(compile_options), std::move(kernel),
+      NonzeroParameters<kRank, kTileMinorDim>(), output_view, {2, 3, -1, -1},
+      /*aliased_parameter=*/1);
 }
 
-// Returns the ShapelessKey a nonzero graph would be lowered to.
-ShapelessKey NonZeroCacheKey(int64_t rank) {
-  // Only ranks and dtypes reach the shapeless key, so these extents are
+// Returns the ExtentlessKey a nonzero graph would be lowered to.
+ExtentlessKey NonZeroCacheKey(int64_t rank) {
+  // Only ranks and dtypes reach the extentless key, so these extents are
   // placeholders.
   const Dimensions input_dims(rank, -1);
   const Dimensions out_dims = {-1, static_cast<int64_t>(input_dims.size())};
@@ -669,43 +690,50 @@ ShapelessKey NonZeroCacheKey(int64_t rank) {
                 out = op.AddOutput(out_dims, mlir::ElementType::I64);
               });
   graph.AddGraphOutput(out);
-  return graph.GetKey().shapeless_key();
+  return graph.GetKey().extentless_key();
 }
 
-UnboundedDynamicKernel GetNonzero2DUnboundedDynamicKernel() {
-  return UnboundedDynamicKernel{
-      .build = BuildNonzeroIndicesExecutable<2, 128>,
-      .metadata = MakeNonzeroDynamicMetadata<2, 128>(),
-      .key = MakeUnboundedDynamicKernelCacheKey(
-          NonZeroCacheKey(2),
-          static_cast<int>(NonzeroKernelId::kNonzeroKGreaterThan2)),
-      .enabled_by_default = true,
-  };
-}
-
-template <int64_t kTileMinorDim>
-UnboundedDynamicKernel GetNonzero1DUnboundedDynamicKernel(NonzeroKernelId id) {
-  return UnboundedDynamicKernel{
-      .build = BuildNonzeroIndicesExecutable<1, kTileMinorDim>,
-      .metadata = MakeNonzeroDynamicMetadata<1, kTileMinorDim>(),
-      .key = MakeUnboundedDynamicKernelCacheKey(NonZeroCacheKey(1),
-                                                static_cast<int>(id)),
-      .enabled_by_default = true,
+template <int kRank, int64_t kTileMinorDim = 128>
+UnboundedDynamicKernelRegistration GetNonzeroUnboundedDynamicKernel(
+    NonzeroKernelId id) {
+  return {
+      .kernel =
+          UnboundedDynamicKernel{
+              .build = BuildNonzeroIndicesExecutable<kRank, kTileMinorDim>,
+              .metadata = MakeNonzeroDynamicMetadata<kRank, kTileMinorDim>(),
+              .key = MakeUnboundedDynamicKernelCacheKey(NonZeroCacheKey(kRank),
+                                                        static_cast<int>(id)),
+              .enabled_by_default = true,
+          },
   };
 }
 
 }  // namespace
 
-std::vector<UnboundedDynamicKernel> GetNonzeroUnboundedDynamicKernels() {
-  return {GetNonzero2DUnboundedDynamicKernel(),
-          GetNonzero1DUnboundedDynamicKernel<1024>(
-              NonzeroKernelId::kNonzeroInputTile1024),
-          GetNonzero1DUnboundedDynamicKernel<512>(
-              NonzeroKernelId::kNonzeroInputTile512),
-          GetNonzero1DUnboundedDynamicKernel<256>(
-              NonzeroKernelId::kNonzeroInputTile256),
-          GetNonzero1DUnboundedDynamicKernel<128>(
-              NonzeroKernelId::kNonzeroInputTile128)};
+std::vector<UnboundedDynamicKernelRegistration>
+GetNonzeroUnboundedDynamicKernels() {
+  return {GetNonzeroUnboundedDynamicKernel<1, 1024>(
+              NonzeroKernelId::kNonzeroInputMinorTile1024),
+          GetNonzeroUnboundedDynamicKernel<1, 512>(
+              NonzeroKernelId::kNonzeroInputMinorTile512),
+          GetNonzeroUnboundedDynamicKernel<1, 256>(
+              NonzeroKernelId::kNonzeroInputMinorTile256),
+          GetNonzeroUnboundedDynamicKernel<1, 128>(
+              NonzeroKernelId::kNonzeroInputMinorTile128),
+          GetNonzeroUnboundedDynamicKernel<2>(
+              NonzeroKernelId::kNonzeroKGreaterThan2),
+          GetNonzeroUnboundedDynamicKernel<3>(
+              NonzeroKernelId::kNonzeroInputMinorTile128),
+          GetNonzeroUnboundedDynamicKernel<4>(
+              NonzeroKernelId::kNonzeroInputMinorTile128),
+          GetNonzeroUnboundedDynamicKernel<5>(
+              NonzeroKernelId::kNonzeroInputMinorTile128),
+          GetNonzeroUnboundedDynamicKernel<6>(
+              NonzeroKernelId::kNonzeroInputMinorTile128),
+          GetNonzeroUnboundedDynamicKernel<7>(
+              NonzeroKernelId::kNonzeroInputMinorTile128),
+          GetNonzeroUnboundedDynamicKernel<8>(
+              NonzeroKernelId::kNonzeroInputMinorTile128)};
 }
 
 }  // namespace torch_tpu

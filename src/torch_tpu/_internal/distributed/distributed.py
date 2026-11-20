@@ -395,7 +395,7 @@ def set_tpu_launch_env(
         f'"{worker_hostnames_str}"), got {nnodes}'
     )
 
-  completion_index = env.get_str_env_once("JOB_COMPLETION_INDEX")
+  completion_index = env.get_int_env_once("JOB_COMPLETION_INDEX")
   is_multihost = (
       (nnodes is not None and nnodes > 1)
       or len(worker_hostnames) > 1
@@ -520,7 +520,7 @@ def _print_launch_env() -> None:
       if host_sb_addresses
       else hardware.get_tpu_device_count()
   )
-  host_node_rank = env.get_str_env_once("NODE_RANK", default_value="0")
+  host_node_rank = env.get_int_env_once("NODE_RANK", default_value=0)
   print(f'TORCH_TPU_TOPOLOGY="{host_topology}"')
   print(f'TORCH_TPU_SLICEBUILDER_ADDRESSES="{host_sb_addresses}"')
   print(f'TORCH_TPU_XPROF_SESSION_ID="{host_xprof_session_id}"')
@@ -528,10 +528,15 @@ def _print_launch_env() -> None:
   # Always print NODE_RANK, so that launch scripts can pass
   # `--node_rank="${NODE_RANK}"` on single-host too.
   print(f'NODE_RANK="{host_node_rank}"')
-  for var in ("NNODES", "MASTER_ADDR", "MASTER_PORT"):
-    val = env.get_str_env_once(var)
-    if val is not None:
-      print(f'{var}="{val}"')
+  nnodes = env.get_int_env_once("NNODES")
+  if nnodes is not None:
+    print(f'NNODES="{nnodes}"')
+  master_addr = env.get_str_env_once("MASTER_ADDR")
+  if master_addr is not None:
+    print(f'MASTER_ADDR="{master_addr}"')
+  master_port = env.get_int_env_once("MASTER_PORT")
+  if master_port is not None:
+    print(f'MASTER_PORT="{master_port}"')
 
 
 if __name__ == "__main__":

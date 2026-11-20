@@ -83,34 +83,32 @@ absl::StatusOr<mlir::MlirOp> BuildRollShlo(mlir::MlirOp input,
 
 at::Tensor AtenRoll(const at::Tensor& self, at::IntArrayRef shifts,
                     at::IntArrayRef dims) {
-  if (dims.empty()) {
-    if (shifts.empty()) {
-      return self.clone();
-    }
-    if (shifts.size() == 1) {
-      at::Tensor flattened = self.flatten();
-      at::Tensor rolled = AtenRoll(flattened, shifts, {0});
-      return rolled.view(self.sizes());
-    }
+  if (dims.empty() && shifts.size() == 1) {
+    const at::Tensor flattened = self.flatten();
+    const at::Tensor rolled = AtenRoll(flattened, shifts, {0});
+    return rolled.view(self.sizes());
   }
 
-  Dimensions normalized_dims = CopyIntVector(dims);
-  for (auto& dim : normalized_dims) {
-    if (dim < 0) {
-      dim += self.dim();
-    }
-  }
-
-  Indices shifts_vec = CopyIntVector(shifts);
-
-  TT_KERNEL(OpName::kRoll, param_keys, (self, shifts_vec, normalized_dims), {
-    TT_CHECK_THROW(
-        shifts.size() == dims.size() || (dims.empty() && shifts.size() <= 1),
-        error::kInvalidArgument)
+  TT_KERNEL(OpName::kRoll, param_keys, (self, shifts, dims), {
+    TT_CHECK_THROW(!shifts.empty(), error::kInvalidArgument)
+        << "expected shifts to have at least 1 element, got 0";
+    TT_CHECK_THROW(shifts.size() == dims.size(), error::kInvalidArgument)
         << "expected shifts to have the same size as dims (" << dims.size()
         << "), got " << shifts.size();
+    TT_CHECK_THROW(self.dim() > 0, error::kIndexError)
+        << "expected tensor to be at least 1D, got 0D";
 
-    TT_ASSIGN_OR_THROW(auto element_type,
+    Dimensions normalized_dims;
+    normalized_dims.reserve(dims.size());
+    for (const int64_t dim : dims) {
+      TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
+                         SafeWrapDim(dim, self.dim()));
+      normalized_dims.push_back(normalized_dim);
+    }
+
+    const Indices shifts_vec = CopyIntVector(shifts);
+
+    TT_ASSIGN_OR_THROW(const mlir::ElementType element_type,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
 
     auto op_builder = [shifts_vec, normalized_dims](

@@ -29,6 +29,8 @@ from torch_tpu._internal.ops import splash_attention
 from torch_tpu._internal.ops.scaled_grouped_mm.kernels import rowwise_scaled_grouped_mm_kernel
 from torch_tpu._internal.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel
 from torch_tpu._internal.ops.scaled_mm.kernels import blockwise_scaled_mm_kernel
+from torch_tpu._internal.pallas.verify import smt_checker
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 jax_op = pallas.jax_op
@@ -181,13 +183,28 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         report.findings_by_severity(verifier.Severity.ERROR),
         msg=report.summary(),
     )
-    self.assertEmpty(
-        report.findings_by_severity(verifier.Severity.WARNING),
-        msg=report.summary(),
-    )
+    warnings = [
+        f
+        for f in report.findings_by_severity(verifier.Severity.WARNING)
+        if not (
+            smt_checker.cp_model is None
+            and f.category == verifier.FindingCategory.VERIFICATION_INCOMPLETE
+            and "OR-Tools" in f.message
+        )
+    ]
+    self.assertEmpty(warnings, msg=report.summary())
+    lowering_skips = [
+        f
+        for f in report.findings_by_category(
+            verifier.FindingCategory.VERIFICATION_INCOMPLETE
+        )
+        if f.phase == verifier.Phase.LOWERING
+    ]
+    self.assertEmpty(lowering_skips, msg=report.summary())
     for phase in expected_phases:
       self.assertIn(phase, report.checked_phases, msg=report.summary())
 
+  @test_utils.skip_if_asan("b/585577062: Slow / times out in ASAN mode.")
   def test_splash_sdpa_forward_and_backward_kernels_pass_verification(self):
     opts = verifier.VerificationOptions(tpu_version=torch.tpu.TpuVersion.V7)
     batch, seq_len, head_dim = 1, 128, 128
@@ -211,6 +228,8 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -230,6 +249,8 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -247,6 +268,8 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -297,6 +320,8 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             expected_phases=(
                 verifier.Phase.CONTRACTS,
                 verifier.Phase.LOWERING,
+                verifier.Phase.MODEL_CHECK,
+                verifier.Phase.INTERPRET,
             ),
         )
 
@@ -325,8 +350,87 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
+
+    # 5. Rectangular cross-attention (q_seq_len != kv_seq_len) forward +
+    # autograd backward in STATIC mode and fused/split backward lowering.
+    kv_seq_len = 256
+    q_cross = torch.randn(
+        (2, 4, seq_len, head_dim), dtype=torch.bfloat16, requires_grad=True
+    )
+    k_cross = torch.randn(
+        (2, 2, kv_seq_len, head_dim), dtype=torch.bfloat16, requires_grad=True
+    )
+    v_cross = torch.randn(
+        (2, 2, kv_seq_len, head_dim), dtype=torch.bfloat16, requires_grad=True
+    )
+    cross_static_rep = verifier.verify(
+        tpu_ops.splash_sdpa,
+        (q_cross, k_cross, v_cross),
+        kwargs={"is_causal": False, "enable_gqa": True},
+        mode=verifier.VerificationMode.STATIC,
+        options=opts,
+    )
+    self._assert_clean_report(
+        cross_static_rep,
+        expected_phases=(
+            verifier.Phase.FX_GRAPH,
+            verifier.Phase.CONTRACTS,
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+        ),
+    )
+    cross_out = torch.randn_like(q_cross.detach())
+    cross_lse = torch.randn((2, 4, seq_len), dtype=torch.float32)
+    cross_grad_out = torch.randn_like(q_cross.detach())
+    for use_fused_bwd in (True, False):
+      with self.subTest(use_fused_bwd=use_fused_bwd):
+        _, cross_bwd_name = splash_attention._get_splash_op_names(
+            seq_len=seq_len,
+            kv_seq_len=kv_seq_len,
+            n_heads=4,
+            n_kv_heads=2,
+            scale=None,
+            is_causal=False,
+            local_window_size=None,
+            block_q=128,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=128,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+            block_q_dq=None if use_fused_bwd else 128,
+            block_kv_dq=None if use_fused_bwd else 128,
+            use_fused_bwd_kernel=use_fused_bwd,
+            use_vmap_bwd=True,
+            q_layout="HEAD_DIM_MINOR",
+            k_layout="HEAD_DIM_MINOR",
+            v_layout="HEAD_DIM_MINOR",
+        )
+        cross_bwd_op = getattr(torch.ops.pallas, cross_bwd_name)
+        cross_bwd_rep = verifier.verify(
+            cross_bwd_op,
+            (
+                q_cross.detach(),
+                k_cross.detach(),
+                v_cross.detach(),
+                cross_out,
+                cross_lse,
+                cross_grad_out,
+            ),
+            mode=verifier.VerificationMode.STATIC,
+            options=opts,
+        )
+        self._assert_clean_report(
+            cross_bwd_rep,
+            expected_phases=(
+                verifier.Phase.CONTRACTS,
+                verifier.Phase.LOWERING,
+                verifier.Phase.MODEL_CHECK,
+            ),
+        )
 
   def test_blockwise_scaled_mm_kernel_passes_verification(self):
     opts = verifier.VerificationOptions(tpu_version=torch.tpu.TpuVersion.V7)
@@ -346,6 +450,8 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -367,6 +473,36 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
+        ),
+    )
+
+    # Direct raw JAX `jax.jit` entry point with `ShapeDtypeStruct` arguments.
+    raw_rep = verifier.verify(
+        blockwise_scaled_mm_kernel.blockwise_scaled_mm,
+        (
+            jax.ShapeDtypeStruct((128, 256), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((256, 128), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((128, 8), jnp.float32),
+            jax.ShapeDtypeStruct((8, 128), jnp.float32),
+        ),
+        kwargs={
+            "block_size": 32,
+            "out_dtype": jnp.bfloat16,
+            "tile_m": 128,
+            "tile_n": 128,
+            "tile_k": 256,
+            "transpose_rhs": False,
+        },
+        options=opts,
+    )
+    self._assert_clean_report(
+        raw_rep,
+        expected_phases=(
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -389,6 +525,8 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -410,6 +548,35 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
+        ),
+    )
+
+    # Direct raw JAX `jax.jit` entry point with `ShapeDtypeStruct` arguments.
+    raw_rep = verifier.verify(
+        blockwise128_scaled_mm_kernel.scaled_mm_1x128_128x128,
+        (
+            jax.ShapeDtypeStruct((128, 256), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((256, 128), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((128, 2), jnp.float32),
+            jax.ShapeDtypeStruct((2, 1), jnp.float32),
+        ),
+        kwargs={
+            "out_dtype": jnp.bfloat16,
+            "tile_m": 128,
+            "tile_n": 128,
+            "tile_k": 256,
+            "bias": jax.ShapeDtypeStruct((128,), jnp.float32),
+        },
+        mode=verifier.VerificationMode.STATIC,
+        options=opts,
+    )
+    self._assert_clean_report(
+        raw_rep,
+        expected_phases=(
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
         ),
     )
 
@@ -432,6 +599,8 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
         expected_phases=(
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 
@@ -456,6 +625,36 @@ class PallasVerifyTorchTpuKernelsTest(seed_test_utils.RepeatableTest):
             verifier.Phase.FX_GRAPH,
             verifier.Phase.CONTRACTS,
             verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
+        ),
+    )
+
+    # Direct raw JAX `jax.jit` entry point with `ShapeDtypeStruct` arguments.
+    raw_rep = verifier.verify(
+        rowwise_scaled_grouped_mm_kernel.rowwise_scaled_grouped_mm,
+        (
+            jax.ShapeDtypeStruct((256, 256), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((3, 256, 128), jnp.float8_e4m3fn),
+            jax.ShapeDtypeStruct((256,), jnp.float32),
+            jax.ShapeDtypeStruct((3, 128), jnp.float32),
+            jax.ShapeDtypeStruct((3,), jnp.int32),
+        ),
+        kwargs={
+            "out_dtype": jnp.bfloat16,
+            "transpose_rhs": False,
+            "tile_m": 128,
+            "tile_k": 128,
+            "tile_n": 128,
+        },
+        options=opts,
+    )
+    self._assert_clean_report(
+        raw_rep,
+        expected_phases=(
+            verifier.Phase.LOWERING,
+            verifier.Phase.MODEL_CHECK,
+            verifier.Phase.INTERPRET,
         ),
     )
 

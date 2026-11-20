@@ -14,11 +14,8 @@
 
 # Domain experts for this package:
 # gjh8
-# cbasile-g
 # lukeboyer
-# ghpvnist
-# zhanyong-wan
-# haifeng-jin
+# cbasile-g
 
 load(
     "//build_files:build_defs.bzl",
@@ -29,11 +26,8 @@ load(
 )
 load("//shims/mpm:genmpm.bzl", "genmpm")
 load("//shims/pkg:pkg.bzl", "pkg_binary_with_runfiles")
-load(
-    "//shims/py_rules:pytype.bzl",
-    "pytype_strict_binary",
-    "pytype_strict_library",
-)
+load("//shims/py_rules:py_binary.bzl", "py_binary")
+load("//shims/py_rules:py_library.bzl", "py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -129,6 +123,7 @@ torch_tpu_py_library(
     name = "flags",
     srcs = ["flags.py"],
     deps = [
+        ":common",
         ":context",
         ":target",
         "//shims/absl_py/flags",
@@ -180,10 +175,11 @@ torch_tpu_py_library(
     deps = [":workload"],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "workload",
     srcs = ["workload.py"],
+    type_checking = True,
     deps = [":step_lib"],
 )
 
@@ -201,6 +197,7 @@ torch_tpu_py_library(
     name = "measure",
     srcs = ["measure.py"],
     deps = [
+        ":common",
         ":device_ops",
         ":metrics",
         ":step_lib",
@@ -224,16 +221,18 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "step_lib",
     srcs = ["step_lib.py"],
+    type_checking = True,
 )
 
-pytype_strict_library(
-    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
+py_library(
+    # PY_LIBRARY_OK=Keep loss C++-free for coverage tests.
     name = "loss",
     srcs = ["loss.py"],
+    type_checking = True,
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
@@ -252,10 +251,11 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "target",
     srcs = ["target.py"],
+    type_checking = True,
 )
 
 torch_tpu_py_library(
@@ -279,6 +279,7 @@ torch_tpu_py_library(
         "//perflab/steps:common",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
     ],
 )
 
@@ -296,6 +297,7 @@ torch_tpu_py_library(
     name = "cases",
     srcs = ["cases.py"],
     deps = [
+        ":batch_sweep_benchmarks",
         ":common",
         ":context",
         ":flags",
@@ -308,6 +310,11 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
     ],
+)
+
+torch_tpu_py_library(
+    name = "batch_sweep_benchmarks",
+    srcs = ["batch_sweep_benchmarks.py"],
 )
 
 torch_tpu_py_library(
@@ -855,11 +862,12 @@ _DISTRIBUTED_RUNNER_MODEL_DEPS = if_oss(
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "distributed_runner",
     testonly = 1,
     srcs = ["distributed_runner.py"],
     data = _DISTRIBUTED_RUNNER_DATA,
+    type_checking = True,
     deps = _DISTRIBUTED_RUNNER_MODEL_DEPS + [
         ":distributed_runner_lib",
     ],

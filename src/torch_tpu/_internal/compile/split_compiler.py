@@ -281,36 +281,18 @@ class _Stage:
   """Execution domain of a partitioned submodule.
 
   Attributes:
-    ALLOWED_STAGES: Valid `(device, spmd_safe)` combinations.
+    ORDER: The order in which stages repeat.
     device: Device on which the submodule runs (`_Device.CPU` or `_Device.TPU`).
-    spmd_safe: Whether the submodule is an isolated `spmd_safe` TPU collective
-      region. Must be `False` when `device` is `_Device.CPU`.
   """
 
-  ALLOWED_STAGES: ClassVar[tuple[tuple[_Device, bool], ...]] = (
-      (_Device.CPU, False),
-      (_Device.TPU, False),
-      (_Device.TPU, True),
-  )
+  ORDER: ClassVar[tuple[_Device, ...]] = (_Device.CPU, _Device.TPU)
 
   device: _Device = _Device.CPU
-  spmd_safe: bool = False
-
-  def __post_init__(self) -> None:
-    if (self.device, self.spmd_safe) not in self.ALLOWED_STAGES:
-      raise ValueError(
-          f"Disallowed stage {(self.device, self.spmd_safe)}; "
-          f"allowed stages: {self.ALLOWED_STAGES}"
-      )
-
-  def _order_index(self) -> int:
-    """Returns this stage's position in `ALLOWED_STAGES`."""
-    return self.ALLOWED_STAGES.index((self.device, self.spmd_safe))
 
   def __lt__(self, other: object) -> bool:
     if not isinstance(other, _Stage):
       return NotImplemented
-    return self._order_index() < other._order_index()
+    return self.ORDER.index(self.device) < self.ORDER.index(other.device)
 
   @property
   def is_cpu(self) -> bool:
@@ -325,21 +307,21 @@ class _Stage:
 
 @dataclasses.dataclass(frozen=True, order=True)
 class _ScheduledStage:
-  """A slot in the repeating sequence `CPU, TPU, TPU(spmd_safe), CPU, TPU, TPU(spmd_safe), ...`.
+  """A slot in the repeating sequence `CPU, TPU, CPU, TPU, ...`.
 
-  This is a helper class for deciding on partitioning and placement of nodes
-  based on user metadata (like `spmd_safe`) or device placement.
+  This is a helper class for deciding on the partitioning of nodes based on
+  their device placement.
 
   Each node goes in the earliest slot of its kind that doesn't come before any
   of its inputs slots.
   For example, in:
-  `x.neg() -> spmd_safe(all_reduce) -> abs()`
+  `x.neg() -> y.item() -> z.abs()`
   - `neg` goes in slot `(0, TPU)`
-  - `all_reduce` in `(0, TPU(spmd_safe))`
+  - `item` in `(1, CPU)`
   - `abs` in `(1, TPU)`
 
   Attributes:
-    generation: Monotonic pass counter through `_Stage.ALLOWED_STAGES`.
+    generation: Monotonic pass counter through `_Stage.ORDER`.
     stage: The `_Stage` executed in this pass.
   """
 
@@ -366,9 +348,7 @@ class _ScheduledStage:
 
     For example, starting from `_ScheduledStage(0, _Stage(_Device.CPU))`:
       - `advance_to(_Stage(_Device.TPU))` -> `(generation=0, TPU)`
-      - `advance_to(_Stage(_Device.TPU, spmd_safe=True))` ->
-        `(generation=0, TPU+spmd_safe)`
-      - `advance_to(_Stage(_Device.TPU))` -> `(generation=1, TPU)`
+      - `advance_to(_Stage(_Device.CPU))` -> `(generation=1, CPU)`
 
     Args:
       target: Desired execution `_Stage` for the node.
@@ -391,50 +371,6 @@ class _ScheduledStage:
   def is_tpu(self) -> bool:
     """Returns whether this scheduled stage is compiled for TPU."""
     return self.stage.is_tpu
-
-
-def _get_spmd_safe_nodes(graph: torch.fx.Graph) -> Set[torch.fx.Node]:
-  """Returns the nodes in `graph` that belong to an `spmd_safe` region.
-
-  Besides nodes marked `spmd_safe`, this includes nodes that AOTAutograd
-  synthesizes without forward `custom` metadata:
-    - Gradient accumulation (`is_gradient_acc`) nodes whose inputs are all
-      `spmd_safe`.
-    - Backward mutations of forward inputs (`partitioner_tag` is
-      `must_be_in_backward`) whose computed inputs are all `spmd_safe`.
-
-  Args:
-    graph: The FX graph to inspect.
-
-  Returns:
-    The set of nodes that belong to an `spmd_safe` region.
-  """
-  spmd_safe_nodes = set()
-  for node in graph.nodes:
-    meta = getattr(node, "meta", None)
-    if not isinstance(meta, dict):
-      continue
-    is_marked_safe = bool(
-        meta.get("custom", {}).get(spmd_util.SPMD_SAFE_METADATA_KEY, False)
-    )
-    is_safe_grad_acc = (
-        meta.get("is_gradient_acc", False)
-        and bool(node.all_input_nodes)
-        and spmd_safe_nodes.issuperset(node.all_input_nodes)
-    )
-    computed_inputs = [
-        n
-        for n in node.all_input_nodes
-        if n.op not in ("placeholder", "get_attr")
-    ]
-    is_safe_bw_mutation = (
-        meta.get("partitioner_tag") == "must_be_in_backward"
-        and bool(computed_inputs)
-        and spmd_safe_nodes.issuperset(computed_inputs)
-    )
-    if is_marked_safe or is_safe_grad_acc or is_safe_bw_mutation:
-      spmd_safe_nodes.add(node)
-  return spmd_safe_nodes
 
 
 # Ops with these tags are never constant expressions, even if all their inputs
@@ -924,19 +860,108 @@ def _unpickle_split_compiled_executable(
   )
 
 
+def _format_node(node: torch.fx.Node) -> str:
+  """Formats `node` with its source `file:lineno` if available."""
+  target = node._pretty_print_target(node.target)  # pylint: disable=protected-access
+  if node.stack_trace:
+    trace = torch.fx.graph._parse_stack_trace(node.stack_trace)  # pylint: disable=protected-access
+    if trace and trace.file:
+      return f"{node.name}: {target} ({trace.file}:{trace.lineno})"
+  return f"{node.name}: {target}"
+
+
+def _calls_subgraph(module: torch.fx.GraphModule, node: torch.fx.Node) -> bool:
+  """Returns whether `node` of `module` is a higher-order op with a subgraph."""
+  if not isinstance(node.target, torch._ops.HigherOrderOperator):  # pylint: disable=protected-access
+    return False
+  return any(
+      arg.op == "get_attr"
+      and isinstance(
+          getattr(module, str(arg.target), None), torch.fx.GraphModule
+      )
+      for arg in node.all_input_nodes
+  )
+
+
+def _unpacks_container(node: torch.fx.Node) -> bool:
+  """Returns whether `node` unpacks a non-tensor container."""
+  if node.target is not operator.getitem or not node.args:
+    return False
+  source = node.args[0]
+  if not isinstance(source, torch.fx.Node):
+    return False
+  val = source.meta.get("example_value", source.meta.get("val"))
+  return isinstance(val, (tuple, list, dict))
+
+
+def _is_fully_spmd_safe(graph_module: torch.fx.GraphModule) -> bool:
+  """Returns whether all ops that Dynamo traced are annotated `spmd_safe`.
+
+  Under `torch.compile`, `spmd_safe` must cover the whole compiled graph.
+
+  Args:
+    graph_module: The FX graph module that Dynamo traced.
+
+  Returns:
+    Whether the graph has ops and all of them are `spmd_safe`.
+
+  Raises:
+    ValueError: If only some of the ops are `spmd_safe`.
+  """
+  safe_ops = []
+  unsafe_ops = []
+  for module in graph_module.modules():
+    if not isinstance(module, torch.fx.GraphModule):
+      continue
+    for node in module.graph.nodes:
+      if node.op in ("placeholder", "get_attr", "output"):
+        continue
+      # A higher-order op that calls a subgraph, and container `getitem`
+      # unpackers, only pass values through. The subgraph's ops are checked
+      # instead.
+      if _calls_subgraph(module, node) or _unpacks_container(node):
+        continue
+      if (node.meta.get("custom") or {}).get(
+          spmd_util.SPMD_SAFE_METADATA_KEY, False
+      ):
+        safe_ops.append(node)
+      else:
+        unsafe_ops.append(node)
+  if safe_ops and unsafe_ops:
+    examples = [_format_node(n) for n in unsafe_ops[:3]]
+    raise ValueError(
+        f"The graph is partially annotated with `spmd_safe`: {len(unsafe_ops)}"
+        f" of {len(safe_ops) + len(unsafe_ops)} ops are not `spmd_safe`, e.g."
+        f" {examples}. Under `torch.compile`, `spmd_safe` must cover the whole"
+        " compiled function: either compile the `spmd_safe` function directly,"
+        " or decorate the whole compiled function with `spmd_safe`."
+    )
+  return bool(safe_ops)
+
+
 class SplitCompiler(compiler.Compiler):
   """Compiler that splits the graph on collectives and compiles submodules."""
 
   def __init__(self, base_compiler: compiler.Compiler):
+    """Initializes the SplitCompiler.
+
+    Args:
+      base_compiler: The compiler for the submodules.
+    """
     super().__init__(
         base_compiler.compilation_context, debug=base_compiler._debug
     )
     self.base_compiler = base_compiler
+    # Set by `execute_pre_grad_passes`, which sees the graph before AOTAutograd.
+    self._fully_spmd_safe = False
 
   def execute_pre_grad_passes(
       self,
       graph_module: torch.fx.GraphModule,
   ) -> None:
+    # If the code that Dynamo traced is fully `spmd_safe`, we assume its
+    # forward and backward pass are fully `spmd_safe` as well.
+    self._fully_spmd_safe = _is_fully_spmd_safe(graph_module)
     self.base_compiler.execute_pre_grad_passes(graph_module)
 
   def _compile_graph(
@@ -971,18 +996,9 @@ class SplitCompiler(compiler.Compiler):
     _register_output_namedtuple_globals(graph_module)
     graph_module.recompile()
 
-    spmd_safe_nodes = _get_spmd_safe_nodes(graph_module.graph)
-    # We isolate `spmd_safe` into its own stage only when
-    # `materialize_collectives=True`. For `materialize_collectives=False` there
-    # will be no splits so there is no need to isolate `spmd_safe` nodes.
-    isolate_spmd_safe = materialize_collectives and any(
-        node.op == "call_function"
-        # We only isolate spmd_safe nodes if there is a collective, otherwise
-        # `spmd_safe` is redundant and can be grouped with other TPU ops.
-        and collective_ops.is_collective_op(node.target)
-        and devices.get(node) != _Device.CPU
-        for node in spmd_safe_nodes
-    )
+    # A fully `spmd_safe` graph runs identically on all ranks, so its
+    # collectives can be fused with the surrounding ops.
+    split_collectives = materialize_collectives and not self._fully_spmd_safe
 
     partition_id = 0
     partition_map = {}
@@ -998,7 +1014,6 @@ class SplitCompiler(compiler.Compiler):
         continue
 
       device = devices[node]
-      in_spmd_safe_region = node in spmd_safe_nodes
       inputs = list(node.all_input_nodes)
       if torch.Tag.nondeterministic_seeded in getattr(node.target, "tags", ()):
         # Random ops on each device keep their order to draw the same values.
@@ -1007,15 +1022,7 @@ class SplitCompiler(compiler.Compiler):
       stage = _ScheduledStage.after(stages[n] for n in inputs if n in stages)
       # `device` is None for unconstrained constants / SymInt ops (`deferred`).
       if device is not None:
-        target_stage = _Stage(
-            device=device,
-            spmd_safe=(
-                device == _Device.TPU
-                and isolate_spmd_safe
-                and in_spmd_safe_region
-            ),
-        )
-        stage = stage.advance_to(target_stage)
+        stage = stage.advance_to(_Stage(device))
       stages[node] = stage
 
       maybe_collective = getattr(node.target, "overloadpacket", node.target)
@@ -1051,9 +1058,7 @@ class SplitCompiler(compiler.Compiler):
           )
         partition_map[node] = partition_map[node.args[0]]
         stages[node] = stages[node.args[0]]
-      elif (
-          is_collective and not in_spmd_safe_region and materialize_collectives
-      ):
+      elif is_collective and split_collectives:
         # Make sure the collective doesn't end up in the previous partition.
         partition_id += 1
         partition_map[node] = partition_id

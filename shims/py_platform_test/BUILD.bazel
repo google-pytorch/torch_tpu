@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # pganssle-google
-# adamomainz
+# zhanyong-wan
 
 """OSS build rules for py_platform_test."""
 

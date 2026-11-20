@@ -15,6 +15,8 @@
 # Domain experts for this package:
 # cbasile-g
 # gjh8
+# ghpvnist
+# lukeboyer
 
 load(
     "//build_files:build_defs.bzl",

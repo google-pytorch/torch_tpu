@@ -38,6 +38,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/tsl/framework/allocator.h"
 
 namespace torch_tpu {
 namespace {
@@ -361,6 +362,31 @@ TEST(TensorToBufferTest, AssignBufferToAtTensorBumpVersion) {
             initial_version + 2);
   EXPECT_EQ(view.unsafeGetTensorImpl()->version_counter().current_version(),
             initial_version + 2);
+}
+
+TEST(GetFreeAndTotalMemoryTest, ExcludesInUseAndReservedMemory) {
+  tsl::AllocatorStats stats;
+  stats.bytes_limit = 1000;
+  stats.bytes_in_use = 300;
+  stats.bytes_reserved = 200;
+
+  EXPECT_THAT(internal::GetFreeAndTotalMemory(stats), testing::Pair(500, 1000));
+}
+
+TEST(GetFreeAndTotalMemoryTest, ClampsFreeMemoryAtZero) {
+  tsl::AllocatorStats stats;
+  stats.bytes_limit = 1000;
+  stats.bytes_in_use = 800;
+  stats.bytes_reserved = 300;
+
+  EXPECT_THAT(internal::GetFreeAndTotalMemory(stats), testing::Pair(0, 1000));
+}
+
+TEST(GetFreeAndTotalMemoryTest, IsZeroWithoutLimit) {
+  tsl::AllocatorStats stats;
+  stats.bytes_in_use = 300;
+
+  EXPECT_THAT(internal::GetFreeAndTotalMemory(stats), testing::Pair(0, 0));
 }
 
 }  // namespace

@@ -20,13 +20,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <typeindex>
 
 #include "absl/base/attributes.h"
 #include "absl/base/const_init.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/strings/match.h"
@@ -71,18 +69,6 @@ void CheckEnvVarNotMemoized(std::string_view name) {
          "at runtime, read it with std::getenv instead of GetEnvOnce().";
 }
 
-ABSL_CONST_INIT absl::Mutex integer_env_types_mutex(absl::kConstInit);
-
-// Maps each env var name read by GetIntegerEnvOnce() to the IntType it was
-// first read with.
-absl::flat_hash_map<std::string_view, std::type_index>& IntegerEnvTypes()
-    ABSL_EXCLUSIVE_LOCKS_REQUIRED(integer_env_types_mutex) {
-  static absl::NoDestructor<
-      absl::flat_hash_map<std::string_view, std::type_index>>
-      integer_env_types;
-  return *integer_env_types;
-}
-
 }  // namespace
 
 void SafeSetEnvImpl(const char* name, const std::string& value) {
@@ -99,8 +85,8 @@ void SafeUnsetEnvImpl(const char* name) {
 // GetEnvOnce() calls this at most once per env var, so the TT_WARN() calls
 // below warn at most once per env var, like TT_WARN_ONCE() in a function
 // template would.
-std::optional<std::string> ReadEnvForGetEnvOnce(
-    const char* name, const std::optional<SymbolStage> maybe_stage) {
+std::optional<std::string> ReadEnvForGetEnvOnce(const char* name,
+                                                const SymbolStage stage) {
   MarkEnvVarMemoized(name);
   const char* const env_var =  //
       std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
@@ -109,17 +95,15 @@ std::optional<std::string> ReadEnvForGetEnvOnce(
 
   // The env var is set to a non-empty string. Warn the user if the env var is
   // experimental or deprecated.
-  if (maybe_stage.has_value()) {
-    if (maybe_stage->is_experimental()) {
-      TT_WARN(WarningCategory::kExperimentalApi, "the ", name,
-              " environment variable is an experimental feature and may "
-              "change or be removed without notice.");
-    } else if (maybe_stage->is_deprecated()) {
-      const auto deprecated_since = maybe_stage->version();
-      TT_WARN(WarningCategory::kDeprecatedApi, "the ", name,
-              " environment variable is deprecated since TorchTPU v",
-              deprecated_since, " and will be removed in a future release.");
-    }
+  if (stage.is_experimental()) {
+    TT_WARN(WarningCategory::kExperimentalApi, "the ", name,
+            " environment variable is an experimental feature and may "
+            "change or be removed without notice.");
+  } else if (stage.is_deprecated()) {
+    const auto deprecated_since = stage.version();
+    TT_WARN(WarningCategory::kDeprecatedApi, "the ", name,
+            " environment variable is deprecated since TorchTPU v",
+            deprecated_since, " and will be removed in a future release.");
   }
   return std::string(env_var);
 }
@@ -148,16 +132,6 @@ void WarnInvalidIntegerEnv(const char* name, const std::string_view value) {
           " to be an integer, got '", value, "'");
 }
 
-void CheckIntegerEnvType(const std::string_view name,
-                         const std::type_index int_type) {
-  absl::MutexLock lock(integer_env_types_mutex);
-  const auto it = IntegerEnvTypes().try_emplace(name, int_type).first;
-  ABSL_CHECK(it->second == int_type)  // CRASH_OK
-      << "GetIntegerEnvOnce() called on " << name
-      << " with different IntTypes: " << it->second.name() << " vs "
-      << int_type.name();
-}
-
 }  // namespace torch_tpu::internal
 
 namespace torch_tpu {
@@ -180,7 +154,7 @@ static void ExpandRankInEnvVar(const int rank) {
 
 void EnsureRankIsExpandedInEnvVars() {
   static const bool done = [] {
-    const int rank = GetIntegerEnvOnce<int, kRankEnvVar>().value_or(0);
+    const int rank = GetIntegerEnvOnce<kRankEnvVar>().value_or(0);
     ExpandRankInEnvVar<kXlaFlagsEnvVar>(rank);
     ExpandRankInEnvVar<kLibtpuInitArgsEnvVar>(rank);
     return true;

@@ -275,17 +275,17 @@ absl::StatusOr<OpParamCacheKeys> OpParamCacheKeys::Builder::operator*() {
 std::string CompilationCacheKey::CompactFormat() const {
   if (id_key_ < 0) {
     return absl::StrFormat(
-        "%016x_%016x_%016x", graph_key_.shapeless_key().key(),
+        "%016x_%016x_%016x", graph_key_.extentless_key().key(),
         graph_key_.dimensions_key().key(), compile_options_key_.key());
   }
   return absl::StrFormat(
-      "%016x_%016x_%016x_%08x", graph_key_.shapeless_key().key(),
+      "%016x_%016x_%016x_%08x", graph_key_.extentless_key().key(),
       graph_key_.dimensions_key().key(), compile_options_key_.key(), id_key_);
 }
 
 std::ostream& operator<<(std::ostream& os, const CompilationCacheKey& key) {
-  os << "CompilationCacheKey{shapeless_key=" << std::hex
-     << key.graph_key().shapeless_key().key()
+  os << "CompilationCacheKey{extentless_key=" << std::hex
+     << key.graph_key().extentless_key().key()
      << ", dimensions_key=" << key.graph_key().dimensions_key().key()
      << ", compile_options_key=" << key.compile_options_key().key() << std::dec
      << ", id_key=" << key.id_key() << "}";
@@ -625,13 +625,13 @@ GraphKey GraphSignature::GetKey() const {
   auto sorted_donated_indices = donated_indices_;
   std::sort(sorted_donated_indices.begin(), sorted_donated_indices.end());
 
-  const ShapelessKey shapeless_key(FingerprintCat(
+  const ExtentlessKey extentless_key(FingerprintCat(
       graph_output_indices_, tensor_dimensions_starts_, tensor_element_types_,
       sorted_donated_indices, op_inputs_starts_, op_inputs_indices_, op_names_,
       op_param_cache_keys_starts_, op_param_cache_keys_, op_outputs_indices_,
       static_cast<int>(core_pinning_mode_)));
   const DimensionsKey dimensions_key(tensor_dimensions_);
-  return GraphKey(shapeless_key, dimensions_key);
+  return GraphKey(extentless_key, dimensions_key);
 }
 
 }  // namespace torch_tpu

@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# jparkerh
 # zhanyong-wan
+# jparkerh
 
 load(
     "//build_files:build_defs.bzl",

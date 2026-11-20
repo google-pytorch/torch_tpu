@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # chizhang529
-# jialei-chen
+# cota
 
 load(
     "//build_files:build_defs.bzl",
@@ -22,7 +22,7 @@ load(
     "torch_tpu_py_library",
 )
 load("//shims/build_files:torch_rules.bzl", "torch_tpu_torch_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
+load("//shims/py_rules:py_binary.bzl", "py_binary")
 
 package(default_applicable_licenses = ["//:license"])
 
@@ -33,13 +33,15 @@ torch_tpu_py_library(
     deps = [
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
-pytype_strict_binary(
+py_binary(
     name = "torch_test_runner",
     testonly = True,
     srcs = ["torch_test_runner.py"],
+    type_checking = True,
     deps = [
         ":torch_test_configs",
         "//shims/absl_py:app",
@@ -403,11 +405,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "functorch_ac_test",
-    torch_test_module = "functorch/test_ac",
-)
-
-torch_tpu_torch_test(
     name = "functorch_aot_joint_with_descriptors_test",
     torch_test_module = "functorch/test_aot_joint_with_descriptors",
 )
@@ -527,40 +524,13 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "inductor_mix_order_reduction_test",
-    torch_test_module = "inductor/test_mix_order_reduction",
-)
-
-torch_tpu_torch_test(
     name = "inductor_mmdecomp_test",
     torch_test_module = "inductor/test_mmdecomp",
 )
 
 torch_tpu_torch_test(
-    name = "inductor_op_dtype_prop_test",
-    torch_test_module = "inductor/test_op_dtype_prop",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_selective_lowering_test",
-    torch_test_module = "inductor/test_selective_lowering",
-)
-
-torch_tpu_torch_test(
     name = "inductor_slice_scatter_chunking_test",
     torch_test_module = "inductor/test_slice_scatter_chunking",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_torchinductor_codegen_dynamic_shapes_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "inductor/test_torchinductor_codegen_dynamic_shapes",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_torchinductor_dynamic_shapes_test",
-    shard_count = 8,
-    torch_test_module = "inductor/test_torchinductor_dynamic_shapes",
 )
 
 torch_tpu_torch_test(

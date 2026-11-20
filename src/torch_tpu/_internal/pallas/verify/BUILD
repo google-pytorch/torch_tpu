@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# cbasile-g
+# minospapa
+
 # Verification of Pallas kernels and the PyTorch programs that call them. The
 # tests live in //tests/pallas.
 
@@ -58,11 +62,54 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "interpret_verifier",
+    srcs = ["interpret_verifier.py"],
+    deps = [
+        ":findings",
+        ":fx_verifier",
+        ":jaxpr_model",
+        ":smt_checker",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "jaxpr_model",
+    srcs = ["jaxpr_model.py"],
+    deps = [
+        ":findings",
+        ":fx_verifier",
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/pallas:pallas_lib",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "smt_checker",
+    srcs = ["smt_checker.py"],
+    deps = [
+        ":findings",
+        ":jaxpr_model",
+        "//shims/ortools:optional",  # build_cleaner: keep
+    ],
+)
+
+torch_tpu_py_library(
     name = "verifier",
     srcs = ["verifier.py"],
     deps = [
         ":findings",
         ":fx_verifier",
+        ":interpret_verifier",
+        ":jaxpr_model",
+        ":smt_checker",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/utils:annotations",
         "@pypi//jax",

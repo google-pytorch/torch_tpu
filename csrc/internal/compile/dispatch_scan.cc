@@ -47,7 +47,6 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/ops/scan_builder.h"
-#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -365,10 +364,10 @@ bool CanLowerToChloScan(mlir::func::FuncOp main_func,
 // Candidate per-leaf identity constants for symbolic identity inference:
 // - `kZero`: additive / bitwise-OR / bitwise-XOR identity (`0` or `false`).
 // - `kOne`: multiplicative identity (`1` or `true`).
-// - `kMinValue`: `maximum` identity (`-inf` for floats, ` numeric_limits::min`
-//   for integers).
-// - `kMaxValue`: `minimum` identity (`+inf` for floats, `numeric_limits::max`
-//   for integers).
+// - `kMinValue`: `maximum` identity (`-inf`, or the lowest finite value for
+//   types without infinities, such as integers).
+// - `kMaxValue`: `minimum` identity (`+inf`, or the highest finite value for
+//   types without infinities, such as integers).
 enum class IdentityKind { kZero, kOne, kMinValue, kMaxValue };
 
 // Lightweight symbolic value domain used to verify whether a candidate tuple of
@@ -718,28 +717,14 @@ mlir::MlirOp CreateIdentityConstant(mlir::MlirBuilder& builder,
       }
       return MakeConstant(builder, 1, reduced_type);
     case IdentityKind::kMinValue: {
-      if (const auto float_type =
-              llvm::dyn_cast<mlir::FloatType>(element_type)) {
-        const llvm::APFloat neg_inf = llvm::APFloat::getInf(
-            float_type.getFloatSemantics(), /*Negative=*/true);
-        return mlir::stablehlo::Constant(
-            builder, mlir::DenseElementsAttr::get(reduced_type, neg_inf));
-      }
       const mlir::Attribute attr =
-          GetMinFiniteValueAttr(element_type, builder.getOpBuilder());
+          GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder());
       return mlir::stablehlo::Constant(
           builder, mlir::DenseElementsAttr::get(reduced_type, attr));
     }
     case IdentityKind::kMaxValue: {
-      if (const auto float_type =
-              llvm::dyn_cast<mlir::FloatType>(element_type)) {
-        const llvm::APFloat pos_inf = llvm::APFloat::getInf(
-            float_type.getFloatSemantics(), /*Negative=*/false);
-        return mlir::stablehlo::Constant(
-            builder, mlir::DenseElementsAttr::get(reduced_type, pos_inf));
-      }
       const mlir::Attribute attr =
-          GetMaxFiniteValueAttr(element_type, builder.getOpBuilder());
+          GetMinReductionIdentityAttr(element_type, builder.getOpBuilder());
       return mlir::stablehlo::Constant(
           builder, mlir::DenseElementsAttr::get(reduced_type, attr));
     }

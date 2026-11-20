@@ -257,6 +257,8 @@ def _init_device_impl(device: str) -> torch.device:
   # `device.type == "{device}"` works but the convenience attrs are absent.
   # Storage methods are not generated (default `for_storage=False`).
   torch.utils.generate_methods_for_privateuse1_backend()
+  # TODO: b/585211199 - Remove the `ProfilerActivity` backport once minimum OSS
+  # PyTorch is >= 2.13.0.
   # torch >= 2.13 mirrors the rename into `ProfilerActivity` (so users can
   # write `ProfilerActivity.TPU`); older releases only expose `PrivateUse1`.
   # Backport the alias so the documented spelling works on every supported

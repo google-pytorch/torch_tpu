@@ -32,7 +32,6 @@
 #include "c10/core/Storage.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/intrusive_ptr.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -221,7 +220,7 @@ at::Tensor& AtenScatterReduceOut(const at::Tensor& self, int64_t dim,
 at::Tensor& AtenScatterReduceTwoOut(const at::Tensor& self, int64_t dim,
                                     const at::Tensor& index,
                                     const at::Tensor& src,
-                                    c10::string_view reduction,
+                                    std::string_view reduction,
                                     bool include_self, at::Tensor& out) {
   TT_KERNEL(
       OpName::kScatterReduceTwoOut, _,

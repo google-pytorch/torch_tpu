@@ -112,6 +112,11 @@ absl::Status StatusBuilder::JoinMessageToStatus(absl::Status s,
                           std::move(old_root_op_name).value());
   }
 
+  // Preserve the "is user message" state in the original Status if any.
+  if (internal::IsUserMessage(s)) {
+    new_status.SetPayload(internal::kIsUserMessageUrl, absl::Cord());
+  }
+
   return new_status;
 }
 
@@ -141,6 +146,10 @@ std::string GetRootOpNamePayload(const absl::Status& status) {
   auto payload = status.GetPayload(kRootOpNameUrl);
   if (!payload.has_value()) return "";
   return std::string(payload.value());
+}
+
+bool IsUserMessage(const absl::Status& status) {
+  return status.GetPayload(kIsUserMessageUrl).has_value();
 }
 
 absl::Status MaybeAddCppSourceLoc(absl::Status status,

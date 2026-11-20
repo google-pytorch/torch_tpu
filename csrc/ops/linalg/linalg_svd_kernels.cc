@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -30,7 +31,6 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -1636,7 +1636,7 @@ absl::Status HandleEmptyInputSvd(const at::Tensor& self, bool full_matrices,
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgSvdU(
     const at::Tensor& self, bool full_matrices, bool compute_uv,
-    std::optional<c10::string_view> driver, at::Tensor& u, at::Tensor& s,
+    std::optional<std::string_view> driver, at::Tensor& u, at::Tensor& s,
     at::Tensor& vh) {
   TT_KERNEL(
       OpName::kLinalgSvdU, param_keys,

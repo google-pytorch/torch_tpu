@@ -20,6 +20,8 @@ The oracle is PyTorch's dense reference for the flex_attention HOP
 
 # pylint: disable=protected-access
 
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -30,6 +32,8 @@ from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 _BLOCK = 512
+# VMEM bytes of the forward's 512x512 tile for bf16 and head_dim 128.
+_TILE_512_BYTES = 4980736
 _TOLERANCES = {
     torch.float32: dict(atol=2e-4, rtol=2e-4),
     torch.bfloat16: dict(atol=2e-2, rtol=2e-2),
@@ -76,14 +80,37 @@ def _window_per_batch(b, h, q_idx, kv_idx):
   return (q_idx >= kv_idx) & (q_idx - kv_idx < 640 + 384 * b)
 
 
+def _first_block_or_batch_1(b, h, q_idx, kv_idx):
+  # Batch 0 sees only the first KV block; batch 1 sees every block.
+  del h, q_idx
+  return (b == 1) | (kv_idx < _BLOCK)
+
+
+def _prefix_lm(b, h, q_idx, kv_idx):
+  # The first 640 tokens attend bidirectionally; the rest causally.
+  del b, h
+  return (kv_idx < 640) | (q_idx >= kv_idx)
+
+
+def _causal_offset(b, h, q_idx, kv_idx):
+  # Queries are the last T of S keys (prefill after a cache of S - T).
+  del b, h
+  return q_idx + 1024 >= kv_idx
+
+
 def _alibi(score, b, h, q_idx, kv_idx):
   del b
   return score - 0.1 * (h + 1) * (q_idx - kv_idx).abs()
 
 
-def _block_mask(mask_mod, batch, seq):
+def _rel_pos(score, b, h, q_idx, kv_idx):
+  del b, h
+  return score + (q_idx - kv_idx).to(torch.float32) * 0.01
+
+
+def _block_mask(mask_mod, batch, seq, kv_seq=None):
   return fa.create_block_mask(
-      mask_mod, batch, 1, seq, seq, device="cpu", BLOCK_SIZE=_BLOCK
+      mask_mod, batch, 1, seq, kv_seq or seq, device="cpu", BLOCK_SIZE=_BLOCK
   )
 
 
@@ -93,6 +120,18 @@ def _reference(q, k, v, block_mask, scale, score_mod):
       q, k, v, score_mod, block_mask.as_tuple(), scale, {}
   )
   return out, lse
+
+
+def _reference_dkv(q, k, v, grad_out, block_mask, scale):
+  """dK and dV on CPU in f32: autograd through PyTorch's math_attention."""
+  q, k, v, grad_out = (t.detach().cpu().float() for t in (q, k, v, grad_out))
+  k.requires_grad_(True)
+  v.requires_grad_(True)
+  out, _, _ = math_attention(
+      q, k, v, _identity, block_mask.as_tuple(), scale, {}
+  )
+  out.backward(grad_out)
+  return k.grad, v.grad
 
 
 class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
@@ -120,7 +159,7 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     """Runs the kernel and compares (out, lse) with the CPU reference."""
     scale = q.shape[-1] ** -0.5
     if block_mask is None:
-      block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2])
+      block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2], k.shape[-2])
     out, lse = flex_attention.flex_attention_fwd(
         q,
         k,
@@ -170,7 +209,7 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     self.assertTrue((out[:, :, :_BLOCK] == 0).all())
     self.assertTrue((lse[:, :, :_BLOCK] == -torch.inf).all())
 
-  @parameterized.parameters(_sliding_window, _documents)
+  @parameterized.parameters(_sliding_window, _documents, _prefix_lm)
   def test_mask_mod(self, mask_mod):
     q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.float32)
     self._check(q, k, v, mask_mod)
@@ -223,6 +262,99 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(tile, (_BLOCK, _BLOCK))
     self.assertEqual(num_blocks.tolist(), [[[1, 2, 3, 4]]])
+
+  def test_tables_by_kv_list_the_query_blocks_of_each_kv_block(self):
+    block_mask = _block_mask(_causal, 1, 4 * _BLOCK)
+    num_blocks, indices, tile = flex_attention._block_tables(
+        block_mask, True, (2 * _BLOCK, 2 * _BLOCK), by_kv=True
+    )
+    self.assertEqual(tile, (2 * _BLOCK, 2 * _BLOCK))
+    # KV tile 0 is seen by both query tiles, KV tile 1 by query tile 1 only.
+    self.assertEqual(num_blocks.tolist(), [[[2, 1]]])
+    self.assertEqual(indices.tolist(), [[[[0, 1], [1, 0]]]])
+
+  @parameterized.parameters(
+      # (backward, VMEM limit, expected tile); the limit is half the capacity.
+      (False, _TILE_512_BYTES, (512, 512)),
+      (False, _TILE_512_BYTES - 1, (512, 256)),
+      # The backward needs twice the forward's VMEM.
+      (True, 2 * _TILE_512_BYTES, (512, 512)),
+      (True, 2 * _TILE_512_BYTES - 1, (512, 256)),
+      (True, _TILE_512_BYTES, (256, 256)),
+  )
+  def test_kernel_tile_fits_vmem(self, backward, limit, tile):
+    q = torch.zeros(1, 1, 512, 128, dtype=torch.bfloat16)
+    block_mask = fa.create_block_mask(
+        fa.noop_mask, 1, 1, 512, 512, device="cpu", BLOCK_SIZE=128
+    )
+    args_fn = (
+        flex_attention._dkv_kernel_args
+        if backward
+        else flex_attention.kernel_args
+    )
+    with mock.patch.object(
+        flex_attention._device_ops_backend,
+        "_get_vmem_capacity_bytes",
+        return_value=2 * limit,
+    ):
+      args = args_fn(q, q, q, block_mask)
+    self.assertEqual(tuple(args[4:6]), tile)
+    self.assertAlmostEqual(args[6], 128**-0.5)  # The default scale.
+
+  def _check_dkv(self, q, k, v, mask_mod, *, mask_batch=1):
+    scale = q.shape[-1] ** -0.5
+    block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2], k.shape[-2])
+    out, lse = flex_attention.flex_attention_fwd(
+        q, k, v, block_mask, scale=scale
+    )
+    grad_out = torch.randn_like(out)
+    dk, dv = flex_attention.flex_attention_bwd(
+        q, k, v, out, lse, grad_out, block_mask, scale=scale
+    )
+    self.assertEqual((dk.dtype, dv.dtype), (q.dtype, q.dtype))
+    ref_dk, ref_dv = _reference_dkv(q, k, v, grad_out, block_mask, scale)
+    # Measured worst case: 1.1e-4 (f32) and 5.7e-3 (bf16).
+    # TODO(b/576669251): Tighten f32 to ~2e-5 once the forward lse is refined.
+    tol = 2e-4 if q.dtype == torch.float32 else 2e-2
+    test_utils.assert_close(dk.cpu().float(), ref_dk, atol=tol, rtol=tol)
+    test_utils.assert_close(dv.cpu().float(), ref_dv, atol=tol, rtol=tol)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      mask_mod=[fa.noop_mask, _causal],
+  )
+  def test_dkv_matches_reference(self, dtype, mask_mod):
+    q, k, v = self._inputs(1, 2, 2, 2048, 128, dtype)
+    self._check_dkv(q, k, v, mask_mod)
+
+  @parameterized.parameters(_sliding_window, _documents, _prefix_lm)
+  def test_dkv_mask_mod(self, mask_mod):
+    q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.float32)
+    self._check_dkv(q, k, v, mask_mod)
+
+  def test_dkv_batched_gqa(self):
+    # dK / dV sum over the query heads of each KV head, and each batch uses
+    # its own block tables.
+    q, k, v = self._inputs(2, 4, 2, 4096, 128, torch.float32)
+    self._check_dkv(q, k, v, _first_block_or_batch_1, mask_batch=2)
+
+  def test_dkv_with_fully_masked_rows(self):
+    q, k, v = self._inputs(1, 1, 1, 1024, 128, torch.float32)
+    self._check_dkv(q, k, v, _block_causal_empty_first_row)
+
+  def test_rel_pos_score_mod(self):
+    q, k, v = self._inputs(1, 2, 2, 1024, 128, torch.float32)
+    self._check(q, k, v, _causal, score_mod=_rel_pos)
+
+  def test_rectangular(self):
+    q, _, _ = self._inputs(1, 2, 2, 3072, 128, torch.float32)
+    _, k, v = self._inputs(1, 2, 2, 4096, 128, torch.float32)
+    self._check(q, k, v, _causal_offset)
+
+  def test_dkv_rectangular(self):
+    q, _, _ = self._inputs(1, 2, 2, 3072, 128, torch.float32)
+    _, k, v = self._inputs(1, 2, 2, 4096, 128, torch.float32)
+    self._check_dkv(q, k, v, _causal_offset)
 
 
 if __name__ == "__main__":

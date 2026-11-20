@@ -118,8 +118,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
     if (TensorHasTrivialLayout(argument_tensor)) {
       TT_ASSIGN_OR_RETURN(
           DeviceBufferRef buffer_ref, GetBuffer(argument_tensor),
-          _.SetPrepend() << "failed to get buffer from argument tensor: "
-                         << ToString(argument_tensor));
+          _.SetPrepend() << "failed to get buffer from argument tensor ("
+                         << ToString(argument_tensor) << "): ");
       if (NeedsMaterialize(buffer_ref)) {
         has_deferred_or_placeholder = true;
       }
@@ -143,8 +143,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
         argument_tensor.as_strided(base_sizes, base_strides, storage_offset);
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(base_tensor),
                         _.SetPrepend()
-                            << "failed to get buffer from argument tensor: "
-                            << ToString(argument_tensor));
+                            << "failed to get buffer from argument tensor ("
+                            << ToString(argument_tensor) << "): ");
     if (NeedsMaterialize(buffer_ref)) {
       has_deferred_or_placeholder = true;
     }
@@ -192,8 +192,8 @@ PrepareCompiledModeArgumentsNonSequentialFallback(
       const at::Tensor& tensor = DerefTensor(argument_tensors[j]);
       TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                           _.SetPrepend()
-                              << "failed to get buffer from argument tensor: "
-                              << ToString(tensor));
+                              << "failed to get buffer from argument tensor ("
+                              << ToString(tensor) << "): ");
       base_buffer_refs[idx] = std::move(buffer_ref);
     }
   }
@@ -232,8 +232,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
       const at::Tensor& tensor = DerefTensor(argument_tensors[i]);
       TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                           _.SetPrepend()
-                              << "failed to get buffer from argument tensor: "
-                              << ToString(tensor));
+                              << "failed to get buffer from argument tensor ("
+                              << ToString(tensor) << "): ");
       if (NeedsMaterialize(buffer_ref)) {
         has_deferred_or_placeholder = true;
       }
@@ -316,8 +316,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     // deferred ops.
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                         _.SetPrepend()
-                            << "failed to get buffer from argument tensor: "
-                            << ToString(tensor));
+                            << "failed to get buffer from argument tensor ("
+                            << ToString(tensor) << "): ");
     TT_RET_CHECK(!buffer_ref.is_deferred(), error::kInternal)
         << "argument tensor has deferred ops: " << ToString(tensor);
     ABSL_VLOG(3) << "[ExtractMlirFromGraph] arg_tensor: "
@@ -372,8 +372,8 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
     // deferred ops.
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
                         _.SetPrepend()
-                            << "failed to get buffer from argument tensor: "
-                            << ToString(tensor));
+                            << "failed to get buffer from argument tensor ("
+                            << ToString(tensor) << "): ");
     ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
         !buffer_ref.is_deferred())
         << "argument tensor has deferred ops: " << ToString(tensor);
@@ -604,10 +604,8 @@ namespace {
 absl::StatusOr<std::vector<Shape>> GetOutputShapes(
     const SharedLoadedExecutableWithMetadata& executable,
     absl::Span<const OutputShape> output_shapes) {
-  const std::vector<Shape>& inferred_shapes = executable->output_shapes();
-  if (output_shapes.empty()) {
-    return inferred_shapes;
-  }
+  const absl::Span<const xla::Shape> inferred_shapes =
+      executable->output_shapes();
 
   TT_RET_CHECK(output_shapes.size() == inferred_shapes.size(),
                error::kInvalidArgument)
@@ -619,7 +617,7 @@ absl::StatusOr<std::vector<Shape>> GetOutputShapes(
   result_shapes.reserve(inferred_shapes.size());
 
   for (size_t i = 0; i < inferred_shapes.size(); ++i) {
-    Shape result_shape = inferred_shapes[i];
+    TT_ASSIGN_OR_RETURN(Shape result_shape, MakeShape(inferred_shapes[i]));
     const OutputShape& shape_spec = output_shapes[i];
     const auto& dimensions = shape_spec.dimensions;
 
@@ -656,17 +654,10 @@ template <typename TensorSpan>
 std::vector<at::Tensor> ExecuteCompiledModelImpl(
     const SharedLoadedExecutableWithMetadata& executable,
     TensorSpan argument_tensors, absl::Span<const OutputShape> output_shapes) {
-  // Fast path: for static shapes (output_shapes is empty), the executable
-  // already owns the precomputed output shapes. Borrowing an absl::Span avoids
-  // allocating and deep-copying a std::vector<Shape> on every single step.
-  absl::Span<const Shape> result_shapes;
   std::vector<Shape> dynamic_result_shapes;
-  if (output_shapes.empty()) {
-    result_shapes = executable->output_shapes();
-  } else {
+  if (!output_shapes.empty()) {
     TT_ASSIGN_OR_THROW(dynamic_result_shapes,
                        GetOutputShapes(executable, output_shapes));
-    result_shapes = dynamic_result_shapes;
   }
   // Get the materialized buffers for the bases of the argument tensors.
   TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> argument_buffer_refs,
@@ -675,10 +666,17 @@ std::vector<at::Tensor> ExecuteCompiledModelImpl(
                      _.SetPrepend()
                          << "failed to prepare compiled mode arguments: ");
 
-  TT_ASSIGN_OR_THROW(
-      std::vector<DeviceBufferRef> result_buffer_refs,
-      EnqueueExecutable(executable, std::move(argument_buffer_refs),
-                        result_shapes));
+  std::vector<DeviceBufferRef> result_buffer_refs;
+  if (output_shapes.empty()) {
+    TT_ASSIGN_OR_THROW(
+        result_buffer_refs,
+        EnqueueExecutable(executable, std::move(argument_buffer_refs)));
+  } else {
+    TT_ASSIGN_OR_THROW(
+        result_buffer_refs,
+        EnqueueExecutable(executable, std::move(argument_buffer_refs),
+                          dynamic_result_shapes));
+  }
 
   auto num_outputs = result_buffer_refs.size();
   std::vector<at::Tensor> output_tensors;

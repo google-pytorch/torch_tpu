@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # benawilson
-# adivinpatel04
+# ghpvnist
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
@@ -76,7 +76,6 @@ torch_tpu_cc_library(
         "//csrc/ops/sort",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
-        "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

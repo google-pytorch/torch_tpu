@@ -113,6 +113,7 @@ class Tile final : public WithElementwiseOps<Tile>,
 
 // Tile constructors.
 Tile Zeros(const Shape& shape);
+Tile Ones(const Shape& shape);
 Tile Full(const Shape& shape, Literal value);
 Tile NInf(const Shape& shape);
 Tile Iota(const Shape& shape, int axis);

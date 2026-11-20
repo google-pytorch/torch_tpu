@@ -84,7 +84,7 @@ absl::StatusOr<CumminOutputs> BuildCumminShlo(const int64_t dim,
       builder,
       mlir::DenseElementsAttr::get(
           mlir::RankedTensorType::get({}, element_type),
-          GetMaxFiniteValueAttr(element_type, builder.getOpBuilder())));
+          GetMinReductionIdentityAttr(element_type, builder.getOpBuilder())));
   const mlir::MlirOp index_init = MakeScalarConstant(builder, 0, i32);
 
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp value_carry_init,

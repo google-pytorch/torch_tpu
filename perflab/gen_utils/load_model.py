@@ -47,6 +47,19 @@ def _set_config_dtype(config: Any, dtype: torch.dtype) -> None:
       _set_config_dtype(sub_cfg, dtype)
 
 
+def _front_load_layer_types(config: Any, num_layers: int) -> None:
+  """Puts one layer of each type in the first `num_layers` layer types."""
+  layer_types = getattr(config, "layer_types", None)
+  if not isinstance(layer_types, (list, tuple)):
+    return
+  # Per-layer overrides are keyed by layer index, so keep their order.
+  if getattr(config, "is_heterogeneous", False):
+    return
+  first = sorted({layer_types.index(t) for t in layer_types})[:num_layers]
+  order = first + [i for i in range(len(layer_types)) if i not in first]
+  config.layer_types = [layer_types[i] for i in order]
+
+
 def _run_blip_forward_on_model_device(model: torch.nn.Module) -> None:
   """Wraps BLIP `model.forward` in `torch.device` of the model parameters.
 
@@ -123,9 +136,11 @@ def default_load_model(
         if isinstance(out_indices, list):
           config.num_hidden_layers = max(2, len(out_indices))
           config.backbone_out_indices = list(range(len(out_indices)))
+        _front_load_layer_types(config, config.num_hidden_layers)
       if hasattr(config, "text_config") and config.text_config is not None:
         if hasattr(config.text_config, "num_hidden_layers"):
           config.text_config.num_hidden_layers = 2
+          _front_load_layer_types(config.text_config, 2)
       if hasattr(config, "vision_config") and config.vision_config is not None:
         if hasattr(config.vision_config, "num_hidden_layers"):
           config.vision_config.num_hidden_layers = 2

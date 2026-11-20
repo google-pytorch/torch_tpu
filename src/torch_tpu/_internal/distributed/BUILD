@@ -15,8 +15,6 @@
 # Domain experts for this package:
 # basioli-k
 # zhanyong-wan
-# pgmoka
-# jparkerh
 
 load(
     "//build_files:build_defs.bzl",
@@ -99,12 +97,22 @@ torch_tpu_py_library(
     name = "handshake",
     srcs = ["handshake.py"],
     deps = [
+        ":handshake_messages",
         ":process_group_utils",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
         "@pypi//portpicker",
         "@pypi//pyzmq",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "handshake_messages",
+    srcs = ["handshake_messages.py"],
+    deps = [
+        ":process_group_utils",
+        "//src/torch_tpu/_internal:env",
     ],
 )
 
@@ -190,6 +198,15 @@ torch_tpu_py_library(
     srcs = ["collective_ops.py"],
     deps = [
         "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "largest_common_spanning_subgraph",
+    srcs = ["largest_common_spanning_subgraph.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
     ],
 )
 

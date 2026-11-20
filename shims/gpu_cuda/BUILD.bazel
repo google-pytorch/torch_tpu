@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # jialei-chen
-# jonathan1920
+# chizhang529
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")

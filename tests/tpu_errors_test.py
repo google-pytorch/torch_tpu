@@ -54,6 +54,7 @@ from torch.nn.attention import flex_attention
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
+from torch.utils import checkpoint
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -61,9 +62,11 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
+from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
+from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.sync import sync
@@ -915,6 +918,59 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       (tensor + 1).cpu()
 
+  @et.why_tpu_only(
+      "CUDA set_.source_Tensor resizes shared untyped byte storage when sizes"
+      " change instead of checking dtype"
+  )
+  def test_set_source_tensor_different_dtype_empty_self(self):
+    dst = torch.empty(0, device=et.device(), dtype=torch.float32)
+    source = torch.ones(4, device=et.device(), dtype=torch.int8)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_(): expected self and source to have the same dtype, got float32 and int8""",
+    ):
+      torch.ops.aten.set_.source_Tensor(dst, source)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float32",
+          shape=(4,),
+          dtype=torch.float32,
+          required_bytes=16,
+      ),
+      dict(
+          testcase_name="float4_e2m1fn_x2",
+          shape=(3, 4),
+          dtype=torch.float4_e2m1fn_x2,
+          required_bytes=12,
+      ),
+  )
+  @et.why_tpu_only(
+      "CUDA set_.source_Tensor omits storage bounds validation when setting"
+      " from a Tensor"
+  )
+  def test_set_tensor_storage_out_of_bounds(
+      self,
+      shape: tuple[int, ...],
+      dtype: torch.dtype,
+      required_bytes: int,
+  ):
+    dst_shape = (1, 2) if len(shape) == 2 else (2,)
+    dst = torch.empty(dst_shape, device=et.device(), dtype=dtype)
+    orig_stride = dst.stride()
+    orig_ptr = dst.data_ptr()
+    source = torch.empty(shape, device=et.device(), dtype=dtype)
+    source.untyped_storage().resize_(0)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""set_(): expected the number of bytes required by the given arguments to be <= 0 (actual storage size), got {required_bytes}""",
+    ):
+      dst.set_(source)
+    self.assertEqual(dst.size(), dst_shape)
+    self.assertEqual(dst.stride(), orig_stride)
+    self.assertEqual(dst.dtype, dtype)
+    self.assertEqual(dst.data_ptr(), orig_ptr)
+
   # Confirmed this test does NOT fail on cpu.
   @et.why_tpu_only("TODO: support complex dtypes in addmm on TPU.")
   def test_addmm_on_complex_input(self):
@@ -1164,6 +1220,49 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       outputs[0].cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_bounded_p_not_broadcastable_to_static_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((3, 3), device=et.device())
+      dynamism.mark_dynamic(p, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): expected p to be broadcastable to self shape, got [3, 3] vs [4, 3]""",
+      ):
+        t.bernoulli_(p)
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_bounded_p_static_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((4, 3), device=et.device())
+      dynamism.mark_dynamic(p, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<?x3xf32, #stablehlo.bounds<8, ?>>' to target shape tensor<4x3>""",
+      ):
+        t.bernoulli_(p)
+        # cpu() is needed because the error is triggered inside the op builder.
+        t.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_static_p_bounded_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((4, 3), device=et.device())
+      dynamism.mark_dynamic(t, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<4x3xf32>' to target shape tensor<b8x3>""",
+      ):
+        t.bernoulli_(p)
+        # cpu() is needed because the error is triggered inside the op builder.
+        t.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_dynamic_kernel(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       inp = torch.ones(1, 2, 8, device=et.device())
@@ -1194,6 +1293,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.conv1d(inp, weight).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_fused_moving_avg_obs_fq_helper_dynamic_channels_static_buffers(
+      self,
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.ones(3, 4, device=et.device())
+      observer_on = torch.ones(1, dtype=torch.int64, device=et.device())
+      fake_quant_on = torch.ones(1, dtype=torch.int64, device=et.device())
+      running_min = torch.zeros(3, device=et.device())
+      running_max = torch.ones(3, device=et.device())
+      scale = torch.ones(3, device=et.device())
+      zero_point = torch.zeros(3, dtype=torch.int32, device=et.device())
+
+      # Mark the channel dimension of `inp` as dynamic, but not the buffers.
+      dynamism.mark_dynamic(inp, 0, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""fused_moving_avg_obs_fq_helper(): expected running_min to have the size and bounded dynamism of dimension 0 of self, got self type tensor<?x4xf32, #stablehlo.bounds<6, ?>> and running_min type tensor<3xf32>""",
+      ):
+        out, _ = torch._fused_moving_avg_obs_fq_helper(
+            inp,
+            observer_on,
+            fake_quant_on,
+            running_min,
+            running_max,
+            scale,
+            zero_point,
+            0.01,
+            0,
+            255,
+            0,
+            True,
+            False,
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        out.cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_backward_dynamic_channel_dimension(self):
@@ -2316,6 +2453,20 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [ph])
 
+  @et.why_tpu_only("Compiled TPU programs only take TPU tensors.")
+  def test_execute_cpu_argument(self):
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z = x + x
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x])
+    cpu_argument = torch.ones(2, 3)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""execute(): failed to prepare compiled mode arguments: failed to get buffer from argument tensor (shape=[2, 3], strides=[3, 1], numel=6, dtype=float32, device=cpu, is_contiguous=1, is_cpu=1, is_cuda=0, is_meta=0, has_storage=1, storage_offset=0): expected tensor to be on tpu, got cpu""",
+    ):
+      tpu_torch_compile.execute(compile_result.executable, [cpu_argument])
+
   @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
@@ -2335,6 +2486,41 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
     ):
       torch.accelerator.synchronize()
+
+  @parameterized.named_parameters(
+      ("host_read", lambda cond: cond.cpu()),
+      (
+          "stream_synchronize",
+          lambda cond: torch.tpu.default_stream().synchronize(),
+      ),
+      ("device_synchronize", lambda cond: torch.accelerator.synchronize()),
+  )
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
+  def test_async_assertion_message_is_raised_as_written(self, surface: Any):
+    false_cond = torch.tensor(False, device=et.device())
+    torch.ops.aten._assert_async.msg(false_cond, "Value must be positive.")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Value must be positive.""",
+    ):
+      surface(false_cond)
+
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
+  def test_launch_blocking_op_raises_async_assertion_message_as_written(self):
+    x = torch.ones(2, device=et.device())
+    false_cond = torch.tensor(False, device=et.device())
+    with execution_mode.set_eager_mode(
+        EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    ):
+      torch.ops.aten._assert_async.msg(false_cond, "Value must be positive.")
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*Value must be positive\.", re.DOTALL),
+      ):
+        # In launch-blocking mode the next op reports the failure.
+        x.to(torch.int32)
 
   @et.why_tpu_only("Sync materialization status checks are TPU-specific.")
   def test_is_materializing_tensor_not_on_tpu(self):
@@ -2837,6 +3023,237 @@ module {
           weight_decay=0.01,
           eps=1e-8,
           amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adamw_mismatched_exp_avgs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adamw_(): expected exp_avgs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1],
+          [eas1, eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adamw_mismatched_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adamw_(): expected exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adamw_mismatched_max_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adamw_(): expected max_exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1, eas1],
+          [eas1],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=True,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_grads_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected grads to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1],
+          [ea1, ea1],
+          [eas1, eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_exp_avgs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected exp_avgs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1],
+          [eas1, eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_max_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected max_exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1, eas1],
+          [eas1],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=True,
           maximize=False,
       )
 
@@ -4162,6 +4579,20 @@ module {
     ):
       torch.tpu.ops.optimization_barrier([])
 
+  @et.why_tpu_only("The optimization barrier is a TPU-only op.")
+  def test_optimization_barrier_forward_mode_ad_fails(self):
+    primal = torch.ones(2, device=et.device())
+    tangent = torch.ones(2, device=et.device())
+    with torch.autograd.forward_ad.dual_level():
+      dual = torch.autograd.forward_ad.make_dual(primal, tangent)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(
+              r"""jvp is not implemented for the c\+\+ API of custom Function(.|\n)*"""
+          ),
+      ):
+        torch.tpu.ops.optimization_barrier([dual])
+
   @et.why_tpu_only(
       "Native PyTorch accepts 2-D proj_bias without throwing an error."
   )
@@ -5136,6 +5567,98 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
       torch.nn.functional.rms_norm(x_empty, (8,), weight=w_int, eps=1e-5)
 
 
+def _tensor_too_large_for_the_device() -> torch.Tensor:
+  """Returns a tensor that runs out of memory when it is materialized."""
+  return torch.ones(1024, 1024, 1024, 1024, 1024, device=et.device())
+
+
+def _glu_with_dynamic_split_dimension() -> torch.Tensor:
+  """Returns an op result whose lowering fails when materialized."""
+  x = torch.ones(2, 4, device=et.device())
+  dynamism.mark_dynamic(x, 1, 2, 8)
+  return torch.nn.functional.glu(x, dim=1)
+
+
+class DeviceGuardErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests the error types raised through torch.accelerator, Stream and Event.
+
+  PyTorch calls the TPU device guard directly for these APIs.
+  """
+
+  @et.why_tpu_only("CUDA runs out of memory when the tensor is allocated.")
+  def test_failed_event_raises_out_of_memory_error(self):
+    # Deferred, so that the events are recorded before the failure is known.
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      too_large = _tensor_too_large_for_the_device()
+      start = torch.Event(device=et.device(), enable_timing=True)
+      start.record()
+      end = torch.Event(device=et.device(), enable_timing=True)
+      end.record()
+
+    # Synchronizing goes first: it waits until the failure is known.
+    with self.subTest("synchronize"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.synchronize()
+    with self.subTest("query"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.query()
+    with self.subTest("elapsed_time"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.elapsed_time(end)
+    del too_large
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_accelerator_synchronize_raises_not_implemented_error(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      unsupported = _glu_with_dynamic_split_dimension()
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        torch.accelerator.synchronize()
+    del unsupported
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_event_record_raises_not_implemented_error(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      unsupported = _glu_with_dynamic_split_dimension()
+      event = torch.Event(device=et.device())
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        # Recording materializes the deferred ops of the stream.
+        event.record()
+    del unsupported
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_set_stream_raises_not_implemented_error(self):
+    default_stream = torch.accelerator.current_stream()
+    self.addCleanup(torch.accelerator.set_stream, default_stream)
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      torch.accelerator.set_stream(torch.tpu.Stream())
+      unsupported = _glu_with_dynamic_split_dimension()
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        # Leaving a stream materializes its deferred ops.
+        torch.accelerator.set_stream(default_stream)
+    del unsupported
+
+
 # Environment variables that `distributed.set_tpu_launch_env` reads or writes,
 # directly or through `torch_tpu._internal.env`.
 _LAUNCH_ENV_VARS = (
@@ -5686,6 +6209,166 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           self._causal_mask(),
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
       )
+
+  def _bwd_dkv(self, **overrides):
+    """Calls the dK / dV op directly with valid arguments except `overrides`."""
+    shape = (1, 1, 256, 128)
+    args = dict(
+        q=torch.randn(shape, device=et.device()),
+        k=torch.randn(shape, device=et.device()),
+        v=torch.randn(shape, device=et.device()),
+        grad_out=torch.randn(shape, device=et.device()),
+        lse=torch.zeros(1, 1, 1, 256, device=et.device()),
+        di=torch.zeros(1, 1, 1, 256, device=et.device()),
+        q_num_blocks=torch.ones(2, dtype=torch.int32, device=et.device()),
+        q_indices=torch.zeros(4, dtype=torch.int32, device=et.device()),
+        mask_batch=1,
+        mask_heads=1,
+        q_block=128,
+        kv_block=128,
+        scale=1.0,
+        mask_mod_mlir="",
+    )
+    args.update(overrides)
+    return torch.ops.tpu._flex_attention_bwd_dkv(*args.values())
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_bwd_grad_out_must_match_the_output(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_bwd_dkv(): expected grad_out of shape [1, 1, 256, 128] and dtype float32, got [1, 1, 256, 64] and float32""",
+    ):
+      self._bwd_dkv(grad_out=torch.randn(1, 1, 256, 64, device=et.device()))
+
+
+class SpmdSafeCompileErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests error messages for partially `spmd_safe` compiled graphs."""
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_tensor_indexing(self):
+    """Verifies unannotated tensor indexing (`operator.getitem`) is rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_index = torch.compile(lambda t: safe_fn(t[0]), backend="tpu")
+    compiled_ckpt_index = torch.compile(
+        lambda t: checkpoint.checkpoint(safe_fn, t, use_reentrant=False)[0],
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device())
+    x_grad = torch.ones((2, 2), device=et.device(), requires_grad=True)
+    expected = re.compile(
+        r".*ValueError: The graph is partially annotated with `spmd_safe`: 1 of"
+        r" 3 ops are not `spmd_safe`, e\.g\. \['(?:getitem|getitem_1):"
+        r" operator\.getitem \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+        re.DOTALL,
+    )
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=expected,
+    ):
+      compiled_index(x)
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=expected,
+    ):
+      compiled_ckpt_index(x_grad)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_checkpoint_subgraph(self):
+    """Verifies unannotated ops inside a `checkpoint` subgraph are rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_fn = torch.compile(
+        lambda t: checkpoint.checkpoint(
+            lambda y: torch.neg(safe_fn(y)), t, use_reentrant=False
+        ),
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device(), requires_grad=True)
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 1 of 3 ops are not `spmd_safe`, e\.g\. \['neg: torch\.neg"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_bodyless_higher_order_op(self):
+    """Verifies unannotated higher-order ops without a subgraph are rejected."""
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t + 1
+
+    def fn(t):
+      y = torch.ops.higher_order.out_dtype(
+          torch.ops.aten.mul.Scalar, torch.float32, t, 2.0
+      )
+      return safe_fn(y)
+
+    compiled_fn = torch.compile(fn, backend="tpu")
+    x = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 1 of 2 ops are not `spmd_safe`, e\.g\. \['y:"
+            r" torch\.ops\.higher_order\.out_dtype"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
+
+  @et.why_tpu_only("`spmd_safe` only exists on TPU.")
+  def test_partially_spmd_safe_error_formatting(self):
+    """Verifies node formatting without stack traces and 3-op truncation."""
+    no_trace_gm = torch.fx.symbolic_trace(lambda x: torch.neg(x) + 1)
+    neg_node, add_node = (
+        n for n in no_trace_gm.graph.nodes if n.op == "call_function"
+    )
+    neg_node.meta["custom"] = {spmd_util.SPMD_SAFE_METADATA_KEY: True}
+    self.assertIsNone(add_node.stack_trace)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""The graph is partially annotated with `spmd_safe`: 1 of 2 ops are not `spmd_safe`, e.g. ['add: operator.add']. Under `torch.compile`, `spmd_safe` must cover the whole compiled function: either compile the `spmd_safe` function directly, or decorate the whole compiled function with `spmd_safe`.""",
+    ):
+      split_compiler._is_fully_spmd_safe(no_trace_gm)  # pylint: disable=protected-access
+
+    @distributed.spmd_safe
+    def safe_fn(t):
+      return t * 2 + 1
+
+    compiled_fn = torch.compile(
+        lambda t: safe_fn(torch.neg(torch.abs(torch.sin(torch.cos(t))))),
+        backend="tpu",
+    )
+    x = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,  # pylint: disable=protected-access
+        tpu=re.compile(
+            r".*ValueError: The graph is partially annotated with `spmd_safe`:"
+            r" 4 of 6 ops are not `spmd_safe`, e\.g\. \['cos: torch\.cos"
+            r" \([^']*tpu_errors_test\.py:\d+\)', 'sin: torch\.sin"
+            r" \([^']*tpu_errors_test\.py:\d+\)', 'abs_1: torch\.abs"
+            r" \([^']*tpu_errors_test\.py:\d+\)'\]\. Under `torch\.compile`,"
+            r" `spmd_safe` must cover the whole compiled function: either"
+            r" compile the `spmd_safe` function directly, or decorate the"
+            r" whole compiled function with `spmd_safe`\..*",
+            re.DOTALL,
+        ),
+    ):
+      compiled_fn(x)
 
 
 if __name__ == "__main__":

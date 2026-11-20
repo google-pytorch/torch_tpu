@@ -263,15 +263,31 @@ absl::StatusOr<mlir::Type> GetMlirType(mlir::MLIRContext& ctx,
 absl::StatusOr<mlir::DenseElementsAttr> GetVerifiedMinFiniteValue(
     mlir::MlirBuilder& builder, mlir::RankedTensorType constant_tensor_type);
 
-// Returns an attribute for the minimum finite value for a given type. This is
-// used for initializing the minimum finite value for operations like argmax.
+// Returns an attribute for the minimum finite value for a given type, or null
+// if the type is not supported. To start a max reduction, use
+// GetMaxReductionIdentityAttr instead.
 [[nodiscard]] mlir::Attribute GetMinFiniteValueAttr(mlir::Type element_type,
                                                     mlir::OpBuilder& builder);
 
-// Returns an attribute for the maximum finite value for a given type. This is
-// used for initializing the maximum finite value for operations like argmin.
+// Returns an attribute for the maximum finite value for a given type, or null
+// if the type is not supported. To start a min reduction, use
+// GetMinReductionIdentityAttr instead.
 [[nodiscard]] mlir::Attribute GetMaxFiniteValueAttr(mlir::Type element_type,
                                                     mlir::OpBuilder& builder);
+
+// Returns the identity (initial value) of a max reduction over `element_type`:
+// -inf for floating-point types that have infinities, and the minimum finite
+// value otherwise, as in PyTorch. A max over only -inf then yields -inf.
+// Returns null if the type is not supported.
+[[nodiscard]] mlir::Attribute GetMaxReductionIdentityAttr(
+    mlir::Type element_type, mlir::OpBuilder& builder);
+
+// Returns the identity (initial value) of a min reduction over `element_type`:
+// +inf for floating-point types that have infinities, and the maximum finite
+// value otherwise, as in PyTorch. A min over only +inf then yields +inf.
+// Returns null if the type is not supported.
+[[nodiscard]] mlir::Attribute GetMinReductionIdentityAttr(
+    mlir::Type element_type, mlir::OpBuilder& builder);
 
 // Returns the maximum representable finite value for a given floating-point
 // type as a double. Asserts (ABSL_CHECK) that the type is a floating-point
@@ -506,6 +522,16 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
     const std::optional<mlir::stablehlo::Dimensions>& result_dims =
         std::nullopt);
 
+// Builds a stablehlo.clamp that also supports bounded dynamic dimensions.
+// Takes the same arguments as mlir::stablehlo::Clamp.
+//
+// If operand has a static shape, emits stablehlo.clamp. Otherwise, min and max
+// must have the type of operand, and this emits the equivalent
+// stablehlo.maximum and stablehlo.minimum, because stablehlo.clamp infers a
+// result type without the bounds of operand.
+mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
+                       mlir::MlirOp max);
+
 // Returns an mlir::MlirOp representing the number of elements in the input
 // tensor with the given element type, only counting the dimensions specified.
 // If dims is empty, all dimensions are counted.
@@ -565,6 +591,23 @@ absl::StatusOr<mlir::MlirOp> Unsqueeze(mlir::MlirOp input, int64_t dim);
 absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
                                      absl::Span<const int64_t> dims);
 
+// Reshapes `op` to the result dimensions `output_dims` with a
+// `stablehlo.dynamic_reshape`, whose result may have several bounded
+// dimensions (unlike `stablehlo.reshape`). `output_sizes` holds the runtime
+// size of each result dimension as an i32 scalar. XLA's dynamic padder
+// handles the padding of the bounded dimensions. `output_dims` must not be
+// empty (a rank-0 result has no bounded dimension).
+mlir::MlirOp DynamicReshapeWithRuntimeSizes(
+    mlir::MlirOp op, const mlir::stablehlo::Dimensions& output_dims,
+    absl::Span<const mlir::MlirOp> output_sizes);
+
+// Returns the runtime size of each dimension in `dims` as an i32 scalar: the
+// size of its `boundOp` at `boundOpDim` (which must be set) if bounded, or a
+// constant `size` if static. E.g. for the `output_sizes` of
+// `DynamicReshapeWithRuntimeSizes`.
+std::vector<mlir::MlirOp> GetRuntimeSizes(
+    mlir::MlirBuilder& builder, const mlir::stablehlo::Dimensions& dims);
+
 // Flattens the input tensor to a single dimension.
 // Supports bounded dynamic flatten.
 mlir::MlirOp Flatten(mlir::MlirOp input);
@@ -577,33 +620,20 @@ std::string ConsumeMlirDiagnostics(
 // Applies Numpy's broadcasting rules, if needed. See
 // https://numpy.org/devdocs//user/basics.broadcasting.html#broadcastable-arrays
 
+// Applies Numpy's broadcasting rules to a dynamic span of ops, if needed.
+absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
+    absl::Span<const mlir::MlirOp> ops);
+
 // This overload takes a fixed number of inputs as an std::array, and returns
 // the same number of outputs.
 template <int kNumInputs>
 absl::StatusOr<std::array<mlir::MlirOp, kNumInputs>> ApplyBroadcastIfNeeded(
     std::array<mlir::MlirOp, kNumInputs> ops) {
   static_assert(kNumInputs > 0, "ApplyBroadcastIfNeeded requires >= 1 input");
-  if (ABSL_VLOG_IS_ON(3)) {
-    ABSL_VLOG(3) << "[ApplyBroadcastIfNeeded] Broadcasting ops:" << '\n';
-    for (const mlir::MlirOp& op : ops) {
-      ABSL_VLOG(3) << "  " << mlir::debugString(op.getType()) << " from op "
-                   << op.ToString() << '\n';
-    }
-  }
-
-  mlir::SmallVector<mlir::Value, kNumInputs> values = llvm::map_to_vector(
-      ops, [](const mlir::MlirOp& op) { return op.getValue(); });
-  mlir::BaseScopedDiagnosticHandler diag_handler(values[0].getContext());
-  auto broadcasted_values_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
-      ops[0].getBuilder().getOpBuilder(), values);
-  TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
-               error::kInvalidArgument)
-      << "failed to broadcast tensors: "
-      << ConsumeMlirDiagnostics(diag_handler);
-  mlir::SmallVector<mlir::Value, kNumInputs> broadcasted_values =
-      std::move(*broadcasted_values_or_fail);
+  TT_ASSIGN_OR_RETURN(std::vector<mlir::MlirOp> broadcasted,
+                      ApplyBroadcastIfNeeded(absl::MakeConstSpan(ops)));
   for (int i = 0; i < kNumInputs; ++i) {
-    ops[i] = mlir::MlirOp(ops[i].getBuilder(), broadcasted_values[i]);
+    ops[i] = broadcasted[i];
   }
   return std::move(ops);
 }
@@ -616,10 +646,6 @@ ApplyBroadcastIfNeeded(Op1 op1, Op2 op2, Ops... ops) {
   return ApplyBroadcastIfNeeded<2 + sizeof...(Ops)>(
       std::array<mlir::MlirOp, 2 + sizeof...(Ops)>{op1, op2, ops...});
 }
-
-// Applies Numpy's broadcasting rules to a dynamic span of ops, if needed.
-absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
-    absl::Span<const mlir::MlirOp> ops);
 
 absl::StatusOr<mlir::MlirOp> Broadcast(mlir::MlirOp input,
                                        absl::Span<const int64_t> output_dims,
@@ -838,7 +864,8 @@ absl::Status BuildReduceBody(mlir::RegionBuilder& rb, mlir::Type element_type,
 // memory that has uninitialized values. There is no way to represent
 // uninitialized value in MLIR; instead, we follow the convention of
 // torch.utils.deterministic.fill_uninitialized_memory, which is to use
-// std::numeric_limits<scalar_t>::quiet_NaN() for float types and
+// std::numeric_limits<scalar_t>::quiet_NaN() for float types (or maximum finite
+// value for finite-only float formats without NaN) and
 // std::numeric_limits<scalar_t>::max() for integers and boolean types.
 mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
                                     mlir::ElementType tensor_element_type,
@@ -846,6 +873,10 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
 
 // Slice if left_pad or right_pad is negative to truncate the tensor in the
 // dimension specified, otherwise return op.
+//
+// Supports bounded dynamic dimensions. If the dimension specified is bounded,
+// the truncation applies to its upper bound and to its runtime size (clamped
+// at 0), so the elements kept are those of `op` within its runtime size.
 absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
                                              int64_t left_pad,
                                              int64_t right_pad);

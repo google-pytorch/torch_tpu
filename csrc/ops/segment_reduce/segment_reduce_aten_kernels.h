@@ -19,14 +19,14 @@
 
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 #include "ATen/core/Scalar.h"
 #include "ATen/core/Tensor.h"
-#include "c10/util/string_view.h"
 
 namespace torch_tpu {
 
-at::Tensor AtenSegmentReduce(const at::Tensor& data, c10::string_view reduce,
+at::Tensor AtenSegmentReduce(const at::Tensor& data, std::string_view reduce,
                              const std::optional<at::Tensor>& lengths,
                              const std::optional<at::Tensor>& indices,
                              const std::optional<at::Tensor>& offsets,

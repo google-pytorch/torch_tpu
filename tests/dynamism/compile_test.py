@@ -15,6 +15,7 @@
 """Test demonstrating dynamic execution through torch.compile()."""
 
 from collections.abc import Callable, Sequence
+import itertools
 from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -1929,6 +1930,178 @@ class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
     out = compiled(embeddings, mask, eoi_embedding)
     expected = fn(embeddings, mask, eoi_embedding)
     utils.assert_close(out, expected)
+
+
+# TODO: b/581040310 - Remove once `atanh` leaves the `COMPILE_GRAD` deny list in
+# dynamism_test_utils.py, so `ops_test_dynamic_compiled_grad` covers this path.
+class DynamicAtanhBackwardTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32, 1e-4),
+      ("bfloat16", torch.bfloat16, 2e-2),
+  )
+  def test_atanh_dynamic_compiled_backward(self, dtype, tol):
+    def fn(x):
+      return torch.atanh(x).sum()
+
+    compiled = torch.compile(fn, backend="tpu")
+    x_cpu = torch.linspace(-0.7, 0.7, 24, dtype=dtype).reshape(4, 6)
+    x_tpu = x_cpu.to(self.device).detach().requires_grad_(True)
+    x_ref = x_cpu.detach().clone().requires_grad_(True)
+    torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=10)
+    torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=12)
+
+    loss = compiled(x_tpu)
+    loss.backward()
+    loss_ref = fn(x_ref)
+    loss_ref.backward()
+    utils.assert_close(loss, loss_ref, rtol=tol, atol=tol)
+    utils.assert_close(x_tpu.grad, x_ref.grad, rtol=tol, atol=tol)
+
+
+class DynamicFusedMovingAvgObsFqTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  def test_fused_moving_avg_obs_fq_helper_per_channel_dynamic_dim(self):
+    def fn(x, obs_on, fq_on, rmin, rmax, scale, zp):
+      rmin_c = rmin.clone()
+      rmax_c = rmax.clone()
+      scale_c = scale.clone()
+      zp_c = zp.clone()
+      out, mask = torch._fused_moving_avg_obs_fq_helper(
+          x,
+          obs_on,
+          fq_on,
+          rmin_c,
+          rmax_c,
+          scale_c,
+          zp_c,
+          0.01,
+          0,
+          255,
+          0,
+          True,
+          False,
+      )
+      return out, mask, rmin_c, rmax_c, scale_c, zp_c
+
+    compiled = torch.compile(fn, backend="tpu")
+    obs_cpu = torch.tensor([1], dtype=torch.int64)
+
+    for num_channels, fq_val in itertools.product((3, 5), (1, 0)):
+      with self.subTest(num_channels=num_channels, fake_quant_on=fq_val):
+        x_cpu = torch.linspace(
+            -2.0, 2.0, num_channels * 4, dtype=torch.float32
+        ).reshape(num_channels, 4)
+        fq_cpu = torch.tensor([fq_val], dtype=torch.int64)
+        rmin_cpu = torch.linspace(-2.0, -0.5, num_channels, dtype=torch.float32)
+        # The ranges are not symmetric around zero, so that no zero point lands
+        # on a rounding tie (x.5). libtpu 0.0.50 rounds float64 ties to the
+        # wrong integer.
+        rmax_cpu = torch.linspace(1.0, 2.0, num_channels, dtype=torch.float32)
+        scale_cpu = torch.full((num_channels,), 0.1, dtype=torch.float32)
+        zp_cpu = torch.zeros(num_channels, dtype=torch.int32)
+        expected = fn(
+            x_cpu, obs_cpu, fq_cpu, rmin_cpu, rmax_cpu, scale_cpu, zp_cpu
+        )
+
+        x_tpu = x_cpu.to(self.device)
+        rmin_tpu = rmin_cpu.to(self.device)
+        rmax_tpu = rmax_cpu.to(self.device)
+        scale_tpu = scale_cpu.to(self.device)
+        zp_tpu = zp_cpu.to(self.device)
+        for t in (x_tpu, rmin_tpu, rmax_tpu, scale_tpu, zp_tpu):
+          torch._dynamo.mark_dynamic(t, 0, min=2, max=16)
+
+        actual = compiled(
+            x_tpu,
+            obs_cpu.to(self.device),
+            fq_cpu.to(self.device),
+            rmin_tpu,
+            rmax_tpu,
+            scale_tpu,
+            zp_tpu,
+        )
+        for act, exp in zip(actual, expected, strict=True):
+          utils.assert_close(act, exp)
+
+  # Calls `fused_moving_avg_obs_fake_quant` rather than the helper because it
+  # drops the bool `mask` output, which fails XLA TPU tile layout verification
+  # with more than one bounded dimension (see `DYNAMISM_DENY_LISTS`).
+  @parameterized.named_parameters(
+      dict(testcase_name="per_channel", per_row_fq=True),
+      dict(testcase_name="per_tensor", per_row_fq=False),
+  )
+  def test_fused_moving_avg_obs_fake_quant_multi_dynamic_dims(
+      self, per_row_fq: bool
+  ):
+    def fn(x, obs_on, fq_on, rmin, rmax, scale, zp):
+      rmin_c = rmin.clone()
+      rmax_c = rmax.clone()
+      scale_c = scale.clone()
+      zp_c = zp.clone()
+      out = torch.fused_moving_avg_obs_fake_quant(
+          x,
+          obs_on,
+          fq_on,
+          rmin_c,
+          rmax_c,
+          scale_c,
+          zp_c,
+          0.01,
+          0,
+          255,
+          0,
+          per_row_fq,
+          False,
+      )
+      return out, rmin_c, rmax_c, scale_c, zp_c
+
+    compiled = torch.compile(fn, backend="tpu")
+    num_qparams = 3 if per_row_fq else 1
+    obs_cpu = torch.tensor([1], dtype=torch.int64)
+    rmin_cpu = torch.linspace(-2.0, -0.5, num_qparams, dtype=torch.float32)
+    rmax_cpu = torch.linspace(1.0, 2.0, num_qparams, dtype=torch.float32)
+    scale_cpu = torch.full((num_qparams,), 0.1, dtype=torch.float32)
+    zp_cpu = torch.zeros(num_qparams, dtype=torch.int32)
+
+    # Each shape runs the compiled function at other sizes of the bounded dims.
+    for (rows, cols), fq_val in itertools.product(((4, 5), (6, 3)), (1, 0)):
+      with self.subTest(shape=(3, rows, cols), fake_quant_on=fq_val):
+        x_cpu = torch.linspace(
+            -2.0, 2.0, 3 * rows * cols, dtype=torch.float32
+        ).reshape(3, rows, cols)
+        fq_cpu = torch.tensor([fq_val], dtype=torch.int64)
+        expected = fn(
+            x_cpu, obs_cpu, fq_cpu, rmin_cpu, rmax_cpu, scale_cpu, zp_cpu
+        )
+        x_tpu = x_cpu.to(self.device)
+        torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=16)
+        torch._dynamo.mark_dynamic(x_tpu, 2, min=2, max=16)
+        actual = compiled(
+            x_tpu,
+            obs_cpu.to(self.device),
+            fq_cpu.to(self.device),
+            rmin_cpu.to(self.device),
+            rmax_cpu.to(self.device),
+            scale_cpu.to(self.device),
+            zp_cpu.to(self.device),
+        )
+        for act, exp in zip(actual, expected, strict=True):
+          utils.assert_close(act, exp)
 
 
 if __name__ == "__main__":

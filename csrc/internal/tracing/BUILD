@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# zhanyong-wan
-# ghpvnist
+# thcmbs
+# ryo-not-rio
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 

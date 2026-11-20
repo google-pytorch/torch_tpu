@@ -14,63 +14,91 @@
 
 """Tests for TorchAX optimizer mapping."""
 
-from unittest import mock
-
 from absl.testing import absltest
+from absl.testing import parameterized
+import jax.numpy as jnp
+import numpy as np
 import optax
 import torch
-import torch.nn as nn
+from torch import nn
 from perflab.torchax import optimizer
 from tests import seed_test_utils
+
+_NUM_STEPS = 3
+
+
+def _run_torch_and_optax(
+    torch_optimizer_cls: type[torch.optim.Optimizer],
+    grads: list[np.ndarray],
+    init_param: np.ndarray,
+    **optimizer_kwargs,
+) -> tuple[np.ndarray, np.ndarray]:
+  """Applies the same gradients with torch and the converted optax optimizer.
+
+  Args:
+    torch_optimizer_cls: The torch optimizer class to convert.
+    grads: The gradient to apply at each step.
+    init_param: The initial parameter value.
+    **optimizer_kwargs: Hyperparameters for the torch optimizer.
+
+  Returns:
+    The final (torch, optax) parameter values.
+  """
+  param = nn.Parameter(torch.tensor(init_param))
+  torch_opt = torch_optimizer_cls([param], **optimizer_kwargs)
+  optax_opt = optimizer.get_optax_optimizer(torch_opt)
+
+  jax_param = jnp.asarray(init_param)
+  opt_state = optax_opt.init(jax_param)
+  for grad in grads:
+    param.grad = torch.tensor(grad)
+    torch_opt.step()
+
+    updates, opt_state = optax_opt.update(
+        jnp.asarray(grad), opt_state, jax_param
+    )
+    jax_param = optax.apply_updates(jax_param, updates)
+
+  return param.detach().numpy(), np.asarray(jax_param)
 
 
 class OptimizerTest(seed_test_utils.RepeatableTest):
 
-  @mock.patch.object(optax, "adam")
-  def test_get_optax_optimizer_adam_params_match(self, mock_adam):
-    model = nn.Linear(2, 2)
-    torch_adam = torch.optim.Adam(
-        model.parameters(), lr=0.005, betas=(0.8, 0.95), eps=1e-7
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="adam",
+          torch_optimizer_cls=torch.optim.Adam,
+          optimizer_kwargs=dict(lr=0.05, betas=(0.8, 0.95), eps=1e-3),
+      ),
+      dict(
+          testcase_name="adamw",
+          torch_optimizer_cls=torch.optim.AdamW,
+          optimizer_kwargs=dict(
+              lr=0.05, betas=(0.85, 0.98), eps=1e-3, weight_decay=0.2
+          ),
+      ),
+      dict(
+          testcase_name="adamw_default_weight_decay",
+          torch_optimizer_cls=torch.optim.AdamW,
+          optimizer_kwargs=dict(lr=0.05),
+      ),
+  )
+  def test_optax_steps_match_torch(self, torch_optimizer_cls, optimizer_kwargs):
+    rng = np.random.default_rng(0)
+    init_param = rng.standard_normal((4, 3)).astype(np.float32)
+    grads = [
+        rng.standard_normal((4, 3)).astype(np.float32)
+        for _ in range(_NUM_STEPS)
+    ]
+
+    torch_param, optax_param = _run_torch_and_optax(
+        torch_optimizer_cls, grads, init_param, **optimizer_kwargs
     )
 
-    optimizer.get_optax_optimizer(torch_adam)
-
-    mock_adam.assert_called_once_with(
-        learning_rate=0.005, b1=0.8, b2=0.95, eps=1e-7
-    )
-
-  @mock.patch.object(optax, "adamw")
-  @mock.patch.object(optax, "adam")
-  def test_get_optax_optimizer_adamw_params_match(self, mock_adam, mock_adamw):
-    model = nn.Linear(2, 2)
-    torch_adamw = torch.optim.AdamW(
-        model.parameters(),
-        lr=0.003,
-        betas=(0.85, 0.98),
-        eps=1e-6,
-        weight_decay=0.02,
-    )
-
-    optimizer.get_optax_optimizer(torch_adamw)
-
-    mock_adamw.assert_called_once_with(
-        learning_rate=0.003,
-        b1=0.85,
-        b2=0.98,
-        eps=1e-6,
-        weight_decay=0.02,
-    )
-    mock_adam.assert_not_called()
-
-  def test_get_optax_optimizer_returns_gradient_transformation(self):
-    model = nn.Linear(2, 2)
-    torch_adam = torch.optim.Adam(model.parameters(), lr=0.001)
-    optax_adam = optimizer.get_optax_optimizer(torch_adam)
-    self.assertIsInstance(optax_adam, optax.GradientTransformation)
-
-    torch_adamw = torch.optim.AdamW(model.parameters(), lr=0.001)
-    optax_adamw = optimizer.get_optax_optimizer(torch_adamw)
-    self.assertIsInstance(optax_adamw, optax.GradientTransformation)
+    # The step must actually move the parameters for the comparison to be
+    # meaningful.
+    self.assertGreater(np.abs(torch_param - init_param).max(), 1e-2)
+    np.testing.assert_allclose(optax_param, torch_param, rtol=1e-5, atol=1e-6)
 
   def test_get_optax_optimizer_unsupported_raises(self):
     model = nn.Linear(2, 2)

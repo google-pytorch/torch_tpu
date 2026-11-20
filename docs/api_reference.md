@@ -79,10 +79,10 @@ print(
 | `torch.cuda.default_generators` | `torch.tpu.default_generators` | Lazily initialized tuple of default `torch.Generator` instances indexed by local device ordinal. |
 <!-- mdformat on -->
 
-The `torch.accelerator.random` APIs in this table require PyTorch 2.13 or later.
+The `torch.accelerator.random` APIs in this table require PyTorch 2.14 or later.
 In the rare case that you use an older PyTorch version, use
 `torch.tpu.initial_seed()` or `torch.tpu.get_rng_state()` instead. In PyTorch
-2.13 and later, these `torch.tpu` APIs are internal to TorchTPU, and calling
+2.14 and later, these `torch.tpu` APIs are internal to TorchTPU, and calling
 them from your code raises an error.
 
 ```python
@@ -220,7 +220,7 @@ custom JAX/Pallas kernel wrapper under `torch.tpu.pallas`. See
 | :--- | :--- |
 | `torch.tpu.ops.max_pool{1,2,3}d(...)` | Applies 1D, 2D, or 3D max pooling on TPU without materializing an index tensor. |
 | `torch.tpu.ops.max_pool{1,2,3}d_backward(...)` | Computes the backward pass for `max_pool{1,2,3}d` without an index tensor. |
-| `torch.tpu.ops.optimization_barrier(inputs)` | Prevents XLA from moving, fusing, or deduplicating computations across the barrier. |
+| `torch.tpu.ops.optimization_barrier(inputs)` | Prevents XLA from moving, fusing, or deduplicating computations across the barrier; gradients flow through it. |
 | `torch.tpu.ops.splash_sdpa(q, k, v, ...)` | Scaled dot-product attention backed by the TPU Pallas Splash Attention kernel. |
 | `torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes, ...)` | Grouped matrix multiplication for Mixture-of-Experts (MoE) workloads. |
 | `torch.tpu.ops.ragged_dot_weight_grad(lhs, grad_output, group_sizes)` | Computes the weight gradient for `ragged_dot`. |

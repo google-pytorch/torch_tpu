@@ -309,6 +309,7 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   c10::DeviceGuard device_guard(src.device());
 
   if (src.numel() == 0) {
+    TT_RETURN_IF_ERROR(ValidateBroadcastableToDest(src, dest));
     // Shortcut: no data to move. Create a new storage for dest if it doesn't
     // have one, otherwise leave it as is.
     if (!dest.has_storage()) {

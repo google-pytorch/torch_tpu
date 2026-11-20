@@ -14,6 +14,7 @@
 
 # Domain experts for this package:
 # adivinpatel04
+# ghpvnist
 # chizhang529
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
@@ -42,8 +43,8 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
-        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/numeric:int128",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",

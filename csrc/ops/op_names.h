@@ -93,7 +93,9 @@ enum class OpName {
   kBaddbmmDtype,
   kBaddbmmDtypeOut,
   kBaddbmmOut,
+  kBernoulli,
   kBernoulliOut,
+  kBernoulliP,
   kBernoulli_Float,
   kBernoulli_Tensor,
   kBinCount,
@@ -242,6 +244,7 @@ enum class OpName {
   kFill_Scalar,
   kFill_Tensor,
   kFlatten,
+  kFlexAttentionBwdDkv,
   kFlexAttentionFwd,
   kFlip,
   kFloorDivide,
@@ -481,6 +484,8 @@ enum class OpName {
   kIndexTensorOut,
   kIndices,
   kIndicesInternal,
+  kIntMm,
+  kIntMmOut,
   kIrshiftScalar,
   kIrshiftTensor,
   kIsCoalesced,
@@ -829,6 +834,7 @@ enum class OpName {
   kTopkValues,
   kTorchTpuInternalConstant,
   kTorchTpuInternalDataDependency,
+  kTorchTpuInternalInvokeSubgraph,
   kTorchTpuInternalZeroSize,
   kTorchTpuOptimizationBarrier,
   kTorchTpuStorageAllocate,
@@ -1038,8 +1044,12 @@ ToString(  // NOLINT(google-readability-function-size)
       return "baddbmm.dtype_out";
     case OpName::kBaddbmmOut:
       return "baddbmm.out";
+    case OpName::kBernoulli:
+      return "bernoulli";
     case OpName::kBernoulliOut:
       return "bernoulli.out";
+    case OpName::kBernoulliP:
+      return "bernoulli.p";
     case OpName::kBernoulli_Float:
       return "bernoulli_.float";
     case OpName::kBernoulli_Tensor:
@@ -1336,6 +1346,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "fill_.Tensor";
     case OpName::kFlatten:
       return "flatten";
+    case OpName::kFlexAttentionBwdDkv:
+      return "_flex_attention_bwd_dkv";
     case OpName::kFlexAttentionFwd:
       return "_flex_attention_fwd";
     case OpName::kFlip:
@@ -1814,6 +1826,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "indices";
     case OpName::kIndicesInternal:
       return "_indices";
+    case OpName::kIntMm:
+      return "_int_mm";
+    case OpName::kIntMmOut:
+      return "_int_mm.out";
     case OpName::kIrshiftScalar:
       return "__irshift__.Scalar";
     case OpName::kIrshiftTensor:
@@ -2514,6 +2530,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_torchtpu_internal_constant";
     case OpName::kTorchTpuInternalDataDependency:
       return "_torchtpu_internal_data_dependency";
+    case OpName::kTorchTpuInternalInvokeSubgraph:
+      return "_torchtpu_internal_invoke_subgraph";
     case OpName::kTorchTpuInternalZeroSize:
       return "_torchtpu_internal_zero_size";
     case OpName::kTorchTpuOptimizationBarrier:

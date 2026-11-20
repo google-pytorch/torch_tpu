@@ -141,7 +141,7 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ComputeMaxPoolWithIndices(
 
   // Create initial values for values and indices
   mlir::Attribute val_attr =
-      GetMaxPoolInitValueAttr(element_type, builder.getOpBuilder());
+      GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder());
   mlir::DenseElementsAttr init_value_attr = mlir::DenseElementsAttr::get(
       mlir::RankedTensorType::get({}, element_type), val_attr);
   mlir::MlirOp init_value = mlir::stablehlo::Constant(builder, init_value_attr);
@@ -198,7 +198,7 @@ absl::StatusOr<mlir::MlirOp> ComputeMaxPool(
   const mlir::Type element_type = input_shape.getElementType();
 
   mlir::Attribute val_attr =
-      GetMaxPoolInitValueAttr(element_type, builder.getOpBuilder());
+      GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder());
   mlir::DenseElementsAttr init_value_attr = mlir::DenseElementsAttr::get(
       mlir::RankedTensorType::get({}, element_type), val_attr);
   mlir::MlirOp init_value = mlir::stablehlo::Constant(builder, init_value_attr);

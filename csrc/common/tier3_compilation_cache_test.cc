@@ -59,13 +59,13 @@ class TpuTestEnvironment : public testing::Environment {
 auto* const test_env =
     testing::AddGlobalTestEnvironment(new TpuTestEnvironment);
 
-// Returns a cache key with the given shapeless key, dimensions key, and
+// Returns a cache key with the given extentless key, dimensions key, and
 // a placeholder compile options key.
-CompilationCacheKey MakeCacheKey(uint64_t shapeless_key, int num_dims) {
+CompilationCacheKey MakeCacheKey(uint64_t extentless_key, int num_dims) {
   const Dimensions dims(num_dims, 1);
   const DimensionsKey dimensions_key(dims);
   return CompilationCacheKey(
-      GraphKey(ShapelessKey(shapeless_key), dimensions_key),
+      GraphKey(ExtentlessKey(extentless_key), dimensions_key),
       GetCompilationSpec(CompilationMode::kFastCompile).compile_options_key);
 }
 
@@ -77,7 +77,7 @@ TEST_F(Tier3CompilationCacheTest,
 }
 
 TEST_F(Tier3CompilationCacheTest, GetTier3CacheEntryPath) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/2);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/2);
   const std::string path = GetTier3CacheEntryPath(key);
 
   // Expected path format: <root>/<fingerprint>/<key>.bin
@@ -94,14 +94,14 @@ TEST_F(Tier3CompilationCacheTest, GetTier3CacheEntryPath) {
 // not exist.
 TEST_F(Tier3CompilationCacheTest,
        GetFromTier3CacheFailsIfCacheFileDoesNotExist) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/0);
   EXPECT_EQ(GetFromTier3Cache(key).status().code(), error::kNotFound);
 }
 
 // GetFromTier3Cache() should return an error if the cache file exists
 // but has invalid data.
 TEST_F(Tier3CompilationCacheTest, GetFromTier3CacheFailsIfCacheFileIsInvalid) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/124, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/124, /*num_dims=*/0);
   const std::string serialized_data = "invalid data";
   ASSERT_EQ(
       AtomicWriteToCacheFile(GetTier3CacheEntryPath(key), serialized_data),

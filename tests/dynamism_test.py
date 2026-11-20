@@ -516,6 +516,77 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self._run_bounded_dynamism_test(reshape_fn, mark_dynamic, *args)
 
   @parameterized.named_parameters(
+      dict(
+          # [1, 4, ?, ?] to [4, ?, ?, 1]
+          testcase_name="move_unit_dim",
+          shape=(1, 4, 10, 10),
+          small_shape=(1, 4, 5, 6),
+          dynamic_dims=(2, 3),
+          reshape_fn=lambda x: x.reshape(4, x.shape[2], x.shape[3], 1),
+      ),
+      dict(
+          # [?, ?, 4] to [?, ? * 4]
+          testcase_name="merge_bounded_dim",
+          shape=(10, 10, 4),
+          small_shape=(5, 6, 4),
+          dynamic_dims=(0, 1),
+          reshape_fn=lambda x: x.reshape(x.shape[0], x.shape[1] * 4),
+      ),
+      dict(
+          # [3, ?, ?, 4] to [3 * ?, ? * 4]
+          testcase_name="merge_static_into_bounded_dims",
+          shape=(3, 10, 10, 4),
+          small_shape=(3, 5, 6, 4),
+          dynamic_dims=(1, 2),
+          reshape_fn=lambda x: x.reshape(3 * x.shape[1], x.shape[2] * 4),
+      ),
+      dict(
+          # [?, ?, 8] to [?, ?, 2, 4]
+          testcase_name="split_static_dim",
+          shape=(10, 10, 8),
+          small_shape=(5, 6, 8),
+          dynamic_dims=(0, 1),
+          reshape_fn=lambda x: x.reshape(x.shape[0], x.shape[1], 2, 4),
+      ),
+  )
+  def test_reshape_multiple_bounded_dims_compiled(
+      self, shape, small_shape, dynamic_dims, reshape_fn
+  ):
+    # Results with several bounded dims lower to stablehlo.dynamic_reshape.
+    def fn(x):
+      return reshape_fn(x * 2)
+
+    x = torch.randn(*shape)
+    x_tpu = x.to(self.device)
+    for dim in dynamic_dims:
+      torch._dynamo.mark_dynamic(x_tpu, dim, min=2, max=shape[dim])
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(x_tpu).to("cpu"), fn(x))
+    # Smaller sizes reuse the graph compiled for the bounded dims.
+    small = torch.randn(*small_shape)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(small.to(self.device))
+    utils.assert_close(act.to("cpu"), fn(small))
+
+  def test_reshape_merge_bounded_dims_eager(self):
+    # Broadcasting gives a tensor two bounded dims; merging a static dim into
+    # one of them ([?, ?, 4] to [?, ? * 4]) keeps both bounded, which lowers to
+    # stablehlo.dynamic_reshape with the merged runtime size. Compiled reshapes
+    # go through `_dynamic_reshape` instead, so this covers the eager path.
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 1, 2, 10)
+
+    def fn(x, y):
+      # The multiply materializes the reshaped view on TPU.
+      z = x + y
+      return z.reshape(z.shape[0], z.shape[1] * 4) * 2
+
+    args = (torch.randn(5, 1, 4), torch.randn(1, 6, 4))
+    act = self._run_bounded_dynamism_test(fn, mark_dynamic, *args)
+    self.assertLen(dynamism.get_dynamism_info(act), 2)
+
+  @parameterized.named_parameters(
       ("indexed_dynamic_dim", lambda x, idx: x[idx], []),
       (
           "unindexed_dynamic_dim",
@@ -1068,6 +1139,27 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(grad_x_dynamism_info[0].upper_bound, upper_bound)
     self.assertEmpty(dynamism.get_dynamism_info(act[1]))
 
+  def test_channels_last_permute_compiled_two_dynamic_spatial_dims(self):
+    # Channels-last blocks (e.g. timm `LayerNorm2d` in ConvNeXt) permute NCHW
+    # images to NHWC and back around a per-channel op. With both H and W
+    # bounded, the permutes lower to reshapes with two bounded dimensions.
+    def fn(x, w):
+      y = torch.relu(x.permute(0, 2, 3, 1)) * w
+      return y.permute(0, 3, 1, 2)
+
+    args = [torch.randn(1, 4, 16, 16), torch.randn(4)]
+    expected = fn(*args)
+    x, w = [a.to(self.device) for a in args]
+    torch._dynamo.mark_dynamic(x, 2, min=8, max=16)
+    torch._dynamo.mark_dynamic(x, 3, min=8, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(x, w).to("cpu"), expected)
+    # A smaller image reuses the graph compiled for the bounded dims.
+    small = torch.randn(1, 4, 8, 12)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(small.to(self.device), w)
+    utils.assert_close(act.to("cpu"), fn(small, args[1]))
+
   @parameterized.named_parameters(
       dict(
           testcase_name="2d_dynamic_batch",
@@ -1523,6 +1615,527 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       self.assertEqual(act_dynamism_info[0].dimension, 2)
       self.assertEqual(act_dynamism_info[0].lower_bound, 2)
       self.assertEqual(act_dynamism_info[0].upper_bound, 3)
+
+  def test_attention_mask_compiled_dynamic_seq_len(self):
+    # Like HF transformers, broadcasts a [batch, 1, seq, seq] mask to the
+    # [batch, heads, seq, seq] scores, i.e. to two bounded dims.
+    def fn(q, k, mask):
+      scores = q @ k.transpose(-1, -2)
+      keep = (mask[:, None, :, None] * mask[:, None, None, :]).bool()
+      return torch.where(keep, scores, torch.finfo(scores.dtype).min)
+
+    # Small integers keep the matmul exact on TPU.
+    def make_args(seq_len):
+      return [
+          torch.randint(-3, 4, (1, 2, seq_len, 4), dtype=torch.float32),
+          torch.randint(-3, 4, (1, 2, seq_len, 4), dtype=torch.float32),
+          torch.randint(0, 2, (1, seq_len), dtype=torch.int32),
+      ]
+
+    args = make_args(16)
+    expected = fn(*args)
+    q, k, mask = [a.to(self.device) for a in args]
+    torch._dynamo.mark_dynamic(q, 2, min=2, max=16)
+    torch._dynamo.mark_dynamic(k, 2, min=2, max=16)
+    torch._dynamo.mark_dynamic(mask, 1, min=2, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(q, k, mask).to("cpu"), expected)
+    # A shorter sequence reuses the graph compiled for the bounded dims.
+    short = make_args(5)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(*[a.to(self.device) for a in short])
+    utils.assert_close(act.to("cpu"), fn(*short))
+
+  def test_channel_broadcast_compiled_two_dynamic_spatial_dims(self):
+    # Broadcasts [1, 1, H, W] to [1, C, H, W] with both H and W dynamic, like
+    # the mean in timm `LayerNorm2d`.
+    def fn(x):
+      return x - x[:, :1]
+
+    args = [torch.randn(1, 4, 16, 16)]
+    expected = fn(*args)
+    x = args[0].to(self.device)
+    torch._dynamo.mark_dynamic(x, 2, min=8, max=16)
+    torch._dynamo.mark_dynamic(x, 3, min=8, max=16)
+    compiled = torch.compile(fn, backend="tpu", dynamic=None)
+    utils.assert_close(compiled(x).to("cpu"), expected)
+    # A smaller image reuses the graph compiled for the bounded dims.
+    small = torch.randn(1, 4, 8, 12)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled(small.to(self.device))
+    utils.assert_close(act.to("cpu"), fn(small))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="ord_0", ord_val=0.0),
+      dict(testcase_name="ord_1", ord_val=1.0),
+      dict(testcase_name="ord_2", ord_val=2.0),
+      dict(testcase_name="ord_neg_1", ord_val=-1.0),
+      dict(testcase_name="ord_neg_2", ord_val=-2.0),
+      dict(testcase_name="ord_inf", ord_val=float("inf")),
+      dict(testcase_name="ord_neg_inf", ord_val=float("-inf")),
+  )
+  def test_foreach_norm_eager_dynamic(self, ord_val: float) -> None:
+    def norm_fn(x: torch.Tensor, y: torch.Tensor):
+      return torch._foreach_norm([x, y], ord=ord_val)
+
+    def mark_dynamic(x: torch.Tensor, y: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 1, 2, 12)
+
+    x = torch.tensor(
+        [[1.0, -2.0, 3.0], [4.0, -5.0, 6.0], [-1.5, 2.5, -3.5]],
+        dtype=torch.float32,
+    )
+    y = torch.tensor(
+        [[1.0, 0.0, -2.0, 4.0], [-3.0, 2.0, 1.0, -0.5]],
+        dtype=torch.float32,
+    )
+    self._run_bounded_dynamism_test(norm_fn, mark_dynamic, x, y)
+
+  def test_foreach_norm_compiled_ord_zero_multi_dynamic(self) -> None:
+    def norm_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      norms = torch._foreach_norm([x, y], ord=0.0)
+      return norms[0] + norms[1]
+
+    compiled_fn = torch.compile(norm_fn, backend="tpu", dynamic=None)
+    x1 = torch.tensor(
+        [[1.0, 0.0, -2.0, 3.0], [0.0, 4.0, -5.0, 0.0], [1.5, 0.0, 2.5, -3.5]],
+        dtype=torch.float32,
+    )
+    y1 = torch.tensor([[0.0, 1.0, -2.0], [3.0, 0.0, 4.0]], dtype=torch.float32)
+    x1_tpu = x1.to(self.device)
+    y1_tpu = y1.to(self.device)
+    torch._dynamo.mark_dynamic(x1_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(x1_tpu, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(y1_tpu, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(y1_tpu, 1, min=2, max=16)
+    utils.assert_close(compiled_fn(x1_tpu, y1_tpu).to("cpu"), norm_fn(x1, y1))
+
+    x2 = torch.tensor([[1.0, 0.0], [0.0, -2.0], [3.0, 4.0], [0.0, 5.0]])
+    y2 = torch.tensor(
+        [[1.0, 2.0, 0.0, -1.0], [0.0, 0.0, 3.0, 4.0], [-5.0, 6.0, 0.0, 7.0]]
+    )
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(x2.to(self.device), y2.to(self.device))
+    utils.assert_close(act.to("cpu"), norm_fn(x2, y2))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="ord_1", ord_val=1.0),
+      dict(testcase_name="ord_2", ord_val=2.0),
+      dict(testcase_name="ord_inf", ord_val=float("inf")),
+  )
+  def test_foreach_norm_compiled_grad_multi_dynamic(
+      self, ord_val: float
+  ) -> None:
+    def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      norms = torch._foreach_norm([x, y], ord=ord_val)
+      return norms[0] + norms[1]
+
+    compiled_fn = torch.compile(loss_fn, backend="tpu", dynamic=None)
+
+    def run_step(
+        shapes: tuple[tuple[int, int], tuple[int, int]],
+        mark_dims: bool,
+    ) -> None:
+      (h1, w1), (h2, w2) = shapes
+      x_cpu = (
+          torch.arange(1, h1 * w1 + 1, dtype=torch.float32)
+          .reshape(h1, w1)
+          .requires_grad_(True)
+      )
+      y_cpu = (
+          (-torch.arange(1, h2 * w2 + 1, dtype=torch.float32))
+          .reshape(h2, w2)
+          .requires_grad_(True)
+      )
+      expected_out = loss_fn(x_cpu, y_cpu)
+      expected_out.backward()
+
+      x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+      y_tpu = y_cpu.detach().to(self.device).requires_grad_(True)
+      if mark_dims:
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=16)
+        torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=16)
+        torch._dynamo.mark_dynamic(y_tpu, 0, min=2, max=16)
+        torch._dynamo.mark_dynamic(y_tpu, 1, min=2, max=16)
+
+      act_out = compiled_fn(x_tpu, y_tpu)
+      act_out.backward()
+      utils.assert_close(act_out.to("cpu"), expected_out)
+      utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+      utils.assert_close(y_tpu.grad.to("cpu"), y_cpu.grad)
+
+    run_step(((4, 6), (3, 5)), mark_dims=True)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      run_step(((6, 4), (5, 3)), mark_dims=False)
+
+  @parameterized.named_parameters(
+      ("zeros_like_direct", lambda x: torch.zeros_like(x)),
+      ("ones_like_direct", lambda x: torch.ones_like(x)),
+      ("zeros_like_device_str", lambda x: torch.zeros_like(x, device="tpu")),
+      ("ones_like_dtype", lambda x: torch.ones_like(x, dtype=torch.int32)),
+      (
+          "ones_like_deferred_chain",
+          lambda x: torch.ones_like(x.sum(-1, keepdim=True)),
+      ),
+  )
+  def test_zeros_and_ones_like_preserve_bounded_dynamism(
+      self, like_fn: Callable[[torch.Tensor], torch.Tensor]
+  ) -> None:
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 0, 2, 10)
+
+    for rows in (4, 7):
+      input_tensor = torch.randn(rows, 5, dtype=torch.float32)
+      act = self._run_bounded_dynamism_test(like_fn, mark_dynamic, input_tensor)
+      act_dynamism_info = dynamism.get_dynamism_info(act)
+      self.assertLen(act_dynamism_info, 1)
+      self.assertEqual(act_dynamism_info[0].dimension, 0)
+      self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+      self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="static_slice_view",
+          like_fn=lambda x: torch.zeros_like(x[0]),
+          cols=5,
+      ),
+      dict(
+          testcase_name="empty",
+          like_fn=lambda x: torch.ones_like(x),
+          cols=0,
+      ),
+  )
+  def test_zeros_and_ones_like_static_fallback(
+      self, like_fn: Callable[[torch.Tensor], torch.Tensor], cols: int
+  ) -> None:
+    def mark_dynamic(tensor: torch.Tensor) -> None:
+      dynamism.mark_dynamic(tensor, 0, 2, 10)
+
+    input_tensor = torch.randn(4, cols, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(like_fn, mark_dynamic, input_tensor)
+    self.assertEmpty(dynamism.get_dynamism_info(act))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="x1_rows_p1",
+          p=1.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=None,
+          expected_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="x2_rows_p1",
+          p=1.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=None,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(2,),
+      ),
+      dict(
+          testcase_name="both_rows_p2",
+          p=2.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(1, 2),
+      ),
+      dict(
+          testcase_name="both_rows_p2_mm",
+          p=2.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(1, 2),
+          compute_mode="use_mm_for_euclid_dist",
+          # The matmul-based path runs at default TPU matmul precision.
+          tol=2e-2,
+      ),
+      dict(
+          testcase_name="both_rows_p0",
+          p=0.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(1, 2),
+      ),
+      dict(
+          testcase_name="broadcast_batch_p1",
+          p=1.0,
+          x1_shape=(4, 3),
+          x2_shape=(5, 6, 3),
+          x1_dynamic_dim=None,
+          x2_dynamic_dim=0,
+          expected_dynamic_dims=(0,),
+      ),
+  )
+  def test_cdist_dynamic_input(
+      self,
+      p: float,
+      x1_shape: tuple[int, ...],
+      x2_shape: tuple[int, ...],
+      x1_dynamic_dim: int | None,
+      x2_dynamic_dim: int | None,
+      expected_dynamic_dims: tuple[int, ...],
+      compute_mode: str = "use_mm_for_euclid_dist_if_necessary",
+      tol: float = 1e-4,
+  ) -> None:
+    upper_bound = 10
+
+    def mark_dynamic(x1: torch.Tensor, x2: torch.Tensor) -> None:
+      if x1_dynamic_dim is not None:
+        dynamism.mark_dynamic(x1, x1_dynamic_dim, 2, upper_bound)
+      if x2_dynamic_dim is not None:
+        dynamism.mark_dynamic(x2, x2_dynamic_dim, 2, upper_bound)
+
+    def cdist_fn(x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+      return torch.cdist(x1, x2, p=p, compute_mode=compute_mode)
+
+    x1 = torch.randn(x1_shape, dtype=torch.float32)
+    x2 = torch.randn(x2_shape, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(
+        cdist_fn, mark_dynamic, x1, x2, rtol=tol, atol=tol
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertEqual(
+        [info.dimension for info in act_dynamism_info],
+        list(expected_dynamic_dims),
+    )
+    for info in act_dynamism_info:
+      self.assertEqual(info.upper_bound, upper_bound)
+
+  # Each entry of `dynamic_dims` is `(tensor_index, dim, upper_bound)`, where
+  # tensor 0 is `data` and tensor 1 is `lengths` or `offsets`. Zero lengths
+  # cover empty segments.
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="lengths_bounded_data_dim",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(0, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_bounded_segment_dim",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(1, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_bounded_data_and_segment_dims",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(0, 0, 10), (1, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_bounded_window_dim",
+          data_shape=(6, 3),
+          segments=[2, 0, 3, 1],
+          use_offsets=False,
+          axis=0,
+          dynamic_dims=[(0, 1, 8)],
+      ),
+      dict(
+          testcase_name="offsets_bounded_data_dim",
+          data_shape=(6, 3),
+          segments=[0, 2, 2, 5, 6],
+          use_offsets=True,
+          axis=0,
+          dynamic_dims=[(0, 0, 10)],
+      ),
+      dict(
+          testcase_name="offsets_bounded_segment_dim",
+          data_shape=(6, 3),
+          segments=[0, 2, 2, 5, 6],
+          use_offsets=True,
+          axis=0,
+          dynamic_dims=[(1, 0, 10)],
+      ),
+      dict(
+          testcase_name="lengths_axis_1_bounded_outer_dim",
+          data_shape=(3, 6, 2),
+          segments=[[1, 2, 3], [0, 6, 0], [3, 3, 0]],
+          use_offsets=False,
+          axis=1,
+          dynamic_dims=[(0, 0, 8), (1, 0, 8)],
+      ),
+      dict(
+          testcase_name="lengths_axis_1_bounded_window_and_segment_dims",
+          data_shape=(3, 6, 2),
+          segments=[[1, 2, 3], [0, 6, 0], [3, 3, 0]],
+          use_offsets=False,
+          axis=1,
+          dynamic_dims=[(0, 2, 6), (1, 1, 10)],
+      ),
+      dict(
+          testcase_name="offsets_axis_1_bounded_outer_dim",
+          data_shape=(3, 6, 2),
+          segments=[[0, 1, 3, 6], [0, 0, 6, 6], [0, 3, 6, 6]],
+          use_offsets=True,
+          axis=1,
+          dynamic_dims=[(0, 0, 8), (1, 0, 8)],
+      ),
+      dict(
+          testcase_name="offsets_axis_1_bounded_data_and_segment_dims",
+          data_shape=(3, 6, 2),
+          segments=[[0, 1, 3, 6], [0, 0, 6, 6], [0, 3, 6, 6]],
+          use_offsets=True,
+          axis=1,
+          dynamic_dims=[(0, 1, 10), (1, 1, 10)],
+      ),
+  )
+  def test_segment_reduce_dynamic_input(
+      self,
+      data_shape: tuple[int, ...],
+      segments: Sequence[int] | Sequence[Sequence[int]],
+      use_offsets: bool,
+      axis: int,
+      dynamic_dims: Sequence[tuple[int, int, int]],
+  ) -> None:
+    def mark_dynamic(*tensors: torch.Tensor) -> None:
+      for tensor_index, dim, upper_bound in dynamic_dims:
+        dynamism.mark_dynamic(tensors[tensor_index], dim, 2, upper_bound)
+
+    data = torch.randint(-3, 4, data_shape, dtype=torch.float32)
+    segment_info = torch.tensor(segments, dtype=torch.int64)
+    # Mean of an empty segment without an initial value is NaN.
+    for reduce, initial in (
+        ("sum", None),
+        ("prod", None),
+        ("max", None),
+        ("min", None),
+        ("mean", 2.0),
+    ):
+      with self.subTest(reduce=reduce):
+        tt_testing.reset_eager_state()
+
+        def segment_reduce_fn(
+            data: torch.Tensor,
+            segment_info: torch.Tensor,
+            reduce: str = reduce,
+            initial: float | None = initial,
+        ) -> torch.Tensor:
+          segment_kwarg = "offsets" if use_offsets else "lengths"
+          return torch.segment_reduce(
+              data,
+              reduce,
+              axis=axis,
+              initial=initial,
+              **{segment_kwarg: segment_info},
+          )
+
+        self._run_bounded_dynamism_test(
+            segment_reduce_fn, mark_dynamic, data, segment_info
+        )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="lengths", use_offsets=False),
+      dict(testcase_name="offsets", use_offsets=True),
+  )
+  def test_segment_reduce_compiled_multi_dynamic(self, use_offsets: bool):
+    def segment_reduce_fn(
+        data: torch.Tensor, segment_info: torch.Tensor
+    ) -> torch.Tensor:
+      segment_kwarg = "offsets" if use_offsets else "lengths"
+      return torch.segment_reduce(
+          data, "sum", axis=1, **{segment_kwarg: segment_info}
+      )
+
+    def make_inputs(
+        lengths: Sequence[Sequence[int]], window: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+      lengths = torch.tensor(lengths, dtype=torch.int64)
+      data_shape = (lengths.shape[0], int(lengths[0].sum()), window)
+      data = torch.randint(-3, 4, data_shape, dtype=torch.float32)
+      if not use_offsets:
+        return data, lengths
+      offsets = torch.nn.functional.pad(torch.cumsum(lengths, dim=1), (1, 0))
+      return data, offsets
+
+    compiled_fn = torch.compile(segment_reduce_fn, backend="tpu", dynamic=None)
+    data, segment_info = make_inputs(
+        [[1, 2, 3], [0, 6, 0], [3, 3, 0]], window=4
+    )
+    data_tpu = data.to(self.device)
+    segment_info_tpu = segment_info.to(self.device)
+    for dim in range(data_tpu.dim()):
+      torch._dynamo.mark_dynamic(data_tpu, dim, min=2, max=16)
+    for dim in range(segment_info_tpu.dim()):
+      # PyTorch guards against a single segment, i.e. offsets of size 2.
+      min_size = 3 if use_offsets and dim == segment_info_tpu.dim() - 1 else 2
+      torch._dynamo.mark_dynamic(segment_info_tpu, dim, min=min_size, max=16)
+    utils.assert_close(
+        compiled_fn(data_tpu, segment_info_tpu).to("cpu"),
+        segment_reduce_fn(data, segment_info),
+    )
+
+    # Other sizes of every bounded dim reuse the compiled graph.
+    data, segment_info = make_inputs(
+        [[2, 0, 1, 2], [1, 1, 1, 2], [5, 0, 0, 0], [0, 0, 0, 5]], window=3
+    )
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act = compiled_fn(data.to(self.device), segment_info.to(self.device))
+    utils.assert_close(act.to("cpu"), segment_reduce_fn(data, segment_info))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="fake_quant_on", fake_quant_on=1),
+      dict(testcase_name="fake_quant_off", fake_quant_on=0),
+  )
+  def test_fused_moving_avg_obs_fq_helper_uninitialized_dynamic_channels(
+      self, fake_quant_on: int
+  ) -> None:
+    # Empty observer buffers are uninitialized, so the op initializes them with
+    # the bounded channel dimension of `x`.
+    def fq_fn(x, obs_on, fq_on, rmin, rmax, scale, zp):
+      rmin_c, rmax_c = rmin.clone(), rmax.clone()
+      scale_c, zp_c = scale.clone(), zp.clone()
+      out, mask = torch._fused_moving_avg_obs_fq_helper(
+          x,
+          obs_on,
+          fq_on,
+          rmin_c,
+          rmax_c,
+          scale_c,
+          zp_c,
+          0.01,
+          0,
+          255,
+          0,
+          True,
+          False,
+      )
+      outputs = (out, mask, rmin_c, rmax_c, scale_c, zp_c)
+      # With fake_quant_on 0, the CPU kernel leaves the resized scale and
+      # zero_point uninitialized.
+      return outputs if fake_quant_on else outputs[:4]
+
+    def mark_dynamic(x: torch.Tensor, *unused_args: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    args = (
+        torch.randn(5, 3, dtype=torch.float32),
+        torch.tensor([1]),
+        torch.tensor([fake_quant_on]),
+        torch.empty(0, dtype=torch.float32),
+        torch.empty(0, dtype=torch.float32),
+        torch.empty(0, dtype=torch.float32),
+        torch.empty(0, dtype=torch.int32),
+    )
+    # Fake quantization can round an element to an adjacent quantization level.
+    self._run_bounded_dynamism_test(
+        fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
+    )
 
 
 if __name__ == "__main__":

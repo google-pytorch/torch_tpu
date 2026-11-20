@@ -39,6 +39,7 @@ from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
+from perflab import workload as workload_lib
 from tests import seed_test_utils
 
 _KNOWN_BAD = types.SimpleNamespace(
@@ -598,6 +599,7 @@ class _FakeBatchSweepTest(base_test.BaseBenchmarkTest):
       "bs2_case": (_SWEPT, _COMPILED, 2),
       "bs4_case": (_SWEPT, _COMPILED, 4),
       "bs8_case": (_SWEPT, _COMPILED, 8),
+      "bs16_case": (_SWEPT, _COMPILED, 16),
       "eager_bs8_case": (_SWEPT, _EAGER, 8),
   }
   # Keeps the test loader from collecting the inherited imports test.
@@ -612,8 +614,80 @@ class _FakeBatchSweepTest(base_test.BaseBenchmarkTest):
   def bs8_case(self):
     self.fail("the child process is replaced")
 
+  def bs16_case(self):
+    self.fail("the child process is replaced")
+
   def eager_bs8_case(self):
     self.fail("the child process is replaced")
+
+
+def _measured_payload(
+    batch_size: int | None,
+    samples_per_second: float,
+    *,
+    workload_batch_size: int | None = None,
+    mode: common.RunMode = _COMPILED,
+) -> export_lib.BenchmarkData:
+  """Returns the result of a measured case with the given throughput."""
+  workload_batch_size = workload_batch_size or batch_size
+  return export_lib.BenchmarkData(
+      spec_name="swept",
+      platform=target_lib.Platform.V7_1X1X1,
+      framework=mode_lib.Framework.TORCH,
+      run_mode=mode,
+      succeeded=True,
+      metrics=metrics_lib.PerformanceMetrics(
+          post_warmup_step_time_seconds=workload_batch_size
+          / samples_per_second,
+          throughput_step_time_seconds=workload_batch_size / samples_per_second,
+          step_work=workload_lib.StepWork(
+              workload=workload_lib.Workload(workload_batch_size),
+              samples_per_step=workload_batch_size,
+              tokens_per_step=None,
+          ),
+      ),
+      microbenchmark_name=(
+          None if batch_size is None else export_lib.batch_size_key(batch_size)
+      ),
+      batch_size=batch_size,
+  )
+
+
+def _failed_payload(batch_size: int) -> export_lib.BenchmarkData:
+  return export_lib.BenchmarkData(
+      spec_name="swept",
+      platform=target_lib.Platform.V7_1X1X1,
+      framework=mode_lib.Framework.TORCH,
+      run_mode=_COMPILED,
+      succeeded=False,
+      metrics=metrics_lib.PerformanceMetrics(),
+      microbenchmark_name=export_lib.batch_size_key(batch_size),
+      batch_size=batch_size,
+  )
+
+
+def _unmeasured_throughput_payload(
+    batch_size: int,
+) -> export_lib.BenchmarkData:
+  """Returns a measured case without a throughput, e.g. a pipelined OOM."""
+  return export_lib.BenchmarkData(
+      spec_name="swept",
+      platform=target_lib.Platform.V7_1X1X1,
+      framework=mode_lib.Framework.TORCH,
+      run_mode=_COMPILED,
+      succeeded=True,
+      metrics=metrics_lib.PerformanceMetrics(
+          post_warmup_step_time_seconds=0.01,
+          throughput_step_time_seconds=None,
+          step_work=workload_lib.StepWork(
+              workload=workload_lib.Workload(batch_size),
+              samples_per_step=batch_size,
+              tokens_per_step=None,
+          ),
+      ),
+      microbenchmark_name=export_lib.batch_size_key(batch_size),
+      batch_size=batch_size,
+  )
 
 
 def _out_of_memory_payload(batch_size: int) -> export_lib.BenchmarkData:
@@ -639,15 +713,18 @@ class BaseBenchmarkTestBatchSweepTest(seed_test_utils.RepeatableTest):
             (flags_lib.RUN_IN_SUBPROCESS, True),
             (flags_lib.SKIP_BEHAVIOR, "skip"),
             (flags_lib.DRY_RUN, False),
+            # Every batch size counts towards the patience, unless a test sets
+            # the guard against noisy small batch sizes.
+            (flags_lib.BATCH_SWEEP_PATIENCE_MIN_BS, 1),
         )
     )
-    self.enter_context(
-        mock.patch.dict(
-            base_test._out_of_memory_batch_sizes,  # pylint: disable=protected-access
-            {},
-            clear=True,
-        )
-    )
+    for state in (
+        base_test._out_of_memory_batch_sizes,  # pylint: disable=protected-access
+        base_test._failed_batch_sizes,  # pylint: disable=protected-access
+        base_test._throughputs,  # pylint: disable=protected-access
+        base_test._stopped_batch_sizes,  # pylint: disable=protected-access
+    ):
+      self.enter_context(mock.patch.dict(state, {}, clear=True))
     self.exported = []
     self.enter_context(
         mock.patch.object(export_lib, "export", new=self.exported.append)
@@ -687,6 +764,262 @@ class BaseBenchmarkTestBatchSweepTest(seed_test_utils.RepeatableTest):
         ],
         [(4, "bs4", True, False), (8, "bs8", False, True)],
     )
+
+  def _run_measured(self, method_name: str, payload: export_lib.BenchmarkData):
+    self.run_isolated.return_value = (base_test.Outcome.SUCCESS, None, payload)
+    return self._run(method_name)
+
+  def test_sweep_stops_after_two_batch_sizes_without_improvement(self):
+    self._run_measured("bs2_case", _measured_payload(2, 100.0))
+    # Less than 3% above batch size 2, twice in a row.
+    self._run_measured("bs4_case", _measured_payload(4, 102.0))
+    self._run_measured("bs8_case", _measured_payload(8, 101.0))
+    self.run_isolated.reset_mock()
+
+    result = self._run("bs16_case")
+
+    self.run_isolated.assert_not_called()
+    self.assertLen(result.skipped, 1)
+    self.assertIn(
+        "stopped improving its throughput in run mode compiled: batch sizes 4,"
+        " 8 each improved on the best throughput of the smaller batch sizes by"
+        " less than 3% (the best is at batch size 4), so batch size 16 is not"
+        " run",
+        result.skipped[0][1],
+    )
+    self.assertEqual(
+        [(d.batch_size, d.skipped) for d in self.exported],
+        [(2, False), (4, False), (8, False), (16, True)],
+    )
+
+  def test_one_batch_size_without_improvement_does_not_stop_the_sweep(self):
+    self._run_measured("bs2_case", _measured_payload(2, 100.0))
+    self._run_measured("bs4_case", _measured_payload(4, 102.0))
+    self.run_isolated.reset_mock()
+    self.run_isolated.return_value = (base_test.Outcome.SUCCESS, None, None)
+
+    self._run("bs8_case")
+
+    self.run_isolated.assert_called_once()
+
+  def test_improvement_resets_the_patience(self):
+    self._run_measured("bs2_case", _measured_payload(2, 100.0))
+    self._run_measured("bs4_case", _measured_payload(4, 102.0))
+    # At least 3% above the best so far (102): the count starts over.
+    self._run_measured("bs8_case", _measured_payload(8, 110.0))
+    self.run_isolated.reset_mock()
+    self.run_isolated.return_value = (base_test.Outcome.SUCCESS, None, None)
+
+    self._run("bs16_case")
+
+    self.run_isolated.assert_called_once()
+
+  def test_patience_of_one_stops_after_one_batch_size(self):
+    with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_PATIENCE, 1)):
+      base_test.note_throughput("swept", _COMPILED, 2, 100.0)
+      base_test.note_throughput("swept", _COMPILED, 4, 102.0)
+
+      self.assertIn(
+          "batch size 4 improved on the best throughput of the smaller batch"
+          " sizes by less than 3%",
+          base_test.get_stop_reason("swept", _COMPILED, 8),
+      )
+
+  def test_small_batch_sizes_do_not_count_towards_the_patience(self):
+    # E.g. bert_base_uncased_forward_gen on TPU v7: bs1 is bound by the host's
+    # dispatch, and bs2 and bs3 dip below it.
+    with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_PATIENCE_MIN_BS, 8)):
+      for batch_size, throughput in ((1, 1716.0), (2, 1419.0), (3, 1511.0)):
+        base_test.note_throughput("swept", _COMPILED, batch_size, throughput)
+
+      self.assertIsNone(base_test.get_stop_reason("swept", _COMPILED, 4))
+
+  def test_batch_sizes_from_the_patience_min_bs_count(self):
+    with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_PATIENCE_MIN_BS, 8)):
+      for batch_size, throughput in ((1, 100.0), (8, 101.0), (16, 100.5)):
+        base_test.note_throughput("swept", _COMPILED, batch_size, throughput)
+
+      self.assertIn(
+          "batch sizes 8, 16 each improved on the best throughput of the"
+          " smaller batch sizes by less than 3% (the best is at batch size 8),"
+          " so batch size 32 is not run",
+          base_test.get_stop_reason("swept", _COMPILED, 32),
+      )
+
+  def test_small_batch_size_does_not_add_to_larger_ones(self):
+    with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_PATIENCE_MIN_BS, 8)):
+      # Batch sizes 4, 8 and 16 each improve by less than 3%, but batch size 4
+      # does not count.
+      for batch_size, throughput in ((2, 100.0), (4, 101.0), (8, 101.5)):
+        base_test.note_throughput("swept", _COMPILED, batch_size, throughput)
+      self.assertIsNone(base_test.get_stop_reason("swept", _COMPILED, 16))
+
+      base_test.note_throughput("swept", _COMPILED, 16, 101.0)
+
+      self.assertIsNone(base_test.get_stop_reason("swept", _COMPILED, 16))
+      self.assertIn(
+          "batch sizes 8, 16 each improved",
+          base_test.get_stop_reason("swept", _COMPILED, 32),
+      )
+
+  def test_patience_min_bs_of_one_counts_every_batch_size(self):
+    with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_PATIENCE_MIN_BS, 1)):
+      for batch_size, throughput in ((1, 1716.0), (2, 1419.0), (3, 1511.0)):
+        base_test.note_throughput("swept", _COMPILED, batch_size, throughput)
+
+      self.assertIn(
+          "batch sizes 2, 3 each improved on the best throughput of the"
+          " smaller batch sizes by less than 3% (the best is at batch size 1)",
+          base_test.get_stop_reason("swept", _COMPILED, 4),
+      )
+
+  def test_reported_best_includes_the_last_batch_size(self):
+    base_test.note_throughput("swept", _COMPILED, 2, 100.0)
+    base_test.note_throughput("swept", _COMPILED, 4, 101.0)
+    base_test.note_throughput("swept", _COMPILED, 8, 102.0)
+
+    self.assertIn(
+        "(the best is at batch size 8)",
+        base_test.get_stop_reason("swept", _COMPILED, 16),
+    )
+
+  def test_sweep_continues_while_throughput_improves(self):
+    self._run_measured("bs2_case", _measured_payload(2, 100.0))
+    self._run_measured("bs4_case", _measured_payload(4, 150.0))
+    self._run_measured("bs8_case", _measured_payload(8, 200.0))
+    self.run_isolated.reset_mock()
+    self.run_isolated.return_value = (base_test.Outcome.SUCCESS, None, None)
+
+    self._run("bs16_case")
+
+    self.run_isolated.assert_called_once()
+
+  def test_default_case_counts_towards_its_sweep(self):
+    # The default case runs at its default batch size, 2.
+    self._run_measured(
+        "bs2_case", _measured_payload(None, 100.0, workload_batch_size=2)
+    )
+    self._run_measured("bs4_case", _measured_payload(4, 101.0))
+    self._run_measured("bs8_case", _measured_payload(8, 100.5))
+
+    self.assertIn(
+        "batch sizes 4, 8 each improved on the best throughput of the smaller"
+        " batch sizes by less than 3% (the best is at batch size 4)",
+        base_test.get_stop_reason("swept", _COMPILED, 16),
+    )
+
+  def test_later_improvement_undoes_a_stop_from_the_default_case(self):
+    # The default case runs first, at its default batch size 16, and completes
+    # the patience with batch size 4 before batch size 8 has run.
+    for batch_size, throughput in ((16, 100.0), (2, 100.0), (4, 101.0)):
+      base_test.note_throughput("swept", _COMPILED, batch_size, throughput)
+    self.assertIsNotNone(base_test.get_stop_reason("swept", _COMPILED, 32))
+
+    # Batch size 8 then improves the throughput by more than 3%, so batch size
+    # 16 is the only one without improvement since and the sweep goes on.
+    base_test.note_throughput("swept", _COMPILED, 8, 120.0)
+
+    self.assertIsNone(base_test.get_stop_reason("swept", _COMPILED, 32))
+
+  def test_case_without_throughput_does_not_count(self):
+    self._run_measured("bs2_case", _measured_payload(2, 100.0))
+    # E.g. its pipelined steps ran out of memory: no throughput to compare.
+    self._run_measured("bs4_case", _unmeasured_throughput_payload(4))
+    self._run_measured("bs8_case", _measured_payload(8, 101.0))
+    self.run_isolated.reset_mock()
+    self.run_isolated.return_value = (base_test.Outcome.SUCCESS, None, None)
+
+    self._run("bs16_case")
+
+    self.run_isolated.assert_called_once()
+
+  def test_stopping_is_per_run_mode(self):
+    for batch_size in (2, 4, 8):
+      base_test.note_throughput("swept", _COMPILED, batch_size, 100.0)
+    self.run_isolated.return_value = (base_test.Outcome.SUCCESS, None, None)
+
+    self._run("eager_bs8_case")
+
+    self.run_isolated.assert_called_once()
+
+  def test_zero_min_improvement_measures_every_batch_size(self):
+    with flagsaver.flagsaver((flags_lib.BATCH_SWEEP_MIN_IMPROVEMENT, 0.0)):
+      for batch_size, throughput in ((2, 100.0), (4, 90.0), (8, 80.0)):
+        base_test.note_throughput("swept", _COMPILED, batch_size, throughput)
+      self.assertIsNone(base_test.get_stop_reason("swept", _COMPILED, 16))
+
+  def test_stop_after_a_drop_keeps_the_best_batch_size(self):
+    base_test.note_throughput("swept", _COMPILED, 2, 100.0)
+    base_test.note_throughput("swept", _COMPILED, 4, 80.0)
+    base_test.note_throughput("swept", _COMPILED, 8, 90.0)
+
+    reason = base_test.get_stop_reason("swept", _COMPILED, 16)
+
+    self.assertIn("batch sizes 4, 8 each improved", reason)
+    self.assertIn("(the best is at batch size 2)", reason)
+    self.assertIsNone(base_test.get_stop_reason("swept", _COMPILED, 8))
+    self.assertIsNone(base_test.get_stop_reason("swept", _COMPILED, None))
+
+  def test_failed_case_stops_the_sweep(self):
+    self.run_isolated.return_value = (
+        base_test.Outcome.FAILURE,
+        "simulated failure",
+        _failed_payload(4),
+    )
+    self._run("bs4_case")
+    self.run_isolated.reset_mock()
+
+    result = self._run("bs8_case")
+
+    self.run_isolated.assert_not_called()
+    self.assertIn(
+        "failed in run mode compiled at batch size 4, so batch size 8 is not"
+        " run",
+        result.skipped[0][1],
+    )
+    self.assertEqual(
+        [(d.batch_size, d.succeeded, d.skipped) for d in self.exported],
+        [(4, False, False), (8, True, True)],
+    )
+
+  def test_crashed_or_timed_out_case_stops_the_sweep(self):
+    for outcome in (base_test.Outcome.CRASHED, base_test.Outcome.TIMED_OUT):
+      with self.subTest(outcome=outcome):
+        base_test._failed_batch_sizes.clear()  # pylint: disable=protected-access
+        self.run_isolated.reset_mock()
+        self.run_isolated.return_value = (outcome, "child died", None)
+        self._run("bs4_case")
+        self.run_isolated.reset_mock()
+
+        result = self._run("bs8_case")
+
+        self.run_isolated.assert_not_called()
+        self.assertIn(
+            "failed in run mode compiled at batch size 4", result.skipped[0][1]
+        )
+
+  def test_case_that_fails_without_a_record_stops_the_sweep(self):
+    self.run_isolated.return_value = (
+        base_test.Outcome.ERROR,
+        "failed before measuring",
+        None,
+    )
+    self._run("bs4_case")
+    self.run_isolated.reset_mock()
+
+    result = self._run("bs8_case")
+
+    self.run_isolated.assert_not_called()
+    self.assertLen(result.skipped, 1)
+
+  def test_failure_stops_only_larger_batch_sizes_of_its_run_mode(self):
+    base_test.note_failure("swept", _COMPILED, 4)
+    self.run_isolated.return_value = (base_test.Outcome.SUCCESS, None, None)
+
+    self._run("bs2_case")
+    self._run("eager_bs8_case")
+
+    self.assertEqual(self.run_isolated.call_count, 2)
 
   def test_smaller_batch_sizes_still_run_after_out_of_memory(self):
     base_test.note_out_of_memory("swept", _COMPILED, 4)

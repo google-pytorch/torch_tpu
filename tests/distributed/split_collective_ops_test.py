@@ -21,6 +21,7 @@ from unittest import mock
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
+from torch.distributed import _functional_collectives as funcol
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
@@ -239,10 +240,22 @@ def run_compile_no_splits_with_spmd_safe_test():
   assert len(wrapper.compiled_executables) == 1
 
 
+def _assert_compile_raises_partially_spmd_safe(
+    f: Callable[[torch.Tensor], torch.Tensor], x: torch.Tensor
+) -> None:
+  """Asserts that compiling `f` fails because it is partially `spmd_safe`."""
+  compiled_f = torch.compile(f, backend="tpu", options={"serializable": False})
+  try:
+    compiled_f(x)
+  except torch._dynamo.exc.BackendCompilerFailed as e:  # pylint: disable=protected-access
+    assert "partially annotated with `spmd_safe`" in str(e), e
+    assert "split_collective_ops_test.py:" in str(e), e
+  else:
+    raise AssertionError("Expected a partially spmd_safe graph to raise.")
+
+
 def run_compile_partial_spmd_safe_test():
-  debugs: list[TpuCompileDebug] = []
-  rank = dist.get_rank()
-  world_size = dist.get_world_size()
+  """Tests that an spmd_safe region inside an outer graph raises."""
 
   @torch.tpu.distributed.spmd_safe
   def safe_fn(x):
@@ -251,41 +264,12 @@ def run_compile_partial_spmd_safe_test():
     return y + 3
 
   def outer(x):
-    if rank == 0:
-      x = torch.neg(x)
-    z = safe_fn(x)
+    z = safe_fn(torch.neg(x))
     return torch.abs(z)
 
-  compiled_outer = torch.compile(
-      outer,
-      backend="tpu",
-      options={"serializable": False, "debug_callback": debugs.append},
+  _assert_compile_raises_partially_spmd_safe(
+      outer, torch.ones((2, 2), device="tpu")
   )
-
-  x = torch.ones((2, 2), device="tpu")
-  result = compiled_outer(x)
-
-  expected = torch.full((2, 2), abs(2.0 * world_size - 1.0), device="cpu")
-  utils.assert_close(result.cpu(), expected)
-
-  assert len(debugs[0].compiled_executables) == 1
-  wrapper = debugs[0].compiled_executables[0]
-  assert isinstance(wrapper, _SplitCompiledExecutable)
-
-  children = list(wrapper._split_gm.children())
-  expected_submods = 3 if rank == 0 else 2
-  assert len(children) == expected_submods, (
-      f"Expected {expected_submods} submodules on rank {rank}, got"
-      f" {len(children)}"
-  )
-
-  safe_submod = children[1 if rank == 0 else 0].submod
-  assert isinstance(safe_submod, TorchTpuCompiledExecutable)
-  mlir = safe_submod.mlir_text
-  assert "stablehlo.all_reduce" in mlir
-  assert "stablehlo.multiply" in mlir
-  assert "stablehlo.negate" not in mlir
-  assert "stablehlo.abs" not in mlir
 
 
 def _compile_and_get_split_children(
@@ -339,45 +323,6 @@ def run_compile_chained_spmd_safe_test():
   assert children[0].submod.mlir_text.count("stablehlo.all_reduce") == 2
 
 
-def run_compile_outer_op_between_spmd_safe_test():
-  """Tests that an outer op between spmd_safe regions splits all three."""
-  world_size = dist.get_world_size()
-
-  @torch.tpu.distributed.spmd_safe
-  def scale_and_reduce(x):
-    y = x * 2
-    dist.all_reduce(y)
-    return y
-
-  @torch.tpu.distributed.spmd_safe
-  def shift_and_reduce(x):
-    y = x + 1
-    dist.all_reduce(y)
-    return y
-
-  def f(x):
-    return shift_and_reduce(torch.neg(scale_and_reduce(x)))
-
-  result, children = _compile_and_get_split_children(
-      f, torch.ones((2, 2), device="tpu")
-  )
-
-  expected = torch.full(
-      (2, 2), world_size * (1.0 - 2.0 * world_size), device="cpu"
-  )
-  utils.assert_close(result.cpu(), expected)
-  assert len(children) == 3, f"Expected 3 submodules, got {len(children)}"
-  first, middle, last = (child.submod.mlir_text for child in children)
-  assert "stablehlo.all_reduce" in first
-  assert "stablehlo.multiply" in first
-  assert "stablehlo.negate" not in first
-  assert "stablehlo.negate" in middle
-  assert "stablehlo.all_reduce" not in middle
-  assert "stablehlo.all_reduce" in last
-  assert "stablehlo.negate" not in last
-  assert "stablehlo.multiply" not in last
-
-
 @contextlib.contextmanager
 def _record_split_submodule_ops() -> Iterator[list[list[list[str]]]]:
   """Records the ops of each submodule for every graph SplitCompiler splits.
@@ -421,13 +366,7 @@ class _MutateInBackward(torch.autograd.Function):
 
 
 def run_compile_spmd_safe_backward_input_mutation_test():
-  """Tests that a backward input mutation stays in the spmd_safe submodule.
-
-  AOTAutograd traces the backward `copy_` into the buffer with
-  `partitioner_tag="must_be_in_backward"`, and `copy_fwd_metadata_to_bw_nodes`
-  only copies `meta["custom"]` to `"is_backward"` nodes, so the `copy_` has no
-  `spmd_safe` annotation of its own.
-  """
+  """Tests that a fully spmd_safe graph with a backward buffer mutation is not split."""
 
   class Module(torch.nn.Module):
 
@@ -456,13 +395,7 @@ def run_compile_spmd_safe_backward_input_mutation_test():
 
 
 def run_compile_spmd_safe_cloned_buffer_test():
-  """Tests that a cloned returned buffer stays in the spmd_safe submodule.
-
-  The forward reads a buffer, which the min-cut partitioner saves for
-  backward, and then updates it in place. `clone_mutated_returned_placeholders`
-  clones the buffer and copies the placeholder's metadata onto the clone, so
-  the clone has no `spmd_safe` annotation of its own.
-  """
+  """Tests that a fully spmd_safe graph with a cloned mutated buffer is not split."""
 
   class Module(torch.nn.Module):
 
@@ -489,6 +422,53 @@ def run_compile_spmd_safe_cloned_buffer_test():
   assert len(split_graphs) == 2, f"Expected fwd and bwd, got {split_graphs}"
   forward = split_graphs[0]
   assert any("aten.clone.default" in ops for ops in forward), forward
+  for graph in split_graphs:
+    assert len(graph) == 1, f"Expected 1 submodule, got {graph}"
+
+
+def run_compile_spmd_safe_residual_backward_test():
+  """Tests that the backward of a fully spmd_safe graph is not split.
+
+  The backward graph has nodes that AOTAutograd synthesizes without `spmd_safe`
+  metadata, e.g. the gradient accumulations of the residual connections.
+  """
+
+  world_size = dist.get_world_size()
+
+  class ResidualBlock(torch.nn.Module):
+
+    def __init__(self, all_reduce):
+      super().__init__()
+      self.all_reduce = all_reduce
+      self.w1 = torch.nn.Parameter(torch.full((2, 2), 2.0))
+      self.w2 = torch.nn.Parameter(torch.full((2, 2), 3.0))
+
+    def forward(self, x):
+      x = x + self.all_reduce(x @ self.w1)
+      return x + self.all_reduce(x @ self.w2)
+
+  # All ranks have the same inputs, so all-reducing a value multiplies it by the
+  # world size.
+  ref_model = ResidualBlock(lambda t: t * world_size)
+  ref_x = torch.ones((2, 2), requires_grad=True)
+  ref_model(ref_x).sum().backward()
+
+  model = ResidualBlock(
+      lambda t: funcol.all_reduce(t, "sum", dist.group.WORLD)
+  ).to("tpu")
+  model.forward = torch.tpu.distributed.spmd_safe(model.forward)
+  compiled = torch.compile(
+      model, backend="tpu", options={"serializable": False}
+  )
+  x = torch.ones((2, 2), device="tpu", requires_grad=True)
+
+  with _record_split_submodule_ops() as split_graphs:
+    compiled(x).sum().backward()
+
+  utils.assert_close(x.grad.cpu(), ref_x.grad)
+  utils.assert_close(model.w1.grad.cpu(), ref_model.w1.grad)
+  utils.assert_close(model.w2.grad.cpu(), ref_model.w2.grad)
+  assert len(split_graphs) == 2, f"Expected fwd and bwd, got {split_graphs}"
   for graph in split_graphs:
     assert len(graph) == 1, f"Expected 1 submodule, got {graph}"
 
@@ -849,14 +829,14 @@ class SplitCollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
   def test_compile_chained_spmd_safe(self):
     run_compile_chained_spmd_safe_test()
 
-  def test_compile_outer_op_between_spmd_safe(self):
-    run_compile_outer_op_between_spmd_safe_test()
-
   def test_compile_spmd_safe_backward_input_mutation(self):
     run_compile_spmd_safe_backward_input_mutation_test()
 
   def test_compile_spmd_safe_cloned_buffer(self):
     run_compile_spmd_safe_cloned_buffer_test()
+
+  def test_compile_spmd_safe_residual_backward(self):
+    run_compile_spmd_safe_residual_backward_test()
 
   def test_compile_two_collectives(self):
     run_compile_two_collectives_test()

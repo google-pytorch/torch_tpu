@@ -37,6 +37,12 @@ absl::Status ValidateShellDtypeCast(at::ScalarType src, at::ScalarType dst);
 // This may strip size-1 dimensions from src and dest.
 absl::Status BroadcastAndTranspose(at::Tensor& src, at::Tensor& dest);
 
+// Returns an error unless src can be broadcast to the shape of dest, as
+// required by copy_(). Use this on paths that skip BroadcastAndTranspose(),
+// e.g. when src is empty.
+absl::Status ValidateBroadcastableToDest(const at::Tensor& src,
+                                         const at::Tensor& dest);
+
 // The synchronization mode of a host-to-device or device-to-host copy.
 enum class TransferSyncMode {
   // The copy operation is recorded on the current stream, and then the current

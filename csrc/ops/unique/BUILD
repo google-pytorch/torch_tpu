@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# zhanyong-wan
-# jonathan1920
+# shilpakesavan
+# adivinpatel04
 
 load(
     "//build_files:build_defs.bzl",

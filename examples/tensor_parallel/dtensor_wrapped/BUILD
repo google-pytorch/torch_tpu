@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # leehowes
-# pgmoka
+# zhanyong-wan
 
 load(
     "//build_files:build_defs.bzl",

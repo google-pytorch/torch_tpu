@@ -25,7 +25,9 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/shape.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/shape.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -56,13 +58,18 @@ enum class ArgumentLayoutValidation {
 // parameter positions.
 // When `layout_validation` is `ArgumentLayoutValidation::kValidate`, checks
 // that each static argument buffer's on-device layout matches the layout the
-// executable was compiled for.
+// executable was compiled for. Each non-null `known_argument_shapes[i]` must
+// equal `argument_buffers[i]->on_device_shape()` and avoids querying the buffer
+// directly; `known_argument_shapes` is ignored when
+// `executable->unbounded_dynamic_execution_metadata()` is present.
 absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers,
     absl::Span<const Shape> logical_output_shapes,
     ArgumentLayoutValidation layout_validation =
-        ArgumentLayoutValidation::kValidate);
+        ArgumentLayoutValidation::kValidate,
+    absl::Span<const xla::Shape* absl_nullable const> known_argument_shapes =
+        {});
 
 }  // namespace torch_tpu
 

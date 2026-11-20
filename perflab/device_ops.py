@@ -76,6 +76,28 @@ class DeviceOps(Protocol):
     """Reset the peak-memory counter."""
     ...
 
+  def release_cached_memory(self) -> None:
+    """Releases device memory that the backend caches but doesn't use.
+
+    measure() calls this after the pipelined steps run out of memory, so that
+    the memory they left behind does not affect the steps that follow. Backends
+    without such a cache may implement this as a no-op.
+    """
+    ...
+
+  def agree_on_step_count(self, steps: int) -> int:
+    """Returns the step count that all the processes of the benchmark run.
+
+    The processes of a distributed benchmark must run the same number of steps,
+    as each step runs collectives across them, so measure() agrees on every
+    step count that it derives from the timings of this process. Backends that
+    only run in a single process may return `steps`.
+
+    Args:
+      steps: The step count that this process proposes.
+    """
+    ...
+
   def peak_memory_mb(self) -> float | None:
     """Peak device memory in MB since the last reset, or None if unsupported.
 

@@ -1083,6 +1083,55 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
 
     self.assertIn(expected_mlir, mlir_text)
 
+  def test_optimization_barrier_gradients_pass_through_one_barrier(self):
+    def fn(a, b):
+      a, b = torch.tpu.ops.optimization_barrier([a * 2.0, b * 3.0])
+      return (a * b).sum()
+
+    a = torch.ones(10, device=torch.device('tpu'), requires_grad=True)
+    b = torch.ones(10, device=torch.device('tpu'), requires_grad=True)
+    debugs = []
+    compiled_fn = torch.compile(
+        fn,
+        backend='tpu',
+        fullgraph=True,
+        options={'debug_callback': debugs.append},
+    )
+
+    compiled_fn(a, b).backward()
+
+    self.assertLen(debugs, 1)
+    barrier = ':2 = stablehlo.optimization_barrier'
+    self.assertEqual(debugs[0].stablehlo_forward_text[0].count(barrier), 1)
+    self.assertEqual(debugs[0].stablehlo_backward_text[0].count(barrier), 1)
+    utils.assert_close(a.grad.cpu(), torch.full((10,), 6.0))
+    utils.assert_close(b.grad.cpu(), torch.full((10,), 6.0))
+
+  def test_optimization_barrier_compiled_autograd_is_traceable(self):
+    a = torch.ones(10, device=torch.device('tpu'), requires_grad=True)
+    frozen = torch.ones(10, device=torch.device('tpu'))
+    debugs = []
+    compiler_fn = torch.compile(
+        backend='tpu',
+        fullgraph=True,
+        options={'debug_callback': debugs.append},
+    )
+    with torch._dynamo.compiled_autograd._enable(compiler_fn):
+      a_fenced, frozen_fenced = torch.tpu.ops.optimization_barrier(
+          [a * 2.0, frozen]
+      )
+      (a_fenced + frozen_fenced).sum().backward()
+
+    self.assertLen(debugs, 1)
+    self.assertEqual(
+        debugs[0]
+        .stablehlo_forward_text[0]
+        .count('stablehlo.optimization_barrier'),
+        1,
+    )
+    utils.assert_close(a.grad.cpu(), torch.full((10,), 2.0))
+    self.assertIsNone(frozen.grad)
+
   def test_force_strides_no_op(self):
     # Arrange: create a contiguous tensor on CPU and a copy of it on the TPU
     expected = torch.arange(24, device='cpu').view(2, 3, 4)

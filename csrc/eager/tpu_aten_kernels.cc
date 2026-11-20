@@ -140,6 +140,7 @@
 #include "csrc/ops/index_put/index_put_aten_kernels.h"
 #include "csrc/ops/index_reduce/index_reduce_aten_kernels.h"
 #include "csrc/ops/index_select/index_select_aten_kernels.h"
+#include "csrc/ops/int_mm/int_mm_aten_kernels.h"
 #include "csrc/ops/is/is_aten_kernels.h"
 #include "csrc/ops/isin/isin_aten_kernels.h"
 #include "csrc/ops/jagged/jagged_aten_kernels.h"
@@ -432,7 +433,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kBaddbmmDtype>(m, AtenBaddbmmDtype);
   ImplStable<OpName::kBaddbmmDtypeOut>(m, AtenBaddbmmDtypeOut);
   ImplStable<OpName::kBaddbmmOut>(m, AtenBaddbmmOut);
+  ImplStable<OpName::kBernoulli>(m, AtenBernoulli);
   ImplStable<OpName::kBernoulliOut>(m, AtenBernoulliOut);
+  ImplStable<OpName::kBernoulliP>(m, AtenBernoulliP);
   ImplStable<OpName::kBernoulli_Float>(m, AtenBernoulli_Float);
   ImplStable<OpName::kBernoulli_Tensor>(m, AtenBernoulli_Tensor);
   ImplStable<OpName::kBinCount>(m, AtenBinCount);
@@ -781,6 +784,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kIndexReduceOut>(m, TpuAtenIndexReduceOut);
   ImplStable<OpName::kIndexSelect>(m, TpuAtenIndexSelect);
   ImplStable<OpName::kIndexTensorOut>(m, AtenIndexTensorOut);
+  ImplStable<OpName::kIntMm>(m, AtenIntMm);
+  ImplStable<OpName::kIntMmOut>(m, AtenIntMmOut);
   ImplStable<OpName::kIrshiftScalar>(m, AtenIrshiftScalar);
   ImplStable<OpName::kIrshiftTensor>(m, AtenIrshiftTensor);
   ImplStable<OpName::kIsInScalarTensorOut>(m, AtenIsInScalarTensorOut);
@@ -1314,6 +1319,11 @@ TORCH_LIBRARY(tpu, m) {
       "bool ceil_mode) -> Tensor");
   m.def("_ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
   m.def(
+      "_flex_attention_bwd_dkv(Tensor q, Tensor k, Tensor v, Tensor grad_out, "
+      "Tensor lse, Tensor di, Tensor q_num_blocks, Tensor q_indices, "
+      "int mask_batch, int mask_heads, int q_block, int kv_block, "
+      "float scale, str mask_mod_mlir) -> (Tensor, Tensor)");
+  m.def(
       "_flex_attention_fwd(Tensor q, Tensor k, Tensor v, "
       "Tensor kv_num_blocks, Tensor kv_indices, int mask_batch, "
       "int mask_heads, int q_block, int kv_block, float scale, "
@@ -1769,6 +1779,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   // ImplDeprecated to mark their API stages.
   ImplInternal<OpName::kDistributedSend>(m, TorchTpuSend);
   ImplInternal<OpName::kDistributedRecv>(m, TorchTpuRecv);
+  ImplInternal<OpName::kFlexAttentionBwdDkv>(m, FlexAttentionBwdDkv);
   ImplInternal<OpName::kFlexAttentionFwd>(m, FlexAttentionFwd);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
@@ -1837,6 +1848,8 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
         return AtenSparseDenseMatmulActivationUnstackAutograd::apply(
             stacked_activations, per_feature_batch_sizes, per_feature_dims);
       });
+  ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
+      m, TorchTpuOptimizationBarrierAutograd);
 }
 
 // Registers implementations for torch.ops.tpu ops for CPU tensors.

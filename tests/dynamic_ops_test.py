@@ -15,7 +15,9 @@
 """Tests ops served by precompiled unbounded dynamic kernels."""
 
 from collections.abc import Callable
+import functools
 import math
+from typing import Any
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -23,16 +25,24 @@ import torch
 from tests import op_testing
 
 
+def _to_cpu(result: Any) -> Any:
+  """Moves a tensor, or each tensor of a tuple of tensors, to the CPU."""
+  if isinstance(result, tuple):
+    return tuple(t.cpu() for t in result)
+  return result.cpu()
+
+
 class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
   """Base class for tests of ops served by unbounded dynamic kernels."""
 
   def run_and_check_cache(
       self,
-      op: Callable[..., torch.Tensor],
+      op: Callable[..., Any],
       *inputs: torch.Tensor,
       served: bool,
       static_compilations: int = 1,
-  ) -> tuple[list[torch.Tensor], torch.Tensor]:
+      expected: Any = None,
+  ) -> tuple[list[torch.Tensor], Any]:
     """Checks `op(*inputs)` on TPU vs CPU, input preservation, and cache stats.
 
     Expects 1 unbounded dynamic hit and 0 compilations if `served`, else 0
@@ -46,7 +56,10 @@ class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
     torch.accelerator.synchronize()
     after = torch.tpu._get_cache_stats()  # pylint: disable=protected-access
 
-    self.assert_close(golden_result=op(*inputs), torch_tpu_result=result.cpu())
+    self.assert_close(
+        golden_result=op(*inputs) if expected is None else expected,
+        torch_tpu_result=_to_cpu(result),
+    )
 
     # Check input has not been modified
     for x, x_tpu in zip(inputs, tpu_inputs):
@@ -136,25 +149,114 @@ _NONZERO_SERVED_CASES = (
     _nonzero_case((16385,), 2),
     _nonzero_case((40000,), 777),
     _nonzero_case((40000,), _ALL_NONZERO),
+    # 3-D to 8-D: several row blocks with flushes spanning slices, wide rows,
+    # then one case per rank. M is a multiple of 8 so that XLA, which picks the
+    # input layout that pads least, defaults to row-major T(8,128).
+    _nonzero_case((3, 16, 129), 1025),
+    _nonzero_case((2, 8, 16385), 5),
+    _nonzero_case((2, 3, 8, 129), _ALL_NONZERO),
+    _nonzero_case((2, 1, 3, 8, 129), 777),
+    _nonzero_case((1, 2, 1, 2, 8, 129), _ALL_NONZERO),
+    _nonzero_case((2, 1, 2, 1, 2, 8, 129), 99),
+    _nonzero_case((1, 2, 1, 2, 1, 2, 8, 129), _ALL_NONZERO),
 )
 
 _NONZERO_NOT_SERVED_CASES = (
-    # Default 2-D input layout isn't {1,0:T(8,128)}.
+    # Default input layout isn't row-major with T(8,128) tiles.
     _nonzero_case((3, 7), 5),
     _nonzero_case((5, 1), 5),
     _nonzero_case((5, 3), 5),
-    # K = 0 skips the index graph; K <= rank uses row-major S64[K,rank] layout.
+    _nonzero_case((2, 4, 4), 5),
+    # K = 0 skips the index graph; K <= rank rounded up to a power of two uses
+    # row-major S64[K,rank] layout.
     _nonzero_case((17, 257), 0),
     _nonzero_case((17, 257), 1),
     _nonzero_case((17, 257), 2),
     _nonzero_case((3000,), 0),
     _nonzero_case((3000,), 1),
     _nonzero_case((16,), 1),
-    # Not 1-D or 2-D F32.
-    _nonzero_case((2, 4, 4), 5),
+    _nonzero_case((2, 8, 129), 4),
+    # Not F32, or rank above 8.
     _nonzero_case((17, 257), 5, torch.bfloat16),
     _nonzero_case((3000,), 5, torch.bfloat16),
     _nonzero_case((16,), 5, torch.bfloat16),
+    _nonzero_case((1,) * 7 + (5, 5), 10),
+)
+
+
+def _sort_case(n: int, repeated: bool) -> torch.Tensor:
+  """Returns `n` int32 keys, distinct unless `repeated`, with the extremes."""
+  generator = torch.Generator().manual_seed(n)
+  if repeated:
+    x = torch.randint(-8, 9, (n,), generator=generator, dtype=torch.int32)
+  else:
+    x = (torch.randperm(n, generator=generator) - n // 2).to(torch.int32)
+  x[1] = torch.iinfo(torch.int32).min
+  x[n // 2] = torch.iinfo(torch.int32).max
+  return x
+
+
+# The opt-in sort kernel serves ascending sorts of 1024 int32 elements along
+# dim -1. It is stable, so unstable sorts get distinct keys, whose sorted
+# indices are unique.
+_SORT_SERVED_CASES = (
+    ("default", _sort_case(1024, repeated=False), {}),
+    ("stable", _sort_case(1024, repeated=True), {"stable": True}),
+)
+
+_SORT_NOT_SERVED_CASES = (
+    ("descending", _sort_case(1024, repeated=False), {"descending": True}),
+    ("dim_0", _sort_case(1024, repeated=False), {"dim": 0}),
+    ("n_1023", _sort_case(1023, repeated=False), {}),
+    ("n_2048", _sort_case(2048, repeated=False), {}),
+    ("rank_2", _sort_case(1024, repeated=False).reshape(8, 128), {}),
+    ("float32", _sort_case(1024, repeated=False).float(), {}),
+)
+
+
+def _mm_case(
+    m: int, k: int, n: int, dtype: torch.dtype = torch.float32
+) -> tuple[str, torch.Tensor, torch.Tensor]:
+  """Returns a (name, a, b) case for an [m, k] @ [k, n] product.
+
+  The operands hold small integers, so that the result is exact at any matmul
+  precision.
+  """
+  generator = torch.Generator().manual_seed(m + k + n)
+  a = torch.randint(-4, 5, (m, k), generator=generator).to(dtype)
+  b = torch.randint(-4, 5, (k, n), generator=generator).to(dtype)
+  name = f"{m}x{k}x{n}_" + str(dtype).removeprefix("torch.")
+  return name, a, b
+
+
+# The opt-in matmul kernel serves 2-D float32 and bfloat16 products whose
+# operands and result all have the row-major T(8,128) layout. XLA defaults to
+# the layout that pads least, e.g. a column-major one for a (600, 700) matrix.
+# The kernel computes 512x512 output blocks in 512-deep contraction steps.
+_MM_SERVED_CASES = (
+    # One block, full or partial.
+    _mm_case(512, 512, 512),
+    _mm_case(5, 5, 5),
+    # Partial edge blocks along M, N and K.
+    _mm_case(600, 768, 640),
+    _mm_case(300, 300, 1300),
+    _mm_case(16, 1100, 1280),
+    # bfloat16 rows are padded to 8 in HBM, but to 16 in VMEM.
+    _mm_case(512, 512, 512, torch.bfloat16),
+    _mm_case(1000, 640, 512, torch.bfloat16),
+    _mm_case(24, 256, 128, torch.bfloat16),
+    # Mid-lane-tile and mid-row-tile K tail in bfloat16, 3 blocks per program.
+    _mm_case(600, 1100, 1280, torch.bfloat16),
+)
+
+_MM_NOT_SERVED_CASES = (
+    # Default layout of an operand isn't row-major T(8,128).
+    _mm_case(3, 128, 128),
+    _mm_case(1000, 48, 256),
+    # Empty product.
+    _mm_case(16, 0, 128),
+    # Not float32 or bfloat16.
+    _mm_case(16, 128, 128, torch.float64),
 )
 
 
@@ -173,11 +275,13 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
     # (minor_to_major, tiles, element_size_in_bits); see nonzero_indices.h.
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(x_tpu),
-        ([1, 0], [[8, 128]], 0) if x.ndim == 2 else ([0], [[tile]], 0),
+        ([0], [[tile]], 0)
+        if x.ndim == 1
+        else (list(range(x.ndim))[::-1], [[8, 128]], 0),
     )
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(result),
-        ([0, 1], [[x.ndim, 128]], 0),
+        ([0, 1], [[1 << (x.ndim - 1).bit_length(), 128]], 0),
     )
 
   @parameterized.named_parameters(*_NONZERO_NOT_SERVED_CASES)
@@ -191,6 +295,110 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
         served=False,
         static_compilations=1 if x.count_nonzero() else 0,
     )
+
+  @parameterized.named_parameters(*_SORT_SERVED_CASES)
+  def test_sort_served(self, x: torch.Tensor, kwargs: dict[str, Any]):
+    sort = functools.partial(torch.sort, **kwargs)
+    sort(torch.zeros_like(x).to("tpu"))  # Warm up the opt-in kernel.
+
+    self.run_and_check_cache(sort, x, served=True)
+
+  def test_sort_shares_the_stable_kernel(self):
+    # Unstable sorts are served by the stable sort's kernel, so once a stable
+    # sort has loaded it, an unstable sort compiles nothing.
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    x = _sort_case(1024, repeated=False)
+    torch.sort(torch.zeros_like(x).to("tpu"), stable=True)
+
+    self.run_and_check_cache(torch.sort, x, served=True)
+
+  @parameterized.named_parameters(*_SORT_NOT_SERVED_CASES)
+  def test_sort_not_served(self, x: torch.Tensor, kwargs: dict[str, Any]):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+
+    self.run_and_check_cache(
+        functools.partial(torch.sort, **kwargs), x, served=False
+    )
+
+  @parameterized.named_parameters(*_MM_SERVED_CASES)
+  def test_mm_served(self, a: torch.Tensor, b: torch.Tensor):
+    # Warm up the opt-in kernel on a different shape so the call below proves
+    # one executable serves any shape without recompiling.
+    torch.mm(
+        torch.zeros(16, 128, dtype=a.dtype).to("tpu"),
+        torch.zeros(128, 128, dtype=b.dtype).to("tpu"),
+    )
+
+    tpu_inputs, result = self.run_and_check_cache(torch.mm, a, b, served=True)
+
+    # (minor_to_major, tiles, element_size_in_bits); see matmul.h.
+    tiles = [[8, 128], [2, 1]] if a.dtype == torch.bfloat16 else [[8, 128]]
+    for x in (*tpu_inputs, result):
+      self.assertEqual(
+          torch.tpu.get_device_layout_if_materialized(x), ([1, 0], tiles, 0)
+      )
+
+  @parameterized.named_parameters(*_MM_NOT_SERVED_CASES)
+  def test_mm_not_served(self, a: torch.Tensor, b: torch.Tensor):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+
+    self.run_and_check_cache(torch.mm, a, b, served=False)
+
+  @parameterized.named_parameters(
+      ("default", torch.tpu.Precision.DEFAULT, 0.0),
+      ("high", torch.tpu.Precision.HIGH, None),
+      ("highest", torch.tpu.Precision.HIGHEST, None),
+  )
+  def test_mm_served_at_precision(
+      self, precision: torch.tpu.Precision, expected_value: float | None
+  ):
+    # Each pair of products cancels down to 2**-8, which the single bfloat16
+    # pass of the default precision rounds away (giving 0 instead of 1).
+    a = torch.tensor([1 + 2**-8, -1.0]).repeat(16, 256)
+    b = torch.ones(512, 128)
+    expected = (
+        None
+        if expected_value is None
+        else torch.full((16, 128), expected_value)
+    )
+
+    with torch.tpu.precision(precision):
+      # Warm up the opt-in kernel on a different shape.
+      torch.mm(
+          torch.zeros(16, 128).to("tpu"),
+          torch.zeros(128, 128).to("tpu"),
+      )
+
+      self.run_and_check_cache(torch.mm, a, b, served=True, expected=expected)
+
+  def test_mm_bfloat16_shares_the_default_precision_kernel(self):
+    # bfloat16 products are served by one kernel at every precision, so once
+    # the default precision has loaded it, another precision compiles nothing.
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    _, a, b = _mm_case(24, 256, 128, torch.bfloat16)
+    torch.mm(torch.zeros_like(a).to("tpu"), torch.zeros_like(b).to("tpu"))
+
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      self.run_and_check_cache(torch.mm, a, b, served=True)
+
+  def test_mm_served_back_to_back(self):
+    # Launches overlap on the device, so a copy running past the end of its
+    # buffer corrupts the next launch. 1000 bfloat16 rows end mid VMEM tile.
+    _, a, b = _mm_case(1000, 640, 512, torch.bfloat16)
+    a_tpu, b_tpu = a.to("tpu"), b.to("tpu")
+    before = torch.tpu._get_cache_stats()  # pylint: disable=protected-access
+
+    results = [torch.mm(a_tpu, b_tpu) for _ in range(8)]
+    torch.accelerator.synchronize()
+
+    after = torch.tpu._get_cache_stats()  # pylint: disable=protected-access
+    self.assertEqual(
+        after.num_unbounded_dynamic_hits - before.num_unbounded_dynamic_hits, 8
+    )
+    for result in results:
+      self.assert_close(
+          golden_result=torch.mm(a, b), torch_tpu_result=result.cpu()
+      )
 
 
 if __name__ == "__main__":

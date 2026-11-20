@@ -32,7 +32,6 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/macro_utils.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -108,12 +107,9 @@ xla::PrimitiveType ToXlaType(const mlir::ElementType element_type) {
       return xla::PrimitiveType::F6E2M3FN;
     case mlir::ElementType::F6E3M2FN:
       return xla::PrimitiveType::F6E3M2FN;
-#if TT_IS_INTERNAL_TORCH_TPU
-    // XLA has no corresponding PrimitiveType; pinned OSS XLA/StableHLO predates
-    // openxla/stablehlo#3061.
+    // XLA has no corresponding PrimitiveType.
     case mlir::ElementType::F8E5M3FNU:
       break;
-#endif
       // Deliberately omitting the default case. Without the default case, if an
       // enum value is added in the future and the author forgets to update this
       // switch statement, the C++ compiler will generate a warning (treated as
@@ -448,11 +444,9 @@ at::ScalarType ToScalarType(const mlir::ElementType element_type) {
     case mlir::ElementType::F8E3M4:
     case mlir::ElementType::F8E4M3B11FNUZ:
       break;
-#if TT_IS_INTERNAL_TORCH_TPU
     // TorchTPU does not yet support at::ScalarType::Float8_e5m3fnu.
     case mlir::ElementType::F8E5M3FNU:
       break;
-#endif
   }
 
   ABSL_LOG(FATAL)  // CRASH_OK
@@ -593,10 +587,8 @@ std::string_view ToShortString(const mlir::ElementType element_type) {
       return "f8E5M2";
     case mlir::ElementType::F8E5M2FNUZ:
       return "f8E5M2FNUZ";
-#if TT_IS_INTERNAL_TORCH_TPU
     case mlir::ElementType::F8E5M3FNU:
       return "f8E5M3FNU";
-#endif
     case mlir::ElementType::F8E8M0FNU:
       return "f8E8M0FNU";
     case mlir::ElementType::COMPLEXF32:
@@ -729,9 +721,7 @@ int64_t TorchEquivalentBitwidth(mlir::ElementType element_type) {
     case mlir::ElementType::F8E4M3B11FNUZ:
     case mlir::ElementType::F8E5M2:
     case mlir::ElementType::F8E5M2FNUZ:
-#if TT_IS_INTERNAL_TORCH_TPU
     case mlir::ElementType::F8E5M3FNU:
-#endif
     case mlir::ElementType::F8E8M0FNU:
       return 8;
     case mlir::ElementType::I16:

@@ -14,11 +14,13 @@
 
 """Tests that automatic mixed precision (AMP)/torch.autocast works on TPU."""
 
+import re
 from typing import TypeAlias
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -103,13 +105,22 @@ class AmpTest(seed_test_utils.RepeatableTest):
         [loss], [x, y] + list(model.parameters())
     )
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
+    # Normalize the module name before comparing complete MLIR; it is an
+    # unstable PyTorch implementation detail (e.g., internal line numbers and
+    # op call chains).
+    normalized_mlir_text = re.sub(
+        r"module @tt_jit_\w+ \{",
+        "module @tt_jit_amp_test_test_autocast_works {",
+        mlir_text,
+    )
 
     # Operations that get actually performed:
     # - embedding layer uses f32 (%0)
-    # - linear layer converts to bf16 (%1 through %6)
-    # - multiplication preserves bf16 (%7)
-    # - loss function converts to f32 (%8 through %16)
-    expected_mlir = """module @tt_jit_build_mlir_compile_mlir_as_strided {
+    # - linear layer converts inputs to bf16, accumulates/adds bias in f32, and
+    #   converts output to bf16 (%1 through %8)
+    # - multiplication preserves bf16 (%9)
+    # - loss function converts to f32 (%10 through %18)
+    expected_mlir = """module @tt_jit_amp_test_test_autocast_works {
   func.func @main(%arg0: tensor<10xi64>, %arg1: tensor<10x10xf32>, %arg2: tensor<10x10xf32>, %arg3: tensor<10x10xf32>, %arg4: tensor<10xf32>) -> tensor<f32> {
     %cst = stablehlo.constant dense<-1.000000e+00> : tensor<10x10xbf16>
     %c = stablehlo.constant dense<0> : tensor<i64>
@@ -120,23 +131,25 @@ class AmpTest(seed_test_utils.RepeatableTest):
     %1 = stablehlo.convert %0 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %2 = stablehlo.convert %arg3 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %3 = stablehlo.convert %arg4 : (tensor<10xf32>) -> tensor<10xbf16>
-    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xbf16>
-    %5 = stablehlo.broadcast_in_dim %3, dims = [1] : (tensor<10xbf16>) -> tensor<10x10xbf16>
-    %6 = stablehlo.add %4, %5 : tensor<10x10xbf16>
-    %7 = stablehlo.multiply %6, %cst : tensor<10x10xbf16>
-    %8 = stablehlo.convert %7 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
-    %9 = stablehlo.subtract %8, %arg1 : tensor<10x10xf32>
-    %10 = stablehlo.multiply %9, %9 : tensor<10x10xf32>
-    %11 = stablehlo.reduce(%10 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
-    %12 = stablehlo.divide %11, %cst_0 : tensor<f32>
-    %13 = stablehlo.reshape %12 : (tensor<f32>) -> tensor<1x1xf32>
-    %14 = stablehlo.dynamic_update_slice %cst_2, %13, %c, %c : (tensor<10x10xf32>, tensor<1x1xf32>, tensor<i64>, tensor<i64>) -> tensor<10x10xf32>
-    %15 = stablehlo.slice %14 [0:1, 0:1] : (tensor<10x10xf32>) -> tensor<1x1xf32>
-    %16 = stablehlo.reshape %15 : (tensor<1x1xf32>) -> tensor<f32>
-    return %16 : tensor<f32>
+    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %5 = stablehlo.convert %3 : (tensor<10xbf16>) -> tensor<10xf32>
+    %6 = stablehlo.broadcast_in_dim %5, dims = [1] : (tensor<10xf32>) -> tensor<10x10xf32>
+    %7 = stablehlo.add %4, %6 : tensor<10x10xf32>
+    %8 = stablehlo.convert %7 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
+    %9 = stablehlo.multiply %8, %cst : tensor<10x10xbf16>
+    %10 = stablehlo.convert %9 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %11 = stablehlo.subtract %10, %arg1 : tensor<10x10xf32>
+    %12 = stablehlo.multiply %11, %11 : tensor<10x10xf32>
+    %13 = stablehlo.reduce(%12 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
+    %14 = stablehlo.divide %13, %cst_0 : tensor<f32>
+    %15 = stablehlo.reshape %14 : (tensor<f32>) -> tensor<1x1xf32>
+    %16 = stablehlo.dynamic_update_slice %cst_2, %15, %c, %c : (tensor<10x10xf32>, tensor<1x1xf32>, tensor<i64>, tensor<i64>) -> tensor<10x10xf32>
+    %17 = stablehlo.slice %16 [0:1, 0:1] : (tensor<10x10xf32>) -> tensor<1x1xf32>
+    %18 = stablehlo.reshape %17 : (tensor<1x1xf32>) -> tensor<f32>
+    return %18 : tensor<f32>
   }
 }"""
-    expected_mlir_reduced = """module @tt_jit_functional_L4403C0_mse_loss_mse_loss {
+    expected_mlir_reduced = """module @tt_jit_amp_test_test_autocast_works {
   func.func @main(%arg0: tensor<10xi64>, %arg1: tensor<10x10xf32>, %arg2: tensor<10x10xf32>, %arg3: tensor<10x10xf32>, %arg4: tensor<10xf32>) -> tensor<f32> {
     %cst = stablehlo.constant dense<-1.000000e+00> : tensor<10x10xbf16>
     %cst_0 = stablehlo.constant dense<1.000000e+02> : tensor<f32>
@@ -145,22 +158,65 @@ class AmpTest(seed_test_utils.RepeatableTest):
     %1 = stablehlo.convert %0 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %2 = stablehlo.convert %arg3 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
     %3 = stablehlo.convert %arg4 : (tensor<10xf32>) -> tensor<10xbf16>
-    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xbf16>
-    %5 = stablehlo.broadcast_in_dim %3, dims = [1] : (tensor<10xbf16>) -> tensor<10x10xbf16>
-    %6 = stablehlo.add %4, %5 : tensor<10x10xbf16>
-    %7 = stablehlo.multiply %6, %cst : tensor<10x10xbf16>
-    %8 = stablehlo.convert %7 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
-    %9 = stablehlo.subtract %8, %arg1 : tensor<10x10xf32>
-    %10 = stablehlo.multiply %9, %9 : tensor<10x10xf32>
-    %11 = stablehlo.reduce(%10 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
-    %12 = stablehlo.divide %11, %cst_0 : tensor<f32>
-    return %12 : tensor<f32>
+    %4 = stablehlo.dot_general %1, %2, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x10xbf16>, tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %5 = stablehlo.convert %3 : (tensor<10xbf16>) -> tensor<10xf32>
+    %6 = stablehlo.broadcast_in_dim %5, dims = [1] : (tensor<10xf32>) -> tensor<10x10xf32>
+    %7 = stablehlo.add %4, %6 : tensor<10x10xf32>
+    %8 = stablehlo.convert %7 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
+    %9 = stablehlo.multiply %8, %cst : tensor<10x10xbf16>
+    %10 = stablehlo.convert %9 : (tensor<10x10xbf16>) -> tensor<10x10xf32>
+    %11 = stablehlo.subtract %10, %arg1 : tensor<10x10xf32>
+    %12 = stablehlo.multiply %11, %11 : tensor<10x10xf32>
+    %13 = stablehlo.reduce(%12 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
+    %14 = stablehlo.divide %13, %cst_0 : tensor<f32>
+    return %14 : tensor<f32>
   }
 }"""
     self.assertIn(
-        mlir_text.strip(),
+        normalized_mlir_text.strip(),
         [expected_mlir.strip(), expected_mlir_reduced.strip()],
     )
+
+  def test_autocast_rnn(self):
+    x = torch.randn(1, 2, 1, device="tpu", dtype=torch.float32)
+    hx = torch.randn(2, 2, 1, device="tpu", dtype=torch.float32)
+    cx = torch.randn(2, 2, 1, device="tpu", dtype=torch.float32)
+    m = torch.nn.LSTM(1, 1, 2, device="tpu").to(torch.bfloat16)
+
+    default_dtype = torch.get_autocast_dtype("tpu")
+    with torch.amp.autocast(device_type="tpu"):
+      out, (hy, cy) = m(x, (hx, cx))
+    # Materialize outputs on CPU to surface any asynchronous TPU compile errors.
+    out_cpu, hy_cpu, cy_cpu = out.cpu(), hy.cpu(), cy.cpu()
+    self.assertEqual(out_cpu.dtype, default_dtype)
+    self.assertEqual(hy_cpu.dtype, default_dtype)
+    self.assertEqual(cy_cpu.dtype, default_dtype)
+
+    with torch.amp.autocast(device_type="tpu", dtype=torch.bfloat16):
+      out_bf16, (hy_bf16, cy_bf16) = m(x, (hx, cx))
+    ref_out, (ref_hy, ref_cy) = m(
+        x.to(torch.bfloat16), (hx.to(torch.bfloat16), cx.to(torch.bfloat16))
+    )
+    self.assertEqual(out_bf16.dtype, torch.bfloat16)
+    self.assertEqual(hy_bf16.dtype, torch.bfloat16)
+    self.assertEqual(cy_bf16.dtype, torch.bfloat16)
+    test_utils.assert_close(out_bf16.cpu(), ref_out.cpu())
+    test_utils.assert_close(hy_bf16.cpu(), ref_hy.cpu())
+    test_utils.assert_close(cy_bf16.cpu(), ref_cy.cpu())
+
+    for rnn_cls in (
+        lambda: torch.nn.GRU(1, 1, 2, device="tpu"),
+        lambda: torch.nn.RNN(1, 1, 2, nonlinearity="tanh", device="tpu"),
+        lambda: torch.nn.RNN(1, 1, 2, nonlinearity="relu", device="tpu"),
+    ):
+      rnn = rnn_cls().to(torch.bfloat16)
+      with torch.amp.autocast(device_type="tpu", dtype=torch.bfloat16):
+        rnn_out, rnn_hy = rnn(x, hx)
+      ref_rnn_out, ref_rnn_hy = rnn(x.to(torch.bfloat16), hx.to(torch.bfloat16))
+      self.assertEqual(rnn_out.dtype, torch.bfloat16)
+      self.assertEqual(rnn_hy.dtype, torch.bfloat16)
+      test_utils.assert_close(rnn_out.cpu(), ref_rnn_out.cpu())
+      test_utils.assert_close(rnn_hy.cpu(), ref_rnn_hy.cpu())
 
 
 if __name__ == "__main__":

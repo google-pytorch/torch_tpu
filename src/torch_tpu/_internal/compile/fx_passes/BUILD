@@ -15,10 +15,9 @@
 # Domain experts for this package:
 # basioli-k
 # lukeboyer
-# mkhanna15
 # ghpvnist
 # arfaian
-# zhanyong-wan
+# mkhanna15
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 

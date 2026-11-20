@@ -27,7 +27,6 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -147,7 +146,7 @@ struct QrDims {
 };
 
 absl::StatusOr<QrDims> ComputeQrDims(const at::Tensor& self,
-                                     c10::string_view mode) {
+                                     std::string_view mode) {
   TT_RET_CHECK(self.dim() >= 2, error::kInvalidArgument)
       << "expected input tensor to have at least 2 dimensions, got "
       << self.dim();
@@ -181,7 +180,7 @@ absl::StatusOr<QrDims> ComputeQrDims(const at::Tensor& self,
   return QrDims{std::move(q_dims), std::move(r_dims)};
 }
 
-absl::Status QrOut(const at::Tensor& self, c10::string_view mode,
+absl::Status QrOut(const at::Tensor& self, std::string_view mode,
                    OpParamCacheKeys param_keys, at::Tensor& q, at::Tensor& r) {
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(q, self.scalar_type(), /*allow_out_dtype_cast=*/false));
@@ -226,7 +225,7 @@ std::tuple<at::Tensor&, at::Tensor&> AtenGeqrfA(const at::Tensor& self,
 }
 
 std::tuple<at::Tensor&, at::Tensor&> AtenLinalgQrOut(const at::Tensor& self,
-                                                     c10::string_view mode,
+                                                     std::string_view mode,
                                                      at::Tensor& q,
                                                      at::Tensor& r) {
   TT_KERNEL(OpName::kLinalgQrOut, param_keys, (self, mode, q, r), {

@@ -230,9 +230,12 @@ absl::StatusOr<mlir::MlirOp> BuildCrossEntropyClassIndicesShlo(
     TT_ASSIGN_OR_RETURN(weight_orig,
                         CastIfNeeded(weight_orig.value(), orig_self_dtype));
   }
+  // `log_probs` is computed in this program; a masked sum keeps XLA from
+  // materializing it in HBM just to gather one element per row.
   TT_ASSIGN_OR_RETURN(auto nll_outputs, BuildNllLossForwardOutShlo(
                                             log_probs_orig, target, weight_orig,
-                                            reduction, ignore_index, builder));
+                                            reduction, ignore_index, builder,
+                                            NllTargetSelection::kMaskedSum));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp nll_loss,
                       CastIfNeeded(nll_outputs[0], compute_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp total_weight,

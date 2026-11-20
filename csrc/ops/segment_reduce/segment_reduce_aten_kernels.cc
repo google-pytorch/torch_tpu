@@ -29,7 +29,6 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -53,6 +52,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
 
@@ -111,10 +111,9 @@ at::Scalar GetNeutralScalar(SegmentReduceOp reduce_op,
 
 absl::StatusOr<mlir::MlirOp> ApplyInitialValue(mlir::MlirOp scatter_res,
                                                SegmentReduceOp reduce_op,
-                                               mlir::MlirOp initial_op,
-                                               const Dimensions& init_shape) {
+                                               mlir::MlirOp initial_op) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp init_const,
-                      Broadcast(initial_op, init_shape, {}));
+                      BroadcastIfNeeded(initial_op, scatter_res));
   switch (reduce_op) {
     case SegmentReduceOp::kSum:
       return mlir::stablehlo::Add(scatter_res, init_const);
@@ -132,7 +131,6 @@ absl::StatusOr<mlir::MlirOp> ApplyInitialValue(mlir::MlirOp scatter_res,
 struct SegmentBoundariesAndLengths {
   mlir::MlirOp boundary_indices;
   mlir::MlirOp lengths;
-  int64_t num_segments = 0;
 };
 
 struct SegmentIdsAndMaskedData {
@@ -145,82 +143,51 @@ absl::StatusOr<SegmentBoundariesAndLengths> ComputeSegmentBoundariesAndLengths(
     std::optional<mlir::MlirOp> offsets_opt, int64_t axis) {
   if (offsets_opt.has_value()) {
     mlir::MlirOp offsets = *offsets_opt;
-    const mlir::RankedTensorType offsets_type = GetTensorTypeOrDie(offsets);
-    const Dimensions offsets_shape = CopyIntVector(offsets_type.getShape());
-    const int64_t offsets_rank = offsets_type.getRank();
-    const int64_t num_segments = offsets_shape.back() - 1;
-
-    Dimensions start_indices_off(offsets_rank, 0);
-    Dimensions limit_indices_off = offsets_shape;
-    limit_indices_off.back() = num_segments;
-    Dimensions strides(offsets_rank, 1);
-
-    mlir::MlirOp off_start = mlir::stablehlo::Slice(offsets, start_indices_off,
-                                                    limit_indices_off, strides);
-
-    Dimensions start_indices_boundary(offsets_rank, 0);
-    start_indices_boundary.back() = 1;
-    Dimensions limit_indices_boundary = offsets_shape;
-    limit_indices_boundary.back() = num_segments + 1;
-
-    mlir::MlirOp boundary_indices = mlir::stablehlo::Slice(
-        offsets, start_indices_boundary, limit_indices_boundary, strides);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp off_start,
+                        BuildMaybeSlice(offsets, /*dimension=*/axis,
+                                        /*left_pad=*/0, /*right_pad=*/-1));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp boundary_indices,
+                        BuildMaybeSlice(offsets, /*dimension=*/axis,
+                                        /*left_pad=*/-1, /*right_pad=*/0));
     mlir::MlirOp lengths =
         mlir::stablehlo::Subtract(boundary_indices, off_start);
-    return SegmentBoundariesAndLengths{boundary_indices, lengths, num_segments};
+    return SegmentBoundariesAndLengths{boundary_indices, lengths};
   }
 
   mlir::MlirOp lengths = *lengths_opt;
-  const mlir::RankedTensorType lengths_type = GetTensorTypeOrDie(lengths);
-  const int64_t num_segments = lengths_type.getShape().back();
   TT_ASSIGN_OR_RETURN(mlir::MlirOp boundary_indices,
                       BuildCumsumShlo(/*normalized_dim=*/axis,
                                       /*out_dtype=*/std::nullopt, lengths));
-  return SegmentBoundariesAndLengths{boundary_indices, lengths, num_segments};
+  return SegmentBoundariesAndLengths{boundary_indices, lengths};
 }
 
 absl::StatusOr<SegmentIdsAndMaskedData> ComputeSegmentIdsAndMaskedData(
     mlir::MlirOp data, mlir::MlirOp boundary_indices, mlir::MlirOp lengths,
-    int64_t num_segments, int64_t axis, SegmentReduceOp reduce_op,
-    mlir::Type computation_type, mlir::ElementType comp_elem_type,
-    const Dimensions& data_shape, int64_t n_data_axis) {
+    int64_t axis, SegmentReduceOp reduce_op, mlir::Type computation_type) {
   mlir::MlirBuilder& builder = data.getBuilder();
   const mlir::Type index_type = GetTensorTypeOrDie(lengths).getElementType();
   mlir::MlirOp cumsum_exclusive =
       mlir::stablehlo::Subtract(boundary_indices, lengths);
 
-  Dimensions bound_shape;
-  bound_shape.reserve(axis + 2);
-  for (int64_t d = 0; d < axis; ++d) {
-    bound_shape.push_back(data_shape[d]);
-  }
-  bound_shape.push_back(1);
-  bound_shape.push_back(num_segments);
-  mlir::MlirOp c_exc_reshaped =
-      mlir::stablehlo::Reshape(cumsum_exclusive, bound_shape);
-  mlir::MlirOp c_inc_reshaped =
-      mlir::stablehlo::Reshape(boundary_indices, bound_shape);
+  // Compares each index of `data` along `axis` with the boundaries of each
+  // segment, in a tensor of the dimensions of `data` up to `axis` followed by
+  // the segment dimension of `lengths`.
+  const mlir::stablehlo::Dimensions data_dims = GetDimensions(data);
+  mlir::stablehlo::Dimensions comp_dims(data_dims.begin(),
+                                        data_dims.begin() + axis + 1);
+  comp_dims.push_back(GetDimensions(lengths)[axis]);
 
-  Dimensions comp_shape;
-  comp_shape.reserve(axis + 2);
-  for (int64_t d = 0; d < axis; ++d) {
-    comp_shape.push_back(data_shape[d]);
-  }
-  comp_shape.push_back(n_data_axis);
-  comp_shape.push_back(num_segments);
-
-  auto iota_1d_type = mlir::RankedTensorType::get({n_data_axis}, index_type);
-  mlir::MlirOp iota_1d = mlir::stablehlo::Iota(builder, iota_1d_type, 0);
-  Dimensions iota_reshaped_dims(axis + 2, 1);
-  iota_reshaped_dims[axis] = n_data_axis;
-  mlir::MlirOp iota_n = mlir::stablehlo::Reshape(iota_1d, iota_reshaped_dims);
-
+  Dimensions segment_bcast_dims(axis + 1);
+  std::iota(segment_bcast_dims.begin(), segment_bcast_dims.end(), 0);
+  segment_bcast_dims[axis] = axis + 1;
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp c_exc_bcst,
+      BroadcastIfNeeded(cumsum_exclusive, comp_dims, segment_bcast_dims));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp c_inc_bcst,
+      BroadcastIfNeeded(boundary_indices, comp_dims, segment_bcast_dims));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp iota_bcst,
-                      BroadcastIfNeeded(iota_n, comp_shape));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp c_exc_bcst,
-                      BroadcastIfNeeded(c_exc_reshaped, comp_shape));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp c_inc_bcst,
-                      BroadcastIfNeeded(c_inc_reshaped, comp_shape));
+                      Iota(c_exc_bcst, /*iota_dimension=*/axis, index_type));
 
   mlir::MlirOp is_ge = mlir::stablehlo::Compare(
       iota_bcst, c_exc_bcst, mlir::stablehlo::ComparisonDirection::GE);
@@ -230,13 +197,9 @@ absl::StatusOr<SegmentIdsAndMaskedData> ComputeSegmentIdsAndMaskedData(
   mlir::MlirOp in_segment_idx =
       mlir::stablehlo::ConvertElementType(in_segment, index_type);
 
-  auto k_iota_type = mlir::RankedTensorType::get({num_segments}, index_type);
-  mlir::MlirOp k_iota = mlir::stablehlo::Iota(builder, k_iota_type, 0);
-  Dimensions k_reshaped_dims(axis + 2, 1);
-  k_reshaped_dims[axis + 1] = num_segments;
-  mlir::MlirOp k_reshaped = mlir::stablehlo::Reshape(k_iota, k_reshaped_dims);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp k_bcst,
-                      BroadcastIfNeeded(k_reshaped, comp_shape));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp k_bcst,
+      Iota(c_exc_bcst, /*iota_dimension=*/axis + 1, index_type));
 
   mlir::MlirOp k_weighted = mlir::stablehlo::Mul(in_segment_idx, k_bcst);
 
@@ -266,58 +229,61 @@ absl::StatusOr<SegmentIdsAndMaskedData> ComputeSegmentIdsAndMaskedData(
   Dimensions valid_bcast_dims(axis + 1);
   std::iota(valid_bcast_dims.begin(), valid_bcast_dims.end(), 0);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp is_valid_bcast,
-                      Broadcast(is_valid, data_shape, valid_bcast_dims));
+                      BroadcastIfNeeded(is_valid, data_dims, valid_bcast_dims));
 
   at::Scalar neutral_scalar = GetNeutralScalar(reduce_op, computation_type);
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp neutral_constant,
-      MakeConstant(builder, neutral_scalar, comp_elem_type, data_shape));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp neutral_constant,
+                      MakeConstantLike(data, neutral_scalar));
   mlir::MlirOp data_masked =
       mlir::stablehlo::Select(is_valid_bcast, data, neutral_constant);
 
   return SegmentIdsAndMaskedData{segment_ids, data_masked};
 }
 
-mlir::MlirOp ComputeScatterIndices(mlir::MlirBuilder& builder,
-                                   mlir::MlirOp segment_ids, int64_t axis,
-                                   const Dimensions& data_shape,
-                                   int64_t n_data_axis, mlir::Type index_type) {
+absl::StatusOr<mlir::MlirOp> ComputeScatterIndices(mlir::MlirOp segment_ids,
+                                                   int64_t axis) {
+  const mlir::Type index_type =
+      GetTensorTypeOrDie(segment_ids).getElementType();
+  // Each coordinate has the dimensions of `segment_ids` followed by an index
+  // vector dimension of size 1.
+  mlir::stablehlo::Dimensions coord_dims = GetDimensions(segment_ids);
+  coord_dims.push_back(mlir::stablehlo::DimensionInfo{1});
+  Dimensions coord_bcast_dims(axis + 1);
+  std::iota(coord_bcast_dims.begin(), coord_bcast_dims.end(), 0);
+
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp segment_coord,
+      BroadcastIfNeeded(segment_ids, coord_dims, coord_bcast_dims));
   if (axis == 0) {
-    return mlir::stablehlo::Reshape(segment_ids, {n_data_axis, 1});
+    return segment_coord;
   }
-
-  Dimensions outer_shape;
-  outer_shape.reserve(axis + 1);
-  for (int64_t d = 0; d < axis; ++d) {
-    outer_shape.push_back(data_shape[d]);
-  }
-  outer_shape.push_back(n_data_axis);
-
-  Dimensions d_coord_shape = outer_shape;
-  d_coord_shape.push_back(1);
 
   std::vector<mlir::MlirOp> coords;
   coords.reserve(axis + 1);
   for (int64_t d = 0; d < axis; ++d) {
-    auto d_iota_type = mlir::RankedTensorType::get(outer_shape, index_type);
-    mlir::MlirOp d_iota =
-        mlir::stablehlo::Iota(builder, d_iota_type, /*iota_dimension=*/d);
-    coords.push_back(mlir::stablehlo::Reshape(d_iota, d_coord_shape));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp d_iota,
+                        Iota(segment_ids, /*iota_dimension=*/d, index_type));
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp d_coord,
+        BroadcastIfNeeded(d_iota, coord_dims, coord_bcast_dims));
+    coords.push_back(d_coord);
   }
-  coords.push_back(mlir::stablehlo::Reshape(segment_ids, d_coord_shape));
-  return mlir::stablehlo::Concatenate(builder, coords, /*dimension=*/axis + 1);
+  coords.push_back(segment_coord);
+  return mlir::stablehlo::Concatenate(segment_ids.getBuilder(), coords,
+                                      /*dimension=*/axis + 1);
 }
 
 absl::StatusOr<mlir::MlirOp> ExecuteScatterReduction(
     mlir::MlirBuilder& builder, mlir::MlirOp data_masked,
     mlir::MlirOp scatter_indices, SegmentReduceOp reduce_op,
     mlir::Type computation_type, mlir::ElementType comp_elem_type,
-    const Dimensions& init_shape, int64_t axis, int64_t rank,
+    const mlir::stablehlo::Dimensions& init_dims, int64_t axis, int64_t rank,
     std::optional<mlir::MlirOp> initial_op) {
   at::Scalar neutral_scalar = GetNeutralScalar(reduce_op, computation_type);
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp init_output,
-      MakeConstant(builder, neutral_scalar, comp_elem_type, init_shape));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp neutral,
+                      MakeConstant(builder, neutral_scalar, comp_elem_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp init_output,
+                      BroadcastIfNeeded(neutral, init_dims));
 
   Dimensions update_window_dims;
   update_window_dims.reserve(rank - 1 - axis);
@@ -370,9 +336,8 @@ absl::StatusOr<mlir::MlirOp> ExecuteScatterReduction(
                                scatter_region_builder, scatter_dnums)[0];
 
   if (initial_op.has_value()) {
-    TT_ASSIGN_OR_RETURN(
-        scatter_res,
-        ApplyInitialValue(scatter_res, reduce_op, *initial_op, init_shape));
+    TT_ASSIGN_OR_RETURN(scatter_res,
+                        ApplyInitialValue(scatter_res, reduce_op, *initial_op));
   }
 
   return scatter_res;
@@ -380,26 +345,26 @@ absl::StatusOr<mlir::MlirOp> ExecuteScatterReduction(
 
 absl::StatusOr<mlir::MlirOp> PostProcessMeanReduction(
     mlir::MlirOp scatter_res, mlir::MlirOp lengths, int64_t axis,
-    mlir::Type computation_type, const Dimensions& init_shape,
-    std::optional<mlir::MlirOp> initial_op) {
+    mlir::Type computation_type, std::optional<mlir::MlirOp> initial_op) {
   Dimensions bcast_dims_lengths(axis + 1);
   std::iota(bcast_dims_lengths.begin(), bcast_dims_lengths.end(), 0);
 
   mlir::MlirOp lengths_conv =
       mlir::stablehlo::ConvertElementType(lengths, computation_type);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp bcast_lengths,
-                      Broadcast(lengths_conv, init_shape, bcast_dims_lengths));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp bcast_lengths,
+      BroadcastIfNeeded(lengths_conv, scatter_res, bcast_dims_lengths));
 
   if (initial_op.has_value()) {
     TT_ASSIGN_OR_RETURN(mlir::MlirOp initial_or_nan,
-                        Broadcast(*initial_op, init_shape, {}));
+                        BroadcastIfNeeded(*initial_op, scatter_res));
     mlir::MlirOp sum = mlir::stablehlo::Add(scatter_res, initial_or_nan);
     mlir::MlirOp zero = MakeConstantLike(lengths, 0);
     mlir::MlirOp is_empty_mask = mlir::stablehlo::Compare(
         lengths, zero, mlir::stablehlo::ComparisonDirection::EQ);
     TT_ASSIGN_OR_RETURN(
         mlir::MlirOp is_empty,
-        Broadcast(is_empty_mask, init_shape, bcast_dims_lengths));
+        BroadcastIfNeeded(is_empty_mask, scatter_res, bcast_dims_lengths));
     mlir::MlirOp div = mlir::stablehlo::Div(sum, bcast_lengths);
     return mlir::stablehlo::Select(is_empty, initial_or_nan, div);
   }
@@ -414,8 +379,6 @@ absl::StatusOr<mlir::MlirOp> BuildSegmentReduceShlo(
   mlir::MlirBuilder& builder = data.getBuilder();
   const mlir::RankedTensorType data_type = GetTensorTypeOrDie(data);
   const int64_t rank = data_type.getRank();
-  const Dimensions data_shape = CopyIntVector(data_type.getShape());
-  const int64_t n_data_axis = data_shape[axis];
   const mlir::Type computation_type = data_type.getElementType();
   TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_elem_type,
                       ConvertTo<mlir::ElementType>(computation_type));
@@ -423,32 +386,31 @@ absl::StatusOr<mlir::MlirOp> BuildSegmentReduceShlo(
   TT_ASSIGN_OR_RETURN(
       const auto boundaries_and_lengths,
       ComputeSegmentBoundariesAndLengths(lengths_opt, offsets_opt, axis));
-  const auto& [boundary_indices, lengths, num_segments] =
-      boundaries_and_lengths;
+  const auto& [boundary_indices, lengths] = boundaries_and_lengths;
 
   TT_ASSIGN_OR_RETURN(
       const auto ids_and_masked,
-      ComputeSegmentIdsAndMaskedData(
-          data, boundary_indices, lengths, num_segments, axis, reduce_op,
-          computation_type, comp_elem_type, data_shape, n_data_axis));
+      ComputeSegmentIdsAndMaskedData(data, boundary_indices, lengths, axis,
+                                     reduce_op, computation_type));
   const auto& [segment_ids, data_masked] = ids_and_masked;
 
-  const mlir::Type index_type = GetTensorTypeOrDie(lengths).getElementType();
-  mlir::MlirOp scatter_indices = ComputeScatterIndices(
-      builder, segment_ids, axis, data_shape, n_data_axis, index_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp scatter_indices,
+                      ComputeScatterIndices(segment_ids, axis));
 
-  Dimensions init_shape = data_shape;
-  init_shape[axis] = num_segments;
+  // The output has the dimensions of `data`, except for the segment dimension
+  // of `lengths` along `axis`.
+  mlir::stablehlo::Dimensions init_dims = GetDimensions(data);
+  init_dims[axis] = GetDimensions(lengths)[axis];
 
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp scatter_res,
       ExecuteScatterReduction(builder, data_masked, scatter_indices, reduce_op,
-                              computation_type, comp_elem_type, init_shape,
-                              axis, rank, initial_op));
+                              computation_type, comp_elem_type, init_dims, axis,
+                              rank, initial_op));
 
   if (reduce_op == SegmentReduceOp::kMean) {
     return PostProcessMeanReduction(scatter_res, lengths, axis,
-                                    computation_type, init_shape, initial_op);
+                                    computation_type, initial_op);
   }
 
   return scatter_res;
@@ -456,7 +418,7 @@ absl::StatusOr<mlir::MlirOp> BuildSegmentReduceShlo(
 
 }  // namespace
 
-at::Tensor AtenSegmentReduce(const at::Tensor& data, c10::string_view reduce,
+at::Tensor AtenSegmentReduce(const at::Tensor& data, std::string_view reduce,
                              const std::optional<at::Tensor>& lengths,
                              const std::optional<at::Tensor>& indices,
                              const std::optional<at::Tensor>& offsets,

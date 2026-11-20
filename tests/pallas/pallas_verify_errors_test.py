@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import pickle
+from typing import Any
 
 from absl.testing import absltest
 import jax
@@ -40,37 +41,47 @@ def _pallas_add_one(x: jax.Array) -> jax.Array:
 class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
 
   def test_finding_format_includes_severity_category_op_and_location(self):
+    step = verifier.CounterexampleStep(
+        timestamp=0,
+        device_id=0,
+        core_id=0,
+        actor="VPU",
+        operation="store",
+        detail="out[0:8]",
+        source_location="kernel.py:12",
+    )
     finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.USE_AFTER_DONATE,
+        category=verifier.FindingCategory.DATA_RACE,
         severity=verifier.Severity.ERROR,
-        phase=verifier.Phase.FX_GRAPH,
-        message="use after donate on x",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="WAW race on out[0:8]",
         op_name="my_kernel",
         source_location="kernel.py:12",
+        counterexample=(step,),
     )
 
     formatted = finding.format()
-    self.assertIn("[ERROR] (fx_graph) use_after_donate in my_kernel", formatted)
+    self.assertIn("[ERROR] (model_check) data_race in my_kernel", formatted)
+    self.assertIn("Counterexample schedule:", formatted)
     self.assertIn("kernel.py:12", formatted)
-    self.assertIn("use after donate on x", formatted)
 
-  def test_report_with_only_warnings_and_infos_passes(self):
+  def test_report_warnings_and_fail_on_incomplete(self):
     warn_finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.FAKE_KERNEL_MISMATCH,
+        category=verifier.FindingCategory.LOW_PRECISION_ACCUMULATION,
         severity=verifier.Severity.WARNING,
-        phase=verifier.Phase.CONTRACTS,
-        message="shape mismatch",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="bfloat16 matmul without float32 accumulation",
         op_name="my_kernel",
     )
     info_finding = verifier.VerificationFinding(
         category=verifier.FindingCategory.VERIFICATION_INCOMPLETE,
         severity=verifier.Severity.INFO,
-        phase=verifier.Phase.CONTRACTS,
-        message="skipped phase",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="bounded loop unrolling",
         op_name="my_kernel",
     )
     report = findings.report_of(
-        verifier.Phase.CONTRACTS, (warn_finding, info_finding)
+        verifier.Phase.MODEL_CHECK, (warn_finding, info_finding)
     )
 
     self.assertTrue(report.passed)
@@ -83,28 +94,37 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
         report.findings_by_severity(verifier.Severity.INFO),
         (info_finding,),
     )
+    self.assertIn("Verification PASSED", report.summary())
     self.assertIn("1 warning(s), 1 info(s)", report.summary())
     report.raise_for_errors()
+    with self.assertRaisesRegex(
+        verifier.VerificationError, "verification_incomplete in my_kernel"
+    ) as ctx:
+      report.raise_for_errors(fail_on_incomplete=True)
+    self.assertIs(ctx.exception.report, report)
+    self.assertIn("Verification INCOMPLETE", str(ctx.exception))
+    self.assertNotIn("Verification PASSED", str(ctx.exception))
 
   def test_report_with_error_fails_and_filters_by_category(self):
     err_finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.USE_AFTER_DONATE,
+        category=verifier.FindingCategory.DATA_RACE,
         severity=verifier.Severity.ERROR,
-        phase=verifier.Phase.FX_GRAPH,
-        message="use after donate on x",
+        phase=verifier.Phase.MODEL_CHECK,
+        message="WAW race on out[0:8]",
         op_name="my_kernel",
     )
     warn_finding = verifier.VerificationFinding(
-        category=verifier.FindingCategory.FAKE_KERNEL_MISMATCH,
+        category=verifier.FindingCategory.LOW_PRECISION_ACCUMULATION,
         severity=verifier.Severity.WARNING,
         phase=verifier.Phase.CONTRACTS,
-        message="shape mismatch",
+        message="bfloat16 matmul without float32 accumulation",
         op_name="my_kernel",
     )
     warn_report = findings.report_of(verifier.Phase.CONTRACTS, (warn_finding,))
     report = findings.merge_reports(
         warn_report,
-        findings.report_of(verifier.Phase.FX_GRAPH, (err_finding,)),
+        findings.report_of(verifier.Phase.MODEL_CHECK, (err_finding,)),
+        findings.report_of(verifier.Phase.CONTRACTS, ()),
     )
 
     self.assertFalse(report.passed)
@@ -114,10 +134,10 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(
         report.checked_phases,
-        (verifier.Phase.CONTRACTS, verifier.Phase.FX_GRAPH),
+        (verifier.Phase.CONTRACTS, verifier.Phase.MODEL_CHECK),
     )
     self.assertEqual(
-        report.findings_by_category(verifier.FindingCategory.USE_AFTER_DONATE),
+        report.findings_by_category(verifier.FindingCategory.DATA_RACE),
         (err_finding,),
     )
     self.assertIn("FAILED", str(report))
@@ -142,6 +162,14 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
   def test_verification_options_defaults_and_validation(self):
     opts = verifier.VerificationOptions()
     self.assertTrue(opts.check_autograd)
+    self.assertEqual(opts.max_unrolled_iterations, 32)
+    self.assertEqual(opts.solver_timeout_seconds, 5.0)
+    self.assertEqual(
+        verifier.VerificationOptions(
+            solver_timeout_seconds=float("inf")
+        ).solver_timeout_seconds,
+        float("inf"),
+    )
     self.assertIsNone(opts.tpu_version)
     for version in torch.tpu.TpuVersion:
       self.assertIs(
@@ -182,13 +210,107 @@ class PallasVerifyErrorsTest(seed_test_utils.RepeatableTest):
     )
     with self.assertRaisesRegex(ValueError, "unrecognized TPU version"):
       findings.jax_tpu_device_kind(" custom_tpu ")
-    for bad_version in ("TPU v7", "", 123):
+    self.assertFalse(findings.supports_dma_done_count_mode("v5e"))
+    self.assertTrue(findings.supports_dma_done_count_mode("v5p"))
+    self.assertTrue(findings.supports_dma_done_count_mode("TPU v7"))
+    with self.assertRaisesRegex(ValueError, "unrecognized TPU version"):
+      findings.supports_dma_done_count_mode("custom_tpu")
+    with self.assertRaisesRegex(TypeError, "check_autograd must be a bool"):
+      verifier.VerificationOptions(check_autograd="yes")  # type: ignore[arg-type]
+    with self.assertRaisesRegex(
+        TypeError, "max_unrolled_iterations must be an int"
+    ):
+      verifier.VerificationOptions(max_unrolled_iterations=True)
+    with self.assertRaisesRegex(
+        TypeError, "max_unrolled_iterations must be an int"
+    ):
+      verifier.VerificationOptions(max_unrolled_iterations=1.5)  # type: ignore[arg-type]
+    with self.assertRaisesRegex(ValueError, "max_unrolled_iterations"):
+      verifier.VerificationOptions(max_unrolled_iterations=0)
+    with self.assertRaisesRegex(ValueError, "max_unrolled_iterations"):
+      verifier.VerificationOptions(max_unrolled_iterations=-5)
+    with self.assertRaisesRegex(
+        TypeError, "solver_timeout_seconds must be a float or int"
+    ):
+      verifier.VerificationOptions(solver_timeout_seconds="5.0")  # type: ignore[arg-type]
+    with self.assertRaisesRegex(
+        TypeError, "solver_timeout_seconds must be a float or int"
+    ):
+      verifier.VerificationOptions(solver_timeout_seconds=True)
+    with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
+      verifier.VerificationOptions(solver_timeout_seconds=-1.0)
+    with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
+      verifier.VerificationOptions(solver_timeout_seconds=float("nan"))
+    with self.assertRaisesRegex(ValueError, "solver_timeout_seconds"):
+      verifier.VerificationOptions(solver_timeout_seconds=float("-inf"))
+    for bad_version in ("TPU v7", "", "   ", 123):
       with self.assertRaisesRegex(TypeError, "tpu_version"):
         verifier.VerificationOptions(tpu_version=bad_version)  # type: ignore[arg-type]
+    bad_interpret: Any = "invalid"
+    with self.assertRaisesRegex(TypeError, "interpret must be"):
+      verifier.VerificationOptions(interpret=bad_interpret)
+
+    bad_mode: Any = "static"
+    bad_options: Any = {}
     with self.assertRaisesRegex(TypeError, "mode must be"):
-      verifier.verify(lambda x: x, (torch.ones(2),), mode="static")  # type: ignore[arg-type]
+      verifier.verify(lambda x: x, (torch.ones(2),), mode=bad_mode)
     with self.assertRaisesRegex(TypeError, "options must be"):
-      verifier.verify(lambda x: x, (torch.ones(2),), options={})  # type: ignore[arg-type]
+      verifier.verify(lambda x: x, (torch.ones(2),), options=bad_options)
+
+  def test_interpret_sweep_config_defaults_and_validation(self):
+    cfg = verifier.InterpretSweepConfig()
+    self.assertEqual(
+        cfg.schedule_modes,
+        (verifier.DmaScheduleMode.EAGER, verifier.DmaScheduleMode.ON_WAIT),
+    )
+    self.assertEqual(cfg.seeds, (0, 17))
+    self.assertEqual(cfg.uninitialized_memory, verifier.UninitMemoryMode.NAN)
+    self.assertEqual(cfg.rtol, 1e-4)
+    self.assertEqual(cfg.atol, 1e-4)
+
+    single_mode: Any = verifier.DmaScheduleMode.ON_WAIT
+    single_mode_cfg = verifier.InterpretSweepConfig(
+        schedule_modes=single_mode,
+        seeds=[3, 7, 3],
+    )
+    self.assertEqual(
+        single_mode_cfg.schedule_modes, (verifier.DmaScheduleMode.ON_WAIT,)
+    )
+    self.assertEqual(single_mode_cfg.seeds, (3, 7))
+
+    bad_schedule_modes: tuple[Any, ...] = (123, "eager", ("eager",))
+    for bad_modes in bad_schedule_modes:
+      with self.assertRaisesRegex(TypeError, "schedule_modes"):
+        verifier.InterpretSweepConfig(schedule_modes=bad_modes)
+    with self.assertRaisesRegex(ValueError, "schedule_modes"):
+      verifier.InterpretSweepConfig(schedule_modes=())
+
+    bad_seed_inputs: tuple[Any, ...] = (123, "01", (True,), (1.5,))
+    for bad_seeds in bad_seed_inputs:
+      with self.assertRaisesRegex(TypeError, "seeds"):
+        verifier.InterpretSweepConfig(seeds=bad_seeds)
+    with self.assertRaisesRegex(ValueError, "seeds"):
+      verifier.InterpretSweepConfig(seeds=())
+    with self.assertRaisesRegex(ValueError, "seeds"):
+      verifier.InterpretSweepConfig(seeds=(-1,))
+    with self.assertRaisesRegex(ValueError, "seeds"):
+      verifier.InterpretSweepConfig(seeds=(1 << 31,))
+
+    bad_uninit: Any = "nan"
+    with self.assertRaisesRegex(TypeError, "uninitialized_memory"):
+      verifier.InterpretSweepConfig(uninitialized_memory=bad_uninit)
+
+    for bad_tol in (True, "1e-4"):
+      with self.assertRaisesRegex(TypeError, "rtol"):
+        verifier.InterpretSweepConfig(rtol=bad_tol)  # type: ignore[arg-type]
+      with self.assertRaisesRegex(TypeError, "atol"):
+        verifier.InterpretSweepConfig(atol=bad_tol)  # type: ignore[arg-type]
+
+    for bad_val in (-1e-3, float("nan"), float("inf")):
+      with self.assertRaisesRegex(ValueError, "rtol"):
+        verifier.InterpretSweepConfig(rtol=bad_val)
+      with self.assertRaisesRegex(ValueError, "atol"):
+        verifier.InterpretSweepConfig(atol=bad_val)
 
   def test_verify_rejects_non_callable_target(self):
     with self.assertRaisesRegex(TypeError, "target must be callable"):

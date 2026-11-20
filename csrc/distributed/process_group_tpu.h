@@ -49,6 +49,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/util/intrusive_ptr.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/macro_utils.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
@@ -432,6 +433,11 @@ class ProcessGroupTpu : public c10d::Backend {
     ss << method;
     return OpDebugString(ss.str());
   }
+
+  absl::Status DispatchAllReduceInplace(at::Tensor& tensor,
+                                        c10d::ReduceOp reduce_op,
+                                        OpParamCacheKeys param_keys,
+                                        bool fence_operand);
 
   // Helper functions to dispatch the all_to_all_single collective.
   absl::StatusOr<DeviceBufferRef> AllToAllBaseEqualSplits(at::Tensor& output,

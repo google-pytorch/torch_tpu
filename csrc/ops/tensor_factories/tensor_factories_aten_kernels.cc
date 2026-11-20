@@ -16,9 +16,11 @@
 
 #include "csrc/ops/tensor_factories/tensor_factories_aten_kernels.h"
 
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
@@ -29,11 +31,14 @@
 #include "ATen/ops/new_zeros_native.h"
 #include "ATen/ops/ones_like_native.h"
 #include "ATen/ops/zeros_like_native.h"
+#include "absl/algorithm/container.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/Device.h"
 #include "c10/core/ScalarType.h"
 #include "c10/core/TensorImpl.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
@@ -154,6 +159,110 @@ at::Tensor CreateConstantFilledTensor(at::IntArrayRef size, double scalar_val,
   };
   return ApplyNullaryOp(std::move(op_builder), out_dtype, size,
                         OpParamCacheKeys::Empty());
+}
+
+// Returns true if `buf` has bounded dynamic dimensions or a dynamic on-device
+// shape.
+bool IsDynamicBuffer(const DeviceBufferRef& buf) {
+  return !buf.dynamic_dimensions().empty() || buf.on_device_shape_is_dynamic();
+}
+
+// Returns true if any upstream input in `base`'s deferred-op graph is dynamic
+// per `IsDynamicBuffer`. Walking upstream `DeferredOp` inputs is needed under
+// eager fusion because deferred outputs do not populate `dynamic_dimensions()`
+// on their own `DeviceBufferList` until graph traversal compiles the fused
+// module.
+bool HasDynamicUpstreamInput(const DeviceBufferRef& base) {
+  std::shared_ptr<DeferredOp> root_deferred = base.deferred_op();
+  if (root_deferred == nullptr) {
+    return false;
+  }
+  std::vector<DeviceBufferRef> stack(root_deferred->inputs().begin(),
+                                     root_deferred->inputs().end());
+  absl::flat_hash_set<const DeviceBufferList*> visited{
+      base.device_buffer_list().get()};
+  while (!stack.empty()) {
+    DeviceBufferRef cur = std::move(stack.back());
+    stack.pop_back();
+    if (IsDynamicBuffer(cur)) {
+      return true;
+    }
+    if (!visited.insert(cur.device_buffer_list().get()).second) {
+      continue;
+    }
+    if (std::shared_ptr<DeferredOp> deferred = cur.deferred_op();
+        deferred != nullptr) {
+      stack.insert(stack.end(), deferred->inputs().begin(),
+                   deferred->inputs().end());
+    }
+  }
+  return false;
+}
+
+// Returns true if `tensor` is a contiguous base tensor and it or any upstream
+// input in its deferred-op graph has bounded dynamic dimensions or a dynamic
+// on-device shape.
+bool HasDynamicDimensions(const at::Tensor& tensor) {
+  if (!tensor.defined() || tensor.dim() == 0 || !IsPrivateUse1Device(tensor) ||
+      !tensor.has_storage()) {
+    return false;
+  }
+  absl::StatusOr<DeviceBufferRef> base = GetBaseBuffer(tensor);
+  if (!base.ok()) {
+    return false;
+  }
+  // Views (e.g. a static slice of a dynamic tensor) are lowered by `GetBuffer`
+  // as a view of the base, which can't slice a dynamic dimension, so only
+  // treat the tensor as dynamic when it maps directly to its base buffer.
+  if (tensor.is_conj() || !tensor.is_contiguous() ||
+      tensor.storage_offset() != 0 ||
+      !absl::c_equal(tensor.sizes(), base->dimensions())) {
+    return false;
+  }
+  return IsDynamicBuffer(*base) || HasDynamicUpstreamInput(*base);
+}
+
+// Creates a tensor shaped like `self` and filled with `scalar_val`. If `self`
+// has bounded dynamic dimensions on the target device, builds the result with
+// `MakeConstantLike` on `self` to preserve them; otherwise (static, other
+// device index, empty, or float4_e2m1fn_x2), delegates to
+// `CreateConstantFilledTensor`.
+at::Tensor CreateConstantFilledLikeTensor(
+    const at::Tensor& self, double scalar_val, at::ScalarType out_dtype,
+    std::optional<at::Layout> layout_opt, std::optional<at::Device> device_opt,
+    std::optional<bool> pin_memory_opt, std::string_view op_name_str) {
+  const bool same_device = !device_opt.has_value() ||
+                           (device_opt->type() == self.device().type() &&
+                            (!device_opt->has_index() ||
+                             device_opt->index() == self.device().index()));
+  if (!same_device || !HasDynamicDimensions(self) || self.numel() == 0 ||
+      self.scalar_type() == at::kFloat4_e2m1fn_x2 ||
+      out_dtype == at::kFloat4_e2m1fn_x2) {
+    return CreateConstantFilledTensor(self.sizes(), scalar_val, out_dtype,
+                                      layout_opt, device_opt, pin_memory_opt,
+                                      op_name_str);
+  }
+  ValidateFactoryOptions(out_dtype, layout_opt, device_opt, pin_memory_opt,
+                         op_name_str);
+  TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=all dtypes are supported.
+      const mlir::ElementType mlir_dtype,
+      ConvertTo<mlir::ElementType>(out_dtype));
+  TT_THROW_IF_ERROR(  // ERROR_COV_INFEASIBLE=errors inside are covered.
+      ValidateTensorByteSize(self.sizes(), mlir_dtype));
+  OpParamCacheKeys cache_keys = OpParamCacheKeys::Empty();
+  TT_THROW_IF_ERROR(  // ERROR_COV_INFEASIBLE=fresh key cannot collide.
+      cache_keys.SetParam("scalar_val", scalar_val));
+  auto op_builder = [scalar_val, mlir_dtype](
+                        mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
+    return MakeConstantLike(self_op, scalar_val, mlir_dtype);
+  };
+  TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=errors inside are covered.
+      DeviceBufferRef result_buf,
+      DispatchOp<1>(std::move(op_builder), /*inputs=*/{self},
+                    {.out_dtype = mlir_dtype,
+                     .out_dims = self.sizes(),
+                     .op_param_cache_keys = std::move(cache_keys)}));
+  return MakeTensor(std::move(result_buf));
 }
 
 absl::StatusOr<at::Tensor> CreateScalarFilledTensor(
@@ -285,9 +394,9 @@ at::Tensor AtenZerosLike(const at::Tensor& self,
         const at::MemoryFormat memory_format =
             memory_format_opt.value_or(at::MemoryFormat::Preserve);
         ValidateLikeMemoryFormat(self, memory_format);
-        at::Tensor result = CreateConstantFilledTensor(
-            self.sizes(), 0.0, out_dtype, target_layout, target_device,
-            pin_memory_opt, "zeros_like");
+        at::Tensor result = CreateConstantFilledLikeTensor(
+            self, 0.0, out_dtype, target_layout, target_device, pin_memory_opt,
+            "zeros_like");
         ApplyLikeTensorRestride(result, self, memory_format);
         return result;
       });
@@ -318,9 +427,9 @@ at::Tensor AtenOnesLike(const at::Tensor& self,
         const at::MemoryFormat memory_format =
             memory_format_opt.value_or(at::MemoryFormat::Preserve);
         ValidateLikeMemoryFormat(self, memory_format);
-        at::Tensor result = CreateConstantFilledTensor(
-            self.sizes(), 1.0, out_dtype, target_layout, target_device,
-            pin_memory_opt, "ones_like");
+        at::Tensor result = CreateConstantFilledLikeTensor(
+            self, 1.0, out_dtype, target_layout, target_device, pin_memory_opt,
+            "ones_like");
         ApplyLikeTensorRestride(result, self, memory_format);
         return result;
       });
@@ -353,6 +462,7 @@ at::Tensor AtenFullLike(const at::Tensor& self, const at::Scalar& fill_value,
         const at::MemoryFormat memory_format =
             memory_format_opt.value_or(at::MemoryFormat::Preserve);
         ValidateLikeMemoryFormat(self, memory_format);
+        // TODO: b/449736443 - Preserve bounded dynamic dimensions in full_like.
         TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=errors inside are covered.
             at::Tensor result, CreateScalarFilledTensor(
                                    self.sizes(), promoted_fill_value, out_dtype,

@@ -110,6 +110,12 @@ absl::StatusOr<mlir::MlirOp> BuildLog10Shlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildErfcShlo(mlir::MlirOp input,
                                            mlir::ElementType out_mlir_type);
+// Lowers `erfc(input_op)` for an input already promoted to computation dtype,
+// using a single-branch minimax approximation when targeting bf16 or f16 to
+// avoid StableHLO's multi-branch `chlo.erfc` expansion; returns a value in
+// `input_op`'s computation dtype.
+absl::StatusOr<mlir::MlirOp> BuildErfcForTargetDtypeShlo(
+    mlir::MlirOp input_op, mlir::ElementType target_dtype);
 absl::StatusOr<mlir::MlirOp> BuildFracShlo(mlir::MlirOp input);
 
 }  // namespace torch_tpu

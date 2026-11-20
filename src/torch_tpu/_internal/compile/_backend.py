@@ -67,6 +67,8 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import process_group_utils
+from torch_tpu._internal.distributed import tpu_distributed
+from torch_tpu._internal.precision import precision_impl
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -350,16 +352,56 @@ def _mark_device_layouts(
       example_input._tpu_device_layout = layout
 
 
-def _process_group_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
-  """Returns the devices of the process groups that `graph_module` refers to.
+@functools.cache
+def _default_device_assignment() -> tuple[int, ...]:
+  """Returns the devices that executables without collectives are built for.
 
-  Cached executables embed the devices of the groups their collectives use, but
-  graphs name groups by creation order, which does not determine their members.
+  Mirrors `SetDefaultDeviceAssignment` in csrc/common/compilation.cc: with one
+  device, this process's device; otherwise all devices of the PJRT client. The
+  devices are fixed once the runtime is initialized, so this is computed once.
+  Runtime errors propagate: a cache key without the devices would let runs of
+  different world sizes share executables.
+  """
+  device_ids = tuple(tpu_distributed.all_global_device_ids())
+  if len(device_ids) == 1:
+    return (tpu_distributed.global_device_id(),)
+  return device_ids
+
+
+def _device_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
+  """Returns the devices that the executables of `graph_module` run on.
+
+  Cached executables embed the devices they were compiled for:
+  - every executable, the default device assignment (this process's device if
+    it sees one device, all devices of the PJRT client otherwise);
+  - executables with collectives, the devices of the groups they use. Graphs
+    name groups by creation order, which does not determine their members.
+
+  The default device assignment matters when jobs of different world sizes (or
+  single processes on different devices) compile the same graph with one
+  on-disk cache (`TORCHINDUCTOR_CACHE_DIR`, by default shared by all processes
+  of a user on a host), e.g. a world-size-1 baseline followed by a
+  tensor-parallel run of the same model. Without it in the key, a graph without
+  collectives would load the executable cached by the world-size-1 run on every
+  rank of the world-size-N run. Only the rank owning that one device could run
+  it; every other rank would fail with "attempted to execute with 1 argument
+  lists when local device count is 0 (total replica count: 1, partition count:
+  1)" in the background executor and then hang.
+
+  Args:
+    graph_module: The Dynamo graph being compiled.
+
+  Returns:
+    A tag for the cache key.
   """
   groups = process_group_utils.get_process_groups(graph_module)
+  default_da = ",".join(map(str, _default_device_assignment()))
   return ";".join(
-      f"{name}:{','.join(map(str, device_mesh.get_device_assignment(pg)))}"
-      for name, pg in sorted(groups.items())
+      [f"default_da:{default_da}"]
+      + [
+          f"{name}:{','.join(map(str, device_mesh.get_device_assignment(pg)))}"
+          for name, pg in sorted(groups.items())
+      ]
   )
 
 
@@ -427,14 +469,13 @@ def _serialization_context(
     stack.enter_context(
         functorch_config.patch("bundled_autograd_cache", True),
     )
-    pg_tag = _process_group_cache_key_tag(graph_module)
-    if pg_tag:
-      tag = compiler_config.cache_key_tag
-      stack.enter_context(
-          compiler_config.patch(  # pyrefly: ignore[missing-attribute]
-              cache_key_tag=f"{tag}:{pg_tag}" if tag else pg_tag
-          )
-      )
+    device_tag = _device_cache_key_tag(graph_module)
+    tag = compiler_config.cache_key_tag
+    stack.enter_context(
+        compiler_config.patch(  # pyrefly: ignore[missing-attribute]
+            cache_key_tag=f"{tag}:{device_tag}" if tag else device_tag
+        )
+    )
 
     # The default tensor metadata extraction methods below are used during cache
     # key generation and unfortunately they zero-out `storage_offset` in the
@@ -767,6 +808,73 @@ def _guard_input_storage_offsets(graph_module: torch.fx.GraphModule) -> None:
     dynamo_guards.install_guard(guard)
 
 
+def _lowering_precision_getter(
+    async_compile: bool, example_inputs: Sequence[Any]
+) -> str:
+  """Returns the `precision_impl` getter for the precision programs lower with.
+
+  StaticCompiler with `async_compile`, and DynamicCompiler for every bucket,
+  lower on worker threads. Those threads do not see the calling thread's
+  `torch.tpu.precision` context or `at::NoTF32Guard`, so they lower with the
+  global precision.
+  """
+  if async_compile or compiler.has_dynamic_symints(example_inputs):
+    return "_get_global_precision"
+  return "_get_precision"
+
+
+def _guard_matmul_precision(precision_getter: str) -> None:
+  """Installs Dynamo guards on the TPU matmul precision.
+
+  Lowering reads the precision from TorchTPU's own state (`torch.tpu.precision`,
+  then `at::NoTF32Guard`, then `torch.set_float32_matmul_precision`), which
+  Dynamo's global state guard does not see. Without these guards, a frame
+  compiled under one precision keeps running after another one is selected.
+
+  The calling thread's precision is always guarded, since programs compiled
+  again for new input layouts lower on the calling thread. The precision from
+  `precision_getter` is guarded too when it differs.
+
+  Args:
+    precision_getter: The `precision_impl` getter returned by
+      `_lowering_precision_getter`.
+  """
+  # Ensure we're within a tracing context to install guards
+  if torch._guards.TracingContext.try_get() is None:
+    return
+  for getter in dict.fromkeys(("_get_precision", precision_getter)):
+    source = dynamo_source.ImportSource("torch_tpu")
+    for member in ("_internal", "precision", "precision_impl", getter):
+      source = dynamo_source.AttrSource(source, member)
+    value_source = dynamo_source.AttrSource(
+        dynamo_source.CallFunctionNoArgsSource(source), "value"
+    )
+    dynamo_guards.install_guard(
+        value_source.make_guard(dynamo_guards.GuardBuilder.EQUALS_MATCH)
+    )
+
+
+@contextlib.contextmanager
+def _matmul_precision_cache_key_tag(precision_getter: str) -> Iterator[None]:
+  """Adds the TPU matmul precision programs lower with to the cache key tag.
+
+  AOTAutogradCache keys hash `torch.backends.cuda.matmul.fp32_precision`, which
+  the TPU precision setters do not change, so programs compiled under different
+  TPU precisions would otherwise share an on-disk entry.
+
+  Args:
+    precision_getter: The `precision_impl` getter returned by
+      `_lowering_precision_getter`.
+  """
+  precision = getattr(precision_impl, precision_getter)()
+  precision_tag = f"tpu_matmul_precision={precision.name}"
+  tag = compiler_config.cache_key_tag
+  with compiler_config.patch(  # pyrefly: ignore[missing-attribute]
+      cache_key_tag=f"{tag}:{precision_tag}" if tag else precision_tag
+  ):
+    yield
+
+
 _VALID_SYMBOL_REGEX = re.compile(r"[^a-zA-Z0-9_]")
 
 
@@ -963,6 +1071,8 @@ class TpuBackend:
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
     _guard_input_storage_offsets(graph_module)
+    precision_getter = _lowering_precision_getter(async_compile, example_inputs)
+    _guard_matmul_precision(precision_getter)
     input_layouts = {}
     # The inputs with non-default layouts, which are checked on each call.
     input_indices = []
@@ -1033,9 +1143,12 @@ class TpuBackend:
         if async_compile
         else contextlib.nullcontext()
     )
-    with _serialization_context(
-        graph_module, example_inputs, serializable
-    ) as captured_entry:
+    with (
+        _matmul_precision_cache_key_tag(precision_getter),
+        _serialization_context(
+            graph_module, example_inputs, serializable
+        ) as captured_entry,
+    ):
       with save_context:
         with execution_mode.set_eager_mode(
             execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH

@@ -83,12 +83,16 @@ inline absl::Status Materialize(
                      mode);
 }
 
-// Enqueues an executable for materialization.
-// This will create one new DeviceBufferList for each output tensor, with the
-// same shapes and dtypes as the output_shapes argument.
-// These outputs will be materialized, i.e. will hold PjRtBuffers, but these
-// PjRtBuffers will not be ready until the executable reaches the front of the
-// materialization queue, is Executed, and the execution completes.
+// Enqueues an executable for materialization using
+// `executable->output_shapes()` (converting each `xla::Shape` inline without
+// allocating a `std::vector<Shape>`), or using explicit `output_shapes` when
+// runtime output shape overrides apply. These outputs will be materialized,
+// i.e. will hold PjRtBuffers, but these PjRtBuffers will not be ready until the
+// executable reaches the front of the materialization queue, is Executed, and
+// the execution completes.
+absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
+    SharedLoadedExecutableWithMetadata executable,
+    std::vector<DeviceBufferRef> arguments, std::string_view task_name = "");
 absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,

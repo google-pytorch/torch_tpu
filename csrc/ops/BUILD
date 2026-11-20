@@ -16,10 +16,10 @@
 # adivinpatel04
 # ghpvnist
 # cbasile-g
+# lizlian
+# benawilson
+# shilpakesavan
 # jparkerh
-# zhanyong-wan
-# pineapplejuice233
-# salkan0
 
 load(
     "//build_files:build_defs.bzl",
@@ -234,12 +234,24 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "python_context_testing",
+    testonly = True,
+    hdrs = ["python_context_testing.h"],
+    deps = [":python_context"],
+)
+
 torch_tpu_cc_test(
     name = "python_context_test",
     srcs = ["python_context_test.cc"],
+    # PyTorch 2.15.0 defaults C++ stack symbolization to dladdr, which cannot
+    # resolve internal symbols in -c opt test binaries (PyTorch 2.16.0 switches
+    # the default to fast). Use fast in-process .symtab symbolization explicitly.
+    env = {"TORCH_SYMBOLIZE_MODE": "fast"},
     deps = [
         ":op_names",
         ":python_context",
+        ":python_context_testing",
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
         "//csrc/common:oss_test_main",
@@ -286,6 +298,7 @@ torch_tpu_cc_library(
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
@@ -372,6 +385,7 @@ torch_tpu_cc_library(
         ":op_names",
         "//csrc/common:cache_key",
         "//csrc/common:error_utils",
+        "//csrc/common:status_builder",
         "//csrc/eager:current_stream",
         "//csrc/eager:eager_mode",
         "//csrc/eager:events_queue",

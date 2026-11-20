@@ -14,13 +14,14 @@
 
 # Domain experts for this package:
 # gjh8
-# cbasile-g
 # lukeboyer
-# ghpvnist
-# lizlian
+# cbasile-g
+# zhanyong-wan
+# agarwalt
 
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "internal_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -54,6 +55,7 @@ torch_tpu_py_test(
         "//perflab:registry",
         "//perflab:step_lib",
         "//perflab:target",
+        "//perflab:workload",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
@@ -96,6 +98,36 @@ torch_tpu_py_test(
         "//perflab:target",
         "//perflab:workload",
         "//perflab/models",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "batch_sweep_benchmarks_test",
+    srcs = ["batch_sweep_benchmarks_test.py"],
+    data = [
+        "//perflab/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
+    ],
+    notest_oss = True,  # NOTEST_OSS_OK=registers the generated benchmarks of the internal in-tree model list, which OSS does not export
+    deps = [
+        "//perflab:batch_sweep_benchmarks",
+        "//perflab:cases",
+        "//perflab:common",
+        "//perflab:context",
+        "//perflab:discovery",
+        "//perflab:flags",
+        "//perflab:known_failures",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab/models",
+        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
@@ -166,6 +198,7 @@ torch_tpu_py_test(
         "//perflab:mode",
         "//perflab:target",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/benchmarks:export_adapter",
         "//tests:seed_test_utils",
@@ -177,6 +210,11 @@ torch_tpu_py_library(
     testonly = True,
     srcs = ["fakes.py"],
     deps = [
+        "//perflab:export",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//shims/torch:pytorch",
         "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
     ],
 )
@@ -185,6 +223,7 @@ torch_tpu_py_test(
     name = "flags_test",
     srcs = ["flags_test.py"],
     deps = [
+        "//perflab:common",
         "//perflab:context",
         "//perflab:flags",
         "//perflab:target",
@@ -245,6 +284,7 @@ torch_tpu_py_test(
         "//perflab:device_utils",
         "//perflab:measure",
         "//perflab:metrics",
+        "//perflab:workload",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
@@ -458,11 +498,12 @@ torch_tpu_py_test(
     srcs = ["compile_test.py"],
     deps = [
         "//perflab:compile",
-        "//perflab:device_utils",
         "//perflab:target",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
 )
@@ -497,9 +538,11 @@ torch_tpu_py_test(
     name = "cases_test",
     srcs = ["cases_test.py"],
     deps = [
+        "//perflab:batch_sweep_benchmarks",
         "//perflab:cases",
         "//perflab:common",
         "//perflab:context",
+        "//perflab:flags",
         "//perflab:known_failures",
         "//perflab:mode",
         "//perflab:registry",
@@ -615,8 +658,18 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "distributed_runner_test",
+    timeout = "long",
     srcs = ["distributed_runner_test.py"],
+    exec_properties = if_oss(
+        None,
+        select({
+            "//tools/cpp:sanitizer_build": {"test.mem": "24g"},
+            "//conditions:default": None,
+        }),
+    ),
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
+        ":fakes",
         "//perflab:common",
         "//perflab:discovery",
         "//perflab:distributed_runner_lib",
@@ -626,18 +679,19 @@ torch_tpu_py_test(
         "//perflab:metrics",
         "//perflab:mode",
         "//perflab:registry",
-        "//perflab:step_lib",
         "//perflab:target",
-        "//perflab:torch_device_ops",
         "//perflab:workload",
         "//perflab/steps",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
+        "//tests/distributed:distributed_utils",
+        "@pypi//portpicker",
     ],
 )
 

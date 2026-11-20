@@ -13,10 +13,9 @@
 # limitations under the License.
 
 # Domain experts for this package:
+# vladbelous
 # ghpvnist
 # pgmoka
-# pganssle-google
-# zhanyong-wan
 
 load(
     "//build_files:build_defs.bzl",

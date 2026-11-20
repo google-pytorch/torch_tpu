@@ -123,13 +123,13 @@ absl::StatusOr<ReductionInput> PrepareReductionInput(
 }
 
 // Returns the initial value for reduction based on the MinMaxOp type
-// (lowest finite value for Max, highest for Min).
+// (-inf for Max, +inf for Min, or the type's limits if it has no infinities).
 mlir::MlirOp GetMinMaxInitValue(mlir::MlirBuilder& builder, MinMaxOp op,
                                 mlir::Type element_type) {
   mlir::Attribute init_attr =
       op == MinMaxOp::kMax
-          ? GetMinFiniteValueAttr(element_type, builder.getOpBuilder())
-          : GetMaxFiniteValueAttr(element_type, builder.getOpBuilder());
+          ? GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder())
+          : GetMinReductionIdentityAttr(element_type, builder.getOpBuilder());
   mlir::DenseElementsAttr init_elements_attr = mlir::DenseElementsAttr::get(
       mlir::RankedTensorType::get({}, element_type), init_attr);
   return stablehlo::Constant(builder, init_elements_attr);

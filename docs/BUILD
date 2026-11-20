@@ -15,8 +15,7 @@
 # Domain experts for this package:
 # zhanyong-wan
 # leehowes
-# yilingyuan
-# pgmoka
+# kshitiz-khandel
 
 """Markdown documentation for TorchTPU."""
 

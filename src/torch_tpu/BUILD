@@ -14,9 +14,8 @@
 
 # Domain experts for this package:
 # zhanyong-wan
-# yilingyuan
+# chizhang529
 # cbasile-g
-# pganssle-google
 
 load("@rules_license//rules:license.bzl", "license")
 load("@torch_tpu_version//:version.bzl", "WHEEL_VERSION")  # copybara:comment(oss-only)

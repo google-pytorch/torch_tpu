@@ -48,7 +48,7 @@ def _initialize_graphsafe_rng():
   # pylint: enable=protected-access
 
 
-# TODO: b/576283069 - Remove if-condition once minimum OSS PyTorch is >= 2.12.0
+# TODO: b/585211199 - Remove if-condition once minimum OSS PyTorch is >= 2.13.0
 # (pytorch/pytorch#182391).
 if hasattr(aot_utils, "register_graphsafe_rng_device_type"):
   _initialize_graphsafe_rng()

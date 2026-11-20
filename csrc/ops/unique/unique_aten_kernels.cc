@@ -82,9 +82,12 @@ absl::StatusOr<at::Tensor> GetUniqueCount(const at::Tensor& self, bool sorted) {
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> Unique2(
     const at::Tensor& self, int64_t output_size, bool sorted,
     bool return_inverse, bool return_counts) {
-  TT_ASSIGN_OR_RETURN(auto param_keys,
-                      TT_MAKE_OP_PARAM_CACHE_KEYS(
-                          output_size, sorted, return_inverse, return_counts));
+  // `output_size` already keys the cache through the output dimensions. Keeping
+  // it out of the op param cache keys keeps the shapeless cache key independent
+  // of the data-dependent number of unique values.
+  TT_ASSIGN_OR_RETURN(
+      auto param_keys,
+      TT_MAKE_OP_PARAM_CACHE_KEYS(sorted, return_inverse, return_counts));
 
   TT_ASSIGN_OR_RETURN(auto val_type,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));

@@ -24,9 +24,11 @@ from unittest import mock
 from absl import flags
 from absl.testing import absltest
 from absl.testing import flagsaver
+from perflab import batch_sweep_benchmarks
 from perflab import cases
 from perflab import common
 from perflab import context as context_lib
+from perflab import flags as flags_lib
 from perflab import known_failures
 from perflab import mode as mode_lib
 from perflab import registry as registry_lib
@@ -127,6 +129,12 @@ class PresubmitPolicyTest(seed_test_utils.RepeatableTest):
     self.assertIn("Left 2 benchmarks out", output)
     self.assertIn("CPU_SMOKE_ONLY (too big): smoke_only", output)
     self.assertIn("SKIP (never in presubmit): skipped", output)
+
+  def test_batch_sweep_only_collects_no_default_cases(self):
+    with flagsaver.flagsaver(
+        (flags_lib.BATCH_SWEEP, True), (flags_lib.BATCH_SWEEP_ONLY, True)
+    ):
+      self.assertEmpty(self._case_benchmarks(context_lib.RunScope.FULL, False))
 
   def test_get_cases_logs_nothing_in_full_scope(self):
     with self.assertNoLogs(level="INFO"):
@@ -518,6 +526,19 @@ def _make_sweep_spec(
   )
 
 
+_OPT_IN = batch_sweep_benchmarks.BatchSweepOptIn()
+
+# One benchmark whose default workload has batch size 4.
+_DEFAULT_BATCH_SIZE_4_REGISTRY = {
+    "alpha": _make_sweep_spec(
+        "alpha",
+        workload=registry_lib.scoped_workload(
+            full=workload_lib.Workload(4, 128),
+            presubmit=workload_lib.Workload(1, 128),
+        ),
+    )
+}
+
 _SWEEP_REGISTRY = {
     "alpha": _make_sweep_spec("alpha"),
     "bravo": _make_sweep_spec(
@@ -535,10 +556,22 @@ _SWEEP_REGISTRY = {
 
 class BatchSweepCasesTest(seed_test_utils.RepeatableTest):
 
+  def setUp(self):
+    super().setUp()
+    # Opts the benchmarks of these tests in to the batch sweep.
+    self.enter_context(
+        mock.patch.object(
+            batch_sweep_benchmarks,
+            "BATCH_SWEEP_BENCHMARKS",
+            {name: _OPT_IN for name in _SWEEP_REGISTRY},
+        )
+    )
+
   def _sweep_cases(
       self,
       platform: target_lib.Platform = target_lib.Platform.B200_1,
       order_seed: str = "",
+      run_modes: frozenset[common.RunMode] = frozenset(common.RunMode),
   ) -> list[tuple[str, registry_lib.BenchmarkSpec, common.RunMode, int]]:
     with mock.patch.dict(registry_lib.REGISTRY, _SWEEP_REGISTRY, clear=True):
       return list(
@@ -546,9 +579,32 @@ class BatchSweepCasesTest(seed_test_utils.RepeatableTest):
               platform,
               mode_lib.Framework.TORCH,
               batch_sizes=(4, 1),
+              run_modes=run_modes,
               order_seed=order_seed,
           )
       )
+
+  def _batch_sizes_by_mode(
+      self,
+      platform: target_lib.Platform,
+      registry: Mapping[str, registry_lib.BenchmarkSpec],
+      batch_sizes: Sequence[int] | None = (1, 2, 4, 8),
+      **flag_values: Any,
+  ) -> dict[common.RunMode, list[int]]:
+    """Returns the swept batch sizes by run mode, with the sweep's flags."""
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        flagsaver.flagsaver(**flag_values),
+    ):
+      sweep_cases = list(
+          cases.get_batch_sweep_cases(
+              platform, mode_lib.Framework.TORCH, batch_sizes=batch_sizes
+          )
+      )
+    by_mode = {}
+    for _, _, mode, batch_size in sweep_cases:
+      by_mode.setdefault(mode, []).append(batch_size)
+    return by_mode
 
   def test_one_case_per_swept_benchmark_run_mode_and_batch_size(self):
     eager = common.RunMode.EAGER_DEFAULT
@@ -608,25 +664,184 @@ class BatchSweepCasesTest(seed_test_utils.RepeatableTest):
     )
 
   def test_default_batch_size_is_not_a_sweep_case(self):
+    # The default case (batch size 4) is one of `get_cases`.
+    self.assertEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1, _DEFAULT_BATCH_SIZE_4_REGISTRY
+        ),
+        {common.RunMode.COMPILED: [1, 2, 8]},
+    )
+
+  def test_batch_sweep_only_also_sweeps_the_default_batch_size(self):
+    # `get_cases` has no default case, so the sweep measures the whole curve.
+    self.assertEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1,
+            _DEFAULT_BATCH_SIZE_4_REGISTRY,
+            batch_sweep=True,
+            batch_sweep_only=True,
+        ),
+        {common.RunMode.COMPILED: [1, 2, 4, 8]},
+    )
+
+  def test_batch_sweep_only_adds_the_default_batch_size_to_its_own(self):
     registry = {
         "alpha": _make_sweep_spec(
             "alpha",
-            workload=registry_lib.scoped_workload(
-                full=workload_lib.Workload(4, 128),
-                presubmit=workload_lib.Workload(1, 128),
-            ),
+            batch_sweep=registry_lib.BatchSweep(batch_sizes=(32, 8)),
+            workload=_DEFAULT_BATCH_SIZE_4_REGISTRY["alpha"].workload,
         )
     }
-    with mock.patch.dict(registry_lib.REGISTRY, registry, clear=True):
-      sweep_cases = list(
-          cases.get_batch_sweep_cases(
-              target_lib.Platform.CPU,
-              mode_lib.Framework.TORCH,
-              batch_sizes=(1, 2, 4, 8),
-          )
+    self.assertEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1,
+            registry,
+            batch_sweep=True,
+            batch_sweep_only=True,
+        ),
+        {common.RunMode.COMPILED: [4, 8, 32]},
+    )
+
+  def test_sweeps_only_compiled_by_default(self):
+    for platform in (target_lib.Platform.B200_1, target_lib.Platform.V7_1X1X1):
+      with self.subTest(platform=platform):
+        self.assertEqual(
+            self._batch_sizes_by_mode(platform, _DEFAULT_BATCH_SIZE_4_REGISTRY),
+            {common.RunMode.COMPILED: [1, 2, 8]},
+        )
+
+  def test_sweeps_the_run_modes_of_the_flag_that_the_platform_runs(self):
+    run_modes = ["eager_optimized", "eager_default"]
+    self.assertCountEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1,
+            _DEFAULT_BATCH_SIZE_4_REGISTRY,
+            batch_sweep_run_modes=run_modes,
+        ),
+        [common.RunMode.EAGER_OPTIMIZED, common.RunMode.EAGER_DEFAULT],
+    )
+    # GPUs do not run eager_optimized.
+    self.assertCountEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.B200_1,
+            _DEFAULT_BATCH_SIZE_4_REGISTRY,
+            batch_sweep_run_modes=run_modes,
+        ),
+        [common.RunMode.EAGER_DEFAULT],
+    )
+    # CPUs only run eager_default, so they sweep nothing by default.
+    self.assertEmpty(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.CPU, _DEFAULT_BATCH_SIZE_4_REGISTRY
+        )
+    )
+
+  def test_benchmarks_that_do_not_opt_in_are_not_swept(self):
+    with mock.patch.object(
+        batch_sweep_benchmarks, "BATCH_SWEEP_BENCHMARKS", {"bravo": _OPT_IN}
+    ):
+      self.assertEqual(
+          {spec.name for _, spec, _, _ in self._sweep_cases()}, {"bravo"}
       )
-    # The default case (batch size 4) is one of `get_cases`.
-    self.assertEqual([b for *_, b in sweep_cases], [1, 2, 8])
+      self.assertEqual(
+          cases.get_batch_sweep_skip_reason(_SWEEP_REGISTRY["alpha"]),
+          "Benchmark alpha is not batch swept: it is not opted in to the batch"
+          " sweep (see BATCH_SWEEP_BENCHMARKS)",
+      )
+      # Not opting in comes first, whatever else keeps it out of the sweep.
+      self.assertIn(
+          "not opted in",
+          cases.get_batch_sweep_skip_reason(_SWEEP_REGISTRY["charlie"]),
+      )
+
+  def _cap_alpha(self, max_batch_size: int) -> None:
+    self.enter_context(
+        mock.patch.object(
+            batch_sweep_benchmarks,
+            "BATCH_SWEEP_BENCHMARKS",
+            {
+                "alpha": batch_sweep_benchmarks.BatchSweepOptIn(
+                    max_batch_size=max_batch_size,
+                    max_batch_size_reason="too big",
+                )
+            },
+        )
+    )
+
+  def test_cap_drops_the_larger_batch_sizes(self):
+    self._cap_alpha(2)
+    self.assertEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1, _DEFAULT_BATCH_SIZE_4_REGISTRY
+        ),
+        {common.RunMode.COMPILED: [1, 2]},
+    )
+
+  def test_cap_keeps_the_default_batch_size(self):
+    self._cap_alpha(2)
+    self.assertEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1,
+            _DEFAULT_BATCH_SIZE_4_REGISTRY,
+            batch_sweep=True,
+            batch_sweep_only=True,
+        ),
+        {common.RunMode.COMPILED: [1, 2, 4]},
+    )
+
+  def test_cap_applies_to_batch_sweep_sizes(self):
+    self._cap_alpha(16)
+    self.assertEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1,
+            _DEFAULT_BATCH_SIZE_4_REGISTRY,
+            batch_sizes=None,
+            batch_sweep_sizes=["1", "16", "64", "128"],
+        ),
+        {common.RunMode.COMPILED: [1, 16]},
+    )
+
+  def test_cap_applies_to_the_benchmarks_own_batch_sizes(self):
+    self._cap_alpha(8)
+    registry = {
+        "alpha": _make_sweep_spec(
+            "alpha",
+            batch_sweep=registry_lib.BatchSweep(batch_sizes=(32, 8, 2)),
+            workload=_DEFAULT_BATCH_SIZE_4_REGISTRY["alpha"].workload,
+        )
+    }
+    self.assertEqual(
+        self._batch_sizes_by_mode(
+            target_lib.Platform.V7_1X1X1,
+            registry,
+            batch_sweep=True,
+            batch_sweep_only=True,
+        ),
+        {common.RunMode.COMPILED: [2, 4, 8]},
+    )
+
+  def test_logs_the_cap_and_its_reason(self):
+    self._cap_alpha(2)
+    with self.assertLogs(level="INFO") as logs:
+      self._batch_sizes_by_mode(
+          target_lib.Platform.V7_1X1X1, _DEFAULT_BATCH_SIZE_4_REGISTRY
+      )
+    self.assertIn(
+        "alpha: batch sweep capped at 2 (its default batch size 4 is still"
+        " measured), dropping batch sizes 8: too big",
+        "\n".join(logs.output),
+    )
+
+  def test_logs_the_opted_in_benchmarks_left_out(self):
+    with self.assertLogs(level="INFO") as logs:
+      self._sweep_cases()
+    output = "\n".join(logs.output)
+    self.assertIn(
+        "Left 0 benchmarks that are not opted in to the batch sweep"
+        " (BATCH_SWEEP_BENCHMARKS) out of it, and 3 that are:",
+        output,
+    )
+    self.assertIn("Benchmark charlie is not batch swept: packed", output)
 
   def test_batch_sweep_skip_reason(self):
     self.assertIsNone(

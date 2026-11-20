@@ -41,9 +41,10 @@ class XProfCallbackHandler {
   XProfCallbackHandler(XProfCallbackHandler&&) = delete;
   XProfCallbackHandler& operator=(XProfCallbackHandler&&) = delete;
 
-  // Registers the global callback handler. Should be called explicitly to avoid
-  // Static Initialization Order Fiasco (SIOF) risks.
-  static void Register();
+  // Idempotently registers a TSL profiler factory that activates an
+  // `XProfCallbackHandler` for the lifetime of each host-tracing
+  // `tsl::ProfilerSession`.
+  static void RegisterTracerFactory();
 
  private:
   const at::CallbackHandle handle_ = at::INVALID_CALLBACK_HANDLE;

@@ -57,12 +57,13 @@ def _patch_inline_subgraph():
   subgraphs by default, so invoke_subgraph nodes are naturally preserved and
   these config options do not need to be patched.
   """
-  # TODO: b/576283069 - Patch `inline_single_use_invoke_subgraph` and
-  # `inline_invoke_subgraph` unconditionally once minimum OSS PyTorch is
-  # >= 2.12.0.
   kwargs = {}
+  # TODO: b/585211199 - Patch `inline_single_use_invoke_subgraph`
+  # unconditionally once minimum OSS PyTorch is >= 2.13.0.
   if hasattr(torch._dynamo.config, "inline_single_use_invoke_subgraph"):
     kwargs["inline_single_use_invoke_subgraph"] = False
+  # TODO: b/576283069 - Patch `inline_invoke_subgraph` unconditionally once
+  # minimum OSS PyTorch is >= 2.12.0.
   if hasattr(torch._dynamo.config, "inline_invoke_subgraph"):
     kwargs["inline_invoke_subgraph"] = False
   if kwargs:

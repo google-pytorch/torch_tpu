@@ -17,8 +17,9 @@
 #ifndef TORCH_TPU_CSRC_OPS_LINALG_QR_QR_LIB_H_
 #define TORCH_TPU_CSRC_OPS_LINALG_QR_QR_LIB_H_
 
+#include <string_view>
+
 #include "absl/status/statusor.h"
-#include "c10/util/string_view.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -47,7 +48,7 @@ absl::StatusOr<MlirOpResults<2>> BuildGeqrfShlo(mlir::MlirOp input);
 //     - result[0]: Q after decomposition.
 //     - result[1]: R after decomposition.
 absl::StatusOr<MlirOpResults<2>> BuildQrShlo(mlir::MlirOp input,
-                                             c10::string_view mode);
+                                             std::string_view mode);
 
 }  // namespace torch_tpu
 

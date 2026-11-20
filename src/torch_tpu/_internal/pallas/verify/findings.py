@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Findings and reports produced by verification.
+"""Findings, counterexample traces, and reports produced by verification.
 
 Every verification pass in `torch.tpu.pallas.verifier` emits structured
 `VerificationFinding` records grouped into a `VerificationReport`. Reports track
@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 import dataclasses
 import enum
+import math
 from typing import TypeAlias
 
 from torch_tpu._internal.utils import annotations
@@ -98,6 +99,12 @@ _TORCH_TO_JAX_TPU_DEVICE_KIND: dict[TpuVersion, str] = {
     TpuVersion.V8T: "TPU8t",
 }
 
+# TPU generations that do NOT support DMA done-count mode on
+# `pltpu.SemaphoreType.REGULAR` semaphores for non-SMEM transfers (TPU v5e
+# requires `pltpu.SemaphoreType.DMA`; TPU v5p and newer support done-count mode).
+_NO_DMA_DONE_COUNT_TPU_VERSIONS: frozenset[TpuVersion] = frozenset({
+    TpuVersion.V5E,
+})
 
 # Default TorchTPU generation that ops without a mesh or inferred target are
 # lowered for.
@@ -136,14 +143,25 @@ def jax_tpu_device_kind(tpu_version: TpuVersion | str) -> str:
   raise ValueError(f"unrecognized TPU version: {tpu_version!r}")
 
 
+def supports_dma_done_count_mode(tpu_version: TpuVersion | str) -> bool:
+  """Returns whether `tpu_version` supports done-count regular DMA sems."""
+  if isinstance(tpu_version, TpuVersion):
+    return tpu_version not in _NO_DMA_DONE_COUNT_TPU_VERSIONS
+  parsed = parse_tpu_version(tpu_version)
+  if parsed is not None:
+    return parsed not in _NO_DMA_DONE_COUNT_TPU_VERSIONS
+  raise ValueError(f"unrecognized TPU version: {tpu_version!r}")
+
+
 @annotations.experimental(_exp_reason("Severity"))
 class Severity(enum.Enum):
   """Severity of a verification finding.
 
-  Only `ERROR` findings cause `VerificationReport.passed` to evaluate to `False`
-  or cause `VerificationReport.raise_for_errors()` to raise `VerificationError`.
+  `ERROR` findings cause `VerificationReport.passed` to evaluate to `False` and
+  `VerificationReport.raise_for_errors()` to raise `VerificationError`.
   `WARNING` and `INFO` findings are surfaced in summaries without failing
-  verification.
+  verification by default (`VERIFICATION_INCOMPLETE` findings also raise when
+  `raise_for_errors(fail_on_incomplete=True)` is passed).
   """
 
   ERROR = "error"
@@ -163,6 +181,11 @@ class Phase(enum.Enum):
   FX_GRAPH = "fx_graph"
   # Registered custom backward compared against the forward kernel.
   AUTOGRAD = "autograd"
+  # Static model checking of Pallas kernel Jaxprs, semaphores, and memory
+  # accesses.
+  MODEL_CHECK = "model_check"
+  # Dynamic sweeps over CPU TPU-interpret schedules.
+  INTERPRET = "interpret"
 
 
 @annotations.experimental(_exp_reason("FindingCategory"))
@@ -179,9 +202,189 @@ class FindingCategory(enum.Enum):
   AUTOGRAD_PARITY_MISMATCH = "autograd_parity_mismatch"
   LOWERING_FAILURE = "lowering_failure"
 
+  # Kernel concurrency, memory, semaphore, and hardware safety.
+  UNWRITTEN_OUTPUT = "unwritten_output"
+  OUT_OF_BOUNDS_ACCESS = "out_of_bounds_access"
+  INVALID_DEVICE_ID = "invalid_device_id"
+  HARDWARE_CONSTRAINT_VIOLATION = "hardware_constraint_violation"
+  LOW_PRECISION_ACCUMULATION = "low_precision_accumulation"
+  DATA_RACE = "data_race"
+  CONCURRENT_DMA_SEM_SHARING = "concurrent_dma_sem_sharing"
+  UNTHROTTLED_REMOTE_OVERWRITE = "unthrottled_remote_overwrite"
+  PARALLEL_GRID_CONFLICT = "parallel_grid_conflict"
+  SEMAPHORE_DEADLOCK = "semaphore_deadlock"
+  SEMAPHORE_NONZERO_EXIT = "semaphore_nonzero_exit"
+  NAN_OR_UNINIT_READ = "nan_or_uninit_read"
+  SCHEDULE_DIVERGENCE = "schedule_divergence"
+
   # Parts of the program that could not be verified (bounded unrolling,
   # solver timeouts, unsupported constructs, skipped phases).
   VERIFICATION_INCOMPLETE = "verification_incomplete"
+
+
+@annotations.experimental(_exp_reason("DmaScheduleMode"))
+class DmaScheduleMode(enum.Enum):
+  """DMA execution schedule policy for CPU TPU interpret simulation."""
+
+  # DMAs complete as soon as `dma_start` issues.
+  EAGER = "eager"
+  # Pending DMAs remain in flight and execute when a semaphore wait runs.
+  ON_WAIT = "on_wait"
+
+
+@annotations.experimental(_exp_reason("UninitMemoryMode"))
+class UninitMemoryMode(enum.Enum):
+  """Buffer initialization policy for CPU TPU interpret simulation."""
+
+  # Scratch and output buffers are poisoned (quiet NaNs for floating-point
+  # dtypes, `iinfo.max` for integers, `True` for booleans) so reads of
+  # unwritten regions propagate into the kernel's outputs.
+  NAN = "nan"
+  # Scratch and output buffers are zero-filled before kernel execution.
+  ZERO = "zero"
+
+
+@annotations.experimental(_exp_reason("InterpretSweepConfig"))
+@dataclasses.dataclass(frozen=True)
+class InterpretSweepConfig:
+  """Configuration for CPU TPU interpret schedule sweeping.
+
+  Attributes:
+    schedule_modes: DMA completion timing policies (`EAGER`, `ON_WAIT`) to test.
+    seeds: PRNG seeds passed as `random_seed` to TPU interpret mode to randomize
+      `parallel`-dimension grid execution order.
+    uninitialized_memory: Scratch and output buffer initialization policy (`NAN`
+      or `ZERO`). When set to `NAN`, the verifier poisons buffers (quiet NaNs
+      for floats, `iinfo.max` for integers, `True` for booleans) and compares
+      against a `ZERO`-filled control run to distinguish genuine uninitialized
+      reads or unwritten output regions from intentional kernel-computed values.
+    rtol: Relative tolerance used when comparing floating-point/inexact outputs
+      across schedules (integer and boolean outputs require exact equality).
+    atol: Absolute tolerance used when comparing floating-point/inexact outputs
+      across schedules (integer and boolean outputs require exact equality).
+  """
+
+  schedule_modes: tuple[DmaScheduleMode, ...] = (
+      DmaScheduleMode.EAGER,
+      DmaScheduleMode.ON_WAIT,
+  )
+  seeds: tuple[int, ...] = (0, 17)
+  uninitialized_memory: UninitMemoryMode = UninitMemoryMode.NAN
+  rtol: float = 1e-4
+  atol: float = 1e-4
+
+  __tt_api_stages__ = _field_stages(
+      "InterpretSweepConfig",
+      (
+          "schedule_modes",
+          "seeds",
+          "uninitialized_memory",
+          "rtol",
+          "atol",
+      ),
+  )
+
+  def __post_init__(self) -> None:
+    if isinstance(self.schedule_modes, DmaScheduleMode):
+      modes = (self.schedule_modes,)
+    elif isinstance(self.schedule_modes, Iterable) and not isinstance(
+        self.schedule_modes, (str, bytes)
+    ):
+      modes = tuple(self.schedule_modes)
+    else:
+      raise TypeError(
+          "schedule_modes must be a sequence of DmaScheduleMode, got"
+          f" {type(self.schedule_modes).__name__}"
+      )
+    if not all(isinstance(mode, DmaScheduleMode) for mode in modes):
+      raise TypeError(
+          "schedule_modes elements must be DmaScheduleMode instances"
+      )
+    if not modes:
+      raise ValueError(
+          "schedule_modes must be a non-empty sequence of DmaScheduleMode"
+      )
+    object.__setattr__(self, "schedule_modes", tuple(dict.fromkeys(modes)))
+
+    if isinstance(self.seeds, Iterable) and not isinstance(
+        self.seeds, (str, bytes)
+    ):
+      seeds = tuple(self.seeds)
+    else:
+      raise TypeError(
+          f"seeds must be a sequence of ints, got {type(self.seeds).__name__}"
+      )
+    if not all(
+        isinstance(seed, int) and not isinstance(seed, bool) for seed in seeds
+    ):
+      raise TypeError("seeds elements must be ints")
+    if not seeds or not all(0 <= seed < (1 << 31) for seed in seeds):
+      raise ValueError(
+          "seeds must be a non-empty sequence of ints in [0, 2**31)"
+      )
+    object.__setattr__(self, "seeds", tuple(dict.fromkeys(seeds)))
+
+    if not isinstance(self.uninitialized_memory, UninitMemoryMode):
+      raise TypeError(
+          "uninitialized_memory must be an UninitMemoryMode, got"
+          f" {type(self.uninitialized_memory).__name__}"
+      )
+    if not isinstance(self.rtol, (int, float)) or isinstance(self.rtol, bool):
+      raise TypeError(
+          f"rtol must be a float or int, got {type(self.rtol).__name__}"
+      )
+    if not math.isfinite(self.rtol) or self.rtol < 0:
+      raise ValueError(
+          f"rtol must be a finite non-negative number, got {self.rtol!r}"
+      )
+    if not isinstance(self.atol, (int, float)) or isinstance(self.atol, bool):
+      raise TypeError(
+          f"atol must be a float or int, got {type(self.atol).__name__}"
+      )
+    if not math.isfinite(self.atol) or self.atol < 0:
+      raise ValueError(
+          f"atol must be a finite non-negative number, got {self.atol!r}"
+      )
+
+
+@annotations.experimental(_exp_reason("CounterexampleStep"))
+@dataclasses.dataclass(frozen=True)
+class CounterexampleStep:
+  """One ordered event in a concrete counterexample execution schedule.
+
+  Attributes:
+    timestamp: Compacted integer logical timestamp (`0, 1, ...`).
+    device_id: Mesh device index (`0` for single-device kernels).
+    core_id: Core or sub-mesh index on the device.
+    actor: Short identifier of the executing core, grid iteration, or DMA
+      engine.
+    operation: Kind of operation (`vpu_load`, `vpu_store`, `dma_start`,
+      `dma_write_done`, `sem_signal`, `sem_wait`, etc.).
+    detail: Human-readable description of the buffer region or semaphore action.
+    source_location: Optional `file:line` in user code where the operation
+      originated.
+  """
+
+  timestamp: int
+  device_id: int
+  core_id: int
+  actor: str
+  operation: str
+  detail: str
+  source_location: str | None = None
+
+  __tt_api_stages__ = _field_stages(
+      "CounterexampleStep",
+      (
+          "timestamp",
+          "device_id",
+          "core_id",
+          "actor",
+          "operation",
+          "detail",
+          "source_location",
+      ),
+  )
 
 
 @annotations.experimental(_exp_reason("VerificationFinding"))
@@ -195,6 +398,7 @@ class VerificationFinding:
   message: str
   op_name: str | None = None
   source_location: str | None = None
+  counterexample: tuple[CounterexampleStep, ...] = ()
 
   __tt_api_stages__ = _field_stages(
       "VerificationFinding",
@@ -205,12 +409,13 @@ class VerificationFinding:
           "message",
           "op_name",
           "source_location",
+          "counterexample",
       ),
   )
 
   @annotations.experimental(_exp_reason("VerificationFinding.format"))
   def format(self) -> str:
-    """Formats this finding into readable text."""
+    """Formats this finding and any counterexample trace into readable text."""
     phase_part = f" ({self.phase.value})" if self.phase is not None else ""
     header = (
         f"[{self.severity.value.upper()}]{phase_part} {self.category.value}"
@@ -219,15 +424,28 @@ class VerificationFinding:
       header += f" in {self.op_name}"
     if self.source_location:
       header += f" @ {self.source_location}"
-    return f"{header}: {self.message}"
+    lines = [f"{header}: {self.message}"]
+    if self.counterexample:
+      lines.append("  Counterexample schedule:")
+      for step in self.counterexample:
+        loc = f" ({step.source_location})" if step.source_location else ""
+        lines.append(
+            f"    t={step.timestamp:02d} [dev={step.device_id},"
+            f" core={step.core_id}, {step.actor}] {step.operation}:"
+            f" {step.detail}{loc}"
+        )
+    return "\n".join(lines)
 
 
 @annotations.experimental(_exp_reason("VerificationError"))
 class VerificationError(AssertionError):
-  """Raised by `VerificationReport.raise_for_errors` when errors were found."""
+  """Raised by `VerificationReport.raise_for_errors` on failure."""
 
   def __init__(self, report: VerificationReport) -> None:
-    super().__init__(report.summary())
+    msg = report.summary()
+    if report.passed and msg.startswith("Verification PASSED "):
+      msg = "Verification INCOMPLETE " + msg[len("Verification PASSED ") :]
+    super().__init__(msg)
     self._report = report
 
   def __reduce__(
@@ -301,9 +519,19 @@ class VerificationReport:
     return "\n".join(lines)
 
   @annotations.experimental(_exp_reason("VerificationReport.raise_for_errors"))
-  def raise_for_errors(self) -> None:
-    """Raises `VerificationError` if the report contains any error."""
-    if not self.passed:
+  def raise_for_errors(self, *, fail_on_incomplete: bool = False) -> None:
+    """Raises `VerificationError` if the report contains any error.
+
+    Args:
+      fail_on_incomplete: If `True`, also raises `VerificationError` when any
+        `FindingCategory.VERIFICATION_INCOMPLETE` finding is present.
+    """
+    if not self.passed or (
+        fail_on_incomplete
+        and bool(
+            self.findings_by_category(FindingCategory.VERIFICATION_INCOMPLETE)
+        )
+    ):
       raise VerificationError(self)
 
   def __str__(self) -> str:

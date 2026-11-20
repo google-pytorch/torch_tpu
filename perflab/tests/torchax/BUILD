@@ -14,6 +14,7 @@
 
 # Domain experts for this package:
 # cbasile-g
+# zhanyong-wan
 # ghpvnist
 
 load(
@@ -66,12 +67,16 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "optimizer_test",
     srcs = ["optimizer_test.py"],
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//perflab/torchax:optimizer",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
+        "@pypi//jax",
+        "@pypi//numpy",
         "@pypi//optax",
     ],
 )

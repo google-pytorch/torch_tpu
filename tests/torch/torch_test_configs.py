@@ -19,10 +19,11 @@ https://github.com/pytorch/pytorch/blob/main/docs/source/accelerator/testing.md.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Final
+from typing import Final, TypeAlias
 
 import torch
 from torch.testing._internal.opinfo import core as opinfo_core
+from torch_tpu._internal.utils import hardware
 
 # Decorators applied to OpInfo-based tests, i.e. tests parametrized by `@ops`,
 # for TPU.
@@ -64,17 +65,13 @@ _FLOAT8_E5M3FNU_DTYPES: Final[Sequence[torch.dtype]] = (
     else ()
 )
 
-TEST_EXCLUSIONS: Final[
-    Mapping[
-        str,
-        Mapping[
-            str,
-            str
-            | Sequence[str]
-            | Mapping[str, str | Mapping[str, Sequence[torch.dtype]]],
-        ],
-    ]
-] = {
+_MethodExclusion: TypeAlias = str | Mapping[str, Sequence[torch.dtype]]
+_ClassExclusions: TypeAlias = (
+    str | Sequence[str] | Mapping[str, _MethodExclusion]
+)
+_TestExclusions: TypeAlias = Mapping[str, Mapping[str, _ClassExclusions]]
+
+_BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
     # TODO(b/573758862): track per-test exclusion reasons and triage.
     # go/keep-sorted start block=yes
     "distributed/_composable/fsdp/test_fully_shard_comm": {
@@ -87,6 +84,16 @@ TEST_EXCLUSIONS: Final[
     "distributed/pipelining/test_microbatch": {
         "MicrobatchTestsDevices": [
             "test_split_block_mask",
+        ],
+    },
+    "dynamo/test_activation_checkpointing": {
+        "ActivationCheckpointingViaTagsTests": [
+            "test_autocast_flash_attention",
+            "test_compile_selective_checkpoint_random_op",
+            "test_pattern_matcher",
+            "test_tags_dropout",
+            "test_tags_rand",
+            "test_tags_recomputed_rand",
         ],
     },
     "dynamo/test_debug_utils": {
@@ -212,13 +219,19 @@ TEST_EXCLUSIONS: Final[
             "test_Conv3d_depthwise_naive_groups",
             "test_ConvTranspose2d_size_1_kernel",
             "test_conv1d_vs_scipy",
+            # TODO(b/587476687): Re-enable once conv preserves channels_last.
+            "test_conv2d_nhwc",
             "test_conv2d_vs_scipy",
+            # TODO(b/587476687): Re-enable once conv preserves channels_last_3d.
+            "test_conv3d_ndhwc",
             "test_conv3d_same_padding_backward",
             "test_conv3d_vs_scipy",
             "test_conv_backend",
             "test_conv_empty_channel",
             "test_conv_inputs_device_mismatch",
             "test_conv_mismatch_memory_format",
+            # TODO(b/587476687): Re-enable once conv preserves channels_last.
+            "test_conv_not_mutate_stride",
             "test_convert_conv2d_weight_memory_format",
             "test_convert_conv3d_weight_memory_format",
             "test_slow_conv_dilated2d_unbatched",
@@ -309,6 +322,7 @@ TEST_EXCLUSIONS: Final[
             "test_memory_profiler",
             "test_overhead_activities_own_no_device_time",
             "test_profile_all_threads",
+            "test_region_device_time",
             "test_trace_only_export_matches_default",
         ],
         "TestProfilerEventsParityDevice": [
@@ -390,6 +404,12 @@ TEST_EXCLUSIONS: Final[
             "test_incorrect_schema_mutation",
         ],
     },
+    "test_dataloader": {
+        "TestDataLoaderDevice": [
+            "test_custom_batch_pin",
+            "test_string_shuffle_pin_memory",
+        ],
+    },
     "test_dlpack": {
         "TestTorchDlPack": [
             "test_dlpack_exchange_api",
@@ -415,6 +435,11 @@ TEST_EXCLUSIONS: Final[
             "test_needs_copy_error",
             "test_no_copy",
             "test_readonly_wrapper_bare_capsule_is_valid",
+        ],
+    },
+    "test_dynamic_shapes": {
+        "TestUnbackedOpsDevice": [
+            "test_narrow_with_tensor_start",
         ],
     },
     "test_expanded_weights": {
@@ -822,6 +847,7 @@ TEST_EXCLUSIONS: Final[
             "test_grad_scaling_state_dict": "*",
             "test_grad_scaling_unscale_sparse": "*",
             "test_grad_scaling_update_scale": "*",
+            "test_has_storage_data": "*",
             "test_index_add_all_dtypes": "*",
             "test_index_add_large_inputs": "*",
             "test_index_fill_mem_overlap": "*",
@@ -873,7 +899,6 @@ TEST_EXCLUSIONS: Final[
             },
             "test_scatter_reduce_scalar": {"dtypes": [torch.complex128]},
             "test_shift_mem_overlap": "*",
-            "test_split_with_sizes_copy_out": "*",
             "test_storage": "*",
             "test_strides_propagation": "*",
             "test_take_empty": "*",
@@ -890,6 +915,13 @@ TEST_EXCLUSIONS: Final[
     "test_transformers": {
         "TestSDPAFailureModes": [
             "test_dispatch_fails_no_backend",
+        ],
+        "TestSDPAGeneric": [
+            "test_scaled_dot_product_attention_fp16_overflow",
+            "test_sdp_math_gradcheck",
+            "test_sdpa_math_broadcast_batch_dims",
+            "test_sdpa_zero_output",
+            "test_sdpa_zero_qk_head_dim_matches_eager_attention",
         ],
         "TestTransformersAccelerator": [
             "test_disable_fastpath",
@@ -960,3 +992,70 @@ TEST_EXCLUSIONS: Final[
     },
     # go/keep-sorted end
 }
+
+# Exclusions that apply only on TPU v7x (`hardware.TpuVersion.V7`), merged into
+# `TEST_EXCLUSIONS` below when running on TPU v7x.
+_TPU_V7_EXCLUSIONS: Final[_TestExclusions] = {
+    # go/keep-sorted start block=yes
+    "test_indexing": {
+        "TestIndexingDevice": [
+            # TODO(https://github.com/pytorch/pytorch/issues/205534): Remove
+            # TPU v7x exclusion once the upstream test uses a float32 reference.
+            "test_index_put_large_indices",
+        ],
+    },
+    # go/keep-sorted end
+}
+
+
+def _merge_exclusions(
+    base: _TestExclusions, extra: _TestExclusions
+) -> _TestExclusions:
+  """Merges per-generation exclusions into a base exclusion mapping."""
+  merged: dict[str, dict[str, _ClassExclusions]] = {
+      module: dict(classes) for module, classes in base.items()
+  }
+  for module, classes in extra.items():
+    target = merged.setdefault(module, {})
+    for cls_name, extra_entry in classes.items():
+      if cls_name not in target:
+        target[cls_name] = extra_entry
+        continue
+      base_entry = target[cls_name]
+      if isinstance(base_entry, str) or isinstance(extra_entry, str):
+        target[cls_name] = "*"
+      elif isinstance(base_entry, Sequence) and isinstance(
+          extra_entry, Sequence
+      ):
+        target[cls_name] = [*base_entry, *extra_entry]
+      else:
+        base_map: dict[str, _MethodExclusion] = (
+            {m: "*" for m in base_entry}
+            if isinstance(base_entry, Sequence)
+            else dict(base_entry)
+        )
+        extra_map: Mapping[str, _MethodExclusion] = (
+            {m: "*" for m in extra_entry}
+            if isinstance(extra_entry, Sequence)
+            else extra_entry
+        )
+        for method, spec in extra_map.items():
+          existing = base_map.get(method)
+          if existing is None:
+            base_map[method] = spec
+          elif isinstance(existing, str) or isinstance(spec, str):
+            base_map[method] = "*"
+          else:
+            base_map[method] = {
+                "dtypes": [*existing.get("dtypes", ()), *spec.get("dtypes", ())]
+            }
+        target[cls_name] = base_map
+  return merged
+
+
+TEST_EXCLUSIONS: Final[_TestExclusions] = (
+    _merge_exclusions(_BASE_TEST_EXCLUSIONS, _TPU_V7_EXCLUSIONS)
+    if getattr(hardware.get_tpu_spec(), "version", None)
+    == hardware.TpuVersion.V7
+    else _BASE_TEST_EXCLUSIONS
+)

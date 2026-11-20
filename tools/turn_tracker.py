@@ -55,7 +55,10 @@ Contract:
         added, or when the original poster comments or submits a review.
       - Adds 'stat:awaiting-requester' when a responder comments or submits
         a review. Responders are assignees on issues, and assignees plus
-        reviewers (requested or already reviewed) on pull requests.
+        reviewers (requested or already reviewed) on pull requests. Exception:
+        before 'pull ready', a repo-member PR responder's comment or COMMENTED
+        review that @-mentions other responders (outside quoted lines) without
+        @-mentioning the original poster leaves labels unchanged.
       - Deletes conflicting turn labels on turn flips (including
         'stat:awaiting-assignee' on pull requests).
       - Leaves labels unchanged when a review request or an assignee is
@@ -81,6 +84,7 @@ from collections.abc import Callable, Mapping, Sequence, Set
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any, Final, NamedTuple
 import urllib.error
@@ -90,6 +94,14 @@ import urllib.request
 ASSIGNEE_LABEL: Final[str] = "stat:awaiting-assignee"
 REVIEWERS_LABEL: Final[str] = "stat:awaiting-reviewers"
 REQUESTER_LABEL: Final[str] = "stat:awaiting-requester"
+PULL_READY_LABEL: Final[str] = "pull ready"
+
+_REPO_MEMBER_ASSOCIATIONS: Final[frozenset[str]] = frozenset({
+    "COLLABORATOR",
+    "MEMBER",
+    "OWNER",
+})
+_MENTION_RE: Final[re.Pattern[str]] = re.compile(r"@([\w-]+)")
 
 _ISSUE_RESPONDER_ACTIONS: Final[frozenset[str]] = frozenset({
     # go/keep-sorted start
@@ -125,6 +137,48 @@ def _is_bot(user: Mapping[str, Any] | None) -> bool:
 
 def _logins(users: Sequence[Mapping[str, Any] | None]) -> frozenset[str]:
   return frozenset(u["login"].lower() for u in users if u and u.get("login"))
+
+
+def _is_responder_side_talk(
+    event_name: str,
+    payload: Mapping[str, Any],
+    existing_labels: Mapping[str, str],
+    is_pr: bool,
+    sender_login: str,
+    op_login: str,
+    responders: Set[str],
+) -> bool:
+  """Returns whether a PR responder's comment only addresses other responders.
+
+  Before the merge phase (`pull ready`), when a repo-member PR responder posts
+  a comment or COMMENTED review that @-mentions another responder (outside
+  quoted lines) without @-mentioning the PR author, it is a conversation among
+  responders rather than handing the turn back to the author.
+  """
+  if not is_pr or PULL_READY_LABEL.lower() in existing_labels:
+    return False
+
+  if event_name in ("issue_comment", "pull_request_review_comment"):
+    entry = payload.get("comment") or {}
+  elif event_name == "pull_request_review":
+    entry = payload.get("review") or {}
+    if (entry.get("state") or "").upper() != "COMMENTED":
+      return False
+  else:
+    return False
+
+  author_association = (entry.get("author_association") or "").upper()
+  if author_association not in _REPO_MEMBER_ASSOCIATIONS:
+    return False
+
+  body = "\n".join(
+      line
+      for line in (entry.get("body") or "").splitlines()
+      if not line.lstrip().startswith(">")
+  )
+  mentioned = {mention.lower() for mention in _MENTION_RE.findall(body)}
+  other_responders = responders - {sender_login, op_login}
+  return bool(mentioned & other_responders) and op_login not in mentioned
 
 
 def determine_label_changes(
@@ -210,6 +264,16 @@ def determine_label_changes(
   if is_op and is_responder:
     return LabelChanges()
   if is_responder:
+    if _is_responder_side_talk(
+        event_name,
+        payload,
+        existing_labels,
+        is_pr,
+        sender_login,
+        op_login,
+        responders,
+    ):
+      return LabelChanges()
     return awaiting_requester()
   if is_op:
     return awaiting_responder()

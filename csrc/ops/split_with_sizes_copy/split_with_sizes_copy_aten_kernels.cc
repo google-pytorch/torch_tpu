@@ -16,6 +16,7 @@
 
 #include "csrc/ops/split_with_sizes_copy/split_with_sizes_copy_aten_kernels.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <numeric>
 #include <utility>
@@ -34,6 +35,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
@@ -84,46 +86,55 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
           if (num_rows == 0) {
             return;
           }
-          TT_ASSIGN_OR_THROW(const mlir::ElementType dtype,
-                             ConvertTo<mlir::ElementType>(self.scalar_type()));
-          const at::Tensor flat_self = self.view(-1);
-          int64_t start = 0;
-          for (int64_t i = 0; i < out.size(); ++i) {
-            const int64_t size = split_sizes[i];
-            if (size > 0) {
-              auto op_builder = [num_rows, num_cols, start,
-                                 size](mlir::MlirOp flat) {
-                const Indices stride = {1};
-                std::vector<mlir::MlirOp> rows;
-                rows.reserve(num_rows);
-                for (int64_t row = 0; row < num_rows; ++row) {
-                  const Indices begin = {row * num_cols + start};
-                  const Indices limit = {row * num_cols + start + size};
-                  rows.push_back(
-                      mlir::stablehlo::Slice(flat, begin, limit, stride));
-                }
-                return mlir::stablehlo::Concatenate(flat.getBuilder(), rows, 0);
-              };
-              OpParamCacheKeys param_keys = OpParamCacheKeys::Empty();
-              TT_THROW_IF_ERROR(param_keys.SetParam("num_rows", num_rows));
-              TT_THROW_IF_ERROR(param_keys.SetParam("start", start));
-              const int64_t out_dims[] = {num_rows * size};
-              TT_THROW_IF_ERROR(DispatchOpOut<1>(
-                  std::move(op_builder), flat_self, out[i].view(-1),
-                  {.out_dtype = dtype,
-                   .out_dims = out_dims,
-                   .op_param_cache_keys = std::move(param_keys)}));
+          const bool can_flatten =
+              self.is_contiguous() &&
+              std::all_of(out.begin(), out.end(), [](const at::Tensor& t) {
+                return t.numel() == 0 || t.is_contiguous();
+              });
+          if (can_flatten) {
+            TT_ASSIGN_OR_THROW(
+                const mlir::ElementType dtype,
+                ConvertTo<mlir::ElementType>(self.scalar_type()));
+            const at::Tensor flat_self = self.view(-1);
+            int64_t start = 0;
+            for (int64_t i = 0; i < out.size(); ++i) {
+              const int64_t size = split_sizes[i];
+              if (size > 0) {
+                auto op_builder = [num_rows, num_cols, start,
+                                   size](mlir::MlirOp flat) {
+                  const Indices stride = {1};
+                  std::vector<mlir::MlirOp> rows;
+                  rows.reserve(num_rows);
+                  for (int64_t row = 0; row < num_rows; ++row) {
+                    const Indices begin = {row * num_cols + start};
+                    const Indices limit = {row * num_cols + start + size};
+                    rows.push_back(
+                        mlir::stablehlo::Slice(flat, begin, limit, stride));
+                  }
+                  return mlir::stablehlo::Concatenate(flat.getBuilder(), rows,
+                                                      0);
+                };
+                OpParamCacheKeys param_keys = OpParamCacheKeys::Empty();
+                TT_THROW_IF_ERROR(param_keys.SetParam("num_rows", num_rows));
+                TT_THROW_IF_ERROR(param_keys.SetParam("start", start));
+                const int64_t out_dims[] = {num_rows * size};
+                TT_THROW_IF_ERROR(DispatchOpOut<1>(
+                    std::move(op_builder), flat_self, out[i].view(-1),
+                    {.out_dtype = dtype,
+                     .out_dims = out_dims,
+                     .op_param_cache_keys = std::move(param_keys)}));
+              }
+              start += size;
             }
-            start += size;
+            return;
           }
-        } else {
-          // Fallback to naive implementation: multiple copy_
-          int64_t start = 0;
-          for (int64_t i = 0; i < out.size(); ++i) {
-            int64_t size = split_sizes[i];
-            out[i].copy_(self.narrow(normalized_dim, start, size));
-            start += size;
-          }
+        }
+        // Fallback to naive implementation: multiple copy_
+        int64_t start = 0;
+        for (int64_t i = 0; i < out.size(); ++i) {
+          int64_t size = split_sizes[i];
+          out[i].copy_(self.narrow(normalized_dim, start, size));
+          start += size;
         }
       });
 }

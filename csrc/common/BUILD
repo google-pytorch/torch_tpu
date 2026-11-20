@@ -13,11 +13,9 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# yilingyuan
 # zhanyong-wan
-# ryo-not-rio
 # ghpvnist
-# haifeng-jin
+# ryo-not-rio
 
 """Common utilities for torch_tpu."""
 
@@ -136,7 +134,6 @@ torch_tpu_cc_library(
         ":fingerprint_utils",
         ":macro_utils",
         ":to_string",
-        ":utils",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
@@ -258,6 +255,7 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
@@ -312,6 +310,7 @@ torch_tpu_cc_test(
     # Enables the error message format checks so that they're tested in all
     # builds (they are always enabled in the internal build).
     env = {"TORCH_TPU_INTERNAL_CHECK_ERROR_FORMAT": "1"},
+    shard_count = 8,
     deps = [
         ":cache_key",
         ":env_vars",
@@ -907,7 +906,10 @@ torch_tpu_cc_library(
     hdrs = ["fake_tensor_utils.h"],
     deps = [
         ":const_tensor",
+        "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
     ],
 )
 
@@ -923,6 +925,7 @@ torch_tpu_cc_test(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/cleanup",
     ],
 )
 
@@ -1037,7 +1040,6 @@ torch_tpu_cc_library(
         "//shims/torch/c10/util:base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
-        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
@@ -1174,7 +1176,10 @@ torch_tpu_cc_library(
     deps = [
         ":env_vars",
         ":error_utils",
+        ":premapped_buffer_defaults",
+        ":warnings",
         "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
@@ -1188,8 +1193,37 @@ torch_tpu_cc_test(
         ":env_vars",
         ":error_utils",
         "//csrc/common:oss_test_main",
+        "//shims/torch",  # build_cleaner: keep for c10::WarningUtils
+        "//shims/torch/c10/util:base",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# Implementation details of the TPU_PREMAPPED_BUFFER_SIZE default computed by
+# :discovery. Private so that only :discovery and its unit tests can use it.
+torch_tpu_cc_library(
+    name = "premapped_buffer_defaults",
+    srcs = ["premapped_buffer_defaults.cc"],
+    hdrs = ["premapped_buffer_defaults.h"],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":env_vars",
+        ":tpu_hardware",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "premapped_buffer_defaults_test",
+    srcs = ["premapped_buffer_defaults_test.cc"],
+    deps = [
+        ":env_vars",
+        ":premapped_buffer_defaults",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -1495,6 +1529,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/platform:numbers",
+        "@tsl//tsl/platform:platform_port",
         "@xla//xla/hlo/utils/concurrency:concurrency_utils",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_compiler",
@@ -1645,14 +1680,17 @@ torch_tpu_cc_test(
         ":error_utils",
         ":excess_precision",
         ":mlir_test_modules",
+        ":shape",
         ":status_test_utils",
         "//csrc/common:oss_test_main",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch:torch_headers",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_proto_cc",
@@ -1796,7 +1834,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
-        "@xla//xla:xla_proto_cc",
+        "@com_google_absl//absl/strings",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )

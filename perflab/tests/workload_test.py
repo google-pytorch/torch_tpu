@@ -203,6 +203,7 @@ class ThroughputMetricsTest(seed_test_utils.RepeatableTest):
   def test_throughput_from_wall_and_device_time(self):
     metrics = metrics_lib.PerformanceMetrics(
         post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=0.5,
         average_post_warmup_device_time_seconds=0.25,
         step_work=workload_lib.StepWork(
             workload=workload_lib.Workload(batch_size=4, seq_len=128),
@@ -223,9 +224,78 @@ class ThroughputMetricsTest(seed_test_utils.RepeatableTest):
     }
     self.assertEqual({key: metric_map.get(key) for key in expected}, expected)
 
+  def test_throughput_from_pipelined_step_time(self):
+    metrics = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.5,
+        pipelined_step_time_seconds=0.25,
+        num_pipelined_steps=40,
+        throughput_step_time_seconds=0.25,
+        average_post_warmup_device_time_seconds=0.2,
+        step_work=workload_lib.StepWork(
+            workload=workload_lib.Workload(batch_size=4, seq_len=128),
+            samples_per_step=4,
+            tokens_per_step=512,
+        ),
+    )
+    metric_map = metrics.metric_map()
+    expected = {
+        # The throughput comes from the pipelined steps; the latency and the
+        # device throughput are unchanged.
+        "samples_per_second": 16.0,
+        "tokens_per_second": 2048.0,
+        "device_samples_per_second": 20.0,
+        "device_tokens_per_second": 2560.0,
+        "post_warmup_step_time_seconds": 0.5,
+        "pipelined_step_time_seconds": 0.25,
+        "pipelined_step_time_ms": 250.0,
+        "num_pipelined_steps": 40.0,
+    }
+    self.assertEqual({key: metric_map.get(key) for key in expected}, expected)
+    self.assertNotIn("pipelined_samples_per_second", metric_map)
+    self.assertNotIn("pipelined_tokens_per_second", metric_map)
+
+  def test_throughput_from_synchronized_steps_without_pipelined_steps(self):
+    # Decode and torchax, whose steppers do not support pipelined steps, keep
+    # the synchronized throughput.
+    metric_map = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=0.5,
+        step_work=workload_lib.StepWork(
+            workload=workload_lib.Workload(batch_size=2, seq_len=2048),
+            samples_per_step=None,
+            tokens_per_step=32,
+        ),
+    ).metric_map()
+    self.assertEqual(metric_map["tokens_per_second"], 64.0)
+    for key in (
+        "pipelined_step_time_seconds",
+        "pipelined_step_time_ms",
+        "num_pipelined_steps",
+    ):
+      self.assertNotIn(key, metric_map)
+
+  def test_no_throughput_without_throughput_step_time(self):
+    # E.g. the pipelined steps were disabled or ran out of memory.
+    metric_map = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=None,
+        average_post_warmup_device_time_seconds=0.25,
+        step_work=workload_lib.StepWork(
+            workload=workload_lib.Workload(batch_size=4, seq_len=128),
+            samples_per_step=4,
+            tokens_per_step=512,
+        ),
+    ).metric_map()
+    self.assertNotIn("samples_per_second", metric_map)
+    self.assertNotIn("tokens_per_second", metric_map)
+    # The latency and the device throughput are still exported.
+    self.assertEqual(metric_map["post_warmup_step_time_seconds"], 0.5)
+    self.assertEqual(metric_map["device_samples_per_second"], 16.0)
+
   def test_no_device_throughput_without_device_time(self):
     metrics = metrics_lib.PerformanceMetrics(
         post_warmup_step_time_seconds=2.0,
+        throughput_step_time_seconds=2.0,
         step_work=workload_lib.StepWork(
             workload=workload_lib.Workload(batch_size=8),
             samples_per_step=8,
@@ -245,6 +315,7 @@ class ThroughputMetricsTest(seed_test_utils.RepeatableTest):
   def test_decode_exports_only_tokens(self):
     metrics = metrics_lib.PerformanceMetrics(
         post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=0.5,
         step_work=workload_lib.StepWork(
             workload=workload_lib.Workload(batch_size=2, seq_len=2048),
             samples_per_step=None,
@@ -257,7 +328,7 @@ class ThroughputMetricsTest(seed_test_utils.RepeatableTest):
 
   def test_no_throughput_without_step_work(self):
     metric_map = metrics_lib.PerformanceMetrics(
-        post_warmup_step_time_seconds=0.5
+        post_warmup_step_time_seconds=0.5, throughput_step_time_seconds=0.5
     ).metric_map()
     for key in ("batch_size", "samples_per_second", "tokens_per_second"):
       self.assertNotIn(key, metric_map)

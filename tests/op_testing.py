@@ -93,6 +93,8 @@ GPU_SM100: Final[str] = "gpu_sm100"
 _DEFAULT_GPU_GOLDEN_ARCH: Final[str] = GPU_SM100
 # Test method attribute set by @record_gpu_goldens_on.
 _GPU_GOLDEN_ARCH_ATTR: Final[str] = "gpu_golden_arch"
+# Test method attribute set by @unimplemented_on_tpu.
+_UNIMPLEMENTED_ON_TPU_ATTR: Final[str] = "unimplemented_on_tpu"
 
 _GPU_GOLDEN_HOPPER_SUFFIX: Final[str] = "_hopper"
 
@@ -3673,7 +3675,10 @@ def _addmm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    # Upstream CUDA `aten.*.dtype_out` kernels do not resize zero-element `out`
+    # tensors, whereas TorchTPU's `DispatchOpOut` resizes natively without
+    # triggering a Dynamo `Tensor.resize_()` graph break.
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((mat1.size(0), mat2.size(1)))
     return torch.ops.aten.addmm.dtype_out(
         self, mat1, mat2, out_dtype, beta=beta, alpha=alpha, out=out
@@ -3698,7 +3703,7 @@ def _baddbmm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((batch1.size(0), batch1.size(1), batch2.size(2)))
     return torch.ops.aten.baddbmm.dtype_out(
         self, batch1, batch2, out_dtype, beta=beta, alpha=alpha, out=out
@@ -3720,7 +3725,7 @@ def _bmm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((self.size(0), self.size(1), mat2.size(2)))
     return torch.ops.aten.bmm.dtype_out(self, mat2, out_dtype, out=out)
   return torch.ops.aten.bmm.dtype(self, mat2, out_dtype)
@@ -3738,7 +3743,7 @@ def _mm_dtype_wrapper(
       raise RuntimeError(
           "out_dtype must be the same as the dtype of the provided out tensor"
       )
-    if out.shape == (0,):
+    if out.device.type == "cuda" and out.shape == (0,):
       out.resize_((self.size(0), mat2.size(1)))
     return torch.ops.aten.mm.dtype_out(self, mat2, out_dtype, out=out)
   return torch.ops.aten.mm.dtype(self, mat2, out_dtype)
@@ -4525,8 +4530,17 @@ def _golden_dtype_key(
   return _dtype_str(dtype)
 
 
+@dataclasses.dataclass(frozen=True)
+class _PreEncodedSample:
+  """Plistlib-compatible encoded `(OpInput, OpOutput)` pair."""
+
+  encoded_pair: tuple[_pytree.PyTree, _pytree.PyTree]
+
+
 _GoldenSample = (
-    tuple["OpInput", "OpOutput"] | Callable[[], tuple["OpInput", "OpOutput"]]
+    tuple["OpInput", "OpOutput"]
+    | Callable[[], tuple["OpInput", "OpOutput"]]
+    | _PreEncodedSample
 )
 
 
@@ -4538,8 +4552,10 @@ class GoldenGpuData:
 
     test_case_name -> op variant -> dtype_key -> [sample, ...]
 
-  Each sample is either a decoded `(OpInput, OpOutput)` pair or a zero-argument
-  callable that lazily deserializes and returns the pair on demand.
+  Each sample is either a decoded `(OpInput, OpOutput)` pair, a zero-argument
+  callable that lazily deserializes and returns the pair on demand, or a
+  `_PreEncodedSample` recorded during `GEN_GPU_GOLDEN` mode so live tensors can
+  be freed immediately after each sample.
 
   The `dtype_key` is a string:
     - For standard tests: the dtype name without "torch." prefix (e.g.,
@@ -4578,9 +4594,17 @@ class GoldenGpuData:
   ) -> None:
     """Records a single golden (input, output) sample."""
     key = _golden_dtype_key(dtype, out_dtype_override)
-    self._samples_for(test_case_name, variant.value, key).append(
-        (op_input, op_output)
-    )
+    if _gen_gpu_golden_mode():
+      self._samples_for(test_case_name, variant.value, key).append(
+          _PreEncodedSample((
+              op_input.to_plistlib_pytree(),
+              op_output.to_plistlib_pytree(),
+          ))
+      )
+    else:
+      self._samples_for(test_case_name, variant.value, key).append(
+          (op_input, op_output)
+      )
 
   def _ensure_test_case_loaded(self, test_case_name: str) -> None:
     """Lazily loads the golden samples for `test_case_name`, if present."""
@@ -4617,11 +4641,17 @@ class GoldenGpuData:
     samples = (
         self._data.get(test_case_name, {}).get(variant.value, {}).get(key, [])
     )
-    # Lazily deserialize callable samples on first access, caching the result
-    # in-place to avoid re-decoding on subsequent reads.
+    # Lazily deserialize callable or pre-encoded samples on first access,
+    # caching the result in-place to avoid re-decoding on subsequent reads.
     for i, sample in enumerate(samples):
       if callable(sample):
         samples[i] = sample()
+      elif isinstance(sample, _PreEncodedSample):
+        inp_tree, out_tree = sample.encoded_pair
+        samples[i] = (
+            OpInput.from_plistlib_pytree(inp_tree),
+            OpOutput.from_plistlib_pytree(out_tree),
+        )
     return typing.cast(Sequence[tuple["OpInput", "OpOutput"]], samples)
 
   def clear(self) -> None:
@@ -4640,21 +4670,27 @@ class GoldenGpuData:
 
   def to_plistlib_pytree(self) -> _pytree.PyTree:
     """Encodes the golden data into a plistlib-compatible pytree."""
-    # Ensure any lazily-deferred samples are fully deserialized before saving.
-    for variant_to_dt in self._data.values():
-      for dt_to_samples in variant_to_dt.values():
-        for samples in dt_to_samples.values():
-          for i, sample in enumerate(samples):
-            if callable(sample):
-              samples[i] = sample()
-
-    def leaf_func(x: "OpInput | OpOutput") -> _pytree.PyTree:
-      return x.to_plistlib_pytree()
-
-    def is_leaf(x: Any) -> bool:
-      return isinstance(x, (OpInput, OpOutput))
-
-    return _pytree.tree_map(leaf_func, self._data, is_leaf=is_leaf)
+    encoded: dict[str, dict[str, dict[str, list[Any]]]] = {}
+    for test_case_name, variant_to_dt in self._data.items():
+      encoded_variants: dict[str, dict[str, list[Any]]] = {}
+      for variant_name, dt_to_samples in variant_to_dt.items():
+        encoded_dtypes: dict[str, list[Any]] = {}
+        for dt_key, samples in dt_to_samples.items():
+          encoded_list = []
+          for sample in samples:
+            if isinstance(sample, _PreEncodedSample):
+              encoded_list.append(list(sample.encoded_pair))
+            else:
+              if callable(sample):
+                sample = sample()
+              inp, out = sample
+              encoded_list.append(
+                  [inp.to_plistlib_pytree(), out.to_plistlib_pytree()]
+              )
+          encoded_dtypes[dt_key] = encoded_list
+        encoded_variants[variant_name] = encoded_dtypes
+      encoded[test_case_name] = encoded_variants
+    return encoded
 
   def merge_plistlib_pytree(self, encoded_data: _pytree.PyTree) -> None:
     """Decodes a plistlib-compatible pytree and merges it into this data."""
@@ -4706,17 +4742,17 @@ _KNOWN_OPS: Final[Sequence[OpInfo]] = (
 )
 
 
-COMPLEX_DTYPES: Final[Sequence[torch.dtype]] = (
+COMPLEX_DTYPES: Final[tuple[torch.dtype, ...]] = (
     # TODO: add complex128.
     torch.complex64,
 )
-FLOAT_DTYPES: Final[Sequence[torch.dtype]] = (
+FLOAT_DTYPES: Final[tuple[torch.dtype, ...]] = (
     torch.float64,
     torch.float32,
     torch.float16,
     torch.bfloat16,
 )
-INTEGRAL_DTYPES: Final[Sequence[torch.dtype]] = (
+INTEGRAL_DTYPES: Final[tuple[torch.dtype, ...]] = (
     torch.uint8,
     torch.int8,
     torch.int16,
@@ -4725,13 +4761,13 @@ INTEGRAL_DTYPES: Final[Sequence[torch.dtype]] = (
     torch.bool,
 )
 
-UNQUANTIZED_NUMERIC_DTYPES: Final[Sequence[torch.dtype]] = (
+UNQUANTIZED_NUMERIC_DTYPES: Final[tuple[torch.dtype, ...]] = (
     *COMPLEX_DTYPES,
     *FLOAT_DTYPES,
     *INTEGRAL_DTYPES,
 )
 
-ALL_NUMERIC_DTYPES: Final[Sequence[torch.dtype]] = (
+ALL_NUMERIC_DTYPES: Final[tuple[torch.dtype, ...]] = (
     *UNQUANTIZED_NUMERIC_DTYPES,
     *quantize_utils.QUANTIZED_NUMERIC_DTYPES,
 )
@@ -5085,16 +5121,29 @@ P99: {sorted_durations_ms[99*num//100]:.2f}ms""",
 
 
 def _get_op(op_name: str, *, variant_test_name: str | None = None) -> OpInfo:
-  """Returns the op with the given name."""
+  """Returns the op with the given name and optional variant_test_name.
+
+  When `variant_test_name` is `None`, returns the first matching OpInfo in
+  `_KNOWN_OPS`. When a string (including `""`) is provided, matches
+  `op.variant_test_name == variant_test_name` exactly.
+  """
   try:
     return next(
         op
         for op in _KNOWN_OPS
         if op.name == op_name
-        and (not variant_test_name or op.variant_test_name == variant_test_name)
+        and (
+            variant_test_name is None
+            or op.variant_test_name == variant_test_name
+        )
     )
   except StopIteration as e:
-    raise ValueError(f"Unknown op: {op_name}") from e
+    suffix = (
+        f" (variant_test_name={variant_test_name!r})"
+        if variant_test_name is not None
+        else ""
+    )
+    raise ValueError(f"Unknown op: {op_name}{suffix}") from e
 
 
 def _supports_out(op: OpInfo) -> bool:
@@ -5184,6 +5233,23 @@ def _convert_sample_dtype(
   return sample
 
 
+_COMPRESSED_SPARSE_LAYOUTS: Final[tuple[torch.layout, ...]] = (
+    torch.sparse_csr,
+    torch.sparse_csc,
+    torch.sparse_bsr,
+    torch.sparse_bsc,
+)
+
+
+def _sample_max_tensor_numel(sample: SampleInput) -> int:
+  """Returns the maximum element count among all tensors in `sample`."""
+  leaves = _pytree.tree_leaves((sample.input, sample.args, sample.kwargs))
+  return max(
+      (t.numel() for t in leaves if isinstance(t, torch.Tensor)),
+      default=0,
+  )
+
+
 def _sample_inputs(
     op: OpInfo,
     device: torch.device,
@@ -5204,6 +5270,13 @@ def _sample_inputs(
     samples = list(op.sample_inputs(device, sample_dtype, requires_grad=False))
     if sample_dtype != dtype:
       samples = [_convert_sample_dtype(s, sample_dtype, dtype) for s in samples]
+    if op.name == "grid_sampler_3d":
+      # PyTorch's sample_inputs_grid_sampler_3d includes 5D shapes up to
+      # (20, 21, 22, 23, 24) (>5M elements per tensor), which bloat a single
+      # golden shard by >600 MB. Keep the smaller 5D shapes (up to 100k
+      # elements), which still cover every (mode, padding_mode, align_corners)
+      # combination.
+      samples = [s for s in samples if _sample_max_tensor_numel(s) <= 100_000]
     return samples
   except Exception as e:  # pylint: disable=broad-except
     if device.type == "cpu":
@@ -5341,6 +5414,8 @@ def _prepare_zero_element_out_tensors(
             layout=torch.sparse_coo,
             device=obj.device,
         )
+      if obj.layout in _COMPRESSED_SPARSE_LAYOUTS:
+        return obj.detach().clone().to(dtype=dtype)
       return torch.empty((0,), dtype=dtype, device=obj.device)
     return obj
 
@@ -5350,6 +5425,11 @@ def _prepare_zero_element_out_tensors(
 def _gen_gpu_golden_mode() -> bool:
   """Returns true if the test is running in gen_gpu_golden mode."""
   return _TEST_MODE.value == TestMode.GEN_GPU_GOLDEN
+
+
+def _records_unimplemented_ops() -> bool:
+  """Returns True when @unimplemented_on_tpu tests should run to record goldens."""
+  return _gen_gpu_golden_mode() and not is_compiled_mode()
 
 
 def golden_target_gpu_arch() -> str:
@@ -5408,6 +5488,43 @@ def record_gpu_goldens_on(arch: str):
   return decorator
 
 
+@typing.overload
+def unimplemented_on_tpu(arg: Callable[..., Any]) -> Callable[..., Any]:
+  ...
+
+
+@typing.overload
+def unimplemented_on_tpu(
+    arg: str = ...,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+  ...
+
+
+def unimplemented_on_tpu(
+    arg: Callable[..., Any] | str = "Not yet implemented on TorchTPU",
+) -> Any:
+  """Marks an op test as unimplemented on TPU while still recording GPU goldens.
+
+  Tags the test method in-place without wrapping it so test-inspection tools
+  (e.g. `DynamismDenyListsTest`) can check `_UNIMPLEMENTED_ON_TPU_ATTR` on the
+  method directly. Skipping is enforced in `OpInfoTestBase.setUp()` before
+  `super().setUp()`: tagged tests run only during eager and backward GPU golden
+  generation (`GEN_GPU_GOLDEN` without `--use_compiled`), and are skipped in all
+  other modes including compiled golden generation and `DUMP_DTYPE_EXCLUSIONS`.
+  """
+  if callable(arg):
+    return unimplemented_on_tpu()(arg)
+  reason = arg
+  if not reason:
+    raise ValueError("unimplemented_on_tpu reason must be non-empty.")
+
+  def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+    setattr(func, _UNIMPLEMENTED_ON_TPU_ATTR, reason)
+    return func
+
+  return decorator
+
+
 def _dump_dtype_exclusions_mode() -> bool:
   """Returns true if the test is running in dump_dtype_exclusions mode."""
   return _TEST_MODE.value == TestMode.DUMP_DTYPE_EXCLUSIONS
@@ -5439,10 +5556,27 @@ def is_tpu_vs_gpu_compiled() -> bool:
   return _torch_tpu_vs_gpu_mode() and is_compiled_mode()
 
 
+def runs_all_samples(max_samples_per_op_dtype: int | None = None) -> bool:
+  """Returns True if neither --dtypes nor a sample limit filter the samples.
+
+  Args:
+    max_samples_per_op_dtype: The sample limit passed to do_test_op(), if any.
+      If None, --max_samples_per_op_dtype applies.
+  """
+  if max_samples_per_op_dtype is None:
+    max_samples_per_op_dtype = _MAX_SAMPLES_PER_OP_DTYPE.value
+  return "all" in _DTYPES.value and max_samples_per_op_dtype < 0
+
+
 def _is_enum(obj: Any) -> bool:
   """Returns True if obj is a Python enum or a pybind11 enum object."""
   cls = obj if isinstance(obj, type) else type(obj)
   return issubclass(cls, enum.Enum) or hasattr(cls, "__entries")
+
+
+def _is_dataclass_instance(obj: Any) -> bool:
+  """Returns True if obj is a dataclass instance (not a dataclass type)."""
+  return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
 
 
 def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
@@ -5450,15 +5584,24 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
 
   In particular,
 
-    - A torch.Tensor is serialized to a byte string using st.save().
+    - A torch.Tensor is serialized to a byte string using st.save(), or a
+      {"$$sparse_coo": ...} / {"$$sparse_compressed": ...} dict for sparse
+      layouts.
     - A tuple is converted to a {"$$tuple": ...} dict. This is needed
       for preserving the tuple/list distinction because plistlib always
       serializes tuples as lists.
+    - A set / frozenset is converted to a deterministically sorted
+      {"$$set": [...]} / {"$$frozenset": [...]} dict.
+    - A slice is converted to a {"$$slice": [start, stop, step]} dict.
+    - Ellipsis is converted to a {"$$ellipsis": True} dict.
     - A torch.dtype is converted to a {"$$dtype": dtype_name} dict.
     - A torch.device is converted to a {"$$device": device_name} dict.
+    - A torch.layout is converted to a {"$$layout": layout_name} dict.
     - A torch.memory_format is converted to a {"$$memory_format": format_name}
       dict.
     - An enum (Python or pybind11) is converted to a {"$$enum": ...} dict.
+    - A dataclass instance is converted to a {"$$dataclass": ...} dict.
+    - A Python object with `__dict__` is converted to a {"$$object": ...} dict.
     - A complex number is converted to a {"$$real": ..., "$$imag": ...} dict.
     - An Exception is serialized to a {"$$exception": {"type": ...,
       "message": ...}} dict.
@@ -5472,6 +5615,9 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
   Returns:
     A copy of the PyTree with the values converted to values that plistlib can
     handle.
+
+  Raises:
+    TypeError: If an unsupported object without `__dict__` is encountered.
   """
 
   def leaf_func(x: Any) -> Any:
@@ -5479,7 +5625,41 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
       # Use st.save() to serialize the tensor to a byte string. This format is
       # lossless and compact. Since st.save() takes a dict from str to tensor,
       # we need to provide a dummy str key.
-      #
+      if x.layout == torch.sparse_coo:
+        return {
+            "$$sparse_coo": {
+                "sparse_dim": x.sparse_dim(),
+                "dense_dim": x.dense_dim(),
+                "size": list(x.shape),
+                "is_coalesced": x.is_coalesced(),
+                "indices": _to_plistlib_compatible(
+                    x._indices().detach().clone().contiguous()
+                ),
+                "values": _to_plistlib_compatible(
+                    x._values().detach().clone().contiguous()
+                ),
+            }
+        }
+      if x.layout in _COMPRESSED_SPARSE_LAYOUTS:
+        if x.layout in (torch.sparse_csr, torch.sparse_bsr):
+          compressed_indices = x.crow_indices().detach().clone().contiguous()
+          plain_indices = x.col_indices().detach().clone().contiguous()
+        else:
+          compressed_indices = x.ccol_indices().detach().clone().contiguous()
+          plain_indices = x.row_indices().detach().clone().contiguous()
+        return {
+            "$$sparse_compressed": {
+                "layout": str(x.layout).split(".")[-1],
+                "size": list(x.shape),
+                "compressed_indices": _to_plistlib_compatible(
+                    compressed_indices
+                ),
+                "plain_indices": _to_plistlib_compatible(plain_indices),
+                "values": _to_plistlib_compatible(
+                    x.values().detach().clone().contiguous()
+                ),
+            }
+        }
       # st.save() doesn't handle sub-byte dtypes or float8_e8m0fnu, so serialize
       # the raw bytes as uint8 and record the original dtype in the key after a
       # "b:" prefix.
@@ -5490,17 +5670,6 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
             # contiguous() needs a copy kernel the sub-byte dtypes don't have.
             x.view(torch.uint8).contiguous()
         })
-      if x.layout == torch.sparse_coo:
-        return {
-            "$$sparse_coo": {
-                "sparse_dim": x.sparse_dim(),
-                "dense_dim": x.dense_dim(),
-                "size": list(x.shape),
-                "is_coalesced": x.is_coalesced(),
-                "indices": _to_plistlib_compatible(x._indices().contiguous()),
-                "values": _to_plistlib_compatible(x._values().contiguous()),
-            }
-        }
       # st.save() doesn't handle non-contiguous tensors or non-strided tensors.
       if x.layout != torch.strided:
         x = x.to_dense()
@@ -5513,12 +5682,38 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
       return st.save({"": x})
     if isinstance(x, tuple):
       return {"$$tuple": [_to_plistlib_compatible(e) for e in x]}
+    if isinstance(x, set):
+      return {
+          "$$set": [
+              _to_plistlib_compatible(e)
+              for e in sorted(x, key=lambda v: (type(v).__qualname__, repr(v)))
+          ]
+      }
+    if isinstance(x, frozenset):
+      return {
+          "$$frozenset": [
+              _to_plistlib_compatible(e)
+              for e in sorted(x, key=lambda v: (type(v).__qualname__, repr(v)))
+          ]
+      }
+    if isinstance(x, slice):
+      return {
+          "$$slice": [
+              _to_plistlib_compatible(x.start),
+              _to_plistlib_compatible(x.stop),
+              _to_plistlib_compatible(x.step),
+          ]
+      }
+    if x is Ellipsis:
+      return {"$$ellipsis": True}
     if isinstance(x, torch.dtype):
       # The value is the name of the dtype, e.g. "float32".
       return {"$$dtype": str(x).split(".")[-1]}
     if isinstance(x, torch.device):
       # The value is the name of the device, e.g. "cpu" or "tpu".
       return {"$$device": str(x)}
+    if isinstance(x, torch.layout):
+      return {"$$layout": str(x).split(".")[-1]}
     if isinstance(x, complex):  # plistlib doesn't handle complex numbers.
       # Encode complex numbers as real + imag.
       return {"$$real": x.real, "$$imag": x.imag}
@@ -5535,25 +5730,65 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
               "value": getattr(x, "value", None),
           }
       }
+    if _is_dataclass_instance(x):
+      cls = type(x)
+      return {
+          "$$dataclass": {
+              "module": cls.__module__,
+              "class": cls.__qualname__,
+              "fields": {
+                  f.name: _to_plistlib_compatible(getattr(x, f.name))
+                  for f in dataclasses.fields(x)
+                  if hasattr(x, f.name)
+              },
+          }
+      }
     if isinstance(x, Exception):
       # Preserve the exception type and message separately so the harness can
       # enforce exception parity between the golden device and TPU.
       return {"$$exception": {"type": type(x).__name__, "message": str(x)}}
+    if not isinstance(
+        x, (bool, int, float, str, bytes, list, dict, type(None))
+    ):
+      if hasattr(x, "__dict__"):
+        cls = type(x)
+        return {
+            "$$object": {
+                "module": cls.__module__,
+                "class": cls.__qualname__,
+                "attrs": _to_plistlib_compatible(dict(vars(x))),
+            }
+        }
+      raise TypeError(
+          f"Unsupported type for plistlib serialization: {type(x).__qualname__}"
+      )
     return x
 
   def is_leaf(obj: Any) -> bool:
-    return isinstance(
-        obj,
-        (
-            tuple,
-            torch.Tensor,
-            torch.dtype,
-            torch.device,
-            torch.memory_format,
-            complex,
-            Exception,
-        ),
-    ) or _is_enum(obj)
+    return (
+        isinstance(
+            obj,
+            (
+                tuple,
+                set,
+                frozenset,
+                slice,
+                torch.Tensor,
+                torch.dtype,
+                torch.device,
+                torch.layout,
+                torch.memory_format,
+                complex,
+                Exception,
+            ),
+        )
+        or obj is Ellipsis
+        or _is_enum(obj)
+        or _is_dataclass_instance(obj)
+        or not isinstance(
+            obj, (bool, int, float, str, bytes, list, dict, type(None))
+        )
+    )
 
   return _pytree.tree_map(leaf_func, ptree, is_leaf=is_leaf)
 
@@ -5626,11 +5861,20 @@ def _from_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
   In particular,
 
     - A byte string is deserialized to a torch.Tensor using st.load().
+    - A {"$$sparse_coo": ...} or {"$$sparse_compressed": ...} dict is
+      deserialized to a sparse torch.Tensor.
     - A {"$$tuple": ...} dict is deserialized to a tuple.
+    - A {"$$set": ...} dict is deserialized to a set.
+    - A {"$$frozenset": ...} dict is deserialized to a frozenset.
+    - A {"$$slice": ...} dict is deserialized to a slice.
+    - A {"$$ellipsis": True} dict is deserialized to Ellipsis.
     - A {"$$dtype": ...} dict is deserialized to a torch.dtype.
     - A {"$$device": ...} dict is deserialized to a torch.device.
+    - A {"$$layout": ...} dict is deserialized to a torch.layout.
     - A {"$$memory_format": ...} dict is deserialized to a torch.memory_format.
     - A {"$$enum": ...} dict is deserialized to an enum instance.
+    - A {"$$dataclass": ...} dict is deserialized to a dataclass instance.
+    - A {"$$object": ...} dict is deserialized to a Python object instance.
     - A {"$$real": ..., "$$imag": ...} dict is deserialized to a complex number.
     - A {"$$exception": {"type": ..., "message": ...}} dict is deserialized to
       an Exception of the recorded type carrying the message.
@@ -5670,13 +5914,40 @@ def _from_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
             device=values.device,
             is_coalesced=info["is_coalesced"],
         )
+      if "$$sparse_compressed" in x:
+        info = x["$$sparse_compressed"]
+        compressed_indices = _from_plistlib_compatible(
+            info["compressed_indices"]
+        )
+        plain_indices = _from_plistlib_compatible(info["plain_indices"])
+        values = _from_plistlib_compatible(info["values"])
+        layout = getattr(torch, info["layout"])
+        return torch.ops.aten._sparse_compressed_tensor_unsafe(
+            compressed_indices,
+            plain_indices,
+            values,
+            info["size"],
+            dtype=values.dtype,
+            layout=layout,
+            device=values.device,
+        )
       if "$$tuple" in x:
         return tuple(_from_plistlib_compatible(e) for e in x["$$tuple"])
+      if "$$set" in x:
+        return {_from_plistlib_compatible(e) for e in x["$$set"]}
+      if "$$frozenset" in x:
+        return frozenset(_from_plistlib_compatible(e) for e in x["$$frozenset"])
+      if "$$slice" in x:
+        return slice(*(_from_plistlib_compatible(e) for e in x["$$slice"]))
+      if "$$ellipsis" in x:
+        return Ellipsis
       if "$$dtype" in x:
         dtype_name = x["$$dtype"]
         return getattr(torch, dtype_name)
       if "$$device" in x:
         return torch.device(x["$$device"])
+      if "$$layout" in x:
+        return getattr(torch, x["$$layout"])
       if "$$memory_format" in x:
         format_name = x["$$memory_format"]
         return getattr(torch, format_name)
@@ -5707,6 +5978,42 @@ def _from_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
         return enum_name
       if "$$real" in x and "$$imag" in x:
         return complex(x["$$real"], x["$$imag"])
+      if "$$dataclass" in x:
+        info = x["$$dataclass"]
+        cls = _resolve_enum_class(info.get("module", ""), info.get("class", ""))
+        fields = {
+            k: _from_plistlib_compatible(v)
+            for k, v in info.get("fields", {}).items()
+        }
+        if cls is not None and dataclasses.is_dataclass(cls):
+          init_names = {f.name for f in dataclasses.fields(cls) if f.init}
+          init_fields = {k: v for k, v in fields.items() if k in init_names}
+          extra_fields = {
+              k: v for k, v in fields.items() if k not in init_names
+          }
+          try:
+            obj = cls(**init_fields)
+          except TypeError:
+            obj = object.__new__(cls)
+            extra_fields = fields
+          for k, v in extra_fields.items():
+            object.__setattr__(obj, k, v)
+          return obj
+        if cls is not None:
+          return cls(**fields)
+        return fields
+      if "$$object" in x:
+        info = x["$$object"]
+        cls = _resolve_enum_class(info.get("module", ""), info.get("class", ""))
+        attrs = _from_plistlib_compatible(info.get("attrs", {}))
+        if cls is not None:
+          try:
+            return cls(**attrs)
+          except Exception:  # pylint: disable=broad-except
+            obj = object.__new__(cls)
+            obj.__dict__.update(attrs)
+            return obj
+        return attrs
       if "$$exception" in x:
         return _deserialize_exception(x["$$exception"])
       return {k: _from_plistlib_compatible(v) for k, v in x.items()}
@@ -5722,6 +6029,31 @@ def _from_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
     )
 
   return _pytree.tree_map(leaf_func, ptree, is_leaf=is_leaf)
+
+
+def _clone_pytree(x: _pytree.PyTree) -> _pytree.PyTree:
+  """Deep-copies a PyTree, cloning compressed sparse tensors that lack storage."""
+
+  def copy_leaf(obj: Any) -> Any:
+    if (
+        isinstance(obj, torch.Tensor)
+        and obj.layout in _COMPRESSED_SPARSE_LAYOUTS
+    ):
+      return obj.detach().clone()
+    if isinstance(obj, OpInput):
+      cloned = object.__new__(OpInput)
+      cloned.name = obj.name
+      cloned.input_value = _clone_pytree(obj.input_value)
+      cloned.args = _clone_pytree(obj.args)
+      cloned.kwargs = _clone_pytree(obj.kwargs)
+      return cloned
+    if isinstance(obj, OpOutput):
+      cloned = object.__new__(OpOutput)
+      cloned.output_value = _clone_pytree(obj.output_value)
+      return cloned
+    return copy.deepcopy(obj)
+
+  return _tensor_tree_map(copy_leaf, x)
 
 
 def _safe_tensor_repr(obj: Any) -> Any:
@@ -5745,9 +6077,9 @@ class OpInput:
   def __init__(self, sample: SampleInput) -> None:
     cpu = torch.device("cpu")
     self.name = sample.name
-    self.input_value = to(copy.deepcopy(sample.input), cpu)
-    self.args = to(copy.deepcopy(sample.args), cpu)
-    self.kwargs = to(copy.deepcopy(sample.kwargs), cpu)
+    self.input_value = to(_clone_pytree(sample.input), cpu)
+    self.args = to(_clone_pytree(sample.args), cpu)
+    self.kwargs = to(_clone_pytree(sample.kwargs), cpu)
 
   def __str__(self) -> str:
     return self.__repr__()
@@ -5813,7 +6145,7 @@ class OpOutput:
       return
 
     cpu = torch.device("cpu")
-    self.output_value = to(copy.deepcopy(output_value), cpu)
+    self.output_value = to(_clone_pytree(output_value), cpu)
 
   def __str__(self) -> str:
     return self.__repr__()
@@ -5958,6 +6290,67 @@ def _dummy_grad(device: torch.device) -> torch.Tensor:
   return torch.tensor([], dtype=torch.float32, device=device)
 
 
+_COMPILED_DENY_LIST: frozenset[str] = frozenset(
+    [
+        ####
+        # TODO: Materialize was called on a placeholder tensor.
+        #  Dynamo handing our compile backend a graph with data dependent ops.
+        "masked_scatter",
+        ####
+        # TODO: failed to validate and reorder inputs.
+        # This is mostly the same as the numel == 0 case, but for embedded
+        # constants in the graph.
+        "arange",
+        "tril_indices",
+        ####
+        # TODO: Precision mismatch, need to update tolerance.
+        "nn.functional.gelu",
+        ####
+        # TODO: Unsupported CVT X64 expansion from c64[] to c128[]
+        #  Likely only shows in compiled mode due to optimization level
+        #  difference
+        "addcdiv",
+        ####
+        # TODO: dynamo assert _PyEval_EvalFrameDefault is EMPTY
+        #  Unclear if these are dynamo bugs or due to the special dynamo flags
+        #  we set in our backend.
+        "exponential",  # exponential_complex64_sample0
+        "empty_strided",
+        "empty_strided.out",
+        "multinomial",
+        "nn.functional.scaled_dot_product_attention",
+        "normal",
+        "normal.out",
+        "randint",
+        "randint.out",
+        "randn",
+        "uniform",
+        # Zero-element 1D (0,) out tensor passed by _prepare_out fails shape
+        # expansion in Inductor for 4D _masked_softmax inputs.
+        "_masked_softmax.out",
+        "_masked_softmax_backward.out",
+    ]
+    + (
+        # Before PyTorch 2.15, Dynamo does not treat a torch.return_types
+        # `out=` (e.g. cummax/max/min/topk's (values, indices)) as a tuple, so
+        # it misses the graph break for resizing the zero-element out tensors.
+        # Tracing then fails with "list index out of range" (or leaves the
+        # wrong out shape for 0-D inputs).
+        ["cummax.out", "cummin.out", "max.out", "min.out", "topk.out"]
+        if utils.get_torch_version() < (2, 15, 0)
+        else []
+    )
+    + (
+        # Before PyTorch 2.14, Dynamo does not resize the zero-element `out=`
+        # tensor passed to `torch.empty(..., out=out)`, leaving it at shape
+        # (0,).
+        ["empty.out"]
+        if utils.get_torch_version() < (2, 14, 0)
+        else []
+    )
+)
+
+
 def _compiled_supports_op(
     op: OpInfo, device_op_input: OpInput, variant: OpVariant
 ) -> bool:
@@ -6002,79 +6395,10 @@ def _compiled_supports_op(
   ):
     return False
 
-  compiled_deny_list = [
-      ####
-      # TODO: Materialize was called on a placeholder tensor.
-      #  Dynamo handing our compile backend a graph with data dependent ops.
-      "index_put",
-      "masked_scatter",
-      "masked_select",
-      "nonzero",
-      ####
-      # TODO: failed to validate and reorder inputs.
-      # This is mostly the same as the numel == 0 case, but for embedded
-      # constants in the graph.
-      "arange",
-      "empty",
-      "split_with_sizes",
-      "tril_indices",
-      ####
-      # TODO: NaN result
-      "prod",
-      "topk",
-      ####
-      # TODO: Precision mismatch, need to update tolerance.
-      "nn.functional.gelu",
-      ####
-      # TODO: Unsupported CVT X64 expansion from c64[] to c128[]
-      #  Likely only shows in compiled mode due to optimization level difference
-      "addcdiv",
-      ####
-      # TODO: Timeout, looks like this causes a hang somewhere.
-      "_foreach_erf",
-      "_foreach_erf.out",
-      ####
-      # TODO: dynamo assert _PyEval_EvalFrameDefault is EMPTY
-      #  Unclear if these are dynamo bugs or due to the special dynamo flags we
-      #  set in our backend.
-      "_foreach_add",
-      "_foreach_add.out",
-      "bincount",
-      "exponential",  # exponential_complex64_sample0
-      "empty_strided",
-      "empty_strided.out",
-      "multinomial",
-      "nn.functional.scaled_dot_product_attention",
-      "normal",
-      "normal.out",
-      "randint",
-      "randint.out",
-      "randn",
-      "resize_",
-      "uniform",
-      # TODO(b/568080282): Fix list index out of range and 0D shape mismatch in
-      # compiled .out variant with dim.
-      "max.out",
-      "min.out",
-      # Zero-element 1D (0,) out tensor passed by _prepare_out fails shape
-      # expansion in Inductor for 4D _masked_softmax inputs.
-      "_masked_softmax.out",
-      "_masked_softmax_backward.out",
-  ]
-  if utils.get_torch_version() < (2, 15, 0):
-    # Before PyTorch 2.15, Dynamo does not treat a torch.return_types `out=`
-    # (e.g. cummax's (values, indices)) as a tuple, so it misses the graph
-    # break for resizing the zero-element out tensors. Tracing then fails with
-    # "list index out of range" (or leaves the wrong out shape for 0-D inputs).
-    compiled_deny_list += [
-        "cummax.out",
-        "cummin.out",
-    ]
-
   key = op.name
   if variant == OpVariant.OUT:
     key += ".out"
-  return key not in compiled_deny_list
+  return key not in _COMPILED_DENY_LIST
 
 
 def _target_device(dtype: torch.dtype, device: torch.device) -> torch.device:
@@ -6265,7 +6589,7 @@ def _run_with_symbolic_dims(
   Returns:
     The input dims that the op specialized, or the exception it raised.
   """
-  device_input = to(copy.deepcopy(op_input), device)
+  device_input = to(_clone_pytree(op_input), device)
   shape_env = symbolic_shapes.ShapeEnv()
   fake_mode = fake_tensor.FakeTensorMode(
       shape_env=shape_env, allow_non_fake_inputs=True
@@ -6509,10 +6833,14 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
 
   def skipTest(self, reason: typing.Any) -> typing.Never:
     """Overrides TestCase.skipTest to bypass skips during dtype exclusion collection."""
-    # Never skip tests when dumping dtype exclusions. Every test must run so
-    # that its `do_test_op` calls can record its dtype exclusions, regardless of
-    # any mode-based or environment-based skip conditions.
-    if _dump_dtype_exclusions_mode():
+    # Never skip implemented tests when dumping dtype exclusions. Every
+    # implemented test must run so that its `do_test_op` calls can record its
+    # dtype exclusions, regardless of any mode-based or environment-based skip
+    # conditions. Tests marked @unimplemented_on_tpu are still skipped.
+    method = getattr(self, self._testMethodName, None)
+    if _dump_dtype_exclusions_mode() and not getattr(
+        method, _UNIMPLEMENTED_ON_TPU_ATTR, None
+    ):
       return  # pyrefly: ignore[bad-return]
     super().skipTest(reason)
 
@@ -6701,11 +7029,17 @@ class OpInfoTestBase(TorchTpuTestBase):
   """
 
   def setUp(self) -> None:
+    method = getattr(self, self._testMethodName, None)
+    if not _records_unimplemented_ops():
+      if reason := getattr(method, _UNIMPLEMENTED_ON_TPU_ATTR, None):
+        # Raise unittest.SkipTest directly rather than calling self.skipTest()
+        # so DUMP_DTYPE_EXCLUSIONS mode cannot bypass the skip and corrupt
+        # op_dtype_exclusions.yaml across shared op_name variants.
+        raise unittest.SkipTest(f"Unimplemented on TPU: {reason}")
     super().setUp()
     # Each test records its goldens on one GPU: the one set by
     # @record_gpu_goldens_on, or the default GPU if untagged.
     if _gen_gpu_golden_mode():
-      method = getattr(self, self._testMethodName, None)
       arch = getattr(method, _GPU_GOLDEN_ARCH_ATTR, _DEFAULT_GPU_GOLDEN_ARCH)
       if golden_target_gpu_arch() != arch:
         self.skipTest(
@@ -7028,9 +7362,9 @@ class OpInfoTestBase(TorchTpuTestBase):
     op_func = _op_func(op, variant, target_device)
 
     # Clone the sample to prevent the op from mutating it.
-    # We must deepcopy op_input *before* setting its device to the given device,
+    # We must clone op_input *before* setting its device to the given device,
     # because deepcopying a TPU tensor is not implemented yet.
-    device_op_input = to(copy.deepcopy(op_input), target_device)
+    device_op_input = to(_clone_pytree(op_input), target_device)
     if variant == OpVariant.OUT:
       device_op_input.kwargs["out"] = out
 
@@ -7115,7 +7449,9 @@ class OpInfoTestBase(TorchTpuTestBase):
             )
         )
     except Exception as e:  # pylint: disable=broad-except
-      # The op raised an exception.
+      # The op raised an exception. Clear the traceback so frame locals (e.g.
+      # CUDA tensors) are not kept alive by retained Exception objects.
+      e.__traceback__ = None
       if device.type != "tpu":
         print(
             f"Exception caught during golden generation for {op_name}: {e}",
@@ -7835,7 +8171,7 @@ class OpInfoTestBase(TorchTpuTestBase):
     """
     input_value = golden_input.input_value
     if compute_grad:
-      input_value = _requires_grad_input(copy.deepcopy(input_value))
+      input_value = _requires_grad_input(_clone_pytree(input_value))
       if not _can_compute_grad(variant, input_value):
         return (
             (
@@ -8263,7 +8599,7 @@ def _save_golden_file() -> None:
     )
   except Exception as e:
     print(
-        f"Failed to dump golden data: {e}, where:\n{encoded_data=}",
+        f"Failed to dump golden data: {e}",
         flush=True,
     )
     raise

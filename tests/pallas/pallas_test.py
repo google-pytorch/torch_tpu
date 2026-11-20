@@ -25,6 +25,7 @@ from typing import TypeAlias
 from unittest import mock
 import warnings
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 from jax.experimental import pallas as pl
 from jax.interpreters.mlir import ir
@@ -182,6 +183,13 @@ def jax_add_or_subtract_vectors_wrapper(
   out_shape = jax.ShapeDtypeStruct(x.shape, x.dtype)
   wrapped = functools.partial(_add_or_subtract_vectors_kernel, mode)
   return pl.pallas_call(wrapped, out_shape=out_shape)(x, y)
+
+
+def _donate_kernel(
+    x: jax.Array, kv: jax.Array, scale: int, *, mode: str = "a"
+) -> tuple[jax.Array, jax.Array]:
+  del mode  # Unused.
+  return x * scale, kv
 
 
 class TestPallasKernels(seed_test_utils.RepeatableTest):
@@ -1954,6 +1962,91 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     test_utils.assert_close(res_aliased.cpu(), torch.full((2, 2), 10.0))
     test_utils.assert_close(t_aliased.cpu(), torch.full((2, 2), 10.0))
 
+  def test_custom_jax_kernel_donates_keyword_arguments_by_name(self):
+    """Verifies custom_jax_kernel donates keyword arguments by name on TPU."""
+
+    def kernel_donate_kwonly_tensor(
+        x: jax.Array, kv: jax.Array, *, extra: jax.Array
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      return x * 3, kv, extra
+
+    # `x` is donated at the position jax.jit inferred from its name, and the
+    # keyword-only `extra` by name.
+    kernel = pallas.custom_jax_kernel(
+        kernel_donate_kwonly_tensor,
+        donate_argnames=("x", "extra"),
+        warn_deprecated=False,
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    t_extra = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv, out_extra = kernel(t_x, t_kv, extra=t_extra)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(out_extra.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(t_x)
+    self._assert_donated(t_extra)
+    test_utils.assert_close(t_kv.cpu(), torch.full((2, 2), 2.0))
+
+  @parameterized.named_parameters(
+      ("positional", lambda op, x, kv: op(x, kv, 3)),
+      ("keyword", lambda op, x, kv: op(x, kv=kv, scale=3)),
+  )
+  def test_donate_argnames(self, call_op):
+    """Verifies jax_op donates only the named tensor, however it's passed."""
+    op = pallas.jax_op(
+        f"test::{self._testMethodName}", _donate_kernel, donate_argnames="kv"
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv = call_op(op, t_x, t_kv)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_kv)
+
+  def test_donate_argnames_sequence(self):
+    """Verifies jax_op donates every tensor of a sequence donated by name."""
+
+    def kernel_donate_seq_by_name(
+        opt: jax.Array | None,
+        xs: Sequence[jax.Array],
+        kv: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+      base = xs[0] if opt is None else xs[0] + opt
+      return base, xs[1], kv
+
+    op_seq = pallas.jax_op(
+        "test::kernel_donate_seq_by_name",
+        kernel_donate_seq_by_name,
+        donate_argnames=("xs",),
+    )
+    d0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    d1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    kv_kept = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    r0, r1, r_kv = op_seq(None, [d0, d1], kv_kept)
+    test_utils.assert_close(r0.cpu(), torch.ones((2, 2)))
+    test_utils.assert_close(r1.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(r_kv.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(d0)
+    self._assert_donated(d1)
+    test_utils.assert_close(kv_kept.cpu(), torch.full((2, 2), 4.0))
+
+  def test_donate_argnames_partial(self):
+    """Verifies jax_op donates by name through `functools.partial`."""
+    op_partial = pallas.jax_op(
+        "test::kernel_donate_partial",
+        functools.partial(_donate_kernel, scale=3),
+        donate_argnames=("kv",),
+    )
+    t_x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_kv = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    out_x, out_kv = op_partial(t_x, t_kv)
+    test_utils.assert_close(out_x.cpu(), torch.full((2, 2), 3.0))
+    test_utils.assert_close(out_kv.cpu(), torch.full((2, 2), 2.0))
+    test_utils.assert_close(t_x.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_kv)
+
   def test_negative_donate_argnums_skip_keyword_only_parameters(self):
     """Verifies negative donate_argnums count only positional parameters."""
     if jax.__version_info__ < (0, 12, 0):
@@ -2275,6 +2368,282 @@ class TestSplashAttention(seed_test_utils.RepeatableTest):
     test_utils.assert_close(q_tpu.grad.cpu(), q_ref.grad, rtol=1e-2, atol=1e-2)
     test_utils.assert_close(k_tpu.grad.cpu(), k_ref.grad, rtol=1e-2, atol=1e-2)
     test_utils.assert_close(v_tpu.grad.cpu(), v_ref.grad, rtol=1e-2, atol=1e-2)
+
+  def test_make_splash_attention_fn_rectangular_export(self):
+    kernel_lib = splash_attention.splash_attention_kernel
+    mask_lib = splash_attention.splash_attention_mask
+    block_sizes = kernel_lib.BlockSizes(
+        block_q=128,
+        block_kv=128,
+        block_kv_compute=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+        block_q_dq=128,
+        block_kv_dq=128,
+        use_fused_bwd_kernel=False,
+    )
+    rect_mask = mask_lib.MultiHeadMask(
+        masks=(mask_lib.CausalMask(shape=(256, 512)),) * 4
+    )
+    with jax.transfer_guard("disallow"):
+      fwd_info, dq_info, dkv_info, _ = (
+          splash_attention._make_numpy_splash_mask_infos(rect_mask, block_sizes)
+      )
+    self._assert_host_numpy_mask_info(fwd_info)
+    self._assert_host_numpy_mask_info(dq_info)
+    self._assert_host_numpy_mask_info(dkv_info)
+
+    for kwargs in (
+        dict(
+            seq_len=256,
+            kv_seq_len=512,
+            n_heads=4,
+            n_kv_heads=4,
+            is_causal=False,
+            use_fused_bwd_kernel=True,
+            block_q=128,
+            block_kv=256,
+            block_kv_compute=256,
+            block_q_dkv=128,
+            block_kv_dkv=256,
+            block_kv_dkv_compute=256,
+        ),
+        dict(
+            seq_len=512,
+            kv_seq_len=256,
+            n_heads=4,
+            n_kv_heads=2,
+            is_causal=False,
+            use_fused_bwd_kernel=False,
+            block_q=256,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=256,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+            block_q_dq=256,
+            block_kv_dq=128,
+        ),
+        dict(
+            seq_len=256,
+            kv_seq_len=512,
+            n_heads=4,
+            n_kv_heads=1,
+            is_causal=True,
+            use_fused_bwd_kernel=True,
+            block_q=128,
+            block_kv=128,
+            block_kv_compute=128,
+            block_q_dkv=128,
+            block_kv_dkv=128,
+            block_kv_dkv_compute=128,
+        ),
+    ):
+      q_len = kwargs["seq_len"]
+      kv_len = kwargs["kv_seq_len"]
+      q_spec = jax.ShapeDtypeStruct((2, 4, q_len, 128), jnp.float32)
+      kv_shape = (
+          (2, kv_len, 128)
+          if kwargs["n_kv_heads"] == 1
+          else (2, kwargs["n_kv_heads"], kv_len, 128)
+      )
+      kv_spec = jax.ShapeDtypeStruct(kv_shape, jnp.float32)
+      lse_spec = jax.ShapeDtypeStruct((2, 4, q_len), jnp.float32)
+      with jax.transfer_guard("disallow"):
+        fwd_fn, bwd_fn = splash_attention._make_splash_attention_fn(**kwargs)
+        fwd_exp = jax.export.export(fwd_fn, platforms=["tpu"])(
+            q_spec, kv_spec, kv_spec
+        )
+        bwd_exp = jax.export.export(bwd_fn, platforms=["tpu"])(
+            q_spec, kv_spec, kv_spec, q_spec, lse_spec, q_spec
+        )
+      self.assertEqual(
+          [a.shape for a in fwd_exp.out_avals], [q_spec.shape, lse_spec.shape]
+      )
+      self.assertEqual(
+          [a.shape for a in bwd_exp.out_avals],
+          [q_spec.shape, kv_spec.shape, kv_spec.shape],
+      )
+
+  def test_get_splash_op_names_separates_kv_seq_len(self):
+    base = dict(
+        n_heads=4,
+        n_kv_heads=2,
+        is_causal=False,
+        block_q=128,
+        block_kv=128,
+        block_kv_compute=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+    )
+    ops_default = splash_attention._get_splash_op_names(seq_len=256, **base)
+    ops_256_256 = splash_attention._get_splash_op_names(
+        seq_len=256, kv_seq_len=256, **base
+    )
+    ops_256_512 = splash_attention._get_splash_op_names(
+        seq_len=256, kv_seq_len=512, **base
+    )
+    ops_512_256 = splash_attention._get_splash_op_names(
+        seq_len=512, kv_seq_len=256, **base
+    )
+    self.assertEqual(ops_default, ops_256_256)
+    self.assertNotEqual(ops_256_256, ops_256_512)
+    self.assertNotEqual(ops_256_512, ops_512_256)
+    self.assertNotEqual(ops_256_256, ops_512_256)
+
+    with torch._subclasses.FakeTensorMode():
+      q = torch.randn(
+          2, 256, 4, 128, dtype=torch.bfloat16, requires_grad=True
+      ).transpose(1, 2)
+      k = torch.randn(
+          2, 512, 2, 128, dtype=torch.bfloat16, requires_grad=True
+      ).transpose(1, 2)
+      v = torch.randn(
+          2, 512, 2, 128, dtype=torch.bfloat16, requires_grad=True
+      ).transpose(1, 2)
+      q.retain_grad()
+      k.retain_grad()
+      v.retain_grad()
+      out = splash_attention.splash_sdpa(
+          q, k, v, is_causal=False, enable_gqa=True
+      )
+      out.sum().backward()
+      self.assertEqual(out.shape, (2, 4, 256, 128))
+      self.assertTrue(out.is_contiguous())
+      self.assertIsNotNone(q.grad)
+      self.assertIsNotNone(k.grad)
+      self.assertIsNotNone(v.grad)
+      self.assertEqual(q.grad.shape, (2, 4, 256, 128))
+      self.assertEqual(k.grad.shape, (2, 2, 512, 128))
+      self.assertEqual(v.grad.shape, (2, 2, 512, 128))
+      self.assertTrue(q.grad.is_contiguous())
+      self.assertTrue(k.grad.is_contiguous())
+      self.assertTrue(v.grad.is_contiguous())
+
+  def test_splash_sdpa_cross_attention_fwd_bwd(self):
+    bsz, n_heads, head_dim = 2, 4, 128
+    torch.manual_seed(42)
+    cases = (
+        (256, 512, 4, False, True, True, 128, 128),
+        (512, 256, 2, False, False, True, None, None),
+        (256, 512, 1, True, True, False, None, None),
+    )
+    for (
+        q_len,
+        kv_len,
+        n_kv_heads,
+        is_causal,
+        use_fused_bwd,
+        use_vmap_bwd,
+        block_q,
+        block_kv,
+    ) in cases:
+      enable_gqa = n_heads != n_kv_heads
+      q_cpu = torch.randn(bsz, n_heads, q_len, head_dim, dtype=torch.float32)
+      k_cpu = torch.randn(
+          bsz, n_kv_heads, kv_len, head_dim, dtype=torch.float32
+      )
+      v_cpu = torch.randn(
+          bsz, n_kv_heads, kv_len, head_dim, dtype=torch.float32
+      )
+      dy_cpu = torch.randn(bsz, n_heads, q_len, head_dim, dtype=torch.float32)
+
+      q_ref = q_cpu.clone().requires_grad_(True)
+      k_ref = k_cpu.clone().requires_grad_(True)
+      v_ref = v_cpu.clone().requires_grad_(True)
+      out_ref = torch.nn.functional.scaled_dot_product_attention(
+          q_ref,
+          k_ref,
+          v_ref,
+          is_causal=is_causal,
+          enable_gqa=enable_gqa,
+      )
+      out_ref.backward(dy_cpu)
+
+      q_tpu = q_cpu.to("tpu").detach().requires_grad_(True)
+      k_tpu = k_cpu.to("tpu").detach().requires_grad_(True)
+      v_tpu = v_cpu.to("tpu").detach().requires_grad_(True)
+      out_tpu = torch.tpu.ops.splash_sdpa(
+          q_tpu,
+          k_tpu,
+          v_tpu,
+          is_causal=is_causal,
+          enable_gqa=enable_gqa,
+          block_q=block_q,
+          block_kv=block_kv,
+          use_fused_bwd_kernel=use_fused_bwd,
+          use_vmap_bwd=use_vmap_bwd,
+      )
+      out_tpu.backward(dy_cpu.to("tpu"))
+
+      self.assertEqual(out_tpu.shape, (bsz, n_heads, q_len, head_dim))
+      self.assertIsNotNone(q_tpu.grad)
+      self.assertIsNotNone(k_tpu.grad)
+      self.assertIsNotNone(v_tpu.grad)
+      self.assertEqual(k_tpu.grad.shape, (bsz, n_kv_heads, kv_len, head_dim))
+      self.assertEqual(v_tpu.grad.shape, (bsz, n_kv_heads, kv_len, head_dim))
+      test_utils.assert_close(out_tpu.cpu(), out_ref, rtol=2e-2, atol=2e-2)
+      test_utils.assert_close(
+          q_tpu.grad.cpu(), q_ref.grad, rtol=3e-2, atol=3e-2
+      )
+      test_utils.assert_close(
+          k_tpu.grad.cpu(), k_ref.grad, rtol=3e-2, atol=3e-2
+      )
+      test_utils.assert_close(
+          v_tpu.grad.cpu(), v_ref.grad, rtol=3e-2, atol=3e-2
+      )
+
+  def test_splash_sdpa_cross_attention_invalid_inputs(self):
+    q = torch.zeros(2, 4, 256, 128, dtype=torch.bfloat16)
+    k_valid = torch.zeros(2, 4, 512, 128, dtype=torch.bfloat16)
+    v_valid = torch.zeros(2, 4, 512, 128, dtype=torch.bfloat16)
+    k_unaligned = torch.zeros(2, 4, 300, 128, dtype=torch.bfloat16)
+    v_unaligned = torch.zeros(2, 4, 300, 128, dtype=torch.bfloat16)
+    v_mismatched = torch.zeros(2, 4, 256, 128, dtype=torch.bfloat16)
+    k_bad_batch = torch.zeros(1, 4, 512, 128, dtype=torch.bfloat16)
+    v_bad_batch = torch.zeros(1, 4, 512, 128, dtype=torch.bfloat16)
+    seg_ids = torch.zeros(2, 256, dtype=torch.int32)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"kv_seq_len \(300\) must be a positive multiple of 128"
+    ):
+      splash_attention.splash_sdpa(q, k_unaligned, v_unaligned, is_causal=False)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"kv_seq_len \(300\) must be a positive multiple of 128"
+    ):
+      splash_attention.splash_sdpa(
+          q, k_unaligned, v_unaligned, is_causal=False, block_kv=128
+      )
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"Expected k and v leading dimensions \(2, 4, 512\)"
+    ):
+      splash_attention.splash_sdpa(q, k_valid, v_mismatched, is_causal=False)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError, r"Expected k and v leading dimensions \(2, 4, 512\)"
+    ):
+      splash_attention.splash_sdpa(q, k_bad_batch, v_bad_batch, is_causal=False)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError,
+        r"segment_ids requires matching query and key/value sequence lengths",
+    ):
+      splash_attention.splash_sdpa(
+          q, k_valid, v_valid, is_causal=False, segment_ids=seg_ids
+      )
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
+        ValueError,
+        r"local_window_size requires matching query and key/value sequence"
+        r" lengths",
+    ):
+      splash_attention.splash_sdpa(
+          q, k_valid, v_valid, is_causal=True, local_window_size=128
+      )
 
 
 if __name__ == "__main__":

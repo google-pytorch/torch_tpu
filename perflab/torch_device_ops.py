@@ -200,6 +200,12 @@ class TorchDeviceOps:
       torch.accelerator.synchronize()
       torch.accelerator.reset_peak_memory_stats(self.device)
 
+  def release_cached_memory(self) -> None:
+    """Releases the device memory that the allocator caches but doesn't use."""
+    if self.target.device_kind != target_lib.DeviceKind.CPU:
+      torch.accelerator.synchronize()
+      torch.accelerator.empty_cache()
+
   def peak_memory_mb(self) -> float:
     """Peak device memory in MB since the last reset."""
     if self.target.device_kind == target_lib.DeviceKind.CPU:

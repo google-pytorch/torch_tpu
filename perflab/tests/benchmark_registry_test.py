@@ -128,6 +128,8 @@ def _parse_registry(text: str) -> list[_Benchmark]:
 class _Stepper:
   """Stepper whose step does nothing."""
 
+  supports_pipelined_steps = False
+
   def get_step_fn(self):
     return lambda: None
 
@@ -149,6 +151,12 @@ class _DeviceOps:
 
   def reset_peak_memory(self):
     pass
+
+  def release_cached_memory(self):
+    pass
+
+  def agree_on_step_count(self, steps):
+    return steps
 
   def peak_memory_mb(self):
     return 1.0

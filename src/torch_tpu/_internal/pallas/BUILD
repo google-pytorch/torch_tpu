@@ -14,18 +14,19 @@
 
 # Domain experts for this package:
 # zhanyong-wan
-# cota
-# willfroom
 # yilingyuan
+# nvgrw
 # jparkerh
-# benawilson
+# cota
+# cbasile-g
+# willfroom
 
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//shims/py_rules:py_library.bzl", "py_library")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
@@ -113,10 +114,11 @@ torch_tpu_py_library(
 # NOTE: We use pytype_strict_library here instead of torch_tpu_py_library to break a circular
 # dependency cycle where torch_tpu_py_library automatically injects a dependency on
 # //src/torch_tpu/_internal:testing.
-pytype_strict_library(
+py_library(
     # PY_LIBRARY_OK=Break circular dependency cycle with _internal:testing.
     name = "pallas_kernel_generate_utils",
     srcs = ["pallas_kernel_generate_utils.py"],
+    type_checking = True,
     deps = [],
 )
 

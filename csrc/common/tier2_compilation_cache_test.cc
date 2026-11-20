@@ -103,13 +103,13 @@ std::vector<std::string> ListFiles(const std::string& directory_path) {
   return files;
 }
 
-// Returns a cache key with the given shapeless key, dimensions key, and
+// Returns a cache key with the given extentless key, dimensions key, and
 // a placeholder compile options key.
-CompilationCacheKey MakeCacheKey(uint64_t shapeless_key, int num_dims) {
+CompilationCacheKey MakeCacheKey(uint64_t extentless_key, int num_dims) {
   const Dimensions dims(num_dims, 1);
   const DimensionsKey dimensions_key(dims);
   return CompilationCacheKey(
-      GraphKey(ShapelessKey(shapeless_key), dimensions_key),
+      GraphKey(ExtentlessKey(extentless_key), dimensions_key),
       GetCompilationSpec(CompilationMode::kFastCompile).compile_options_key);
 }
 
@@ -157,7 +157,7 @@ class Tier2CacheEntryLockTest : public Tier2CacheTest {};
 // should create it.
 TEST_F(Tier2CacheEntryLockTest, CreatesLockFileIfNeeded) {
   // Acquire a lock for the given key. This should create the lock file.
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/0);
   Tier2CacheEntryLock lock(key);
 
   // The lock file should be created.
@@ -170,7 +170,7 @@ TEST_F(Tier2CacheEntryLockTest, CreatesLockFileIfNeeded) {
 // should not create it.
 TEST_F(Tier2CacheEntryLockTest, DoesNotCreateLockFileIfItExists) {
   // Create a lock file for the given key manually.
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/0);
   const std::string lock_path =
       absl::StrCat(cache_path_, "/", key.CompactFormat(), ".lock");
   const UniqueFileDescriptor fd(
@@ -189,7 +189,7 @@ TEST_F(Tier2CacheEntryLockTest, DoesNotCreateLockFileIfItExists) {
 
 // Only one user can hold the lock for a given key at a time.
 TEST_F(Tier2CacheEntryLockTest, OnlyOneUserCanHoldLockAtATime) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/456, /*num_dims=*/1);
+  const auto key = MakeCacheKey(/*extentless_key=*/456, /*num_dims=*/1);
 
   // How many threads are currently inside the lock.
   std::atomic<int> threads_inside_lock{0};
@@ -249,7 +249,7 @@ TEST_F(Tier2CacheTest, CachePath) {
 // AtomicWriteToCacheFile() should write the given data to the cache file
 // for the given key, if the file does not exist.
 TEST_F(Tier2CacheTest, WriteToCacheEntryIfDoesNotExist) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/0);
   Tier2CacheEntryLock lock(key);
   const std::string serialized_data = "test data";
   ASSERT_EQ(
@@ -266,7 +266,7 @@ TEST_F(Tier2CacheTest, WriteToCacheEntryIfDoesNotExist) {
 // AtomicWriteToCacheFile() should overwrite the existing cache file for
 // the given key, if it exists.
 TEST_F(Tier2CacheTest, WriteToCacheEntryIfExists) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/0);
   Tier2CacheEntryLock lock(key);
 
   // The first write should create the cache file.
@@ -290,7 +290,7 @@ TEST_F(Tier2CacheTest, WriteToCacheEntryIfExists) {
 
 // Concurrent writes to the same cache file should not corrupt it.
 TEST_F(Tier2CacheTest, ConcurrentWritesDoNotCorruptCacheFile) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/456, /*num_dims=*/1);
+  const auto key = MakeCacheKey(/*extentless_key=*/456, /*num_dims=*/1);
   const std::string cache_file_path =
       absl::StrCat(cache_path_, "/", key.CompactFormat(), ".bin");
 
@@ -330,7 +330,7 @@ TEST_F(Tier2CacheTest, ConcurrentWritesDoNotCorruptCacheFile) {
 // GetFromTier2Cache() should return a not-found error if the cache file does
 // not exist.
 TEST_F(Tier2CacheTest, GetFromTier2CacheFailsIfCacheFileDoesNotExist) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/0);
   Tier2CacheEntryStats tier2_stats;
   EXPECT_EQ(GetFromTier2Cache(key, absl::Now(), tier2_stats).status().code(),
             error::kNotFound);
@@ -339,7 +339,7 @@ TEST_F(Tier2CacheTest, GetFromTier2CacheFailsIfCacheFileDoesNotExist) {
 // GetFromTier2Cache() should return an error if the cache file exists
 // but has invalid data.
 TEST_F(Tier2CacheTest, GetFromTier2CacheFailsIfCacheFileIsInvalid) {
-  const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
+  const auto key = MakeCacheKey(/*extentless_key=*/123, /*num_dims=*/0);
   Tier2CacheEntryLock lock(key);
   const std::string serialized_data = "invalid data";
   ASSERT_EQ(

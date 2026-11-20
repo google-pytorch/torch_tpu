@@ -328,6 +328,10 @@ at::Tensor AtenViewAsComplex(const at::Tensor& self) {
         << " to be even numbers (except in the last dimension), got "
         << DropLastAndGetOddStridesStr(strides);
 
+    TT_CHECK_THROW(self.storage_offset() % 2 == 0, error::kInvalidArgument)
+        << "expected the storage offset to be divisible by 2, got "
+        << self.storage_offset();
+
     Dimensions output_dims = CopyIntVector(self.sizes());
     output_dims.pop_back();
     Strides output_strides;

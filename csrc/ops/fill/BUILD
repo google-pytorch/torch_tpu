@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# zhanyong-wan
-# jonathan1920
+# haitong
+# adamomainz
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
@@ -31,6 +31,7 @@ torch_tpu_cc_library(
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:fixed_size_span",
         "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",

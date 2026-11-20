@@ -15,7 +15,7 @@
 # Domain experts for this package:
 # zhanyong-wan
 # benawilson
-# agarwalt
+# cbasile-g
 
 load(
     "//build_files:build_defs.bzl",

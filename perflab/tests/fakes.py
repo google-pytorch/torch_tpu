@@ -15,12 +15,19 @@
 """Shared test doubles for perflab tests.
 
 These are stateful fakes for the boundaries of the perflab harness (the wall
-clock, the XProf profiler) plus a builder for real `XSpace` protos so that
-tests can assert on observable results instead of on mock interactions.
+clock, the XProf profiler, the MLCompass exporter) plus small real objects
+(a tiny `BenchmarkSpec`, a real `XSpace` proto) so that tests can assert on
+observable results instead of on mock interactions.
 """
 
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+import torch
+from perflab import export as export_lib
+from perflab import registry as registry_lib
+from perflab import step_lib
+from perflab import target as target_lib
 
 from tsl.profiler.protobuf import xplane_pb2
 
@@ -71,6 +78,10 @@ class CountingStep:
     pre_warmup_init_calls: Number of `pre_warmup_init` calls.
     post_warmup_hook_calls: Number of `post_warmup_hook` calls.
   """
+
+  # Most tests count the steps that run, so they run no pipelined steps; tests
+  # of the pipelined steps use a subclass that supports them.
+  supports_pipelined_steps = False
 
   def __init__(
       self,
@@ -136,6 +147,7 @@ class RecordingOps:
     peak_mb: Value reported by `peak_memory_mb`.
     recompile_on_calls: `await_result` call numbers that count as a recompile.
     session_id_lookups: Number of device-time lookups by xprof session id.
+    released: Number of `release_cached_memory` calls.
   """
 
   def __init__(
@@ -150,6 +162,7 @@ class RecordingOps:
     self.recompile_on_calls = recompile_on_calls or set()
     self.calls = 0
     self.session_id_lookups = 0
+    self.released = 0
     self._recompiles = 0
 
   def await_result(self, out):
@@ -168,6 +181,12 @@ class RecordingOps:
   def reset_peak_memory(self):
     self.events.append("reset")
     self.reset_count += 1
+
+  def release_cached_memory(self):
+    self.released += 1
+
+  def agree_on_step_count(self, steps):
+    return steps
 
   def peak_memory_mb(self):
     return self.peak_mb
@@ -316,3 +335,45 @@ def make_xspace(
       line.events.add(offset_ps=offset_ps, duration_ps=duration_ps)
       offset_ps += duration_ps
   return xspace
+
+
+class RecordingExporter:
+  """Stands in for `export.export`, the MLCompass upload boundary.
+
+  Attributes:
+    exported: Every `BenchmarkData` that would have been uploaded, in order.
+  """
+
+  def __init__(self):
+    self.exported: list[export_lib.BenchmarkData] = []
+
+  def __call__(self, data: export_lib.BenchmarkData) -> None:
+    self.exported.append(data)
+
+
+def tiny_spec(
+    name: str = "tiny_linear", **overrides: Any
+) -> registry_lib.BenchmarkSpec:
+  """Returns a real forward-only `BenchmarkSpec` over a 4x4 `nn.Linear`.
+
+  The model and inputs are created on the CPU in float32, so the spec is cheap
+  enough for end-to-end harness tests.
+
+  Args:
+    name: The spec name.
+    **overrides: Other `BenchmarkSpec` fields, e.g. `compile_config`.
+  """
+
+  def factory(ctx):
+    del ctx  # The tiny model always runs on the CPU.
+    return torch.nn.Linear(4, 4), (torch.randn(2, 4),), {}
+
+  fields = dict(
+      name=name,
+      factory=factory,
+      stepper=step_lib.StepperType.FORWARD,
+      dtype=target_lib.DType.FP32,
+      presubmit=registry_lib.PresubmitPolicy.RUN,
+  )
+  fields.update(overrides)
+  return registry_lib.BenchmarkSpec(**fields)

@@ -79,6 +79,8 @@ layout check). In addition, follow these conventions:
     [Small CLs](https://google.github.io/eng-practices/review/developer/small-cls.html),
     prefer small and focused pull requests that each solve one problem. When
     possible, split a large change into a series of pull requests.
+*   **Minimalism (No Speculative Bloat)**: Solve only what was asked with the
+    smallest clear diff. Reuse and extend existing code when possible.
 *   **Format Before Pushing**: Run `nox -s format` before every push, and make
     sure `nox -s lint` passes.
 *   **Error Messages**: When adding or modifying user-facing or internal
@@ -89,6 +91,10 @@ layout check). In addition, follow these conventions:
 *   **Const**: Make a variable or function parameter `const` unless there's a
     need to mutate it or move from it. Exception: `MlirOp` must not be `const`,
     as it acts as a reference.
+*   **`[[nodiscard]]`**: Mark a C++ function `[[nodiscard]]` if ignoring its
+    return value likely indicates a bug. Skip it when the return type is already
+    `[[nodiscard]]` (e.g. `absl::Status`, `absl::StatusOr`), and put it only on
+    the declaration, not on a separate definition.
 *   **Boolean Parameters**: Per
     [Tip of the Week #94](https://abseil.io/tips/94), use enum parameters as
     opposed to `bool` to improve call-site readability.
@@ -206,6 +212,11 @@ in `ci/custom_lint_rules.METADATA`:
     what not to run prematurely), followed immediately by a link to the
     canonical `SKILL.md`. **Never** duplicate multi-step procedures, templates,
     or checklists outside their canonical file.
+*   **Prompts Over Scripts for Judgment**: A skill's caller is already an LLM
+    agent with search and CLI tools. Keep semantic judgment, classification, and
+    rare edge cases in concise `SKILL.md` instructions; write helper scripts
+    only for deterministic computation, bulk queries, or mutations the agent
+    cannot do reliably.
 *   **Skill Naming**: Every TorchTPU skill has one name of the form
     `tt-<verb-phrase>`, used as its frontmatter `name` and its directory name
     (`.agents/skills/<name>/`). `nox -s lint` checks the name and directory
@@ -227,12 +238,36 @@ in `ci/custom_lint_rules.METADATA`:
 Before starting a task, check whether one of these skills covers it. If so, read
 its `SKILL.md` and follow it.
 
+*   [`tt-add-precompiled-kernels`](.agents/skills/tt-add-precompiled-kernels/SKILL.md):
+    adding or extending precompiled unbounded dynamic kernels (Mosaic kernels
+    written in Kiln), with their registration and tests.
 *   [`tt-create-change`](.agents/skills/tt-create-change/SKILL.md): committing a
     change, and opening, describing, or updating a pull request, including
     addressing review comments.
 *   [`tt-fix-composite-ops`](.agents/skills/tt-fix-composite-ops/SKILL.md):
     migrating a composite ATen operator to a native one that lowers directly to
     StableHLO.
+*   [`tt-fix-op-lowering-tolerances`](.agents/skills/tt-fix-op-lowering-tolerances/SKILL.md):
+    diagnosing and fixing numerical accuracy gaps and loose tolerances in
+    operator lowerings.
+*   [`tt-implement-ops`](.agents/skills/tt-implement-ops/SKILL.md): implementing
+    a new ATen operator or StableHLO lowering, including C++ registration and
+    tests.
+*   [`tt-manage-api-lifecycle`](.agents/skills/tt-manage-api-lifecycle/SKILL.md):
+    adding, changing, exposing, or deprecating TorchTPU APIs, env vars, or
+    `tt_apis.yaml`.
+*   [`tt-review-code`](.agents/skills/tt-review-code/SKILL.md): reviewing a
+    change for complexity, C++ pitfalls, readability, and style.
+*   [`tt-support-dtypes`](.agents/skills/tt-support-dtypes/SKILL.md): fixing
+    unsupported or excluded dtypes for an op.
+*   [`tt-support-dynamism`](.agents/skills/tt-support-dynamism/SKILL.md):
+    bounded dynamic shape support in op lowerings and `torch.compile` FX passes,
+    and fixing ops in `DYNAMISM_DENY_LISTS`.
+*   [`tt-update-error-coverage-data`](.agents/skills/tt-update-error-coverage-data/SKILL.md):
+    updating the `tests/error_coverage_data.yaml` baseline.
+*   [`tt-update-tolerances`](.agents/skills/tt-update-tolerances/SKILL.md):
+    verifying, calculating, and surgically updating operator error tolerances in
+    `tests/ops_test.py`.
 *   [`tt-write-docs`](.agents/skills/tt-write-docs/SKILL.md): writing, editing,
     or reviewing narrative documentation or README content.
 *   [`tt-write-error-tests`](.agents/skills/tt-write-error-tests/SKILL.md):
