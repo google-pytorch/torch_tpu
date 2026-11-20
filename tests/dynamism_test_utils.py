@@ -21,6 +21,7 @@ Handles the following details for per-op unit testing:
   - Mark inputs as dynamic.
 """
 
+import collections
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 import dataclasses
 import enum
@@ -53,6 +54,17 @@ EAGER = DynamismMode.EAGER
 COMPILE = DynamismMode.COMPILE
 COMPILE_GRAD = DynamismMode.COMPILE_GRAD
 ALL_MODES = frozenset(DynamismMode)
+
+DEFAULT_BUCKET_SIZE = 128
+# When 3+ dimensions on a single tensor are marked dynamic simultaneously
+# without explicit upper bounds, rounding every dimension to 128 produces
+# 128^3 = 2,097,152+ elements (e.g., `flatten` / `repeat_interleave`), causing
+# XLA SliceToDynamic backend compilation to emit ~70k bundles (~2 min per dtype
+# under ASAN) and blow up HBM. Use a smaller power-of-2 bucket step (16) so
+# 3D+ bounded tensors stay small while preserving power-of-2 divisibility
+# guards.
+MULTI_DIM_BUCKET_THRESHOLD = 3
+MULTI_DIM_BUCKET_SIZE = 16
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -103,6 +115,28 @@ class DynamicMarkingPlan:
           "tensor_dims must be non-negative and strictly ascending without"
           f" duplicates, got {self.tensor_dims}."
       )
+
+
+def _compile_bucket_size_for_dims(dims: Iterable[TensorDim]) -> int | None:
+  """Returns an override `bucket_size` for `dims`, or `None` for the default."""
+  dims_per_tensor = collections.Counter(d.tensor_index for d in dims)
+  if max(dims_per_tensor.values(), default=0) >= MULTI_DIM_BUCKET_THRESHOLD:
+    return MULTI_DIM_BUCKET_SIZE
+  return None
+
+
+def compile_bucket_size(plan: DynamicMarkingPlan) -> int | None:
+  """Returns the `torch.compile` `bucket_size` override for `plan`, if any.
+
+  Args:
+    plan: The dynamic marking plan being compiled.
+
+  Returns:
+    `MULTI_DIM_BUCKET_SIZE` when at least one tensor in `plan.coupled_dims` has
+    `>= MULTI_DIM_BUCKET_THRESHOLD` simultaneously dynamic dimensions, or `None`
+    to use the compiler's default bucket size.
+  """
+  return _compile_bucket_size_for_dims(plan.coupled_dims)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -304,6 +338,8 @@ def _satisfies_upper_bound_guards(
     shape_env: symbolic_shapes.ShapeEnv,
     canonical_syms: Iterable[sympy.Symbol],
     mode: DynamismMode,
+    *,
+    bucket_step: int = DEFAULT_BUCKET_SIZE,
 ) -> bool:
   """Returns True if mode-specific upper bounds satisfy `shape_env` guards."""
   if mode == DynamismMode.EAGER:
@@ -324,7 +360,9 @@ def _satisfies_upper_bound_guards(
     vr_upper = shape_env.var_to_range[sym].upper
     finite_ub = None if sympy_numbers.is_infinite(vr_upper) else int(vr_upper)
     bucket_ub[str(sym)] = (
-        finite_ub if finite_ub is not None else -(-sz // 128) * 128
+        finite_ub
+        if finite_ub is not None
+        else -(-sz // bucket_step) * bucket_step
     )
     fallback_ub[str(sym)] = (
         finite_ub
@@ -1094,7 +1132,10 @@ class DynamicOpInfo:
       canonical_syms.add(canonical_sym)
 
     # Verify mode-specific upper bounds satisfy all shape guards.
-    if not _satisfies_upper_bound_guards(shape_env, canonical_syms, mode):
+    bucket_step = _compile_bucket_size_for_dims(coupled) or DEFAULT_BUCKET_SIZE
+    if not _satisfies_upper_bound_guards(
+        shape_env, canonical_syms, mode, bucket_step=bucket_step
+    ):
       logging.debug(
           "[DynamicOpInfo] Rejected %s (%s) in %s: upper-bound guards failed",
           self.op_info.name,
