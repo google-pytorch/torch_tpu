@@ -146,6 +146,7 @@ torch_tpu_cc_library(
         "pjrt_execute.h",
     ],
     deps = [
+        ":pjrt_state",
         ":pjrt_utils",
         "//csrc/common:compilation",
         "//csrc/common:dimension_types",
@@ -185,6 +186,7 @@ torch_tpu_cc_library(
         "pjrt_transfer.h",
     ],
     deps = [
+        ":pjrt_state",
         ":pjrt_utils",
         "//csrc/common:context_manager",
         "//csrc/common:context_states",

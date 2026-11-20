@@ -43,6 +43,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
@@ -117,8 +118,9 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
     const UnboundedDynamicExecutionMetadata& meta,
     absl::Span<xla::PjRtBuffer* const> argument_buffers,
     absl::Span<const Shape> logical_output_shapes) {
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetPjRtClient());
-  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, GetPjRtDevice());
+  PjrtBackend& backend = PjrtBackend::GetInstance();
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, backend.GetClient());
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, backend.GetDevice());
   TT_ASSIGN_OR_RETURN(xla::PjRtMemorySpace * memory_space,
                       GetDefaultMemorySpace(device));
 

@@ -38,6 +38,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/host_allocator.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/future.h"
@@ -157,8 +158,9 @@ absl::StatusOr<DeviceBufferRef> HostToDeviceTransfer::Run() {
 absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>>
 HostToDeviceTransfer::StartTransfer(
     absl_nonnull std::unique_ptr<HostToDeviceTransferImpl> impl) {
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetPjRtClient());
-  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, GetPjRtDevice());
+  PjrtBackend& backend = PjrtBackend::GetInstance();
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, backend.GetClient());
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, backend.GetDevice());
 
   // Get the parameters for the PjRtBuffer to be created.
   const xla::PrimitiveType type =
