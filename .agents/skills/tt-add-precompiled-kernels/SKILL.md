@@ -36,14 +36,16 @@ directory that holds `csrc/` and `tests/`.
     (`csrc/common/unbounded_dynamic_kernel_registry.h`) returns the first
     kernel, in registration order, that is registered under the graph's
     extentless key and whose `is_compatible` accepts the logical input and
-    output shapes. torch.compile never uses these kernels. `is_compatible` is a
-    callback function that is used to filter out kernels within the registry
-    using fields that are not captured in the extentless key.
+    output shapes. A kernel can be registered under several extentless keys, so
+    that graphs with any of them share its executable. torch.compile never uses
+    these kernels. `is_compatible` is a callback function that is used to filter
+    out kernels within the registry using fields that are not captured in the
+    extentless key.
 *   So a kernel only serves graphs that consist of exactly the op as recorded.
     If eager execution fuses the op with neighboring ops, the graph's key
     differs and a static kernel is compiled.
-*   Kernels in the registry are marked as either marked as
-    `enabled_by_default=true` or `enabled_by_default=false`.
+*   Kernels in the registry are marked as either `enabled_by_default=true` or
+    `enabled_by_default=false`.
     `TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS`, read once per process,
     selects the kernels: `default` (or unset) loads those with
     `enabled_by_default=true`, `all` also loads the `enabled_by_default=false`
@@ -62,9 +64,12 @@ directory that holds `csrc/` and `tests/`.
 *   Kiln: `csrc/internal/mosaic/kiln/kiln.h` maps its concepts to Pallas,
     `lib/pipeline.h` declares `EmitPipeline`, and `kiln_test.cc` and
     `kiln_e2e_test.cc` hold small kernels.
+*   A kernel registered under several extentless keys:
+    `csrc/experimental/precompiled_kernels/sort/sort.{h,cc}`, whose one stable
+    kernel serves both stable and unstable sorts.
 
-nonzero is not fully implemented (step 7): its kernels serve F32 1-D and 2-D
-inputs in their default layouts, and other inputs fall back to static kernels.
+nonzero is not fully implemented (step 7): its kernels serve F32 inputs of rank
+1 to 8 in their default layouts, and other inputs fall back to static kernels.
 
 ## Workflow
 
@@ -83,7 +88,8 @@ Decide, and document in the header, before writing code:
     physical view of the outputs, and the arithmetic bounds the caller checks
     (see `nonzero_indices.h`). XLA's default layouts can depend on sizes: the
     tile of a 1-D F32 array is N rounded up to a power of two in [128, 1024],
-    and S64[K,D] switches to a row-major layout when K <= D.
+    and S64[K,D] switches to a row-major layout when K <= D rounded up to a
+    power of two.
 *   **What stays static**: inputs outside the contract (other layouts, sizes or
     dtypes) fall back to static kernels. They become the not-served cases of
     step 5.
@@ -116,15 +122,21 @@ Add `csrc/experimental/precompiled_kernels/{kernel}.{h,cc}` (e.g.
     output transform and `is_compatible` (step 3). Its hooks are plain function
     pointers cached with the executable, so pass per-kernel constants as
     template parameters, not captures.
-*   **Build function**: serialize the kernel, wrap it with
-    `BuildMosaicCustomCall` (`mosaic_custom_call.h`; `operand_to_metadata` maps
-    each operand to its metadata parameter, -1 for none), set
-    `set_run_backend_only(true)` so that no HLO pass rewrites the custom call,
-    set the result layout and `argument_layouts`, and compile with
-    `client.CompileAndLoad`, wrapped in `AdaptXlaError`.
+*   **Build function**: build the `kiln::Kernel` and compile it with
+    `CompileMosaicKernel` (`kernel_utils.h`), as `BuildNonzeroIndicesExecutable`
+    does. It serializes the kernel, wraps it with `BuildMosaicCustomCall`
+    (`mosaic_custom_call.h`; `operand_to_metadata` maps each operand to its
+    metadata parameter, -1 for none, and `aliased_parameter` names the donated
+    output's parameter), sets `set_run_backend_only(true)` so that no HLO pass
+    rewrites the custom call, sets the result layout and `argument_layouts`, and
+    compiles with `client.CompileAndLoad`, wrapped in `AdaptXlaError`.
 *   **Header**: exposes only `Get{Op}UnboundedDynamicKernels()`, returning a
-    `std::vector<UnboundedDynamicKernel>`, and documents each kernel's buffer
-    contract.
+    `std::vector<UnboundedDynamicKernelRegistration>` (or
+    `Get{Op}UnboundedDynamicKernel()`, returning one
+    `UnboundedDynamicKernelRegistration`, for a single kernel, like sort), and
+    documents each kernel's buffer contract. Each registration pairs an
+    `UnboundedDynamicKernel` with `additional_search_keys`, the extentless keys
+    of any other graphs it serves (step 3).
 
 **Missing Kiln features**: Kiln mirrors Pallas TPU (see the concept map in
 `kiln.h`). If the kernel needs something that Pallas TPU has but Kiln lacks
@@ -146,8 +158,11 @@ it is reviewed and lands on its own, then write the kernel with it:
 
 ### 3. Split Keys, Ids and Compatibility
 
-Each `UnboundedDynamicKernel` is registered under
-`MakeUnboundedDynamicKernelCacheKey(extentless_key, id)` (`kernel_utils.h`).
+Each `UnboundedDynamicKernel` is identified by its `key`,
+`MakeUnboundedDynamicKernelCacheKey(extentless_key, id)` (`kernel_utils.h`),
+which also names its executable in the compilation cache. Graphs with that
+`extentless_key` find the kernel, as do graphs with any of the extentless keys
+in the `additional_search_keys` of its `UnboundedDynamicKernelRegistration`.
 Each piece of information belongs to exactly one of these three:
 
 *   **Extentless key** (`{Op}CacheKey`): what the graph records apart from
@@ -161,18 +176,19 @@ Each piece of information belongs to exactly one of these three:
     constructed by creating a dummy graph upon kernel registration to reuse the
     key construction logic.
 *   **`is_compatible`**: checks only what the key leaves out, e.g. on-device
-    layouts, resolved with `ResolveXlaLayouts` and compared with the buffer
-    contract. A kernel is only compatible with the op if the extentless key
-    matches and is_compatible() == true. Never re-check operand counts, ranks,
-    dtypes or op params: the registry only calls it for graphs with the kernel's
-    extentless key.
+    layouts, compared with the buffer contract by `HasDeviceLayouts`
+    (`kernel_utils.h`, which resolves them with `ResolveXlaLayouts`). A kernel
+    is only compatible with the op if the extentless key matches and
+    is_compatible() == true. Never re-check operand counts, ranks, dtypes or op
+    params: the registry only calls it for graphs with one of the kernel's
+    extentless keys.
 *   **Kernel id** (the `id_key`): tells apart kernels that share an extentless
     key, so name each id after the property outside the key that its kernel
     requires or selects, never after rank, dtype or op params. For example,
     `kNonzeroKGreaterThan2` names the 2-D kernel's K > 2 requirement, and
-    `kNonzeroInputTile1024` to `kNonzeroInputTile128` name the 1-D kernels'
-    input tiles. Declare the ids in an `enum class {Op}KernelId : int` with
-    explicit non-negative values. They are persisted in tier-2 cache entry
+    `kNonzeroInputMinorTile1024` to `kNonzeroInputMinorTile128` name the
+    kernels' input tiles. Declare the ids in an `enum class {Op}KernelId : int`
+    with explicit non-negative values. They are persisted in tier-2 cache entry
     names, so never reuse or renumber them; -1 is reserved for keys that don't
     identify a kernel.
 
@@ -180,16 +196,26 @@ When kernels share an extentless key, registration order is lookup order: make
 their predicates disjoint (like the 1-D tiles) or register the most specific
 kernel first.
 
+When one kernel serves graphs with different extentless keys, e.g. a stable sort
+kernel that serves both `torch.sort(x)` and `torch.sort(x, stable=True)`,
+register it once, rather than one kernel per key, so that it compiles once and
+they share its executable: build its `key` from one of the extentless keys and
+list the others in `additional_search_keys`. When merging existing kernels this
+way, keep the `key` of one of them, so that its persisted cache entries stay
+valid, and retire the other ids with a comment in the enum.
+
 ### 4. Register
 
 *   **BUILD**: add a `torch_tpu_cc_library` for `{kernel}` to
-    `csrc/experimental/precompiled_kernels/BUILD`, and make it a dep of
-    `:kernel_registration`, which `csrc/eager:tpu_aten_kernels` already links in
-    (`alwayslink`).
+    `csrc/experimental/precompiled_kernels/BUILD` (or to a subpackage's `BUILD`,
+    like `sort/`), and make it a dep of `:kernel_registration`, which
+    `csrc/eager:tpu_aten_kernels` already links in (`alwayslink`).
 *   **Registration**: in `kernel_registration.cc`, add
-    `TT_REGISTER_DYNAMIC_KERNELS(Get{Op}UnboundedDynamicKernels());`. The
-    argument runs during static initialization, so it must not read flags, the
-    environment or other registries. Two kernels under one key crash at startup.
+    `TT_REGISTER_DYNAMIC_KERNELS(Get{Op}UnboundedDynamicKernels());`, or
+    `TT_REGISTER_DYNAMIC_KERNEL(Get{Op}UnboundedDynamicKernel());` for a single
+    kernel. The argument runs during static initialization, so it must not read
+    flags, the environment or other registries. Two kernels with one `key` crash
+    at startup.
 *   **`enabled_by_default`**: `true` only if the op's static path compiles once
     per data-dependent output shape, as nonzero's does per K. Otherwise, leave
     the kernel opt-in (`false`, loaded with `all`) until benchmarks show that it
@@ -207,11 +233,11 @@ kernel first.
 
 Add, next to existing helpers:
 
-*   **Cases**: a helper (`_{op}_case`) that returns a `(name, input, ...)` tuple
-    with deterministic data, and the `_{OP}_SERVED_CASES` and
-    `_{OP}_NOT_SERVED_CASES` tuples. Comment each group of cases with the kernel
-    edge it covers: each kernel id, tile and scratch-window boundaries, masked
-    tails, the smallest and largest sizes, and for not-served cases, each reason
+*   **Cases**: a helper (e.g. `_{op}_case`) that builds deterministic inputs,
+    and the `_{OP}_SERVED_CASES` and `_{OP}_NOT_SERVED_CASES` tuples of
+    `(name, input, ...)` cases. Comment each group of cases with the kernel edge
+    it covers: each kernel id, tile and scratch-window boundaries, masked tails,
+    the smallest and largest sizes, and for not-served cases, each reason
     (layout, dtype, rank, sizes outside the contract).
 *   **`test_{op}_served`**: run the op once on an input of the same shape that
     the same kernel serves, to load the kernel and any static graph the op also
