@@ -961,6 +961,110 @@ TEST_F(KilnE2eTest, PipelinedBlocksInAnyOrder) {
   }
 }
 
+// Multi-slot (>2) pipelined inputs with default per-step blocks across step
+// counts smaller than, equal to, and larger than `num_slots`.
+TEST_F(KilnE2eTest, PipelinedMultiSlotInput) {
+  constexpr int64_t kRows = 8;
+  constexpr int64_t kCols = 128;
+  auto rows = [](Scalar i) {
+    return BlockRegion{.offsets = {i * kRows, 0}, .sizes = {kRows, kCols}};
+  };
+
+  for (const int64_t num_slots : {3, 4}) {
+    SCOPED_TRACE(absl::StrCat("num_slots=", num_slots));
+    TT_ASSERT_OK_AND_ASSIGN(
+        Kernel kernel,
+        CreateKernel(
+            GridSpec{.name = absl::StrCat("pipelined_multislot_", num_slots)},
+            InSpec::Hbm(f32(kDynamic, kCols)),
+            OutSpec::Hbm(f32(kDynamic, kCols)), [&](HbmRef in, HbmRef out) {
+              EmitPipeline(
+                  0, in.Dim(0) / kRows,
+                  {{.hbm = in,
+                    .block_shape = {kRows, kCols},
+                    .region = rows,
+                    .num_slots = num_slots}},
+                  {{.hbm = out, .block_shape = {kRows, kCols}, .region = rows}},
+                  [&](const PipelineStep& s) {
+                    Store(s.outputs[0].ref,
+                          Load(s.inputs[0].ref) * 3.0f + 1.0f);
+                  });
+            }));
+
+    TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                            VerifyAndSerialize(std::move(kernel)));
+
+    for (const int64_t num_steps : {1, 2, 3, 4, 7}) {
+      SCOPED_TRACE(absl::StrCat("num_steps=", num_steps));
+      xla::Literal input =
+          Make2dF32(num_steps * kRows, kCols, [](int64_t r, int64_t c) {
+            return static_cast<float>((r * 7 + c) % 19 - 9);
+          });
+      xla::Literal expected =
+          Make2dF32(num_steps * kRows, kCols, [&](int64_t r, int64_t c) {
+            return input.Get<float>({r, c}) * 3.0f + 1.0f;
+          });
+      RunAndCompare(serialized, {&input}, expected);
+    }
+  }
+}
+
+// Mixed 2-slot + 3-slot 1D inputs with a non-zero `begin` step, covering both
+// the flat 1D multi-slot allocation and per-`num_slots` prefetch guards.
+TEST_F(KilnE2eTest, PipelinedMixedSlots1dWithNonZeroBegin) {
+  constexpr int64_t kChunk = 128;
+  auto chunk = [](Scalar i) {
+    return BlockRegion{.offsets = {i * kChunk}, .sizes = {kChunk}};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(
+          GridSpec{.name = "pipelined_mixed_1d_nonzero_begin"},
+          InSpec::Hbm(f32(kDynamic)), InSpec::Hbm(f32(kDynamic)),
+          OutSpec::Hbm(f32(kDynamic)), [&](HbmRef a, HbmRef b, HbmRef out) {
+            const Scalar begin = I32(1);
+            const Scalar end = a.Dim(0) / kChunk;
+            EmitPipeline(
+                begin, end,
+                {{.hbm = a,
+                  .block_shape = {kChunk},
+                  .region = chunk,
+                  .num_slots = 2},
+                 {.hbm = b,
+                  .block_shape = {kChunk},
+                  .region = chunk,
+                  .num_slots = 3}},
+                {{.hbm = out,
+                  .block_shape = {kChunk},
+                  .block_index = [begin](Scalar step) { return step - begin; },
+                  .region = chunk}},
+                [&](const PipelineStep& s) {
+                  Store(s.outputs[0].ref,
+                        Load(s.inputs[0].ref) + Load(s.inputs[1].ref) * 2.0f);
+                });
+          }));
+
+  TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                          VerifyAndSerialize(std::move(kernel)));
+
+  for (const int64_t total_chunks : {2, 3, 4, 6}) {
+    SCOPED_TRACE(absl::StrCat("total_chunks=", total_chunks));
+    xla::Literal a = Make1dF32(total_chunks * kChunk, [](int64_t i) {
+      return static_cast<float>((i * 5) % 17 - 8);
+    });
+    xla::Literal b = Make1dF32(total_chunks * kChunk, [](int64_t i) {
+      return static_cast<float>((i * 3) % 13 - 6);
+    });
+    xla::Literal expected =
+        Make1dF32((total_chunks - 1) * kChunk, [&](int64_t i) {
+          const int64_t src = i + kChunk;
+          return a.Get<float>({src}) + b.Get<float>({src}) * 2.0f;
+        });
+    RunAndCompare(serialized, {&a, &b}, expected);
+  }
+}
+
 TEST_F(KilnE2eTest, DynamicMemrefSliceSizesAndScopedDma) {
   TT_ASSERT_OK_AND_ASSIGN(
       Kernel kernel,

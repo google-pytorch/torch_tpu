@@ -69,6 +69,9 @@ struct PipelineOperand {
   absl::AnyInvocable<Scalar(Scalar step) const> block_index = nullptr;
   // Called with the step for inputs, and with the block index for outputs.
   absl::AnyInvocable<BlockRegion(Scalar block) const> region;
+  // Number of VMEM slots (and DMA semaphores) for this operand. Must be >= 2
+  // (inputs prefetch up to `num_slots - 1` steps ahead; outputs require 2).
+  int64_t num_slots = 2;
 };
 
 // One operand's block at one step of `EmitPipeline`.
@@ -97,11 +100,11 @@ struct PipelineStep {
 };
 
 // Software-pipelines a loop over steps [begin, end) that streams HBM operands
-// through double-buffered VMEM blocks: while `body` runs step s, the input
-// copies of step s + 1 and the copy of the previous output block may be in
-// flight (an output slot is only waited for before its reuse, i.e. on entering
-// the block after next). Allocates the VMEM blocks and DMA semaphores, and
-// waits for every copy before returning.
+// through buffered VMEM blocks: while `body` runs step s, input copies up to
+// `num_slots - 1` steps ahead and the copy of the previous output block may be
+// in flight (an output slot is only waited for before its reuse, i.e. on
+// entering the block after next). Allocates the VMEM blocks and DMA semaphores,
+// and waits for every copy before returning.
 void EmitPipeline(IndexArg begin, IndexArg end,
                   llvm::ArrayRef<PipelineOperand> inputs,
                   llvm::ArrayRef<PipelineOperand> outputs,

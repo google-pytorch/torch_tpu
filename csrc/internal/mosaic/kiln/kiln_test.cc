@@ -2782,6 +2782,86 @@ TEST(KilnTest, EmitPipelineContraction) {
   )"));
 }
 
+TEST(KilnTest, EmitPipelineMultiSlotInput) {
+  auto rows = [](Scalar i) {
+    return BlockRegion{.offsets = {i * 8, 0}, .sizes = {8, 128}};
+  };
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "pipeline_3slots"}, InSpec::Hbm(f32(kDynamic, 128)),
+          OutSpec::Hbm(f32(kDynamic, 128)),
+          [&](HbmRef in, HbmRef out) {
+            EmitPipeline(
+                0, in.Dim(0) / 8,
+                {{.hbm = in,
+                  .block_shape = {8, 128},
+                  .region = rows,
+                  .num_slots = 3}},
+                {{.hbm = out, .block_shape = {8, 128}, .region = rows}},
+                [&](const PipelineStep& s) {
+                  Store(s.outputs[0].ref, Load(s.inputs[0].ref));
+                });
+          }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @pipeline_3slots(
+    CHECK:           memref.alloca() : memref<3x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:           tpu.sem_alloc : memref<3x!tpu.dma_semaphore
+    CHECK-NOT:       arith.remsi
+    CHECK:           tpu.enqueue_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+    CHECK-NOT:       arith.remsi
+    CHECK:           scf.if
+    CHECK-NOT:         arith.remsi
+    CHECK:             tpu.enqueue_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+    CHECK:           scf.for %[[IV:[^ ]+]] =
+    CHECK:             %[[STEP:.*]] = arith.index_cast %[[IV]] : index to i32
+    CHECK:             %[[REM:.*]] = arith.subi {{.*}}, %[[STEP]] : i32
+    CHECK:             %[[C2_CMP:.*]] = arith.constant 2 : i32
+    CHECK:             arith.cmpi sgt, %[[REM]], %[[C2_CMP]] : i32
+    CHECK:             scf.if
+    CHECK:               %[[C2:.*]] = arith.constant 2 : i32
+    CHECK:               %[[PF:.*]] = arith.addi %[[STEP]], %[[C2]] : i32
+    CHECK:               %[[C3_PF:.*]] = arith.constant 3 : i32
+    CHECK:               arith.remsi {{.*}}, %[[C3_PF]] : i32
+    CHECK:               tpu.enqueue_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+    CHECK:             %[[C3_WAIT:.*]] = arith.constant 3 : i32
+    CHECK:             arith.remsi {{.*}}, %[[C3_WAIT]] : i32
+    CHECK:             tpu.wait_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+  )"));
+}
+
+TEST(KilnDeathTest, EmitPipelineRejectsInvalidNumSlots) {
+  auto chunk = [](Scalar i) {
+    return BlockRegion{.offsets = {i * 128}, .sizes = {128}};
+  };
+  EXPECT_THAT(CreateKernel(GridSpec{.name = "bad_input_slots"},
+                           InSpec::Hbm(f32(kDynamic)),
+                           [&](HbmRef in) {
+                             EXPECT_DEATH(
+                                 EmitPipeline(0, in.Dim(0) / 128,
+                                              {{.hbm = in,
+                                                .block_shape = {128},
+                                                .region = chunk,
+                                                .num_slots = 1}},
+                                              /*outputs=*/{},
+                                              [](const PipelineStep&) {}),
+                                 "need at least 2 slots");
+                           }),
+              IsOk());
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "bad_output_slots"}, OutSpec::Hbm(f32(kDynamic)),
+          [&](HbmRef out) {
+            EXPECT_DEATH(EmitPipeline(0, out.Dim(0) / 128, /*inputs=*/{},
+                                      {{.hbm = out,
+                                        .block_shape = {128},
+                                        .region = chunk,
+                                        .num_slots = 3}},
+                                      [](const PipelineStep&) {}),
+                         "not supported for outputs");
+          }),
+      IsOk());
+}
+
 TEST(KilnTest, IfReturnsValues) {
   EXPECT_THAT(
       CreateKernel(
