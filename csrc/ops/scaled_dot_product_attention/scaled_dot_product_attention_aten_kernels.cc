@@ -312,8 +312,8 @@ GenerateResults(at::Tensor out, at::Tensor logsumexp,
   at::Tensor cum_seq_q = at::zeros({batch + 1}, out.options().dtype(at::kInt));
   at::Tensor cum_seq_k = at::zeros({batch + 1}, out.options().dtype(at::kInt));
   if (!philox_seed.defined()) {
-    philox_seed = at::zeros({1}, out.options().dtype(at::kLong));
-    philox_offset = at::zeros({1}, out.options().dtype(at::kLong));
+    philox_seed = at::zeros({}, out.options().dtype(at::kLong));
+    philox_offset = at::zeros({}, out.options().dtype(at::kLong));
   }
   at::Tensor debug_mask = at::zeros({1}, out.options().dtype(at::kBool));
 
