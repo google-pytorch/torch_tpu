@@ -15351,6 +15351,74 @@ module {
         golden_result=expected, torch_tpu_result=out.cpu().flatten()[:9]
     )
 
+  def test_dynamic_reshape_flatten_3d_all_dims_dynamic(self):
+    device = torch.device("tpu")
+    x = torch.arange(120, device=device, dtype=torch.float32).reshape(4, 5, 6)
+    d0 = torch.tensor(2, device=device, dtype=torch.int32)
+    d1 = torch.tensor(3, device=device, dtype=torch.int32)
+    d2 = torch.tensor(4, device=device, dtype=torch.int32)
+    shape = [torch.tensor(24, device=device, dtype=torch.int32)]
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x_dyn = torch.ops.tpu._set_dimension_logical_size(x, 0, d0)
+      x_dyn = torch.ops.tpu._set_dimension_logical_size(x_dyn, 1, d1)
+      x_dyn = torch.ops.tpu._set_dimension_logical_size(x_dyn, 2, d2)
+      out = torch.ops.tpu._dynamic_reshape(x_dyn, shape, [120], [True])
+
+    expected = x.cpu()[:2, :3, :4].flatten()
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=out.cpu().flatten()[:24]
+    )
+
+  def test_dynamic_reshape_flatten_zero_dynamic_dim(self):
+    device = torch.device("tpu")
+    x = torch.arange(1, 25, device=device, dtype=torch.float32).reshape(2, 3, 4)
+    d1 = torch.tensor(0, device=device, dtype=torch.int32)
+    shape = [torch.tensor(0, device=device, dtype=torch.int32)]
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x_dyn = torch.ops.tpu._set_dimension_logical_size(x, 1, d1)
+      out = torch.ops.tpu._dynamic_reshape(x_dyn, shape, [24], [True])
+      out_sum = out.sum()
+
+    self.assertEqual(out_sum.cpu().item(), 0.0)
+
+  def test_dynamic_reshape_flatten_f32_reciprocal_correction(self):
+    device = torch.device("tpu")
+    # 1.0f / 29.0f rounds down in f32 so 29.0f * (1.0f / 29.0f) < 1.0f,
+    # exercising the remainder >= dim_vec correction branch in ComputeDivMod.
+    x = torch.arange(96, device=device, dtype=torch.float32).reshape(3, 32)
+    d1 = torch.tensor(29, device=device, dtype=torch.int32)
+    shape = [torch.tensor(87, device=device, dtype=torch.int32)]
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x_dyn = torch.ops.tpu._set_dimension_logical_size(x, 1, d1)
+      out = torch.ops.tpu._dynamic_reshape(x_dyn, shape, [96], [True])
+
+    expected = x.cpu()[:, :29].flatten()
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=out.cpu().flatten()[:87]
+    )
+
+  def test_dynamic_reshape_flatten_large_bound_div_fallback(self):
+    device = torch.device("tpu")
+    # Static bound 4,200,000 > (1 << 22) exercises the stablehlo::Div fallback.
+    num_cols = 2_100_000
+    x = torch.zeros((2, num_cols), device=device, dtype=torch.int8)
+    x[0, :5] = torch.tensor([1, 2, 3, 4, 5], device=device, dtype=torch.int8)
+    x[1, :5] = torch.tensor([6, 7, 8, 9, 10], device=device, dtype=torch.int8)
+    d1 = torch.tensor(5, device=device, dtype=torch.int32)
+    shape = [torch.tensor(10, device=device, dtype=torch.int32)]
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x_dyn = torch.ops.tpu._set_dimension_logical_size(x, 1, d1)
+      out = torch.ops.tpu._dynamic_reshape(x_dyn, shape, [2 * num_cols], [True])
+
+    expected = torch.arange(1, 11, dtype=torch.int8)
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=out.cpu().flatten()[:10]
+    )
+
   def test_dynamic_reshape_change_dims(self):
     """Tests dynamic_reshape changing dimensions of a 2D dynamic input to another 2D dynamic shape."""
     device = torch.device("tpu")
