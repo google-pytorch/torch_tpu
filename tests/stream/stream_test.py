@@ -42,6 +42,24 @@ def _int64_boundary_tensor(shape):
   return _INT64_BOUNDARY_VALUES.repeat(repeats)[:numel].reshape(shape)
 
 
+def _wait_until_materializing(
+    test_class: seed_test_utils.RepeatableTest,
+    tensor: torch.Tensor,
+    timeout_sec: float = 30.0,
+    poll_interval_sec: float = 0.1,
+):
+  """Waits for a tensor to start materializing, with a polled timeout."""
+  time_slept = 0.0
+  while time_slept < timeout_sec and not sync.is_materializing(tensor):
+    time.sleep(poll_interval_sec)
+    time_slept += poll_interval_sec
+  test_class.assertLess(
+      time_slept,
+      timeout_sec,
+      f'tensor did not start materializing within {timeout_sec} seconds',
+  )
+
+
 class TpuStreamsTest(seed_test_utils.RepeatableTest):
   """Tests for torch.tpu.Stream and torch.tpu.Event.
 
@@ -385,8 +403,8 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
 
       # Switch to the new stream.
       with torch.tpu.stream(new_stream):
-        # Leaving the default stream should materialize x.
-        self.assertTrue(sync.is_materializing(x))
+        # Leaving the default stream should materialize x in the background.
+        _wait_until_materializing(self, x)
 
   def test_stream_materialize_on_event(self):
     """Tests that streams materialize on event recording."""
@@ -403,8 +421,8 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
         event = torch.tpu.Event()
         event.record()
 
-        # Verify that the tensor is now materializing.
-        self.assertTrue(sync.is_materializing(x))
+        # Verify that the tensor will start materializing.
+        _wait_until_materializing(self, x)
 
     # Wait for the event to complete.
     event.synchronize()
@@ -672,8 +690,8 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
 
       # Switch to the new stream.
       with new_stream:
-        # Leaving the default stream should materialize x.
-        self.assertTrue(sync.is_materializing(x))
+        # Leaving the default stream should materialize x in the background.
+        _wait_until_materializing(self, x)
 
   def test_stream_materialize_on_event(self):
     """Tests that streams materialize on event recording."""
@@ -691,11 +709,10 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
         # Since we are in DEFER_AND_FUSE, it should not be materializing.
         self.assertFalse(sync.is_materializing(x))
 
-        # Record an event on the stream. This should trigger materialization.
+        # Record an event on the stream. This should trigger materialization
+        # in the background.
         event = new_stream.record_event()
-
-        # Verify that the tensor is now materializing.
-        self.assertTrue(sync.is_materializing(x))
+        _wait_until_materializing(self, x)
 
     # Wait for the event to complete.
     event.synchronize()

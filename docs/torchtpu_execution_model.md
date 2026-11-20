@@ -32,9 +32,10 @@ later).
 
 ### Analyze stream and prepare execution plan
 
-Once there is work to do on a stream, at some point a background thread will
-pick up work from that stream. This background thread will then jointly analyze
-the work on the stream, considering many different factors, including:
+Once there is work to do on a stream, and any cross-stream timing dependencies
+are satisfied, at some point a background thread will pick up work from that
+stream. This background thread will then jointly analyze the work on the stream,
+considering many different factors, including:
 
 *   How many individual executions does this need to be split into?
 *   What are the inputs and outputs of each execution block?

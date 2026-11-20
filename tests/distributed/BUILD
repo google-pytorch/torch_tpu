@@ -1003,6 +1003,7 @@ torch_tpu_py_test(
         # We explicitly disable the compilation cache because we rely on every rank compiling for itself so that we can definitively confirm that every rank produces the same MLIR.
         "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled",
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "",
+        "TORCH_TPU_INTERNAL_BLOCK_ON_STREAM_EXIT": "0",
     },
     # In OSS, we have to run the test exclusively to avoid the
     # "TPU initialization failed ... Device or resource busy" error.
