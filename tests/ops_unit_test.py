@@ -14763,6 +14763,58 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(dst_tpu.storage_offset(), dst_cpu.storage_offset())
     utils.assert_close(dst_tpu.cpu(), dst_cpu)
 
+  def test_roll_edge_cases(self):
+    """Covers roll cases omitted by OpInfo sample_inputs_roll."""
+    # sample_inputs_roll places the 0D scalar at sample #17 (skipped under OSS
+    # --max_samples_per_op_dtype=5) and does not check non-aliasing.
+    cpu_scalar = torch.tensor(42.0, dtype=torch.float32)
+    tpu_scalar = cpu_scalar.to("tpu")
+    for shift in (0, 5):
+      with self.subTest(case="scalar", shift=shift):
+        expected = torch.roll(cpu_scalar, shifts=shift)
+        actual = torch.roll(tpu_scalar, shifts=shift)
+        self.assertEqual(actual.shape, torch.Size([]))
+        self.assertNotEqual(actual.data_ptr(), tpu_scalar.data_ptr())
+        utils.assert_close(actual.cpu(), expected)
+
+    # sample_inputs_roll only passes distinct non-negative dims.
+    cpu_x = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    tpu_x = cpu_x.to("tpu")
+    for shifts, dims in (
+        (1, -1),
+        ((1, -2), (-2, -1)),
+        ((1, 2), (1, -1)),
+    ):
+      with self.subTest(
+          case="negative_or_duplicate_dims", shifts=shifts, dims=dims
+      ):
+        expected = torch.roll(cpu_x, shifts=shifts, dims=dims)
+        actual = torch.roll(tpu_x, shifts=shifts, dims=dims)
+        utils.assert_close(actual.cpu(), expected)
+
+    # sample_inputs_roll only generates contiguous inputs.
+    cpu_view = cpu_x.transpose(0, 1)
+    tpu_view = tpu_x.transpose(0, 1)
+    for shifts, dims in ((3, None), ((1, -1), (0, -1))):
+      with self.subTest(case="non_contiguous", shifts=shifts, dims=dims):
+        expected = torch.roll(cpu_view, shifts=shifts, dims=dims)
+        actual = torch.roll(tpu_view, shifts=shifts, dims=dims)
+        utils.assert_close(actual.cpu(), expected)
+
+    # sample_inputs_roll only tests (0, 0, 0), which early-exits on dim_size == 0
+    # without exercising Slice + Concatenate on zero-volume slices.
+    for empty_shape, shifts, dims in (
+        ((0, 3), 2, -1),
+        ((2, 0, 4), (1, -1), (0, 2)),
+    ):
+      with self.subTest(case="empty_nonzero_dim", shape=empty_shape, dims=dims):
+        cpu_empty = torch.empty(empty_shape, dtype=torch.float32)
+        tpu_empty = cpu_empty.to("tpu")
+        expected = torch.roll(cpu_empty, shifts=shifts, dims=dims)
+        actual = torch.roll(tpu_empty, shifts=shifts, dims=dims)
+        self.assertEqual(actual.shape, expected.shape)
+        utils.assert_close(actual.cpu(), expected)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

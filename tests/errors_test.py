@@ -2397,6 +2397,22 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
   def test_roll_errors(self):
     """roll() fails when input parameters are invalid."""
     t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    scalar = torch.tensor(1.0, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""`shifts` required""",
+        tpu="""roll(): expected shifts to have at least 1 element, got 0""",
+    ):
+      torch.roll(t, shifts=(), dims=())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""`shifts` required""",
+        tpu="""roll(): expected shifts to have at least 1 element, got 0""",
+    ):
+      torch.roll(t, shifts=(), dims=(5,))
+
     with et.assert_raises_message(
         RuntimeError,
         gpu="""shifts and dimensions must align. shifts: 2, dims:1""",
@@ -2406,10 +2422,33 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
     with et.assert_raises_message(
         RuntimeError,
+        gpu="""shifts and dimensions must align. shifts: 2, dims:1""",
+        tpu="""roll(): expected shifts to have the same size as dims (1), got 2""",
+    ):
+      torch.roll(t, shifts=(2, 3), dims=(5,))
+
+    with et.assert_raises_message(
+        RuntimeError,
         gpu="""shifts and dimensions must align. shifts: 2, dims:0""",
         tpu="""roll(): expected shifts to have the same size as dims (0), got 2""",
     ):
       torch.roll(t, shifts=(2, 3))
+
+    for dim in (-5, 5):
+      with et.assert_raises_message(
+          IndexError,
+          gpu=f"""Dimension out of range (expected to be in range of [-2, 1], but got {dim})""",
+          tpu=f"""roll(): expected dimension to be in range [-2, 1], got {dim}""",
+      ):
+        torch.roll(t, shifts=1, dims=dim)
+
+    for dim in (-1, 0, 1):
+      with et.assert_raises_message(
+          IndexError,
+          gpu=f"""Dimension specified as {dim} but tensor has no dimensions""",
+          tpu="""roll(): expected tensor to be at least 1D, got 0D""",
+      ):
+        torch.roll(scalar, shifts=1, dims=dim)
 
   def test_reduction_dim_out_of_bounds_var(self):
     self.do_test_reduction_dim_out_of_bounds(
