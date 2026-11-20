@@ -347,6 +347,20 @@ class StreamState {
     return std::exchange(repeated_ops_graph_break_requested_, false);
   }
 
+  bool HasPendingUnmaterializedWork() {
+    absl::MutexLock lock(mu_);
+    if (!ready_work_.empty()) {
+      return true;
+    }
+    for (const auto& deferred_op_event : deferred_ops_) {
+      if (deferred_op_event.side_effects != nullptr ||
+          !deferred_op_event.no_side_effects.expired()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void InsertGraphBreak(std::vector<SharedDeviceBufferList> must_materialize,
                         MaterializationReason reason, GraphSplitMode mode,
                         EagerMode eager_mode) {
@@ -500,6 +514,12 @@ class StreamState {
   void WriteBackMaterializationFutures(
       std::vector<xla::Future<void>>&& futures,
       std::optional<DeviceBufferRef> last_device_output) {
+    // When `futures` is empty and `last_device_output` has no value, the
+    // materialization produced no futures and no device-resident TensorCore
+    // output buffer to attach to the next snapshot.
+    if (futures.empty() && !last_device_output.has_value()) {
+      return;
+    }
     // Destroy any replaced DeviceBufferRef outside `mu_` to avoid running
     // `~PjRtCApiBuffer()` while holding `StreamState::mu_` on the hot path.
     std::optional<DeviceBufferRef> old_device_output;
@@ -1127,6 +1147,22 @@ bool ResumeRepeatedOpsGraphBreaks(c10::DeviceIndex device_index,
                                   c10::StreamId stream_id) {
   return GetOrCreateStreamState(device_index, stream_id)
       ->ResumeRepeatedOpsGraphBreaks();
+}
+
+bool HasPendingUnmaterializedWork(const c10::DeviceIndex device_index,
+                                  const c10::StreamId stream_id) {
+  // In `kInternalCompileFxGraph`, PyTorch traces ops into an FX graph instead
+  // of executing them eagerly on the device, and `InsertGraphBreak` returns an
+  // error. Return false so callers do not flush the stream during tracing.
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
+    return false;
+  }
+  if (StreamState* const stream_state =
+          FindStreamState(device_index, stream_id);
+      stream_state != nullptr) {
+    return stream_state->HasPendingUnmaterializedWork();
+  }
+  return false;
 }
 
 void ResetRepeatedOpsHeuristicState() {

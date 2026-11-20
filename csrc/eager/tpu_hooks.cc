@@ -320,16 +320,20 @@ c10::Stream TpuDeviceGuardImpl::ExchangeStream(c10::Stream s) const {
   //     because Z depends on Y, which has not yet been started.
   // By blocking on the exit from stream 2 until Y's materialization is queued,
   // Z's materialization cannot race its inputs, even if Y hasn't finished.
-  TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
-                     MaterializeStream(s.device_index(), old_stream_id,
-                                       MaterializationReason::kExplicitSync));
-  TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
-  // Because we're dropping this snapshot without returning it to the user, any
-  // errors would be lost if we only chained the OkCallback. To ensure all
-  // errors are raised correctly we inject the full completion future into the
-  // stream so errors are picked up by the next snapshot.
-  internal::MarkStreamActive(s.device_index(), old_stream_id,
-                             snapshot.completion_future());
+  // When `old_stream_id` has no pending unmaterialized work (e.g., it was
+  // already materialized or had no deferred ops), skip enqueuing an idle break.
+  if (HasPendingUnmaterializedWork(s.device_index(), old_stream_id)) {
+    TT_ASSIGN_OR_THROW(EventSnapshot snapshot,
+                       MaterializeStream(s.device_index(), old_stream_id,
+                                         MaterializationReason::kExplicitSync));
+    TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
+    // Because we're dropping this snapshot without returning it to the user,
+    // any errors would be lost if we only chained the OkCallback. To ensure all
+    // errors are raised correctly we inject the full completion future into the
+    // stream so errors are picked up by the next snapshot.
+    internal::MarkStreamActive(s.device_index(), old_stream_id,
+                               snapshot.completion_future());
+  }
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 

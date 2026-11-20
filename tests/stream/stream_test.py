@@ -388,6 +388,48 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
         # Leaving the default stream should materialize x.
         self.assertTrue(sync.is_materializing(x))
 
+  def test_exchange_stream_conditional_materialization(self):
+    """Tests exchangeStream skips materializing flushed or empty streams."""
+    s1 = torch.tpu.Stream()
+    s2 = torch.tpu.Stream()
+    x_cpu = torch.arange(16, dtype=torch.float32)
+    x = x_cpu.to('tpu')
+    torch.accelerator.synchronize()
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      # Case 1: s2 has unmaterialized work when leaving
+      # `with torch.tpu.stream(s2):`.
+      with torch.tpu.stream(s2):
+        y = x + 2.0
+        self.assertFalse(sync.is_materializing(y))
+      self.assertTrue(sync.is_materializing(y))
+
+      with torch.tpu.stream(s1):
+        s1.wait_stream(s2)
+        z = y * 3.0
+      self.assertTrue(torch.equal(z.cpu(), (x_cpu + 2.0) * 3.0))
+
+      # Case 2: s2's compute ops are already flushed by Event.record, and only
+      # a dropped dead op and an empty allocation remain on s2 when exiting.
+      ev = torch.tpu.Event()
+      with torch.tpu.stream(s2):
+        y2 = x + 5.0
+        self.assertFalse(sync.is_materializing(y2))
+        ev.record(s2)
+        self.assertTrue(sync.is_materializing(y2))
+        dead_tmp = y2 + 1.0
+        del dead_tmp
+        empty_t = torch.empty(16, dtype=torch.float32, device='tpu')
+        self.assertFalse(sync.is_materializing(empty_t))
+      # Exiting s2 should skip MaterializeStream because no live pending work
+      # remained after ev.record(s2).
+      self.assertFalse(sync.is_materializing(empty_t))
+
+      with torch.tpu.stream(s1):
+        s1.wait_event(ev)
+        z2 = y2 * 4.0
+      self.assertTrue(torch.equal(z2.cpu(), (x_cpu + 5.0) * 4.0))
+
   def test_stream_materialize_on_event(self):
     """Tests that streams materialize on event recording."""
     new_stream = torch.tpu.Stream()

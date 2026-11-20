@@ -72,6 +72,14 @@ void SuspendRepeatedOpsGraphBreaks(
 [[nodiscard]] bool ResumeRepeatedOpsGraphBreaks(c10::DeviceIndex device_index,
                                                 c10::StreamId stream_id);
 
+// Returns true if the given stream has any unmaterialized deferred ops or
+// queued ready work. When this returns false, callers such as
+// `TpuDeviceGuardImpl::ExchangeStream` can safely skip flushing the stream
+// because no deferred ops or queued work exist to create cross-stream
+// dependencies.
+[[nodiscard]] bool HasPendingUnmaterializedWork(c10::DeviceIndex device_index,
+                                                c10::StreamId stream_id);
+
 // Resets the state of the repeated ops heuristic for all streams, including
 // any graph break it requested while suspended, but leaves all events in the
 // queue.
