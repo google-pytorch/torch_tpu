@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # pgmoka
-# yaoshiang
+# kshitiz-khandel
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 

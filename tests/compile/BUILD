@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# zhanyong-wan
-# basioli-k
-# arfaian
+# nvgrw
+# lukeboyer
 # chizhang529
+# zhanyong-wan
 # cbasile-g
-# ghpvnist
-# mkhanna15
+# tudorpip
+# basioli-k
 
 load(
     "//build_files:build_defs.bzl",

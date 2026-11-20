@@ -16,10 +16,10 @@
 # adivinpatel04
 # ghpvnist
 # cbasile-g
+# lizlian
+# benawilson
+# shilpakesavan
 # jparkerh
-# zhanyong-wan
-# pineapplejuice233
-# salkan0
 
 load(
     "//build_files:build_defs.bzl",

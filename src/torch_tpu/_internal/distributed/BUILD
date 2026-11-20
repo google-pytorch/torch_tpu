@@ -15,8 +15,6 @@
 # Domain experts for this package:
 # basioli-k
 # zhanyong-wan
-# pgmoka
-# jparkerh
 
 load(
     "//build_files:build_defs.bzl",

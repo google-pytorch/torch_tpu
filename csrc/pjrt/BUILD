@@ -14,9 +14,9 @@
 
 # Domain experts for this package:
 # benawilson
-# haifeng-jin
-# zhanyong-wan
 # cbasile-g
+# zhanyong-wan
+# haifeng-jin
 
 # Defines a library that wraps the internal PJRT client.
 # This is a workaround to avoid depending on internal components

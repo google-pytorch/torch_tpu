@@ -13,11 +13,9 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# yilingyuan
 # zhanyong-wan
-# ryo-not-rio
 # ghpvnist
-# haifeng-jin
+# ryo-not-rio
 
 """Common utilities for torch_tpu."""
 

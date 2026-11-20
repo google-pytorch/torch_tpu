@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # rickeylev
-# jonathan1920
+# pganssle-google
 
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 

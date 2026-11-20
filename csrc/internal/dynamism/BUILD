@@ -14,7 +14,8 @@
 
 # Domain experts for this package:
 # mkhanna15
-# arfaian
+# zhanyong-wan
+# benawilson
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 

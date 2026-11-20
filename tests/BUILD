@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
+# haifeng-jin
+# minospapa
+# serina1218
+# ryo-not-rio
+# haitong
 # adivinpatel04
 # ghpvnist
-# zhanyong-wan
-# haifeng-jin
-# cbasile-g
-# willfroom
-# arfaian
 
 load(
     "//build_files:build_defs.bzl",

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# lizlian
+# vladbelous
+
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_oss_doc_test",

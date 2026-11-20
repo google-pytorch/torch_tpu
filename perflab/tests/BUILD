@@ -14,10 +14,10 @@
 
 # Domain experts for this package:
 # gjh8
-# cbasile-g
 # lukeboyer
-# ghpvnist
-# lizlian
+# cbasile-g
+# zhanyong-wan
+# agarwalt
 
 load(
     "//build_files:build_defs.bzl",

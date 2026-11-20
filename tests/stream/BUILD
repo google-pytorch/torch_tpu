@@ -14,8 +14,10 @@
 
 # Domain experts for this package:
 # benawilson
+# salkan0
 # yilingyuan
-# haifeng-jin
+# cbasile-g
+# jparkerh
 
 load(
     "//build_files:build_defs.bzl",

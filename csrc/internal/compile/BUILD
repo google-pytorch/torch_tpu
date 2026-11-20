@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
+# nvgrw
 # cbasile-g
-# haifeng-jin
-# zhanyong-wan
 # benawilson
-# basioli-k
-# mkhanna15
+# zhanyong-wan
+# haifeng-jin
 # jparkerh
+# arfaian
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 

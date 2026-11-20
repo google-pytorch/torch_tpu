@@ -14,12 +14,12 @@
 
 # Domain experts for this package:
 # basioli-k
-# mkhanna15
-# arfaian
 # tudorpip
+# arfaian
 # agarwalt
-# zhanyong-wan
+# mkhanna15
 # cbasile-g
+# adivinpatel04
 
 load(
     "//build_files:build_defs.bzl",

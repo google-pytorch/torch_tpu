@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # pganssle-google
-# jparkerh
+# zhanyong-wan
 
 load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
 

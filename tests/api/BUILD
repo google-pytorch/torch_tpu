@@ -14,7 +14,8 @@
 
 # Domain experts for this package:
 # zhanyong-wan
-# pganssle-google
+# yilingyuan
+# cbasile-g
 
 """Tests and tools that guard the TorchTPU public API surface."""
 

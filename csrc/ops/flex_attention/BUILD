@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# tudorpip
+# willfroom
+
 # flex_attention on TPU: a BlockMask-driven, block-skipping flash attention
 # kernel authored in Kiln.
 

@@ -14,11 +14,8 @@
 
 # Domain experts for this package:
 # gjh8
-# cbasile-g
 # lukeboyer
-# ghpvnist
-# zhanyong-wan
-# haifeng-jin
+# cbasile-g
 
 load(
     "//build_files:build_defs.bzl",

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# ryo-not-rio
+# lukeboyer
+
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 load("//shims/py_rules:py_binary.bzl", "py_binary")
 load("//shims/py_rules:py_library.bzl", "py_library")

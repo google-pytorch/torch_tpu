@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# cbasile-g
+# minospapa
+
 # Verification of Pallas kernels and the PyTorch programs that call them. The
 # tests live in //tests/pallas.
 

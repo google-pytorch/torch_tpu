@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# gjh8
+# zhanyong-wan
 # cbasile-g
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")

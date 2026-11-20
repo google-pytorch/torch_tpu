@@ -13,9 +13,10 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# yilingyuan
 # zhanyong-wan
+# yilingyuan
 # haifeng-jin
+# cbasile-g
 # basioli-k
 
 load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")

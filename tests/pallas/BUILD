@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# willfroom
-# yaoshiang
+# minospapa
+# cbasile-g
+# haifeng-jin
 # zhanyong-wan
 # ghpvnist
-# pganssle-google
-# jparkerh
-# chizhang529
+# ryo-not-rio
+# nvgrw
 
 load(
     "//build_files:build_defs.bzl",

@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# gjh8
-# adivinpatel04
+# zhanyong-wan
+# lukeboyer
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 

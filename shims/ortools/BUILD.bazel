@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# pganssle-google
-# zhanyong-wan
+# cbasile-g
+# jparkerh
 
 load("@rules_python//python:py_library.bzl", "py_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")

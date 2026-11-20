@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # benawilson
-# basioli-k
+# hotspur1997
 
 load(
     "//build_files:build_defs.bzl",

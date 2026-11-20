@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# zhanyong-wan
 # ghpvnist
+# jonathan1920
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 

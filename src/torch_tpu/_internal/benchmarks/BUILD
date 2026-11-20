@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # zhanyong-wan
-# cbasile-g
+# pganssle-google
 
 """Benchmark adapter for torch_tpu."""
 

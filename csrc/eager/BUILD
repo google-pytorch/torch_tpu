@@ -14,9 +14,10 @@
 
 # Domain experts for this package:
 # benawilson
+# zhanyong-wan
+# yilingyuan
 # cbasile-g
-# haifeng-jin
-# jparkerh
+# adivinpatel04
 
 load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 
