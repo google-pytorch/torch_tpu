@@ -86,6 +86,14 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_split_block_mask",
         ],
     },
+    "distributed/test_multi_threaded_pg": {
+        "TestCollectivesWithBaseClassDevice": [
+            "test_collectives_issued_from_side_stream",
+        ],
+    },
+    "distributions/test_constraints": {
+        "TestConstraintsDevice": ["test_constraint"],
+    },
     "dynamo/test_activation_checkpointing": {
         "ActivationCheckpointingViaTagsTests": [
             "test_autocast_flash_attention",
@@ -99,6 +107,13 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
     "dynamo/test_debug_utils": {
         "TestInductorConfigOverrideIntegration": [
             "test_config_override_backward_propagation",
+        ],
+    },
+    "dynamo/test_functions": {
+        "FunctionTestsDevice": [
+            "test_capture_triton_handled_during_tracing",
+            "test_device_manual_seed",
+            "test_wrap_triton_handled_during_tracing",
         ],
     },
     "dynamo/test_fx_annotate": {
@@ -127,6 +142,16 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_nested_compile_in_backend_preserves_user_objects",
             "test_record_stream_inductor_output_code",
             "test_synchronize_explicit_none_matches_no_arg",
+        ],
+    },
+    "export/test_experimental": {
+        "TestExperimentDevice": [
+            "test_aot_export_flex_attention_with_blockmask_placeholders",
+        ],
+    },
+    "export/test_export": {
+        "TestExportDevice": [
+            "test_non_strict_export_distribution_validation",
         ],
     },
     "functorch/test_eager_transforms": {
