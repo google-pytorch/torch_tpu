@@ -149,6 +149,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.get_device_properties.sparse_cores_per_device`
 *   `torch.tpu.get_device_properties.topology`
 *   `torch.tpu.get_device_properties.version`
+*   `torch.tpu.is_current_stream_capturing`
 *   `torch.tpu.is_initialized`
 *   `torch.tpu.manual_seed`
 *   `torch.tpu.manual_seed_all`

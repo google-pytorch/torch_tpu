@@ -118,6 +118,7 @@ torch.tpu.get_device_properties.version: {category: Public Python API, defined_i
 torch.tpu.get_rng_state: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.random.get_rng_state, stage: Internal}
 torch.tpu.initial_seed: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.random.initial_seed, stage: Internal}
 torch.tpu.is_available: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.is_available, stage: Internal}
+torch.tpu.is_current_stream_capturing: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.is_initialized: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.manual_seed: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.manual_seed_all: {category: Public Python API, defined_in: runtime, stage: Experimental}

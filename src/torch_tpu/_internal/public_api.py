@@ -160,6 +160,9 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "get_rng_state": _tpu_attr("get_rng_state"),
             "initial_seed": _tpu_attr("initial_seed"),
             "is_available": _tpu_attr("is_available"),
+            "is_current_stream_capturing": _tpu_attr(
+                "is_current_stream_capturing"
+            ),
             "is_initialized": _tpu_attr("is_initialized"),
             "manual_seed": _tpu_attr("manual_seed"),
             "manual_seed_all": _tpu_attr("manual_seed_all"),

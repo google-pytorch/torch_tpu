@@ -890,6 +890,23 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
+      "is_current_stream_capturing() is experimental and subject to change"
+      " without notice."
+  )
+  def is_current_stream_capturing(cls) -> bool:  # In torch/cuda/graphs.py.
+    """Returns whether the current stream is capturing a graph.
+
+    Like `torch.cuda.is_current_stream_capturing()`, so that code shared with
+    CUDA can call it through `torch.get_device_module()`. TPU streams don't
+    capture graphs, so this always returns False.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
+    return False
+
+  @classmethod
+  @experimental(
       "get_amp_supported_dtype() is experimental and may change or be removed "
       "without notice."
   )
