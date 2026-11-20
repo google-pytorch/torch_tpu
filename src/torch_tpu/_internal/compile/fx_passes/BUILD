@@ -71,7 +71,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/compile/dynamic:sym_utils",
+        "@pypi//sympy",
     ],
 )
 
