@@ -798,7 +798,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "untriaged: unknown failure": {
         # Input SymInt is not present in example_inputs.
         "_thnn_fused_gru_cell": {COMPILE_GRAD},
-        "bernoulli": {COMPILE_GRAD},  # Dynamo no_dispatch error
         # Compiled backward graph codegen emits invalid Python.
         "std": {COMPILE_GRAD},
         "var": {COMPILE_GRAD},
