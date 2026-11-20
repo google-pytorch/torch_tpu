@@ -24,6 +24,15 @@ class CpuBackwardNoTpuTest(
 ):
 
   def test_cpu_backward_does_not_initialize_tpu_runtime(self):
+    # This test is flaky (~5% failure rate on CPU machines): some CPU hosts
+    # happen to have non-TPU device files (like VFIO or accel) in /dev. When
+    # those files are present, TorchTPU assumes a TPU might be attached and
+    # tries to start PjRt, so we skip the test on those hosts.
+    if tt_testing.has_tpu_device_nodes():
+      self.skipTest(
+          "Host has VFIO/accel device files, so PjRt initialization will be "
+          "attempted."
+      )
     self.assertFalse(tt_testing.pjrt_init_attempted())
 
     # The autograd engine asks every registered device type for its device
