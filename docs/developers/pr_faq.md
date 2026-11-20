@@ -114,9 +114,9 @@ reviewer.
 
 **Expert**: Once you're satisfied with the PR and CI passed on its latest
 commit, approve it, then add a quality champion as both a reviewer and the
-assignee. The champions are `cbasile-g`, `LeeHowes`, `vladbelous`, and
-`zhanyong-wan`. To balance their load, pick the one who is assignee on the
-fewest
+assignee. The champions are listed in
+[`.github/quality_champions.txt`](../../.github/quality_champions.txt). To
+balance their load, pick the one who is assignee on the fewest
 [open PRs](https://github.com/google-pytorch/torch_tpu/pulls?q=is%3Apr+is%3Aopen+-author%3Aapp%2Fcopybara-service+sort%3Aupdated-asc+draft%3Afalse).
 
 <img src="images/pr_roles.png" alt="Where the reviewer and assignee roles appear in a PR" width="400px">
@@ -155,8 +155,9 @@ the same issue) and close the old one.
 ### When does the import happen?
 
 **Champion**: Google's Copybara bot imports a PR into an internal change once
-the PR has the `pull ready` label **and** a Googler has approved its latest
-commit. After you approve the PR, add the `pull ready` label. If you forget, any
+the PR has the `pull ready` label, a Googler has approved its latest commit,
+**and** a quality champion is assigned (`assignee-is-quality-champion` status is
+green). After you approve the PR, add the `pull ready` label. If you forget, any
 Googler may add it once you've approved. The import usually starts within
 minutes; the PR's `import/copybara` check shows its status.
 
@@ -190,12 +191,13 @@ that opens. The page is Google-internal, so external authors can't do this step.
 
 **Googler**: First check the conditions in
 [When does the import happen?](#when-does-the-import-happen): the PR isn't a
-draft, has the `pull ready` label, and a Googler approved its latest commit.
-Then open the details of the PR's `import/copybara` check, if it has one, which
-says why an import is blocked, e.g. a missing `pull ready` label, no Googler
-approval of the latest commit, or a merge conflict. Fix that cause and the
-import retries. The check doesn't appear on every PR, so if it's missing, look
-for the internal change (see
+draft, has the `pull ready` label, has a Googler approval on its latest commit,
+and has a quality champion assigned (`assignee-is-quality-champion`). Then open
+the details of the PR's `import/copybara` check, if it has one, which says why
+an import is blocked, e.g. a missing `pull ready` label, no Googler approval of
+the latest commit, a missing `assignee-is-quality-champion` status, or a merge
+conflict. Fix that cause and the import retries. The check doesn't appear on
+every PR, so if it's missing, look for the internal change (see
 [How do I check if a PR has been imported?](#how-do-i-check-if-a-pr-has-been-imported)).
 If the conditions are met but there's no internal change after an hour, or the
 change exists but was never sent for review, start the import yourself (see the
