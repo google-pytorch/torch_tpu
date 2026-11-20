@@ -2976,6 +2976,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",  # build_cleaner: keep
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
@@ -2991,6 +2992,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",  # build_cleaner: keep
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],

@@ -838,6 +838,12 @@ enum class OpName {
   kTorchTpuInternalZeroSize,
   kTorchTpuOptimizationBarrier,
   kTorchTpuStorageAllocate,
+  kTpuGruInput,
+  kTpuGruInputBackward,
+  kTpuGruInputForwardCached,
+  kTpuLstmInput,
+  kTpuLstmInputBackward,
+  kTpuLstmInputForwardCached,
   kTransformerEncoderLayerFwd,
   kTrilIndices,
   kTrilOut,
@@ -2538,6 +2544,18 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_optimization_barrier";
     case OpName::kTorchTpuStorageAllocate:
       return "storage.allocate";
+    case OpName::kTpuGruInput:
+      return "_gru_input";
+    case OpName::kTpuGruInputBackward:
+      return "_gru_input_backward";
+    case OpName::kTpuGruInputForwardCached:
+      return "_gru_input_forward_cached";
+    case OpName::kTpuLstmInput:
+      return "_lstm_input";
+    case OpName::kTpuLstmInputBackward:
+      return "_lstm_input_backward";
+    case OpName::kTpuLstmInputForwardCached:
+      return "_lstm_input_forward_cached";
     case OpName::kTransformerEncoderLayerFwd:
       return "_transformer_encoder_layer_fwd";
     case OpName::kTrilIndices:

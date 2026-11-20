@@ -17,6 +17,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._dynamo import testing as dynamo_testing
 import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from torch_tpu._internal.utils.test_utils import assert_close
 from tests import seed_test_utils
@@ -1137,6 +1138,400 @@ class GruOpTest(seed_test_utils.RepeatableTest):
         self.assertIsNotNone(x.grad)
     finally:
       torch.set_float32_matmul_precision(old_precision)
+
+  @parameterized.named_parameters(
+      ("f32_seq_first", torch.float32, False, 1, False),
+      ("f32_batch_first_2layer_bidir", torch.float32, True, 2, True),
+      ("bf16_batch_first_bidir", torch.bfloat16, True, 2, True),
+  )
+  def test_torch_compile_forward_backward(
+      self,
+      dtype: torch.dtype,
+      batch_first: bool,
+      num_layers: int,
+      bidirectional: bool,
+  ):
+    """Verifies torch.compile forward and backward parity for nn.GRU."""
+    torch._dynamo.reset()
+    batch, seq_len, input_size, hidden_size = 3, 5, 8, 12
+    num_directions = 2 if bidirectional else 1
+    tol = 5e-2 if dtype == torch.bfloat16 else 5e-3
+
+    cpu_gru, tpu_gru = self._create_models(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        bias=True,
+        batch_first=batch_first,
+        dtype=dtype,
+        bidirectional=bidirectional,
+    )
+    compiled_gru = torch.compile(tpu_gru)
+
+    in_shape = (
+        (batch, seq_len, input_size)
+        if batch_first
+        else (seq_len, batch, input_size)
+    )
+    x_cpu = torch.randn(in_shape, dtype=dtype, requires_grad=True)
+    h0_cpu = torch.randn(
+        num_layers * num_directions,
+        batch,
+        hidden_size,
+        dtype=dtype,
+        requires_grad=True,
+    )
+    x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+    h0_tpu = h0_cpu.detach().clone().to("tpu").requires_grad_(True)
+
+    out_cpu, hy_cpu = cpu_gru(x_cpu, h0_cpu)
+    out_tpu, hy_tpu = compiled_gru(x_tpu, h0_tpu)
+
+    assert_close(out_tpu.cpu(), out_cpu, atol=tol, rtol=tol)
+    assert_close(hy_tpu.cpu(), hy_cpu, atol=tol, rtol=tol)
+
+    grad_out = torch.randn_like(out_cpu)
+    grad_hy = torch.randn_like(hy_cpu)
+    torch.autograd.backward([out_cpu, hy_cpu], [grad_out, grad_hy])
+    torch.autograd.backward(
+        [out_tpu, hy_tpu], [grad_out.to("tpu"), grad_hy.to("tpu")]
+    )
+
+    assert_close(x_tpu.grad.cpu(), x_cpu.grad, atol=tol, rtol=tol)
+    assert_close(h0_tpu.grad.cpu(), h0_cpu.grad, atol=tol, rtol=tol)
+    # Weight gradients accumulate over the batch and the sequence in TPU
+    # matmuls, so they get the eager tests' parameter tolerances.
+    atol_params = 5e-2 if dtype == torch.float32 else 1e-1
+    rtol_params = 5e-2
+    for (name, cpu_p), (_, tpu_p) in zip(
+        cpu_gru.named_parameters(), tpu_gru.named_parameters()
+    ):
+      self.assertIsNotNone(tpu_p.grad, msg=f"Missing grad for {name}")
+      assert_close(
+          tpu_p.grad.cpu(), cpu_p.grad, atol=atol_params, rtol=rtol_params
+      )
+
+  def test_torch_compile_batch_first_slice_head_and_no_grad(self):
+    """Verifies compiled batch_first GRU followed by sequence slicing and Linear."""
+    torch._dynamo.reset()
+
+    class SeqClassifier(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.rnn = torch.nn.GRU(8, 12, batch_first=True)
+        self.head = torch.nn.Linear(12, 4)
+
+      def forward(self, x):
+        out, _ = self.rnn(x)
+        return self.head(out[:, -1, :])
+
+    cpu_mod = SeqClassifier()
+    tpu_mod = SeqClassifier().to("tpu")
+    with torch.no_grad():
+      for cpu_p, tpu_p in zip(cpu_mod.parameters(), tpu_mod.parameters()):
+        tpu_p.copy_(cpu_p.to("tpu"))
+
+    compiled_mod = torch.compile(tpu_mod)
+    x_cpu = torch.randn(3, 6, 8, requires_grad=True)
+    x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+
+    y_cpu = cpu_mod(x_cpu)
+    y_tpu = compiled_mod(x_tpu)
+    assert_close(y_tpu.cpu(), y_cpu, atol=5e-3, rtol=5e-3)
+
+    y_cpu.sum().backward()
+    y_tpu.sum().backward()
+    assert_close(x_tpu.grad.cpu(), x_cpu.grad, atol=5e-3, rtol=5e-3)
+    for (name, cpu_p), (_, tpu_p) in zip(
+        cpu_mod.named_parameters(), tpu_mod.named_parameters()
+    ):
+      self.assertIsNotNone(tpu_p.grad, msg=f"Missing grad for {name}")
+      assert_close(tpu_p.grad.cpu(), cpu_p.grad, atol=5e-3, rtol=5e-3)
+
+    with torch.no_grad():
+      x_eval = torch.randn(3, 6, 8)
+      assert_close(
+          compiled_mod(x_eval.to("tpu")).cpu(),
+          cpu_mod(x_eval),
+          atol=5e-3,
+          rtol=5e-3,
+      )
+      # AOTAutograd's fake and functional tensors must keep the fused op; only
+      # functorch, wrapper subclasses and forward AD use the composite.
+      backend = dynamo_testing.AotEagerAndRecordGraphs()
+      torch.compile(tpu_mod, backend=backend)(x_eval.to("tpu"))
+      self.assertIn(
+          "torch.ops.tpu._gru_input.default", backend.fw_graphs[0].code
+      )
+
+  def test_torch_compile_dropout_backward(self):
+    """Verifies seeded dropout parity between eager and compiled multi-layer GRU."""
+    torch._dynamo.reset()
+    _, tpu_gru = self._create_models(
+        input_size=8,
+        hidden_size=12,
+        num_layers=2,
+        bias=True,
+        batch_first=True,
+        dtype=torch.float32,
+        dropout=0.4,
+    )
+    tpu_gru.train()
+    compiled_gru = torch.compile(tpu_gru)
+
+    x_base = torch.randn(3, 5, 8, device="tpu")
+    warmup_out, _ = compiled_gru(x_base.clone().requires_grad_(True))
+    warmup_out.sum().backward()
+    tpu_gru.zero_grad(set_to_none=True)
+
+    torch.manual_seed(12345)
+    x_eager = x_base.clone().requires_grad_(True)
+    out_eager, hy_eager = tpu_gru(x_eager)
+    (out_eager.sum() + hy_eager.sum()).backward()
+    eager_x_grad = x_eager.grad.clone()
+    eager_param_grads = [
+        (name, p.grad.clone()) for name, p in tpu_gru.named_parameters()
+    ]
+    tpu_gru.zero_grad(set_to_none=True)
+
+    torch.manual_seed(12345)
+    x_comp = x_base.clone().requires_grad_(True)
+    out_comp, hy_comp = compiled_gru(x_comp)
+    (out_comp.sum() + hy_comp.sum()).backward()
+
+    assert_close(out_comp.cpu(), out_eager.cpu(), atol=1e-5, rtol=1e-5)
+    assert_close(hy_comp.cpu(), hy_eager.cpu(), atol=1e-5, rtol=1e-5)
+    assert_close(x_comp.grad.cpu(), eager_x_grad.cpu(), atol=1e-5, rtol=1e-5)
+    for (name, eager_g), (_, p) in zip(
+        eager_param_grads, tpu_gru.named_parameters()
+    ):
+      self.assertIsNotNone(p.grad, msg=f"Missing grad for {name}")
+      assert_close(p.grad.cpu(), eager_g.cpu(), atol=1e-5, rtol=1e-5)
+
+  @parameterized.named_parameters(
+      # aten::gru.input with a bf16 input and f32 hidden state and weights.
+      ("mixed_dtype", torch.bfloat16, False, 1, 0.0, False, False),
+      # With dropout, the cached forward also returns the dropout RNG state.
+      ("dropout_2layer_bidir", torch.float32, True, 2, 0.4, True, True),
+  )
+  def test_custom_ops_opcheck(
+      self,
+      dtype: torch.dtype,
+      has_biases: bool,
+      num_layers: int,
+      dropout: float,
+      bidirectional: bool,
+      batch_first: bool,
+  ):
+    """Checks the schemas and Meta kernels of the tpu::_gru_input ops."""
+    batch, seq_len, input_size, hidden_size = 2, 4, 8, 12
+    num_directions = 2 if bidirectional else 1
+    _, tpu_gru = self._create_models(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        bias=has_biases,
+        batch_first=batch_first,
+        dtype=torch.float32,
+        bidirectional=bidirectional,
+    )
+    in_shape = (
+        (batch, seq_len, input_size)
+        if batch_first
+        else (seq_len, batch, input_size)
+    )
+    args = (
+        torch.randn(in_shape, dtype=dtype, device="tpu"),
+        torch.randn(
+            num_layers * num_directions, batch, hidden_size, device="tpu"
+        ),
+        [p.detach() for p in tpu_gru.parameters()],
+        has_biases,
+        num_layers,
+        dropout,
+        True,  # train
+        bidirectional,
+        batch_first,
+    )
+    # aten::gru.input owns the autograd of these ops and the torch.compile
+    # tests trace them, so this checks their schemas and Meta kernels.
+    test_utils = ("test_schema", "test_faketensor")
+    torch.library.opcheck(
+        torch.ops.tpu._gru_input.default, args, test_utils=test_utils
+    )
+    torch.library.opcheck(
+        torch.ops.tpu._gru_input_forward_cached.default,
+        args,
+        test_utils=test_utils,
+    )
+    fwd = torch.ops.tpu._gru_input_forward_cached(*args)
+    torch.library.opcheck(
+        torch.ops.tpu._gru_input_backward.default,
+        (torch.randn_like(fwd[0]), torch.randn_like(fwd[1]), *args, fwd[2:]),
+        test_utils=test_utils,
+    )
+
+  @parameterized.named_parameters(
+      # The fused backward unrolls seq_len < kGruUnrollFactor (8) and loops
+      # over chunks of kGruUnrollFactor otherwise, with a layer wavefront for
+      # multi-layer unidirectional GRUs.
+      ("static", 1, False, 4, True),
+      ("chunked", 1, False, 9, True),
+      ("wavefront", 2, False, 9, True),
+      ("bidir_static", 1, True, 4, True),
+      ("bidir_chunked", 1, True, 9, True),
+      ("eager", 1, False, 4, False),
+  )
+  def test_mixed_dtype_parity(
+      self,
+      num_layers: int,
+      bidirectional: bool,
+      seq_len: int,
+      compiled: bool,
+  ):
+    """Verifies aten::gru.input with a bf16 input and f32 hx and weights."""
+    torch._dynamo.reset()
+    num_directions = 2 if bidirectional else 1
+    cpu_gru, tpu_gru = self._create_models(
+        input_size=8,
+        hidden_size=12,
+        num_layers=num_layers,
+        bias=True,
+        batch_first=False,
+        dtype=torch.float32,
+        bidirectional=bidirectional,
+    )
+    x = torch.randn(
+        seq_len, 2, 8, dtype=torch.bfloat16, device="tpu", requires_grad=True
+    )
+    h0 = torch.randn(
+        num_layers * num_directions, 2, 12, device="tpu", requires_grad=True
+    )
+    # The f32 reference runs on the same bf16 input values.
+    x_ref = x.detach().cpu().float().requires_grad_(True)
+    h0_ref = h0.detach().cpu().requires_grad_(True)
+
+    def gru(inp, h, params):
+      return torch.ops.aten.gru.input(
+          inp, h, params, True, num_layers, 0.0, True, bidirectional, False
+      )
+
+    fn = torch.compile(gru) if compiled else gru
+    out, hy = fn(x, h0, list(tpu_gru.parameters()))
+    (out.sum() + hy.sum()).backward()
+    out_ref, hy_ref = gru(x_ref, h0_ref, list(cpu_gru.parameters()))
+    (out_ref.sum() + hy_ref.sum()).backward()
+
+    # x is bf16 and TPU matmuls run in one bf16 pass at the default precision,
+    # so all results get the bf16 tolerances of
+    # test_torch_compile_forward_backward.
+    tol = 5e-2
+    assert_close(out.cpu().float(), out_ref, atol=tol, rtol=tol)
+    assert_close(hy.cpu().float(), hy_ref, atol=tol, rtol=tol)
+    self.assertEqual(x.grad.dtype, torch.bfloat16)
+    assert_close(x.grad.cpu().float(), x_ref.grad, atol=tol, rtol=tol)
+    assert_close(h0.grad.cpu(), h0_ref.grad, atol=tol, rtol=tol)
+    for (name, cpu_p), (_, tpu_p) in zip(
+        cpu_gru.named_parameters(), tpu_gru.named_parameters()
+    ):
+      self.assertIsNotNone(tpu_p.grad, msg=f"Missing grad for {name}")
+      assert_close(tpu_p.grad.cpu(), cpu_p.grad, atol=1e-1, rtol=5e-2)
+    # Gradients computed in bf16 and cast up to f32 would all be representable
+    # in bf16.
+    f32_grads = [("h0", h0.grad)] + [
+        (name, p.grad) for name, p in tpu_gru.named_parameters()
+    ]
+    for name, grad in f32_grads:
+      self.assertEqual(grad.dtype, torch.float32, msg=f"{name}.grad dtype")
+      grad_cpu = grad.cpu()
+      self.assertFalse(
+          torch.equal(grad_cpu, grad_cpu.bfloat16().float()),
+          msg=f"{name}.grad is truncated to bf16",
+      )
+
+  def test_torch_compile_loss_root_inference_mode_and_recompiles(self):
+    """Verifies compiled GRU backward, recompiles and inference_mode."""
+    torch._dynamo.reset()
+    cpu_gru, tpu_gru = self._create_models(
+        input_size=8,
+        hidden_size=12,
+        num_layers=1,
+        bias=True,
+        batch_first=True,
+        dtype=torch.float32,
+    )
+    counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    # TorchTPU defaults to dynamic=False only for TPU backends, not counters.
+    compiled_gru = torch.compile(tpu_gru, backend=counter, dynamic=False)
+
+    compilations_per_call = []
+    for seq_len in (4, 7, 4):
+      tpu_gru.zero_grad(set_to_none=True)
+      cpu_gru.zero_grad(set_to_none=True)
+      x_cpu = torch.randn(3, seq_len, 8, requires_grad=True)
+      x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+      out_cpu, _ = cpu_gru(x_cpu)
+      compilations_before = counter.frame_count
+      out_tpu, _ = compiled_gru(x_tpu)
+      compilations_per_call.append(counter.frame_count - compilations_before)
+      out_cpu.sum().backward()
+      out_tpu.sum().backward()
+      assert_close(out_tpu.cpu(), out_cpu, atol=5e-3, rtol=5e-3)
+      assert_close(x_tpu.grad.cpu(), x_cpu.grad, atol=5e-3, rtol=5e-3)
+    # A new sequence length compiles one graph, and a seen one reuses it.
+    self.assertEqual(compilations_per_call, [1, 1, 0])
+
+    torch._dynamo.reset()
+    with torch.inference_mode():
+      inf_gru = torch.compile(tpu_gru)
+      x_inf = torch.randn(3, 6, 8)
+      out_inf, hy_inf = inf_gru(x_inf.to("tpu"))
+      out_cpu, hy_cpu = cpu_gru(x_inf)
+      assert_close(out_inf.cpu(), out_cpu, atol=5e-3, rtol=5e-3)
+      assert_close(hy_inf.cpu(), hy_cpu, atol=5e-3, rtol=5e-3)
+
+  def test_func_grad_parity(self):
+    """Verifies torch.func.grad parity with CPU for aten::gru.input."""
+    batch, seq_len, input_size, hidden_size = 3, 5, 8, 12
+    num_layers, num_directions = 2, 2
+    cpu_gru, tpu_gru = self._create_models(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        bias=True,
+        batch_first=True,
+        dtype=torch.float32,
+        bidirectional=True,
+    )
+    x = torch.randn(batch, seq_len, input_size)
+    h0 = torch.randn(num_layers * num_directions, batch, hidden_size)
+    out_grad = torch.randn(batch, seq_len, num_directions * hidden_size)
+    hy_grad = torch.randn(num_layers * num_directions, batch, hidden_size)
+
+    def loss(inp, h, params, grad_out, grad_hy):
+      out, hy = torch.ops.aten.gru.input(
+          inp, h, params, True, num_layers, 0.0, True, True, True
+      )
+      return (out * grad_out).sum() + (hy * grad_hy).sum()
+
+    grad_fn = torch.func.grad(loss, argnums=(0, 1, 2))
+    x_grad, h0_grad, param_grads = grad_fn(
+        x, h0, [p.detach() for p in cpu_gru.parameters()], out_grad, hy_grad
+    )
+    tpu_x_grad, tpu_h0_grad, tpu_param_grads = grad_fn(
+        x.to("tpu"),
+        h0.to("tpu"),
+        [p.detach() for p in tpu_gru.parameters()],
+        out_grad.to("tpu"),
+        hy_grad.to("tpu"),
+    )
+    # Under torch.func, TPU runs PyTorch's composite GRU step by step, with
+    # each matmul in one bf16 pass at the default precision.
+    assert_close(tpu_x_grad.cpu(), x_grad, atol=1e-2, rtol=1e-2)
+    assert_close(tpu_h0_grad.cpu(), h0_grad, atol=1e-2, rtol=1e-2)
+    for tpu_grad, cpu_grad in zip(tpu_param_grads, param_grads):
+      assert_close(tpu_grad.cpu(), cpu_grad, atol=5e-2, rtol=5e-2)
 
 
 if __name__ == "__main__":
