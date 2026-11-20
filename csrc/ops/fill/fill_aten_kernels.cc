@@ -17,6 +17,7 @@
 #include "csrc/ops/fill/fill_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -53,9 +54,13 @@ bool HasBoundedDynamicShape(const at::Tensor& tensor) {
   if (!tensor.has_storage()) {
     return false;
   }
-  const absl::StatusOr<DeviceBufferRef> buf = GetBuffer(tensor);
-  return buf.ok() && (!buf->dynamic_dimensions().empty() ||
-                      buf->on_device_shape_is_dynamic());
+  const absl::StatusOr<std::optional<DeviceBufferRef>> buf =
+      GetBufferWithoutCreatingView(tensor);
+  if (!buf.ok() || !buf->has_value()) {
+    return false;
+  }
+  return !(*buf)->dynamic_dimensions().empty() ||
+         (*buf)->on_device_shape_is_dynamic();
 }
 
 absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,

@@ -93,6 +93,17 @@ namespace torch_tpu {
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor);
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 
+// Returns the tensor's existing base DeviceBufferRef if `tensor` directly
+// matches its storage's base buffer (non-conjugated, contiguous, zero storage
+// offset, with the same dimensions and element type as the base buffer).
+//
+// Unlike GetBuffer(), this never synthesizes a deferred view op: if `tensor`
+// is a view that does not directly match its base buffer, returns
+// `std::nullopt`. Returns an error status for undefined tensors, non-TPU
+// tensors, or tensors with a null storage data_ptr (e.g., FakeTensor).
+absl::StatusOr<std::optional<DeviceBufferRef>> GetBufferWithoutCreatingView(
+    const at::Tensor& tensor);
+
 // Extracts the DeviceBufferRef from the given ATen tensor.
 //
 // If the tensor is a view, the buffer will be a view of the base buffer.

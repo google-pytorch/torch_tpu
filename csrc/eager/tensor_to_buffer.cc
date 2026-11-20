@@ -124,6 +124,29 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
   *old_ref_ptr = std::move(buffer_ref);
 }
 
+absl::StatusOr<std::optional<DeviceBufferRef>> GetBufferImpl(
+    const at::Tensor& tensor, std::optional<DonateBase> donate_base) {
+  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
+      << "tensor is undefined";
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
+  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
+
+  if (!tensor.is_conj() && tensor.is_contiguous() &&
+      tensor.storage_offset() == 0 &&
+      tpu_layout.sizes == base_buffer_ref.dimensions() &&
+      tpu_layout.element_type == base_buffer_ref.element_type()) {
+    ABSL_VLOG(1) << "[GetBuffer] Tensor is a contiguous base, "
+                    "returning base buffer.";
+    return base_buffer_ref;
+  }
+
+  if (!donate_base.has_value()) {
+    return std::nullopt;
+  }
+  return CreateViewDeviceBufferRef(base_buffer_ref, tpu_layout,
+                                   tensor.is_conj(), *donate_base);
+}
+
 }  // namespace
 
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
@@ -346,24 +369,16 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
   return *base_buffer_ref;
 }
 
+absl::StatusOr<std::optional<DeviceBufferRef>> GetBufferWithoutCreatingView(
+    const at::Tensor& tensor) {
+  return GetBufferImpl(tensor, /*donate_base=*/std::nullopt);
+}
+
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor,
                                           DonateBase donate_base) {
-  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
-      << "tensor is undefined";
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
-  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
-
-  if (!tensor.is_conj() && tensor.is_contiguous() &&
-      tensor.storage_offset() == 0 &&
-      tpu_layout.sizes == base_buffer_ref.dimensions() &&
-      tpu_layout.element_type == base_buffer_ref.element_type()) {
-    ABSL_VLOG(1) << "[GetBuffer] Tensor is a contiguous base, "
-                    "returning base buffer.";
-    return base_buffer_ref;
-  }
-
-  return CreateViewDeviceBufferRef(base_buffer_ref, tpu_layout,
-                                   tensor.is_conj(), donate_base);
+  TT_ASSIGN_OR_RETURN(std::optional<DeviceBufferRef> buffer,
+                      GetBufferImpl(tensor, donate_base));
+  return std::move(*buffer);
 }
 
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {

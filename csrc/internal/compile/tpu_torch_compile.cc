@@ -321,11 +321,14 @@ std::vector<std::optional<PyLayout>> ToPyLayouts(
 
 std::optional<PyLayout> PyGetDeviceLayoutIfMaterialized(
     const at::Tensor& tensor) {
-  auto buffer_ref_or = GetBuffer(tensor);
+  auto buffer_ref_or = GetBufferWithoutCreatingView(tensor);
   if (!buffer_ref_or.ok()) {
     TT_THROW_TT_ERROR_(buffer_ref_or.status(), TT_SOURCE_LOCATION);
   }
-  DeviceBufferRef buffer_ref = std::move(buffer_ref_or).value();
+  if (!buffer_ref_or->has_value()) {
+    return std::nullopt;
+  }
+  DeviceBufferRef buffer_ref = std::move(*buffer_ref_or).value();
   if (!buffer_ref.is_materializing()) {
     return std::nullopt;
   }
@@ -374,8 +377,9 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
 }
 
 bool PyIsDeviceShapeDynamic(const at::Tensor& tensor) {
-  TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBuffer(tensor));
-  return buffer_ref.on_device_shape_is_dynamic();
+  TT_ASSIGN_OR_THROW(std::optional<DeviceBufferRef> buffer_ref,
+                     GetBufferWithoutCreatingView(tensor));
+  return buffer_ref.has_value() && buffer_ref->on_device_shape_is_dynamic();
 }
 
 std::vector<std::optional<PyLayout>> PyGetParameterLayouts(
@@ -1288,11 +1292,11 @@ bool PyIsConstantTensor(const at::Tensor& tensor) {
       tensor.device().type() != GetPrivateUse1DeviceType()) {
     return false;
   }
-  auto buffer_ref_or = GetBuffer(tensor);
-  if (!buffer_ref_or.ok()) {
+  auto buffer_ref_or = GetBufferWithoutCreatingView(tensor);
+  if (!buffer_ref_or.ok() || !buffer_ref_or->has_value()) {
     return false;
   }
-  auto deferred_op = buffer_ref_or->deferred_op();
+  auto deferred_op = (*buffer_ref_or)->deferred_op();
   return deferred_op != nullptr &&
          deferred_op->op_name() == OpName::kTorchTpuInternalConstant;
 }
