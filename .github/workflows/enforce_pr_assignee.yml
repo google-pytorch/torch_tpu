@@ -54,6 +54,7 @@ jobs:
           persist-credentials: false
       - name: Enforce PR assignee
         env:
+          PYTHONPATH: .
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}

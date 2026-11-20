@@ -95,7 +95,8 @@ step:
 1.  **Triage**: a Google **oncaller** assigns a Google **domain expert** as the
     PR's reviewer.
 2.  **Review**: the **domain expert** reviews the PR, makes sure CI passes on
-    its latest commit, approves it, and adds a Google **quality champion** as a
+    its latest commit, and approves it. Once approved, a bot picks a Google
+    **quality champion** at random (excluding the approver) and adds them as a
     reviewer and the assignee.
 3.  **Quality**: the **quality champion** reviews the PR for style and quality,
     approves it, and adds the `pull ready` label.
