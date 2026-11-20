@@ -26395,6 +26395,42 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
               self.assertEqual(out_tpu.dtype, torch.float32)
               utils.assert_close(out_tpu.cpu(), expected)
 
+  def test_linalg_lu_solve_out_aliased_with_lu(self):
+    a_cpu = torch.tensor(
+        [[2.0, 1.0, 1.0], [4.0, -6.0, 0.0], [-2.0, 7.0, 2.0]],
+        dtype=torch.float32,
+    )
+    b_cpu = torch.tensor(
+        [[5.0, 1.0, 2.0], [-2.0, 3.0, 4.0], [9.0, -1.0, 0.0]],
+        dtype=torch.float32,
+    )
+    lu_cpu, pivots_cpu = torch.linalg.lu_factor(a_cpu)
+    expected = torch.linalg.lu_solve(lu_cpu, pivots_cpu, b_cpu)
+
+    # 1. out is identical to lu
+    lu_tpu = lu_cpu.to("tpu")
+    pivots_tpu = pivots_cpu.to("tpu")
+    b_tpu = b_cpu.to("tpu")
+    torch.linalg.lu_solve(lu_tpu, pivots_tpu, b_tpu, out=lu_tpu)
+    utils.assert_close(actual=lu_tpu.cpu(), expected=expected)
+
+    # 2. out is a view sharing storage with lu
+    lu_tpu_view = lu_cpu.to("tpu")
+    out_view = lu_tpu_view.t()
+    torch.linalg.lu_solve(lu_tpu_view, pivots_tpu, b_tpu, out=out_view)
+    utils.assert_close(actual=out_view.cpu(), expected=expected)
+
+    # 3. out is identical to lu and resized to match b's shape (3, 1)
+    b_col_cpu = b_cpu[:, :1]
+    expected_col = torch.linalg.lu_solve(lu_cpu, pivots_cpu, b_col_cpu)
+    lu_tpu_resize = lu_cpu.to("tpu")
+    b_col_tpu = b_col_cpu.to("tpu")
+    torch.linalg.lu_solve(
+        lu_tpu_resize, pivots_tpu, b_col_tpu, out=lu_tpu_resize
+    )
+    self.assertEqual(lu_tpu_resize.shape, (3, 1))
+    utils.assert_close(actual=lu_tpu_resize.cpu(), expected=expected_col)
+
 
 if __name__ == "__main__":
   absltest.main()
