@@ -47,8 +47,6 @@ ENV LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
 # =====================================================================
 FROM base AS final
 
-ARG GCLOUD_TOKEN=""
-
 WORKDIR /opt/wheels
 
 # Copy prebuilt wheel(s) from dist/ if present in the build context.
@@ -56,22 +54,14 @@ WORKDIR /opt/wheels
 COPY pyproject.toml dist* /opt/wheels/
 
 # If a prebuilt wheel was provided, install it.
-# Otherwise, download the latest nightly torch_tpu wheel authenticated from Google Cloud Artifact Registry.
-# Supports BuildKit secret (--mount=type=secret,id=gcloud_token) or build argument (--build-arg GCLOUD_TOKEN=...).
-RUN --mount=type=secret,id=gcloud_token \
-    set -eu; \
+# Otherwise, download the latest nightly torch_tpu wheel from the public Artifact Registry.
+RUN set -eu; \
     if ls /opt/wheels/*.whl 1>/dev/null 2>&1; then \
       echo "===> Installing provided prebuilt wheel(s)..."; \
     else \
       echo "===> No prebuilt wheel provided; fetching latest nightly from Artifact Registry..."; \
-      TOKEN="${GCLOUD_TOKEN}"; \
-      if [ -f /run/secrets/gcloud_token ]; then TOKEN="$(cat /run/secrets/gcloud_token)"; fi; \
-      if [ -z "${TOKEN}" ]; then \
-        echo "Error: Missing prebuilt wheel in dist/ and missing BuildKit secret (id=gcloud_token) or build arg (GCLOUD_TOKEN) for Artifact Registry authentication." >&2; \
-        exit 1; \
-      fi; \
       pip download --no-deps --pre torch_tpu \
-          --index-url "https://oauth2accesstoken:${TOKEN}@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" \
+          --index-url "https://us-python.pkg.dev/ml-oss-artifacts-published/torch-tpu-virtual-registry/simple/" \
           --only-binary=:all: \
           -d /opt/wheels; \
     fi; \
