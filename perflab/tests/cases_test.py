@@ -14,6 +14,7 @@
 
 """Tests for perflab/cases.py."""
 
+import collections
 from collections.abc import Mapping, Sequence, Set
 import itertools
 import os
@@ -934,6 +935,60 @@ class BatchSweepCasesTest(seed_test_utils.RepeatableTest):
               if s is spec and m is mode
           ]
           self.assertLen({shard_of[n] for n in group}, 1)
+
+  def _sweep_group_shards(
+      self, num_benchmarks: int, total_shards: int
+  ) -> dict[str, set[int]]:
+    """Returns the shards that the cases of each sweep group of a fake sweep run in."""
+    specs = {
+        f"model_{i}": _make_sweep_spec(f"model_{i}")
+        for i in range(num_benchmarks)
+    }
+    mode = common.RunMode.COMPILED
+
+    class _SweepTest:  # pylint: disable=too-few-public-methods
+      case_params = {
+          f"test_benchmark_{name}_bs{b}_{mode.value}": (spec, mode, b)
+          for name, spec in specs.items()
+          for b in (1, 2, 4, 8)
+      }
+
+    loader = cases.BenchmarkTestLoader()
+    names = list(_SweepTest.case_params) + ["test_benchmark_imports"]
+    with mock.patch.object(
+        absltest.TestLoader, "getTestCaseNames", return_value=names
+    ):
+      ordered = loader.getTestCaseNames(_SweepTest)
+    shards_of_group: dict[str, set[int]] = collections.defaultdict(set)
+    assigned = []
+    for shard_index in range(total_shards):
+      for name in loader.shardTestCaseNames(
+          itertools.cycle(range(total_shards)), ordered, shard_index
+      ):
+        assigned.append(name)
+        params = _SweepTest.case_params.get(name)
+        if params is not None:
+          shards_of_group[params[0].name].add(shard_index)
+    self.assertCountEqual(assigned, names)
+    return shards_of_group
+
+  def test_each_sweep_group_gets_its_own_shard_if_there_are_enough(self):
+    # 9 groups on 12 shards by name hash put two groups on one shard, which
+    # then ran out of time before the second one (and left 4 shards idle).
+    shards_of_group = self._sweep_group_shards(num_benchmarks=9, total_shards=9)
+    self.assertLen(shards_of_group, 9)
+    self.assertCountEqual(
+        [shard for shards in shards_of_group.values() for shard in shards],
+        range(9),
+    )
+
+  def test_sweep_groups_are_spread_evenly_over_fewer_shards(self):
+    shards_of_group = self._sweep_group_shards(num_benchmarks=9, total_shards=4)
+    groups_per_shard = collections.Counter(
+        shard for shards in shards_of_group.values() for shard in shards
+    )
+    self.assertTrue(all(len(s) == 1 for s in shards_of_group.values()))
+    self.assertCountEqual(groups_per_shard.values(), [3, 2, 2, 2])
 
   def test_default_cases_keep_their_shards(self):
     # Default cases hash their own name even if it looks like a batch sweep

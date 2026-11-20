@@ -221,8 +221,8 @@ class BenchmarkTestLoader(absltest.TestLoader):
   """TestLoader with deterministic hash ordering and stable name-hash sharding."""
 
   def __init__(self, *args: Any, **kwargs: Any):
-    # The names whose hash assigns a batch sweep case to a shard, by test method
-    # name; see `shardTestCaseNames`.
+    # The sweep group (benchmark and run mode) of each batch sweep case, by test
+    # method name, which assigns the case to a shard; see `shardTestCaseNames`.
     self._shard_keys: dict[str, str] = {}
     self._seed_initialized: bool = False
     self._randomize_ordering_seed: int | None = None
@@ -300,17 +300,25 @@ class BenchmarkTestLoader(absltest.TestLoader):
       ordered_names: Sequence[str],
       shard_index: int,
   ) -> Sequence[str]:
-    """Partitions `ordered_names` across shards by a stable hash of each name.
+    """Partitions `ordered_names` across shards.
 
     Auto-bisect reruns a single shard (e.g.
     `torch_benchmarks_shard_05_of_16_tpu-v7`) at each candidate commit, so a
-    case must stay in the same shard across commits. A case's shard therefore
-    depends only on its own name and the shard count, not on the ordering seed
-    (the commit SHA in CI), estimated costs, known failures, the order of the
-    names, or which other cases exist. The batch sweep cases of a benchmark in
-    a run mode hash the same name instead (recorded by `getTestCaseNames`), so
-    they share a shard and the shard can skip the batch sizes larger than one
-    that ran out of memory.
+    default case must stay in the same shard across commits. A default case's
+    shard therefore depends only on its own name and the shard count, through a
+    stable hash, not on the ordering seed (the commit SHA in CI), estimated
+    costs, known failures, the order of the names, or which other cases exist.
+
+    The batch sweep cases of a benchmark in a run mode (a sweep group, recorded
+    by `getTestCaseNames`) share a shard, so the shard can skip the batch sizes
+    past which the sweep stops. Sweep groups are dealt round-robin over the
+    shards in the sorted order of their names instead of by hash, so that a
+    sweep with at least as many shards as groups runs each group on its own
+    shard: hashing put 2 of the 9 groups of the daily sweep on the same one of
+    its 12 shards, which then never got to the second group within its time
+    budget, and left 4 shards idle. A group's shard therefore depends on which
+    sweep groups the run has, which is fine since sweep results are not
+    bisected by shard (autobisect reruns a single test on one shard).
 
     Args:
       iterator: absltest's cyclic iterator over the shard indices.
@@ -339,14 +347,24 @@ class BenchmarkTestLoader(absltest.TestLoader):
       return []
     buckets = sorted(seen_buckets)
 
-    return [
-        name
+    # Every shard sees the same names (absltest filters them before sharding),
+    # so all shards agree on the sorted sweep groups.
+    sweep_groups = sorted({
+        self._shard_keys[name]
         for name in ordered_names
-        if buckets[
-            _stable_shard_hash(self._shard_keys.get(name, name)) % len(buckets)
-        ]
-        == shard_index
-    ]
+        if name in self._shard_keys
+    })
+    group_buckets = {
+        group: buckets[i % len(buckets)] for i, group in enumerate(sweep_groups)
+    }
+
+    def bucket_of(name: str) -> int:
+      group = self._shard_keys.get(name)
+      if group is not None:
+        return group_buckets[group]
+      return buckets[_stable_shard_hash(name) % len(buckets)]
+
+    return [name for name in ordered_names if bucket_of(name) == shard_index]
 
 
 def get_cases(
