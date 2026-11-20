@@ -423,6 +423,12 @@ REGISTRATION_OVERRIDES = frozenset([
     # pooling lowering on TPU, overriding the default PyTorch decomposition.
     'avg_pool1d',
     'avg_pool1d.out',
+    # bernoulli and bernoulli.p are registered to sample with `self` as an
+    # operand, so the result keeps the bounded dynamic dimensions of `self`,
+    # instead of the composite empty_like + bernoulli_ sampling into a static
+    # tensor.
+    'bernoulli',
+    'bernoulli.p',
     # constant_pad_nd is registered to lower directly to StableHLO Concatenate
     # instead of empty + fill_ + slice.copy_ (DynamicUpdateSlice).
     'constant_pad_nd',

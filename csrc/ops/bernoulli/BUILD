@@ -30,7 +30,6 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
-        "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
@@ -38,6 +37,7 @@ torch_tpu_cc_library(
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
+        "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:rng_utils",
@@ -49,7 +49,6 @@ torch_tpu_cc_library(
         "//shims/torch/c10/core:base_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",

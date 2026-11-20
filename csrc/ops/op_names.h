@@ -93,7 +93,9 @@ enum class OpName {
   kBaddbmmDtype,
   kBaddbmmDtypeOut,
   kBaddbmmOut,
+  kBernoulli,
   kBernoulliOut,
+  kBernoulliP,
   kBernoulli_Float,
   kBernoulli_Tensor,
   kBinCount,
@@ -1042,8 +1044,12 @@ ToString(  // NOLINT(google-readability-function-size)
       return "baddbmm.dtype_out";
     case OpName::kBaddbmmOut:
       return "baddbmm.out";
+    case OpName::kBernoulli:
+      return "bernoulli";
     case OpName::kBernoulliOut:
       return "bernoulli.out";
+    case OpName::kBernoulliP:
+      return "bernoulli.p";
     case OpName::kBernoulli_Float:
       return "bernoulli_.float";
     case OpName::kBernoulli_Tensor:

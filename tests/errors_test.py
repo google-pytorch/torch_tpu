@@ -4933,10 +4933,16 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     t = torch.ones((2, 2), device=device, dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bernoulli_(): expected p to be in the range [0, 1], got 1.5""",
+        tpu="""bernoulli(): expected p to be in the range [0, 1], got 1.5""",
         gpu="""bernoulli_ expects p to be in [0, 1], but got p=1.5""",
     ):
       t.bernoulli(p=1.5)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected p to be in the range [0, 1], got 1.5""",
+        gpu="""bernoulli_ expects p to be in [0, 1], but got p=1.5""",
+    ):
+      t.bernoulli_(1.5)
 
   def test_bernoulli_complex_out_dtype(self):
     device = et.device()
@@ -4954,10 +4960,16 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     t = torch.ones((2, 2), device=device, dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bernoulli_(): expected probabilities tensor to have floating type, got int32""",
+        tpu="""bernoulli(): expected probabilities tensor to have floating type, got int32""",
         gpu="""expected probabilities tensor to have floating type, got Int""",
     ):
       torch.bernoulli(t)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected probabilities tensor to have floating type, got int32""",
+        gpu="""expected probabilities tensor to have floating type, got Int""",
+    ):
+      torch.zeros((2, 2), device=device).bernoulli_(t)
 
   def test_bernoulli_out_non_floating_p_dtype(self):
     device = et.device()
@@ -4969,6 +4981,17 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
         gpu="""expected probabilities tensor to have floating type, got Int""",
     ):
       torch.bernoulli(t, out=out)
+
+  def test_bernoulli_p_not_broadcastable_to_self(self):
+    device = et.device()
+    t = torch.zeros((4, 3), device=device, dtype=torch.float32)
+    p = torch.ones((3, 3), device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected p to be broadcastable to self shape, got [3, 3] vs [4, 3]""",
+        gpu="""The expanded size of the tensor (4) must match the existing size (3) at non-singleton dimension 0.  Target sizes: [4, 3].  Tensor sizes: [3, 3]""",
+    ):
+      t.bernoulli_(p)
 
   def test_add_smaller_out_alias(self):
     """Tests that add fails when the out tensor is a smaller alias of an input."""

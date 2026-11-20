@@ -1220,6 +1220,49 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       outputs[0].cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_bounded_p_not_broadcastable_to_static_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((3, 3), device=et.device())
+      dynamism.mark_dynamic(p, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): expected p to be broadcastable to self shape, got [3, 3] vs [4, 3]""",
+      ):
+        t.bernoulli_(p)
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_bounded_p_static_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((4, 3), device=et.device())
+      dynamism.mark_dynamic(p, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<?x3xf32, #stablehlo.bounds<8, ?>>' to target shape tensor<4x3>""",
+      ):
+        t.bernoulli_(p)
+        # cpu() is needed because the error is triggered inside the op builder.
+        t.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_static_p_bounded_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((4, 3), device=et.device())
+      dynamism.mark_dynamic(t, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<4x3xf32>' to target shape tensor<b8x3>""",
+      ):
+        t.bernoulli_(p)
+        # cpu() is needed because the error is triggered inside the op builder.
+        t.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_dynamic_kernel(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       inp = torch.ones(1, 2, 8, device=et.device())

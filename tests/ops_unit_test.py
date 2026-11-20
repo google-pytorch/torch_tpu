@@ -19704,6 +19704,104 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       self.assertEqual(res.dtype, out_dtype)
       self.assertIs(res, out)
 
+  def test_bernoulli_inplace_aliased_broadcast_p(self):
+    device = torch.device("tpu")
+    # `x[0]` is a 0/1 pattern, so sampling is deterministic, and the other rows
+    # differ from it, so the result differs from the initial `x`.
+    x = torch.tensor(
+        [[1.0, 0.0, 1.0], [0.5, 0.5, 0.5], [0.0, 1.0, 0.0], [0.25, 0.75, 0.5]],
+        device=device,
+    )
+    x.bernoulli_(x[0])
+    self.assertEqual(x.shape, (4, 3))
+    self.assertTrue(
+        torch.equal(x.cpu(), torch.tensor([1.0, 0.0, 1.0]).broadcast_to(4, 3))
+    )
+
+  @parameterized.named_parameters(
+      # (p shape, bounded p dim)
+      ("static_lower_rank_p", (3,), None),
+      ("static_singleton_p", (1, 3), None),
+      ("bounded_p", (4, 3), 0),
+  )
+  def test_bernoulli_inplace_tensor_p_bounded_self(self, p_shape, p_dim):
+    """Verifies `bernoulli_(p)` keeps the bounded dimensions of `self`."""
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      self_shape = (4, 3)
+      x = torch.zeros(self_shape, device="tpu")
+      # A 0/1 pattern that varies along each axis of `p`, so sampling is
+      # deterministic and a wrong broadcast of `p` changes the result.
+      p_cpu = (torch.arange(math.prod(p_shape)) % 2).reshape(p_shape).float()
+      p = p_cpu.to("tpu")
+      dynamism.mark_dynamic(x, 0, lower_bound=2, upper_bound=8)
+      if p_dim is not None:
+        dynamism.mark_dynamic(p, p_dim, lower_bound=2, upper_bound=8)
+      x.bernoulli_(p)
+      self.assertTrue(torch.equal(x.cpu(), p_cpu.broadcast_to(self_shape)))
+      x_dynamism_info = dynamism.get_dynamism_info(x)
+      self.assertLen(x_dynamism_info, 1)
+      self.assertEqual(x_dynamism_info[0].dimension, 0)
+      self.assertEqual(x_dynamism_info[0].upper_bound, 8)
+
+  @parameterized.named_parameters(
+      ("functional", False),
+      ("out", True),
+  )
+  def test_bernoulli_tensor_p_bounded_p(self, use_out):
+    """Verifies `torch.bernoulli(p)` keeps bounded dimensions of `p`."""
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      p_cpu = (torch.arange(12) % 2).reshape(4, 3).float()
+      p = p_cpu.to("tpu")
+      dynamism.mark_dynamic(p, 0, lower_bound=2, upper_bound=8)
+      if use_out:
+        out = torch.empty((0,), device="tpu")
+        y = torch.bernoulli(p, out=out)
+        self.assertIs(y, out)
+      else:
+        y = torch.bernoulli(p)
+      self.assertTrue(torch.equal(y.cpu(), p_cpu))
+      y_dynamism_info = dynamism.get_dynamism_info(y)
+      self.assertLen(y_dynamism_info, 1)
+      self.assertEqual(y_dynamism_info[0].dimension, 0)
+      self.assertEqual(y_dynamism_info[0].upper_bound, 8)
+
+  def test_bernoulli_float_p_bounded_self(self):
+    """Verifies `torch.bernoulli(x, p)` keeps bounded dimensions of `x`."""
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x = torch.zeros((4, 3), device="tpu")
+      dynamism.mark_dynamic(x, 0, lower_bound=2, upper_bound=8)
+      y = torch.bernoulli(x, 1.0)
+      self.assertTrue(torch.equal(y.cpu(), torch.ones(4, 3)))
+      self.assertTrue(torch.equal(x.cpu(), torch.zeros(4, 3)))
+      y_dynamism_info = dynamism.get_dynamism_info(y)
+      self.assertLen(y_dynamism_info, 1)
+      self.assertEqual(y_dynamism_info[0].dimension, 0)
+      self.assertEqual(y_dynamism_info[0].upper_bound, 8)
+
+  def test_bernoulli_tensor_p_empty(self):
+    p = torch.zeros((0, 3), device="tpu")
+    y = torch.bernoulli(p)
+    self.assertEqual(y.cpu().shape, (0, 3))
+    self.assertEqual(y.dtype, torch.float32)
+
+  def test_bernoulli_float_p_empty(self):
+    x = torch.zeros((0, 3), device="tpu")
+    y = torch.bernoulli(x, 0.5)
+    self.assertEqual(y.cpu().shape, (0, 3))
+    self.assertEqual(y.dtype, torch.float32)
+
+  def test_bernoulli_inplace_float_p_bounded_self(self):
+    """Verifies `bernoulli_(p)` with a float `p` keeps bounded `self`."""
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x = torch.zeros((4, 3), device="tpu")
+      dynamism.mark_dynamic(x, 0, lower_bound=2, upper_bound=8)
+      x.bernoulli_(1.0)
+      self.assertTrue(torch.equal(x.cpu(), torch.ones(4, 3)))
+      x_dynamism_info = dynamism.get_dynamism_info(x)
+      self.assertLen(x_dynamism_info, 1)
+      self.assertEqual(x_dynamism_info[0].dimension, 0)
+      self.assertEqual(x_dynamism_info[0].upper_bound, 8)
+
   def test_multinomial_out_resizing(self):
     device = torch.device("tpu")
     weights = torch.tensor([[0.1, 0.9], [0.8, 0.2]], device=device)
