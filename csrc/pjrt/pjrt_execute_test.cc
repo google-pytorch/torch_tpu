@@ -654,5 +654,47 @@ TEST_F(PjrtExecuteTest,
   EXPECT_EQ(on_device_shape_calls->load(std::memory_order_relaxed), 1);
 }
 
+TEST_F(PjrtExecuteTest, ReusesRuntimeShapeMetadataBuffers) {
+  PjrtBackend& backend = PjrtBackend::GetInstance();
+  const xla::Layout layout = xla::LayoutUtil::MakeDescendingLayout(1);
+  TT_ASSERT_OK_AND_ASSIGN(const std::shared_ptr<xla::PjRtBuffer> first,
+                          backend.GetOrCreateRuntimeShapeMetadataBuffer(
+                              {3, 5}, layout, client_, memory_space_));
+  TT_ASSERT_OK_AND_ASSIGN(const std::shared_ptr<xla::PjRtBuffer> second,
+                          backend.GetOrCreateRuntimeShapeMetadataBuffer(
+                              {3, 5}, layout, client_, memory_space_));
+  TT_ASSERT_OK_AND_ASSIGN(const std::shared_ptr<xla::PjRtBuffer> other,
+                          backend.GetOrCreateRuntimeShapeMetadataBuffer(
+                              {5, 3}, layout, client_, memory_space_));
+
+  EXPECT_EQ(first, second);
+  EXPECT_NE(first, other);
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::Literal> literal,
+                          first->ToLiteral().Await());
+  EXPECT_THAT(literal->data<int32_t>(), ElementsAre(3, 5));
+}
+
+TEST_F(PjrtExecuteTest, DropsRuntimeShapeMetadataBuffersWhenFull) {
+  PjrtBackend& backend = PjrtBackend::GetInstance();
+  const xla::Layout layout = xla::LayoutUtil::MakeDescendingLayout(1);
+  TT_ASSERT_OK_AND_ASSIGN(const std::shared_ptr<xla::PjRtBuffer> first,
+                          backend.GetOrCreateRuntimeShapeMetadataBuffer(
+                              {1}, layout, client_, memory_space_));
+  for (int64_t d = 2; d <= PjrtBackend::kMaxRuntimeShapeMetadataBuffers + 1;
+       ++d) {
+    ASSERT_EQ(backend
+                  .GetOrCreateRuntimeShapeMetadataBuffer({d}, layout, client_,
+                                                         memory_space_)
+                  .status(),
+              absl::OkStatus());
+  }
+
+  // `first` is still alive, so a new buffer has a different address.
+  TT_ASSERT_OK_AND_ASSIGN(const std::shared_ptr<xla::PjRtBuffer> again,
+                          backend.GetOrCreateRuntimeShapeMetadataBuffer(
+                              {1}, layout, client_, memory_space_));
+  EXPECT_NE(first, again);
+}
+
 }  // namespace
 }  // namespace torch_tpu

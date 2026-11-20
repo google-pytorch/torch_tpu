@@ -30,11 +30,13 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "csrc/common/contain.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/discovery.h"
@@ -49,6 +51,7 @@
 #include "tsl/profiler/lib/profiler_interface.h"
 #include "xla/backends/profiler/plugin/plugin_tracer.h"  // IWYU pragma: keep for xla::profiler::PluginTracer
 #include "xla/backends/profiler/plugin/profiler_c_api.h"
+#include "xla/layout.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 #include "xla/pjrt/c/pjrt_c_api_profiler_extension.h"
@@ -58,6 +61,7 @@
 #include "xla/pjrt/pjrt_device_description.h"
 #include "xla/pjrt/plugin/plugin_names.h"
 #include "xla/tsl/framework/allocator.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 namespace {
@@ -443,9 +447,54 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
          << "host memory allocator is not implemented for this client";
 }
 
+absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>>
+PjrtBackend::GetOrCreateRuntimeShapeMetadataBuffer(
+    absl::Span<const int64_t> dimensions, const xla::Layout& layout,
+    xla::PjRtClient* absl_nonnull client,
+    xla::PjRtMemorySpace* absl_nonnull memory_space) {
+  MetadataBufferKey key(
+      memory_space, Dimensions(dimensions.begin(), dimensions.end()), layout);
+  absl::MutexLock lock(metadata_buffers_mutex_);
+  if (const auto it = metadata_buffers_.find(key);
+      it != metadata_buffers_.end() && !it->second->IsDeleted()) {
+    return it->second;
+  }
+
+  absl::InlinedVector<int32_t, 8> s32_dims;
+  s32_dims.reserve(dimensions.size());
+  for (const int64_t d : dimensions) {
+    if (static_cast<int32_t>(d) != d) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "Dimension " << d << " exceeds the maximum value for int32_t";
+    }
+    s32_dims.push_back(d);
+  }
+  const int64_t rank = s32_dims.size();
+  TT_ASSIGN_OR_RETURN(
+      std::shared_ptr<xla::PjRtBuffer> buffer,
+      AdaptXlaError(
+          client->BufferFromHostBuffer(
+              s32_dims.data(), xla::S32, /*dims=*/{rank},
+              /*byte_strides=*/std::nullopt,
+              xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+              /*on_done_with_host_buffer=*/nullptr, memory_space, &layout),
+          /* context= */ "failed to create runtime shape metadata S32 buffer"));
+
+  if (metadata_buffers_.size() >= kMaxRuntimeShapeMetadataBuffers) {
+    metadata_buffers_.clear();
+  }
+  metadata_buffers_.insert_or_assign(std::move(key), buffer);
+  return buffer;
+}
+
 void PjrtBackend::Shutdown() {
   if (IsInBadFork()) {
     return;
+  }
+  {
+    // The buffers must be destroyed before the client.
+    absl::MutexLock lock(metadata_buffers_mutex_);
+    metadata_buffers_.clear();
   }
   absl::MutexLock lock(mutex_);
   if (!init_attempted_) {

@@ -22,15 +22,20 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
+#include "xla/layout.h"
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/framework/allocator.h"
@@ -140,8 +145,23 @@ class PjrtBackend {
   absl::StatusOr<xla::HostMemoryAllocator*> GetHostAllocator()
       ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // The most runtime shape metadata buffers kept alive at once.
+  static constexpr int kMaxRuntimeShapeMetadataBuffers = 256;
+
+  // Returns an S32[rank] buffer holding `dimensions`, for the runtime shape
+  // metadata parameters of unbounded dynamic executables. Executables only read
+  // these buffers, so the same buffer is returned for the same dimensions and
+  // layout. When `kMaxRuntimeShapeMetadataBuffers` are cached, the cache is
+  // cleared; callers keep the buffers they hold.
+  absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>>
+  GetOrCreateRuntimeShapeMetadataBuffer(
+      absl::Span<const int64_t> dimensions, const xla::Layout& layout,
+      xla::PjRtClient* absl_nonnull client,
+      xla::PjRtMemorySpace* absl_nonnull memory_space)
+      ABSL_LOCKS_EXCLUDED(metadata_buffers_mutex_);
+
   // Shuts down the PjRt runtime and resets the global state.
-  void Shutdown() ABSL_LOCKS_EXCLUDED(mutex_);
+  void Shutdown() ABSL_LOCKS_EXCLUDED(mutex_, metadata_buffers_mutex_);
 
  private:
   friend class absl::NoDestructor<PjrtBackend>;
@@ -166,6 +186,13 @@ class PjrtBackend {
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;
   absl::Status init_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
+
+  using MetadataBufferKey =
+      std::tuple<xla::PjRtMemorySpace*, Dimensions, xla::Layout>;
+  absl::Mutex metadata_buffers_mutex_;
+  absl::flat_hash_map<MetadataBufferKey, std::shared_ptr<xla::PjRtBuffer>>
+      metadata_buffers_ ABSL_GUARDED_BY(metadata_buffers_mutex_);
+
   std::atomic<BadForkChecker> bad_fork_checker_{nullptr};
   std::atomic<OnInitializedHook> on_initialized_hook_{nullptr};
 };

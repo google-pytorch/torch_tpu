@@ -27,7 +27,6 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
-#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/absl_vlog_is_on.h"
@@ -43,6 +42,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
@@ -69,42 +69,12 @@ xla::Shape MakeXlaShape(const Shape& shape, const xla::Layout& layout) {
   return xla_shape;
 }
 
-// Creates a 1D S32[rank] PjRtBuffer containing the concrete runtime dimension
-// sizes of `dimensions` as int32_t values, suitable for passing as a disjoint
-// runtime shape metadata parameter (operand_to_metadata) to unbounded-dynamic
-// executables.
-absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>>
-CreateRuntimeShapeMetadataBuffer(
-    absl::Span<const int64_t> dimensions, const xla::Layout& layout,
-    xla::PjRtClient* absl_nonnull client,
-    xla::PjRtMemorySpace* absl_nonnull memory_space) {
-  absl::InlinedVector<int32_t, 8> s32_dims;
-  s32_dims.reserve(dimensions.size());
-  for (const int64_t d : dimensions) {
-    if (static_cast<int32_t>(d) != d) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "Dimension " << d << " exceeds the maximum value for int32_t";
-    }
-    s32_dims.push_back(d);
-  }
-
-  const int64_t rank = s32_dims.size();
-  return AdaptXlaError(
-      client->BufferFromHostBuffer(
-          s32_dims.data(), xla::S32, /*dims=*/{rank},
-          /*byte_strides=*/std::nullopt,
-          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
-          /*on_done_with_host_buffer=*/nullptr, memory_space, &layout),
-      /* context= */ "failed to create runtime shape metadata S32 buffer");
-}
-
-// Holds the full physical argument pointer list and any newly allocated
-// ephemeral device buffers (pre-allocated donated dynamic output buffers and
-// disjoint S32[rank] runtime shape metadata buffers) whose lifetimes must span
-// device execution.
+// Holds the full physical argument pointer list and the device buffers it
+// adds (pre-allocated donated dynamic output buffers and disjoint S32[rank]
+// runtime shape metadata buffers), whose lifetimes must span device execution.
 struct DynamicExecutionArguments {
   std::vector<xla::PjRtBuffer* absl_nullable> full_args;
-  std::vector<std::unique_ptr<xla::PjRtBuffer>> ephemeral_buffers;
+  std::vector<std::shared_ptr<xla::PjRtBuffer>> ephemeral_buffers;
 };
 
 // Routes logical argument buffers, pre-allocated donated dynamic output
@@ -164,7 +134,7 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
     result.ephemeral_buffers.push_back(std::move(donated_buf));
   }
 
-  // 3. Create and route disjoint S32[rank] runtime shape metadata buffers.
+  // 3. Route disjoint S32[rank] runtime shape metadata buffers.
   // Steps 1 and 2 have routed every payload, so each buffer already carries the
   // physical shape the executable will see.
   for (int i = 0; i < meta.metadata_params.size(); ++i) {
@@ -180,8 +150,9 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
     const xla::Layout& layout =
         meta.pjrt_param_shapes[binding.shape_pjrt_idx].layout();
     TT_ASSIGN_OR_RETURN(
-        std::unique_ptr<xla::PjRtBuffer> meta_buf,
-        CreateRuntimeShapeMetadataBuffer(dims, layout, client, memory_space));
+        std::shared_ptr<xla::PjRtBuffer> meta_buf,
+        PjrtBackend::GetInstance().GetOrCreateRuntimeShapeMetadataBuffer(
+            dims, layout, client, memory_space));
     result.full_args[binding.shape_pjrt_idx] = meta_buf.get();
     result.ephemeral_buffers.push_back(std::move(meta_buf));
   }
@@ -267,7 +238,7 @@ absl::StatusOr<PjRtBufferPointers> Execute(
   // Ephemeral buffers created for dynamic execution (pre-allocated donated
   // dynamic output buffers and disjoint S32[rank] runtime shape metadata
   // buffers) must outlive device execution.
-  std::vector<std::unique_ptr<xla::PjRtBuffer>> ephemeral_buffers;
+  std::vector<std::shared_ptr<xla::PjRtBuffer>> ephemeral_buffers;
 
   const std::optional<UnboundedDynamicExecutionMetadata>&
       unbounded_dynamic_meta =
