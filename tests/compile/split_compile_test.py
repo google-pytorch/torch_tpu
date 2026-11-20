@@ -24,10 +24,16 @@ from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._higher_order_ops import scan
 from torch.utils import checkpoint
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import debug
 from torch_tpu._internal.compile import split_compiler
+from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.distributed import collective_ops
+from torch_tpu._internal.distributed import handshake
+from torch_tpu._internal.distributed import process_group_utils
 from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -357,6 +363,349 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     self.assertEqual(num_partitions, [1, 1])
     utils.assert_close(x.grad.cpu(), torch.full((2, 2), 7.0))
 
+  def _dispatch_stage(self) -> unittest.mock.Mock:
+    """Patches dispatch-stage handshaking with `aten.mul` as a collective."""
+    new_ops = collective_ops.COLLECTIVE_OPS + (torch.ops.aten.mul,)
+    self.enterContext(
+        unittest.mock.patch.object(collective_ops, "COLLECTIVE_OPS", new_ops)
+    )
+    self.enterContext(
+        unittest.mock.patch.object(
+            tpu_torch_compile,
+            "get_handshake_stage_env_var_once",
+            return_value=tpu_torch_compile.HandshakeStage.DISPATCH_STAGE,
+        )
+    )
+    self.enterContext(
+        unittest.mock.patch.object(
+            process_group_utils, "get_num_collectives_per_pg", return_value={}
+        )
+    )
+    self.enterContext(
+        unittest.mock.patch.object(
+            handshake, "should_handshake", return_value=True
+        )
+    )
+    return self.enterContext(
+        unittest.mock.patch.object(
+            split_compiler, "_submit_handshake", return_value=True
+        )
+    )
+
+  def test_pickled_dispatch_stage_executable_recompiles_on_mismatch(self):
+    submit_handshake = self._dispatch_stage()
+    debugs = []
+
+    def f(x):
+      return (x + 1.0) * 2.0 + 3.0
+
+    compiled = torch.compile(
+        f,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    x = torch.ones((2, 2), device="tpu")
+    expected = torch.full((2, 2), 7.0)
+    utils.assert_close(compiled(x).cpu(), expected)
+
+    executable = debugs[0].compiled_executables[0]
+    restored = pickle.loads(pickle.dumps(executable))
+    self.assertIsNotNone(executable.recompile_fn._split_compiler._debug)
+    self.assertIsNotNone(
+        executable.recompile_fn._split_compiler.base_compiler._debug
+    )
+    self.assertIsNone(restored.recompile_fn.args[0]._debug)
+    self.assertIsNone(restored.recompile_fn.args[0].base_compiler._debug)
+    self.assertLen(restored.compiled_executables, 1)
+    out = restored([x])
+    out = out[0] if isinstance(out, (tuple, list)) else out
+    utils.assert_close(out.cpu(), expected)
+
+    submit_handshake.return_value = False
+    out = restored([x])
+    out = out[0] if isinstance(out, (tuple, list)) else out
+    utils.assert_close(out.cpu(), expected)
+    self.assertLen(restored.compiled_executables, 3)
+    self.assertEqual(
+        restored.fingerprint(), executable.recompile_fn().fingerprint()
+    )
+
+  def test_pickled_dispatch_stage_executable_preserves_spmd_safe(self):
+    submit_handshake = self._dispatch_stage()
+    debugs = []
+
+    @spmd_util.spmd_safe
+    def f(x):
+      return (x + 1.0) * 2.0 + 3.0
+
+    compiled = torch.compile(
+        f,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    x = torch.ones((2, 2), device="tpu")
+    expected = torch.full((2, 2), 7.0)
+    utils.assert_close(compiled(x).cpu(), expected)
+
+    executable = debugs[0].compiled_executables[0]
+    restored = pickle.loads(pickle.dumps(executable))
+    submit_handshake.return_value = False
+    out = restored([x])
+    out = out[0] if isinstance(out, (tuple, list)) else out
+    utils.assert_close(out.cpu(), expected)
+    # `_fully_spmd_safe` keeps `* 2.0` fused inside `f` (1 program, not 3).
+    self.assertLen(restored.compiled_executables, 1)
+    self.assertEqual(
+        restored.fingerprint(), executable.recompile_fn().fingerprint()
+    )
+
+  def test_pickled_dispatch_stage_executable_preserves_cpu_placement(self):
+    submit_handshake = self._dispatch_stage()
+    debugs = []
+
+    def f(x):
+      c = torch.tensor([1.0, 2.0, 3.0])
+      return x * c.to(x.device) + (torch.ones(3) * c).to(x.device)
+
+    compiled = torch.compile(
+        f,
+        backend="tpu",
+        fullgraph=True,
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    x = torch.tensor([2.0, 3.0, 4.0], device="tpu")
+    expected = torch.tensor([3.0, 8.0, 15.0])
+    utils.assert_close(compiled(x).cpu(), expected)
+
+    executable = debugs[0].compiled_executables[0]
+    restored = pickle.loads(pickle.dumps(executable))
+    submit_handshake.return_value = False
+    out = restored([x])
+    out = out[0] if isinstance(out, (tuple, list)) else out
+    utils.assert_close(out.cpu(), expected)
+    self.assertTrue(
+        any(
+            isinstance(submod, torch.fx.GraphModule)
+            for submod in restored._split_gm.children()
+        )
+    )
+    self.assertEqual(
+        restored.fingerprint(), executable.recompile_fn().fingerprint()
+    )
+
+  def test_pickled_dispatch_stage_backward_with_local_module_preserves_spmd_safe(
+      self,
+  ):
+    self._dispatch_stage()
+    debugs = []
+
+    class LocalBlock(torch.nn.Module):
+
+      def forward(self, x):
+        return (x * 2.0) + (x * 3.0)
+
+    block = LocalBlock()
+
+    @spmd_util.spmd_safe
+    def f(x):
+      return block(x) * 4.0
+
+    compiled = torch.compile(
+        f,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    x = torch.ones((2, 2), device="tpu", requires_grad=True)
+    compiled(x).sum().backward()
+    utils.assert_close(x.grad.cpu(), torch.full((2, 2), 20.0))
+
+    bwd_executable = debugs[0].compiled_executables[1]
+    restored_bwd = pickle.loads(pickle.dumps(bwd_executable))
+    recompiled_bwd = restored_bwd.recompile_fn()
+    # `_fully_spmd_safe` keeps `LocalBlock`'s backward fused (1 program, not
+    # split on collectives), and `fwd_nn_module_stack` on `LocalBlock` is
+    # filtered.
+    self.assertLen(recompiled_bwd.compiled_executables, 1)
+    self.assertEqual(
+        recompiled_bwd.fingerprint(),
+        bwd_executable.recompile_fn().fingerprint(),
+    )
+
+  def test_pickling_dispatch_stage_executable_takes_no_device_memory(self):
+    self._dispatch_stage()
+    const_shape = (4096, 64, 128)
+
+    root = torch.nn.Module()
+    root.const = (
+        torch.arange(4096 * 64 * 128, dtype=torch.float32)
+        .reshape(const_shape)
+        .to("tpu")
+    )
+    root.sub = torch.nn.Module()
+    root.sub.const = torch.zeros((1,), dtype=torch.float32, device="tpu")
+    root.marked = tpu_torch_compile.make_constant_tensor(
+        torch.zeros((1,), dtype=torch.float32)
+    )
+
+    graph = torch.fx.Graph()
+    p_x = graph.placeholder("x")
+    c = graph.get_attr("const")
+    c_sub = graph.get_attr("sub.const")
+    c_marked = graph.get_attr("marked")
+    sum1 = graph.call_function(torch.ops.aten.add.Tensor, (p_x, c))
+    sum2 = graph.call_function(torch.ops.aten.add.Tensor, (sum1, c_sub))
+    graph.output(
+        graph.call_function(torch.ops.aten.add.Tensor, (sum2, c_marked))
+    )
+    gm = torch.fx.GraphModule(root, graph)
+
+    x = torch.ones(const_shape, dtype=torch.float32, device="tpu")
+    fake_x = torch._subclasses.fake_tensor.FakeTensorMode().from_tensor(x)
+    executable = split_compiler.SplitCompiler(compiler.StaticCompiler())(
+        gm, (fake_x,)
+    )
+    self.assertIsNotNone(executable.recompile_fn)
+    snapshot = executable.recompile_fn._graph_module
+    self.assertIsNot(snapshot, gm)
+    self.assertTrue(tpu_torch_compile.is_constant_tensor(gm.const))
+    self.assertTrue(tpu_torch_compile.is_constant_tensor(gm.sub.const))
+    self.assertFalse(tpu_torch_compile.is_constant_tensor(snapshot.const))
+    self.assertFalse(tpu_torch_compile.is_constant_tensor(snapshot.sub.const))
+    self.assertFalse(tpu_torch_compile.is_constant_tensor(snapshot.marked))
+    self.assertEqual(snapshot.const.device.type, "cpu")
+    self.assertEqual(snapshot.sub.const.device.type, "cpu")
+    self.assertEqual(snapshot.marked.device.type, "cpu")
+
+    gc.collect()
+    torch.accelerator.synchronize()
+    torch.accelerator.reset_peak_memory_stats()
+    mem_before = torch.accelerator.memory_allocated()
+
+    restored = pickle.loads(pickle.dumps(executable))
+
+    torch.accelerator.synchronize()
+    peak_mem_increase = torch.accelerator.max_memory_allocated() - mem_before
+    self.assertLess(peak_mem_increase, 5 * 1024 * 1024)  # < 5 MiB
+
+    recompiled = restored.recompile_fn()
+    utils.assert_close(
+        recompiled(x)[0, 0, :4].cpu(), torch.tensor([1.0, 2.0, 3.0, 4.0])
+    )
+
+    # An in-process recompile must also leave retained constants on CPU.
+    executable.recompile_fn()
+    self.assertFalse(tpu_torch_compile.is_constant_tensor(snapshot.const))
+    self.assertEqual(snapshot.const.device.type, "cpu")
+    self.assertEqual(snapshot.sub.const.device.type, "cpu")
+    gc.collect()
+    torch.accelerator.synchronize()
+    torch.accelerator.reset_peak_memory_stats()
+    mem_before = torch.accelerator.memory_allocated()
+
+    pickle.loads(pickle.dumps(executable))
+
+    torch.accelerator.synchronize()
+    peak_mem_increase = torch.accelerator.max_memory_allocated() - mem_before
+    self.assertLess(peak_mem_increase, 5 * 1024 * 1024)  # < 5 MiB
+
+  def test_clone_graph_module_moves_child_graph_constants_to_cpu(self):
+    child_graph = torch.fx.Graph()
+    child_x = child_graph.placeholder("x")
+    child_c = child_graph.get_attr("c")
+    child_graph.output(
+        child_graph.call_function(torch.ops.aten.add.Tensor, (child_x, child_c))
+    )
+    child_root = torch.nn.Module()
+    child_root.c = torch.tensor([1.0], device="tpu")
+    child_gm = torch.fx.GraphModule(child_root, child_graph)
+    parent_graph = torch.fx.Graph()
+    parent_x = parent_graph.placeholder("x")
+    parent_child = parent_graph.get_attr("child")
+    parent_graph.output(
+        parent_graph.call_function(
+            torch.ops.higher_order.cond,
+            (True, parent_child, parent_child, (parent_x,)),
+        )
+    )
+    parent_gm = torch.fx.GraphModule({"child": child_gm}, parent_graph)
+    cloned_parent = split_compiler._clone_graph_module(parent_gm)
+    split_compiler.mark_embedded_constants.move_constants_to_cpu(cloned_parent)
+    self.assertIsNot(cloned_parent.child, parent_gm.child)
+    self.assertEqual(cloned_parent.child.c.device.type, "cpu")
+    self.assertEqual(parent_gm.child.c.device.type, "tpu")
+
+  def test_pickled_dispatch_stage_scan_recompiles_on_mismatch(self):
+    submit_handshake = self._dispatch_stage()
+    debugs = []
+
+    def step(carry, x):
+      return carry + x, carry + x
+
+    def f(init, xs):
+      carry, _ = scan(step, init, xs)
+      return (carry + 1.0) * 2.0 + 3.0
+
+    compiled = torch.compile(
+        f,
+        backend="tpu",
+        dynamic=False,
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    init = torch.zeros((2,), device="tpu")
+    xs = torch.ones((3, 2), device="tpu")
+    expected = torch.full((2,), 11.0)
+    utils.assert_close(compiled(init, xs).cpu(), expected)
+
+    executable = debugs[0].compiled_executables[0]
+    restored = pickle.loads(pickle.dumps(executable))
+    submit_handshake.return_value = False
+    out = restored([init, xs])
+    out = out[0] if isinstance(out, (tuple, list)) else out
+    utils.assert_close(out.cpu(), expected)
+    self.assertLen(restored.compiled_executables, 3)
+    self.assertEqual(
+        restored.fingerprint(), executable.recompile_fn().fingerprint()
+    )
+
+  @parameterized.named_parameters(
+      ("generator", "generator"),
+      ("pinned_host", "pinned_host"),
+      ("custom_layout", "custom_layout"),
+  )
+  def test_pickling_dispatch_stage_executable_rejects_unsupported_inputs(
+      self, kind: str
+  ):
+    self._dispatch_stage()
+    graph = torch.fx.Graph()
+    p_x = graph.placeholder("x")
+    graph.placeholder("extra")
+    graph.output(graph.call_function(torch.ops.aten.mul.Tensor, (p_x, 2.0)))
+    gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    x = torch.ones((2, 2), device="tpu")
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
+    fake_x = fake_mode.from_tensor(x)
+    if kind == "generator":
+      extra = tpu_torch_compile.make_export_mode_device_generator(
+          torch.Generator(device="tpu")
+      )
+    elif kind == "pinned_host":
+      extra = fake_mode.from_tensor(torch.ones((2, 2), device="tpu"))
+      extra._is_pinned_host = True
+    else:
+      extra = fake_mode.from_tensor(torch.ones((2, 2), device="tpu"))
+      extra._tpu_device_layout = tpu_torch_compile.get_default_layout(
+          x.dtype, x.shape
+      )
+
+    executable = split_compiler.SplitCompiler(compiler.StaticCompiler())(
+        gm, (fake_x, extra)
+    )
+    with self.assertRaises(  # ASSERT_RAISES_OK=internal pickling guard
+        pickle.PicklingError
+    ):
+      pickle.dumps(executable)
+
 
 class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
 
@@ -496,6 +845,25 @@ class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
     self.assertLen(graphs, 2)
     for gm in graphs:
       self.assertTrue(split_compiler._is_fully_spmd_safe(gm))
+
+  def test_split_compiler_pickle_drops_debug_only_on_copy(self):
+    dbg = debug.TpuCompileDebug()
+    dyn = dynamic_compiler.DynamicCompiler(debug=dbg)
+    split_comp = split_compiler.SplitCompiler(dyn)
+
+    restored_split = pickle.loads(pickle.dumps(split_comp))
+    self.assertIsNone(restored_split._debug)
+    self.assertIsNone(restored_split.base_compiler._debug)
+    self.assertIsNone(restored_split.base_compiler.static_compiler._debug)
+    self.assertIs(split_comp._debug, dbg)
+    self.assertIs(dyn._debug, dbg)
+    self.assertIs(dyn.static_compiler._debug, dbg)
+
+    restored_dyn = pickle.loads(pickle.dumps(dyn))
+    self.assertIsInstance(restored_dyn._debug, debug.TpuCompileDebug)
+    self.assertIsInstance(
+        restored_dyn.static_compiler._debug, debug.TpuCompileDebug
+    )
 
 
 if __name__ == "__main__":

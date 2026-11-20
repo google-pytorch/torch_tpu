@@ -57,11 +57,13 @@ torch_tpu_py_library(
     srcs = ["split_compiler.py"],
     deps = [
         ":compiler",
+        ":debug",
         ":torch_tpu_compiled_executable",
         ":tpu_torch_compile",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
         "//src/torch_tpu/_internal/compile/fx_passes:clone_mutated_returned_placeholders",
         "//src/torch_tpu/_internal/compile/fx_passes:force_collectives_output",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",

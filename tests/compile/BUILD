@@ -188,8 +188,13 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/_internal/compile:debug",
         "//src/torch_tpu/_internal/compile:split_compiler",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # buildcleaner: keep
+        "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
         "//src/torch_tpu/_internal/distributed:collective_ops",
+        "//src/torch_tpu/_internal/distributed:handshake",
+        "//src/torch_tpu/_internal/distributed:process_group_utils",
         "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",

@@ -26,24 +26,29 @@ import dataclasses
 import enum
 import functools
 import operator
+import pickle
 import threading
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 from absl import logging
 import torch
 from torch._dynamo.utils import detect_fake_mode
 from torch._inductor.utils import InputType
 from torch._logging import LazyString
+from torch._subclasses.fake_tensor import FakeTensorMode
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 import torch.distributed as dist
+from torch.fx import _graph_pickler
 from torch.fx.experimental import symbolic_shapes
 from torch.fx.passes import graph_transform_observer
 from torch.fx.passes.split_module import split_module
 from torch.utils import _pytree as pytree
 from torch_tpu._internal import env
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import debug
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.compile.fx_passes import clone_mutated_returned_placeholders
 from torch_tpu._internal.compile.fx_passes import force_collectives_output
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
@@ -939,6 +944,131 @@ def _is_fully_spmd_safe(graph_module: torch.fx.GraphModule) -> bool:
   return bool(safe_ops)
 
 
+def _is_picklable_node_meta(key: str) -> bool:
+  """Returns whether `node.meta[key]` is safe for `GraphPickler` to pickle."""
+  # `_node_metadata_key_filter_safe` excludes `source_fn_stack`,
+  # `nn_module_stack`, and `fwd_source_fn_stack` (which reference unpicklable
+  # Python callables/classes), but omits `fwd_nn_module_stack` on backward
+  # nodes.
+  return (
+      _graph_pickler._node_metadata_key_filter_safe(key)  # pylint: disable=protected-access
+      and key != "fwd_nn_module_stack"
+  )
+
+
+def _pickle_graph(
+    graph_module: torch.fx.GraphModule,
+    example_inputs: Sequence[InputType],
+    is_fwd: bool,
+    module_name: str | None,
+) -> bytes:
+  """Pickles `graph_module` and its compilation inputs with `GraphPickler`."""
+  for example_input in example_inputs:
+    if isinstance(example_input, torch.Generator):
+      # Export-mode TPU generators abort in C++ when `get_state()` is called.
+      raise pickle.PicklingError("Cannot pickle a graph with generator inputs.")
+    if (
+        compiler.is_pinned_host_tensor(example_input)
+        or getattr(example_input, "_tpu_device_layout", None) is not None
+    ):
+      raise pickle.PicklingError(
+          "Cannot pickle a graph with pinned-host or custom-layout inputs."
+      )
+  # Allow non-ATen ops (e.g. collectives) and keep picklable node metadata
+  # (e.g. `val`).
+  options = _graph_pickler.Options(
+      ops_filter=None,
+      node_metadata_key_filter=_is_picklable_node_meta,
+  )
+  return _graph_pickler.GraphPickler.dumps(
+      (graph_module, example_inputs, is_fwd, module_name),
+      options,
+  )
+
+
+def _recompile_from_pickle(
+    split_compiler: "SplitCompiler", payload: bytes
+) -> _SplitCompiledExecutable:
+  """Recompiles a graph serialized by `_pickle_graph`, split on collectives."""
+  fake_mode = FakeTensorMode(shape_env=symbolic_shapes.ShapeEnv())
+  unpickled: Any = _graph_pickler.GraphPickler.loads(payload, fake_mode)
+  graph_module, example_inputs, is_fwd, module_name = unpickled
+  return split_compiler._compile_graph(  # pylint: disable=protected-access
+      graph_module,
+      example_inputs,
+      is_fwd,
+      materialize_collectives=True,
+      module_name=module_name,
+  )
+
+
+def _clone_graph_module(gm: torch.fx.GraphModule) -> torch.fx.GraphModule:
+  """Clones `gm`'s graph and child GraphModules without copying tensors."""
+  with unset_fake_temporarily():
+    cloned = torch.fx.GraphModule(gm, copy.deepcopy(gm.graph))
+  cloned.meta = copy.copy(gm.meta)
+  for name, child in list(cloned.named_children()):
+    if isinstance(child, torch.fx.GraphModule):
+      setattr(cloned, name, _clone_graph_module(child))
+  return cloned
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _RecompileFn:
+  """Picklable callback that recompiles a graph split on collectives.
+
+  Defers `GraphPickler` serialization to `__reduce__` so graphs that are never
+  pickled pay no serialization cost.
+  """
+
+  _split_compiler: "SplitCompiler"
+  _graph_module: torch.fx.GraphModule
+  _example_inputs: Sequence[InputType]
+  _is_fwd: bool
+  _module_name: str | None
+
+  def __call__(self) -> _SplitCompiledExecutable:
+    return self._split_compiler._compile_graph(  # pylint: disable=protected-access
+        _clone_graph_module(self._graph_module),
+        self._example_inputs,
+        self._is_fwd,
+        materialize_collectives=True,
+        module_name=self._module_name,
+    )
+
+  def __reduce__(self) -> tuple[Any, ...]:
+    payload = _pickle_graph(
+        self._graph_module,
+        self._example_inputs,
+        self._is_fwd,
+        self._module_name,
+    )
+    return functools.partial, (
+        _recompile_from_pickle,
+        self._split_compiler,
+        payload,
+    )
+
+
+_CompilerT = TypeVar("_CompilerT", bound=compiler.Compiler)
+
+
+def _without_compile_debug(comp: _CompilerT) -> _CompilerT:
+  """Returns `comp` (or a shallow copy) with `TpuCompileDebug` cleared."""
+  copied = False
+  if isinstance(getattr(comp, "_debug", None), debug.TpuCompileDebug):
+    comp = copy.copy(comp)
+    comp._debug = None  # pylint: disable=protected-access
+    copied = True
+  if isinstance(comp, dynamic_compiler.DynamicCompiler):
+    stripped_static = _without_compile_debug(comp.static_compiler)
+    if stripped_static is not comp.static_compiler:
+      if not copied:
+        comp = copy.copy(comp)
+      comp.static_compiler = stripped_static
+  return comp
+
+
 class SplitCompiler(compiler.Compiler):
   """Compiler that splits the graph on collectives and compiles submodules."""
 
@@ -954,6 +1084,14 @@ class SplitCompiler(compiler.Compiler):
     self.base_compiler = base_compiler
     # Set by `execute_pre_grad_passes`, which sees the graph before AOTAutograd.
     self._fully_spmd_safe = False
+
+  def __getstate__(self) -> dict[str, Any]:
+    """Drops per-compile `TpuCompileDebug` state when pickling."""
+    state = self.__dict__.copy()
+    if isinstance(self._debug, debug.TpuCompileDebug):
+      state["_debug"] = None
+    state["base_compiler"] = _without_compile_debug(self.base_compiler)
+    return state
 
   def execute_pre_grad_passes(
       self,
@@ -1214,14 +1352,10 @@ class SplitCompiler(compiler.Compiler):
       materialize_collectives = (
           False  # We set this so the first compilation doesn't split the graph
       )
-      recompile_fn = functools.partial(
-          self._compile_graph,
-          graph_module,
-          example_inputs,
-          is_fwd,
-          # Split the graph if a recompilation occurs.
-          materialize_collectives=True,
-          module_name=module_name,
+      snapshot = _clone_graph_module(graph_module)
+      mark_embedded_constants.move_constants_to_cpu(snapshot)
+      recompile_fn = _RecompileFn(
+          self, snapshot, example_inputs, is_fwd, module_name
       )
 
     executable = self._compile_graph(

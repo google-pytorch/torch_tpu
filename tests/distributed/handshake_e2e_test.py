@@ -15,6 +15,7 @@
 """End-to-end tests for distributed handshake protocol."""
 
 import os
+import pickle
 from unittest import mock
 
 from absl.testing import absltest
@@ -22,6 +23,7 @@ from absl.testing import parameterized
 import portpicker
 import torch
 from torch import distributed as dist
+from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
 from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
@@ -424,6 +426,70 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     res1 = compiled_fn(x, y)
     expected_iter1 = expected_iter0 * 5.0
     utils.assert_close(res1, torch.ones(4, device="tpu") * expected_iter1)
+
+  def test_handshake_pickled_executable(self) -> None:
+    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    world_size = self.world_size
+    debugs: list[tpu_compile.TpuCompileDebug] = []
+    x = torch.ones(4, device="tpu") * (rank + 1)
+    y = torch.ones(4, device="tpu") * 2
+
+    def collective(x, y):
+      z = torch.add(x, y)
+      dist.all_reduce(z)
+      return z
+
+    cache_dir = os.path.join(
+        self.create_tempdir().full_path, str(rank)  # pyrefly: ignore[missing-attribute]
+    )
+    with temporary_cache_dir(cache_dir):
+      compiled_fn = torch.compile(
+          collective,
+          backend="tpu",
+          fullgraph=True,
+          options={"serializable": True, "debug_callback": debugs.append},
+      )
+      res = compiled_fn(x, y)
+      expected = torch.ones(4, device="tpu") * sum(
+          r + 3 for r in range(world_size)
+      )
+      utils.assert_close(res, expected)
+
+      executable = debugs[0].compiled_executables[0]
+      payload = pickle.dumps(executable)
+      restored = pickle.loads(payload)
+      out = restored([x, y])
+      out = out[0] if isinstance(out, (tuple, list)) else out
+      utils.assert_close(out, expected)
+
+      if self._handshake_stage != "DISPATCH_STAGE":
+        return
+
+      restored_diverged = pickle.loads(payload)
+      if rank == 0:
+
+        def diverged(x, y):
+          z = torch.add(x, y)
+          z = torch.mul(z, 5.0)
+          dist.all_reduce(z)
+          return z
+
+        compiled_diverged = torch.compile(
+            diverged,
+            backend="tpu",
+            fullgraph=True,
+            options={"serializable": True},
+        )
+        out_diverged = compiled_diverged(x, y)
+      else:
+        out = restored_diverged([x, y])
+        out_diverged = out[0] if isinstance(out, (tuple, list)) else out
+        assert len(restored_diverged.compiled_executables) > 1
+
+      expected_diverged = torch.ones(4, device="tpu") * (
+          15 + sum(r + 3 for r in range(1, world_size))
+      )
+      utils.assert_close(out_diverged, expected_diverged)
 
 
 class HandshakeCompileStageE2ETest(
