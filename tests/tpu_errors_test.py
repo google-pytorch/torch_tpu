@@ -5304,6 +5304,26 @@ module {
           expected_msg="gelu(): not implemented for float8_e4m3fn",
       ),
       dict(
+          testcase_name="float8_e4m3fn_gelu_backward_mixed_input",
+          op_fn=lambda t: torch.ops.aten.gelu_backward.grad_input(
+              t,
+              torch.ones_like(t, dtype=torch.float32),
+              grad_input=torch.empty_like(t, dtype=torch.float32),
+          ),
+          dtype=torch.float8_e4m3fn,
+          expected_msg="gelu_backward(): not implemented for float8_e4m3fn",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn_gelu_backward_grad_input",
+          op_fn=lambda t: torch.ops.aten.gelu_backward.grad_input(
+              torch.ones_like(t, dtype=torch.float32),
+              torch.ones_like(t, dtype=torch.float32),
+              grad_input=t,
+          ),
+          dtype=torch.float8_e4m3fn,
+          expected_msg="gelu_backward(): not implemented for float8_e4m3fn",
+      ),
+      dict(
           testcase_name="float8_e4m3fn_silu",
           op_fn=lambda t: torch.nn.functional.silu(t),
           dtype=torch.float8_e4m3fn,

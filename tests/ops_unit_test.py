@@ -1560,6 +1560,78 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       else:
         self.assertNotIn("chlo.erfc", shlo)
 
+  @parameterized.parameters("none", "tanh")
+  def test_gelu_backward_mixed_dtypes_and_out_cast(self, approximate):
+    # Mixed-dtype inputs (float32 grad_output, bfloat16 self and vice versa).
+    # Compute CPU references in the promoted float32 dtype to avoid upstream
+    # PyTorch CPU oneDNN (MKLDNN) bugs in gelu_backward_out_cpu when
+    # approximate="none", which checks only `use_mkldnn(self)` without checking
+    # `grad` or `grad_input` dtypes (ATen/native/Activation.cpp).
+    grad_f32 = torch.ones(4, dtype=torch.float32)
+    self_bf16 = torch.tensor([0.5, -0.5, 1.0, -1.0], dtype=torch.bfloat16)
+    g_tpu = grad_f32.to("tpu")
+    s_bf16_tpu = self_bf16.to("tpu")
+
+    res_f32_bf16 = torch.ops.aten.gelu_backward(
+        g_tpu, s_bf16_tpu, approximate=approximate
+    )
+    expected_f32_bf16 = torch.ops.aten.gelu_backward(
+        grad_f32, self_bf16.to(torch.float32), approximate=approximate
+    )
+    self.assertEqual(res_f32_bf16.dtype, torch.float32)
+    utils.assert_close(
+        res_f32_bf16.cpu(), expected_f32_bf16, rtol=1e-4, atol=1e-4
+    )
+
+    res_bf16_f32 = torch.ops.aten.gelu_backward(
+        s_bf16_tpu, g_tpu, approximate=approximate
+    )
+    expected_bf16_f32 = torch.ops.aten.gelu_backward(
+        self_bf16.to(torch.float32), grad_f32, approximate=approximate
+    )
+    self.assertEqual(res_bf16_f32.dtype, torch.float32)
+    utils.assert_close(
+        res_bf16_f32.cpu(), expected_bf16_f32, rtol=1e-4, atol=1e-4
+    )
+
+    # Out dtype casting: float64 -> float32 (float64 bypasses oneDNN on CPU).
+    x_f64 = torch.tensor([0.5, -0.5, 1.0, -1.0], dtype=torch.float64)
+
+    def run_f64_to_f32(device):
+      g64 = to(x_f64, device)
+      s64 = to(x_f64, device)
+      out_f32 = torch.empty(4, dtype=torch.float32, device=device)
+      torch.ops.aten.gelu_backward.grad_input(
+          g64, s64, approximate=approximate, grad_input=out_f32
+      )
+      return out_f32
+
+    self.assert_close_tpu_vs_cpu(run_f64_to_f32, rtol=1e-4, atol=1e-4)
+
+    # Out dtype casting: float32 -> bfloat16 and float32 -> complex64 (verifies
+    # computation stays in promoted float32 dtype before casting to out_dtype).
+    # Casting complex64 grad_input directly on CPU fails on OSS PyTorch wheels
+    # built with oneDNN (`itensor_view_from_dense expects float/bfloat16/half/
+    # int8/fp8 tensor inputComplexFloat`), so compare against the cast CPU
+    # float32 reference instead.
+    x_f32 = torch.tensor([0.5, -0.5, 1.0, -1.0], dtype=torch.float32)
+    s_f32_tpu = x_f32.to("tpu")
+    expected_f32 = torch.ops.aten.gelu_backward(
+        grad_f32, x_f32, approximate=approximate
+    )
+    for out_dtype, tol in (
+        (torch.bfloat16, 1e-2),
+        (torch.complex64, 1e-4),
+    ):
+      out_tpu = torch.empty(4, dtype=out_dtype, device="tpu")
+      torch.ops.aten.gelu_backward.grad_input(
+          g_tpu, s_f32_tpu, approximate=approximate, grad_input=out_tpu
+      )
+      self.assertEqual(out_tpu.dtype, out_dtype)
+      utils.assert_close(
+          out_tpu.cpu(), expected_f32.to(out_dtype), rtol=tol, atol=tol
+      )
+
   def test_logcumsumexp_out_dtype(self):
     device = torch.device("tpu")
     x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
