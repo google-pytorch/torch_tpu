@@ -26281,6 +26281,46 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
               self.assertEqual(out_tpu.dtype, torch.float32)
               utils.assert_close(out_tpu.cpu(), expected)
 
+  def test_masked_select_out(self):
+    x_cpu = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+    mask_cpu = torch.tensor([[True, False], [False, True]])
+    x_tpu = x_cpu.to("tpu")
+    mask_tpu = mask_cpu.to("tpu")
+
+    out_tpu = torch.full((4, 4), -1.0, dtype=torch.float32, device="tpu")
+    ret = torch.masked_select(x_tpu, mask_tpu, out=out_tpu)
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.shape, (2,))
+    utils.assert_close(out_tpu.cpu(), torch.masked_select(x_cpu, mask_cpu))
+
+    # Empty selection resizes out to (0,), and subsequent selection grows it.
+    empty_mask_tpu = torch.zeros((2, 2), dtype=torch.bool, device="tpu")
+    torch.masked_select(x_tpu, empty_mask_tpu, out=out_tpu)
+    self.assertEqual(out_tpu.shape, (0,))
+
+    torch.masked_select(x_tpu, mask_tpu, out=out_tpu)
+    self.assertEqual(out_tpu.shape, (2,))
+    utils.assert_close(out_tpu.cpu(), torch.masked_select(x_cpu, mask_cpu))
+
+    # Pre-sized slice view preserves storage offset without clobbering base.
+    base_tpu = torch.zeros(6, dtype=torch.float32, device="tpu")
+    out_view = base_tpu[2:4]
+    torch.masked_select(x_tpu, mask_tpu, out=out_view)
+    utils.assert_close(
+        base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
+    )
+
+    # Broadcasted 0D self and 1D mask.
+    scalar_tpu = torch.tensor(7.0, dtype=torch.float32, device="tpu")
+    out_scalar = torch.empty((3, 3), dtype=torch.float32, device="tpu")
+    torch.masked_select(
+        scalar_tpu,
+        torch.tensor([True, False, True], device="tpu"),
+        out=out_scalar,
+    )
+    self.assertEqual(out_scalar.shape, (2,))
+    utils.assert_close(out_scalar.cpu(), torch.tensor([7.0, 7.0]))
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -1353,9 +1353,13 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
   def test_masked_select_out_with_different_scalar_types(self):
     """Masked select function fails when self and out have different scalar types."""
-    t = torch.ones(5, device=et.device(), dtype=torch.float32)
-    out = torch.ones(5, device=et.device(), dtype=torch.int32)
-    mask = torch.ones(5, device=et.device(), dtype=torch.bool)
+    t = torch.tensor(
+        [1.0, 2.0, 3.0, 4.0], device=et.device(), dtype=torch.float32
+    )
+    out = torch.zeros((4, 4), device=et.device(), dtype=torch.int32)
+    mask = torch.tensor(
+        [True, False, True, False], device=et.device(), dtype=torch.bool
+    )
 
     with et.assert_raises_message(
         RuntimeError,
@@ -1363,6 +1367,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
         tpu="""masked_select(): expected out tensor to have dtype float32, got int32""",
     ):
       torch.masked_select(t, mask, out=out)
+    self.assertEqual(out.shape, (4, 4))
 
   @parameterized.parameters(False, True)
   def test_int_mm_invalid_self_rank(self, use_out):
@@ -15686,6 +15691,57 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_out_masked_select_out)""",
     ):
       torch.masked_select(t, mask, out=out)
+
+  def test_masked_select_out_internal_memory_overlap(self):
+    t = torch.tensor([1.0, 2.0, 3.0, 4.0], device=et.device())
+    mask = torch.tensor([True, False, True, False], device=et.device())
+    out = torch.empty(1, device=et.device()).expand(2)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t, mask, out=out)
+
+  def test_masked_select_out_self_memory_overlap(self):
+    t = torch.tensor([1.0, 2.0, 3.0, 4.0], device=et.device())
+    mask = torch.tensor([True, False, True, False], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t, mask, out=t)
+
+    base = torch.ones(6, device=et.device())
+    t_slice = base[:4]
+    out_slice = base[2:]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t_slice, mask, out=out_slice)
+
+  def test_masked_select_out_mask_memory_overlap(self):
+    t = torch.tensor([True, True, False, True], device=et.device())
+    mask = torch.tensor([True, False, True, False], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t, mask, out=mask)
+
+    base = torch.ones(6, device=et.device(), dtype=torch.bool)
+    mask_slice = base[:4]
+    out_slice = base[2:]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t, mask_slice, out=out_slice)
 
   def test_cumsum_bool_dtype(self):
     """Tests that cumsum with a boolean out tensor throws the correct NotImplementedError."""
