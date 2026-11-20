@@ -51,9 +51,42 @@ mlir::Value SkipBroadcasts(mlir::Value v) {
   return v;
 }
 
+// Skips broadcast_in_dim and same-category convert ops (float->float or
+// int->int).
+mlir::Value SkipBroadcastsAndSameCategoryConverts(mlir::Value v) {
+  while (v) {
+    if (auto bcast = v.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>()) {
+      v = bcast.getOperand();
+    } else if (auto convert = v.getDefiningOp<mlir::stablehlo::ConvertOp>()) {
+      mlir::Type in_type = convert.getOperand().getType();
+      mlir::Type out_type = convert.getType();
+      mlir::Type in_elem =
+          mlir::isa<mlir::ShapedType>(in_type)
+              ? mlir::cast<mlir::ShapedType>(in_type).getElementType()
+              : in_type;
+      mlir::Type out_elem =
+          mlir::isa<mlir::ShapedType>(out_type)
+              ? mlir::cast<mlir::ShapedType>(out_type).getElementType()
+              : out_type;
+      const bool same_category = (mlir::isa<mlir::FloatType>(in_elem) &&
+                                  mlir::isa<mlir::FloatType>(out_elem)) ||
+                                 (mlir::isa<mlir::IntegerType>(in_elem) &&
+                                  mlir::isa<mlir::IntegerType>(out_elem));
+      if (same_category) {
+        v = convert.getOperand();
+        continue;
+      }
+      break;
+    } else {
+      break;
+    }
+  }
+  return v;
+}
+
 // Checks if a value is a constant 1.0 (float) or 1 (integer) splat.
 bool IsOneSplat(mlir::Value val) {
-  val = SkipBroadcasts(val);
+  val = SkipBroadcastsAndSameCategoryConverts(val);
   auto const_op = val.getDefiningOp<mlir::stablehlo::ConstantOp>();
   if (!const_op) return false;
   auto attr = mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
@@ -82,7 +115,10 @@ std::optional<MatchedWeight> MatchOnePlusWeight(mlir::Value val) {
       val.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>();
   mlir::Value inner_val = outer_bcast ? outer_bcast.getOperand() : val;
 
-  auto add_op = inner_val.getDefiningOp<mlir::stablehlo::AddOp>();
+  auto downcast_op = inner_val.getDefiningOp<mlir::stablehlo::ConvertOp>();
+  mlir::Value add_val = downcast_op ? downcast_op.getOperand() : inner_val;
+
+  auto add_op = add_val.getDefiningOp<mlir::stablehlo::AddOp>();
   if (!add_op) return std::nullopt;
 
   mlir::Value raw_weight;
@@ -92,6 +128,14 @@ std::optional<MatchedWeight> MatchOnePlusWeight(mlir::Value val) {
     raw_weight = add_op.getLhs();
   } else {
     return std::nullopt;
+  }
+
+  if (downcast_op) {
+    auto upcast_op = raw_weight.getDefiningOp<mlir::stablehlo::ConvertOp>();
+    if (!upcast_op || upcast_op.getOperand().getType() != inner_val.getType()) {
+      return std::nullopt;
+    }
+    raw_weight = upcast_op.getOperand();
   }
 
   return MatchedWeight{raw_weight, outer_bcast};
