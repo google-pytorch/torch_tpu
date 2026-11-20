@@ -465,6 +465,10 @@ static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
             // attempt looking up feedback-directed optimization profile data
             // that is unlikely to be available.
             {"xla_tpu_autofdo", false},
+            // TorchTPU routes long-sequence SDPA to its own Kiln FlashAttention
+            // kernel; disable XLA's HLO FlashAttention/online-softmax pattern
+            // rewrite so StableHLO SDPA stays on XLA's native TPU fusion path.
+            {"xla_tpu_enable_flash_attention", false},
             {"xla_tpu_vmem_scavenging_mode",
              std::string("SAFE_IFF_KERNEL_REQUIRED")},
             // go/keep-sorted end

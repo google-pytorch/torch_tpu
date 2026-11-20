@@ -89,6 +89,9 @@ TEST_F(MakeCompilerOptionsTest, DefaultOptionsInEagerMode) {
               Contains(Pair("xla_tpu_autofdo",
                             xla::CompileOptions::OptionOverride(false))));
   EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_tpu_enable_flash_attention",
+                            xla::CompileOptions::OptionOverride(false))));
+  EXPECT_THAT(options->env_option_overrides,
               Contains(Pair("xla_tpu_vmem_scavenging_mode",
                             xla::CompileOptions::OptionOverride(
                                 "SAFE_IFF_KERNEL_REQUIRED"))));
@@ -104,6 +107,9 @@ TEST_F(MakeCompilerOptionsTest, DefaultOptionsInTorchCompileMode) {
                             xla::CompileOptions::OptionOverride(int64_t{1}))));
   EXPECT_THAT(options->env_option_overrides,
               Contains(Pair("xla_tpu_autofdo",
+                            xla::CompileOptions::OptionOverride(false))));
+  EXPECT_THAT(options->env_option_overrides,
+              Contains(Pair("xla_tpu_enable_flash_attention",
                             xla::CompileOptions::OptionOverride(false))));
   EXPECT_THAT(options->env_option_overrides,
               Contains(Pair("xla_tpu_vmem_scavenging_mode",
@@ -139,6 +145,8 @@ TEST_F(MakeCompilerOptionsTest, CompilerOptionOverrides) {
             Pair("xla_jf_program_hbm_alignment_in_kib",
                  xla::CompileOptions::OptionOverride(std::string("16"))),
             Pair("xla_tpu_autofdo", xla::CompileOptions::OptionOverride(false)),
+            Pair("xla_tpu_enable_flash_attention",
+                 xla::CompileOptions::OptionOverride(false)),
             Pair("xla_tpu_vmem_scavenging_mode",
                  xla::CompileOptions::OptionOverride(
                      std::string("SAFE_IFF_KERNEL_REQUIRED")))));
