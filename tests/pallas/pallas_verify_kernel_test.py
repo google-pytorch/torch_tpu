@@ -41,7 +41,6 @@ from torch_tpu._internal.pallas import _mock_device
 from torch_tpu._internal.pallas.verify import interpret_verifier
 from torch_tpu._internal.pallas.verify import jaxpr_model
 from torch_tpu._internal.pallas.verify import smt_checker
-from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 jax_op = pallas.jax_op
@@ -5626,7 +5625,6 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
         msg=oversized_rep.summary(),
     )
 
-  @test_utils.skip_if_asan("b/585576879: Slow (~185s) in ASAN mode.")
   def test_parallel_grid_order_dependent_int32_schedule_divergence_detected(
       self,
   ):
@@ -5638,7 +5636,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
       return pl.pallas_call(
           kernel,
           out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
-          grid=(8,),
+          grid=(2,),
           in_specs=[pl.BlockSpec(x.shape, lambda _i: (0, 0))],
           out_specs=pl.BlockSpec(x.shape, lambda _i: (0, 0)),
           compiler_params=pltpu.CompilerParams(
@@ -5646,12 +5644,22 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
           ),
       )(x)
 
+    def _first_coord(seed: int) -> int:
+      _, subkey = jax.random.split(jax.random.key(seed))
+      return int(
+          jax.random.permutation(subkey, jnp.arange(2, dtype=jnp.int32))[0]
+      )
+
+    first_on_0 = _first_coord(0)
+    other_seed = next(s for s in range(1, 64) if _first_coord(s) != first_on_0)
+
     div_rep = interpret_verifier.verify_with_cpu_interpret(
         parallel_order_dependent_int32,
         (jnp.zeros((8, 128), dtype=jnp.int32),),
         config=verifier.InterpretSweepConfig(
             schedule_modes=(verifier.DmaScheduleMode.EAGER,),
-            seeds=(0, 1, 2, 17),
+            seeds=(0, other_seed),
+            uninitialized_memory=verifier.UninitMemoryMode.ZERO,
         ),
     )
     self.assertFalse(div_rep.passed, msg=div_rep.summary())
@@ -6791,7 +6799,6 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     self.assertTrue(full_rep.passed, msg=full_rep.summary())
     self.assertIn(verifier.Phase.INTERPRET, full_rep.checked_phases)
 
-  @test_utils.skip_if_asan("b/585576879: Slow (~140s) in ASAN mode.")
   def test_verify_full_mode_restores_global_and_thread_local_patch_state(self):
     fx_vfy = interpret_verifier.fx_verifier
     orig_pallas_call = pl.pallas_call
@@ -6848,6 +6855,83 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     )
     self.assertTrue(err_rep.passed, msg=err_rep.summary())
     _assert_clean_patch_state()
+
+  def test_interpret_sweep_prunes_redundant_modes_and_seeds(self):
+    spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def plain_kernel_fn(x: jax.Array) -> jax.Array:
+      return _single_block_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...] + 1.0), x
+      )
+
+    def parallel_kernel_fn(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...] + 1.0),
+          out_shape=spec,
+          grid=(2,),
+          in_specs=[pl.BlockSpec((4, 128), lambda i: (i, 0))],
+          out_specs=pl.BlockSpec((4, 128), lambda i: (i, 0)),
+          compiler_params=pltpu.CompilerParams(
+              dimension_semantics=("parallel",)
+          ),
+      )(x)
+
+    def dma_kernel_fn(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, buf, sem):
+        copy = pltpu.make_async_copy(x_hbm, buf, sem)
+        copy.start()
+        copy.wait()
+        o_ref[...] = buf[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=spec,
+          in_specs=[HBM_SPEC],
+          out_specs=pl.BlockSpec((8, 128), lambda: (0, 0)),
+          scratch_shapes=(
+              pltpu.VMEM((8, 128), jnp.float32),
+              pltpu.SemaphoreType.DMA,
+          ),
+      )(x)
+
+    recorded: list[tuple[str, int | None]] = []
+
+    def _fake_interpret_run(_fn, _args, _kwargs, params, *_rest):
+      recorded.append((params.dma_execution_mode, params.random_seed))
+      return interpret_verifier._InterpretRunOutcome(
+          leaves=[np.ones((8, 128), dtype=np.float32)],
+          exc=None,
+          nonzero_sems=(),
+      )
+
+    cfg = verifier.InterpretSweepConfig(
+        schedule_modes=(
+            verifier.DmaScheduleMode.EAGER,
+            verifier.DmaScheduleMode.ON_WAIT,
+        ),
+        seeds=(0, 17),
+        uninitialized_memory=verifier.UninitMemoryMode.ZERO,
+    )
+    with mock.patch.object(
+        interpret_verifier, "_interpret_run", side_effect=_fake_interpret_run
+    ):
+      recorded.clear()
+      interpret_verifier.verify_with_cpu_interpret(
+          plain_kernel_fn, (spec,), config=cfg
+      )
+      self.assertEqual(recorded, [("eager", 0)])
+
+      recorded.clear()
+      interpret_verifier.verify_with_cpu_interpret(
+          parallel_kernel_fn, (spec,), config=cfg
+      )
+      self.assertEqual(recorded, [("eager", 0), ("eager", 17)])
+
+      recorded.clear()
+      interpret_verifier.verify_with_cpu_interpret(
+          dma_kernel_fn, (spec,), config=cfg
+      )
+      self.assertEqual(recorded, [("eager", 0), ("on_wait", 0)])
 
 
 if __name__ == "__main__":
