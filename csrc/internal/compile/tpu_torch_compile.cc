@@ -43,6 +43,7 @@
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
+#include "c10/core/ScalarType.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
@@ -353,11 +354,23 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
     return PyLayout();
   }
   xla::PjRtClient& checked_client = **client_or;
-  TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<xla::PrimitiveType>(dtype));
+  TT_ASSIGN_OR_THROW(const xla::PrimitiveType element_type,
+                     ConvertTo<xla::PrimitiveType>(dtype));
+  // PyTorch packs two FP4 values per byte in the last dimension, whereas PJRT
+  // expects unpacked F4E2M1FN dimensions (matching MakePlaceholder).
+  absl::Span<const int64_t> xla_shape = shape;
+  std::optional<SmallInt64Vector> unpacked_shape;
+  if (dtype == at::kFloat4_e2m1fn_x2) {
+    TT_CHECK_THROW(!shape.empty(), error::kInvalidArgument)
+        << "tensors of float4_e2m1fn_x2 dtype must be at least 1D";
+    unpacked_shape = CopyIntVector(shape);
+    unpacked_shape->back() *= 2;
+    xla_shape = *unpacked_shape;
+  }
 
-  TT_ASSIGN_OR_THROW(const auto& layout,
-                     checked_client.GetDefaultLayout(element_type, shape));
-  return ToPyLayout(layout);
+  TT_ASSIGN_OR_THROW(xla::Layout layout,
+                     checked_client.GetDefaultLayout(element_type, xla_shape));
+  return ToPyLayout(std::move(layout));
 }
 
 bool PyIsDeviceShapeDynamic(const at::Tensor& tensor) {

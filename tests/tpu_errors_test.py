@@ -2156,6 +2156,16 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.get_dynamic_pad_module([], [])
 
+  @et.why_tpu_only(
+      "tpu_torch_compile.get_default_layout is a TPU-specific compile API."
+  )
+  def test_get_default_layout_0d_fp4(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_default_layout(): tensors of float4_e2m1fn_x2 dtype must be at least 1D""",
+    ):
+      tpu_torch_compile.get_default_layout(torch.float4_e2m1fn_x2, [])
+
   @parameterized.named_parameters(
       dict(
           testcase_name="mismatched_padded_shapes_size",

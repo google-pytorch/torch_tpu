@@ -1685,6 +1685,21 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertIsInstance(element_size_in_bits, int)
     self.assertEqual(minor_to_major, [1, 0])
 
+    # Packed float4_e2m1fn_x2 tensors double their last dimension on TPU;
+    # [100, 64] packed has unpacked XLA shape [100, 128].
+    for packed_shape in ([8, 64], [100, 64]):
+      fp4_x = (
+          torch.zeros(packed_shape, dtype=torch.uint8)
+          .view(torch.float4_e2m1fn_x2)
+          .to(device=torch.device('tpu'))
+      )
+      device_layout = tpu_torch_compile.get_device_layout_if_materialized(fp4_x)
+      default_layout = tpu_torch_compile.get_default_layout(
+          fp4_x.dtype, list(fp4_x.shape)
+      )
+      self.assertEqual(default_layout[:2], device_layout[:2])
+      self.assertIsNone(compiler.get_non_default_device_layout(fp4_x))
+
   def test_is_device_shape_dynamic(self):
     x_static = torch.ones(2, 3, device='tpu')
     self.assertFalse(tpu_torch_compile.is_device_shape_dynamic(x_static))
