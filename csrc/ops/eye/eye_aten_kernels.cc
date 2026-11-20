@@ -53,6 +53,10 @@ at::Tensor& AtenEyeMOut(c10::SymInt n, c10::SymInt m, at::Tensor& out) {
   TT_KERNEL(OpName::kEyeMOut, param_keys, (n, m, out), {
     const int64_t n_int = n.guard_int(__FILE__, __LINE__);
     const int64_t m_int = m.guard_int(__FILE__, __LINE__);
+    TT_CHECK_THROW(n_int >= 0, error::kInvalidArgument)
+        << "expected n to be >= 0, got " << n_int;
+    TT_CHECK_THROW(m_int >= 0, error::kInvalidArgument)
+        << "expected m to be >= 0, got " << m_int;
     const c10::ScalarType output_dtype = out.scalar_type();
 
     TT_ASSIGN_OR_THROW(auto op_builder,

@@ -136,6 +136,7 @@ csrc/ops/experimental/sparse_gather/sparse_gather_aten_kernels.cc: {remaining: 0
 csrc/ops/experimental/sparse_iota/sparse_iota_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/experimental/sparse_map_row/sparse_map_row_aten_kernels.cc: {remaining: 0, total: 14, infeasible: 6}
 csrc/ops/exponential/exponential_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/eye/eye_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/ops/fake_quantize/fused_moving_avg_obs_fq_helper_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/fft/fft_aten_kernels.cc: {remaining: 2, total: 6, infeasible: 2}
 csrc/ops/fill/fill_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
