@@ -3522,7 +3522,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_repeat(self):
     self.do_test_op("repeat")
 
-  @test_utils.skip_if_asan("b/585577001: Slow / times out in ASAN mode.")
   def test_repeat_interleave(self):
     self.do_test_op(
         "repeat_interleave",
