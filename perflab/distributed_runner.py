@@ -37,6 +37,7 @@ import uuid
 from xml.etree import ElementTree
 
 from absl import app
+from absl import flags
 from absl import logging
 from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
@@ -879,4 +880,7 @@ def main(
 
 if __name__ == "__main__":
   mp.set_start_method("spawn")  # pyrefly: ignore[missing-attribute]
+  # Match absltest so INFO logs (including PERFLAB_RESULT_JSON records) reach
+  # stderr when invoked directly as a script (e.g. OSS GHA or local python).
+  flags.FLAGS.set_default("alsologtostderr", True)
   multiprocessing.handle_main(main)

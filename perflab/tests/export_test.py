@@ -19,6 +19,9 @@ only external boundary; it is replaced with a fake that records the uploaded
 records so the tests can check what would reach MLCompass.
 """
 
+from collections.abc import Sequence
+import datetime
+import json
 import types
 from unittest import mock
 
@@ -345,6 +348,213 @@ class ExportTest(seed_test_utils.RepeatableTest):
         wall_time=None,
         microbenchmark_name="bs128",
     )
+
+
+def _result_lines(log_output: Sequence[str]) -> list[str]:
+  """Returns the JSON payloads of `PERFLAB_RESULT_JSON` INFO log lines."""
+  prefix = f"{export_lib.RESULT_LOG_PREFIX} "
+  lines = []
+  for line in log_output:
+    # assertLogs formats records as "<LEVEL>:<logger>:<message>".
+    parts = line.split(":", 2)
+    if len(parts) == 3 and parts[0] == "INFO" and parts[2].startswith(prefix):
+      lines.append(parts[2][len(prefix) :])
+  return lines
+
+
+class ResultLogTest(seed_test_utils.RepeatableTest):
+  """Tests for PERFLAB_RESULT_JSON structured log records (shared with OSS)."""
+
+  def _read_results(self, log_output: Sequence[str]) -> list[dict[str, object]]:
+    records = [json.loads(line) for line in _result_lines(log_output)]
+    for record in records:
+      # Each record has a timezone-aware ISO 8601 timestamp.
+      timestamp = datetime.datetime.fromisoformat(record.pop("timestamp"))
+      self.assertIsNotNone(timestamp.tzinfo)
+    return records
+
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_export_logs_structured_json_records(self, unused_mock_export):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=10.0,
+        post_warmup_step_time_seconds=0.5,
+        warmup_session_xprof_url="http://xprof/warmup",
+        post_warmup_run_session_xprof_url="http://xprof/post_warmup",
+    )
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="model",
+              platform=target_lib.Platform.V7_2X2X1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=perf_metrics,
+              microbenchmark_name="prefill",
+          )
+      )
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="model",
+              platform=target_lib.Platform.B200_1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.EAGER_DEFAULT,
+              succeeded=False,
+              metrics=metrics_lib.PerformanceMetrics(),
+          )
+      )
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="model",
+              platform=target_lib.Platform.B200_1,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=metrics_lib.PerformanceMetrics(),
+              microbenchmark_name="bs64",
+              batch_size=64,
+              out_of_memory=True,
+          )
+      )
+
+    ok, failed, oom = self._read_results(logs.output)
+    self.assertEqual(
+        ok,
+        {
+            "schema_version": 1,
+            "spec_name": "model",
+            "microbenchmark_name": "prefill",
+            "batch_size": None,
+            "status": "ok",
+            "succeeded": True,
+            "metrics": dict(perf_metrics.metric_map()),
+            "test_name": "torch_tpu/v7_2x2x1/model/compiled/torch",
+            "warmup_xprof_url": "http://xprof/warmup",
+            "post_warmup_xprof_url": "http://xprof/post_warmup",
+        },
+    )
+    self.assertEqual((failed["status"], failed["succeeded"]), ("failed", False))
+    self.assertIsNone(failed["warmup_xprof_url"])
+    self.assertEqual(
+        failed["test_name"],
+        f"torch_tpu/b200_1/model/{common.RunMode.EAGER_DEFAULT.value}/torch",
+    )
+    self.assertEqual((oom["status"], oom["succeeded"]), ("oom", True))
+    self.assertEqual(oom["metrics"], {"out_of_memory": 1.0, "batch_size": 64.0})
+    self.assertEqual(oom["batch_size"], 64)
+
+  @mock.patch.object(export_adapter, "export_benchmark_skip")
+  def test_export_skip_logs_skipped_result(self, unused_mock_export):
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export_skip(
+          spec_name="model",
+          platform=target_lib.Platform.V7_1X1X1,
+          framework=mode_lib.Framework.TORCH,
+          run_mode=common.RunMode.COMPILED,
+      )
+
+    (skipped,) = self._read_results(logs.output)
+    self.assertEqual(skipped["spec_name"], "model")
+    self.assertEqual(skipped["status"], "skipped")
+    self.assertTrue(skipped["succeeded"])
+    self.assertEqual(skipped["metrics"], {"skipped": 1.0})
+    self.assertEqual(
+        skipped["test_name"], "torch_tpu/v7_1x1x1/model/compiled/torch"
+    )
+
+  @mock.patch.object(export_adapter, "export_benchmark_skip")
+  def test_export_known_failure_skip_logs_nothing_for_other_skips(
+      self, mock_export_benchmark_skip
+  ):
+    with (
+        mock.patch.object(known_failures, "KNOWN_FAILURES", ()),
+        self.assertNoLogs(level="INFO"),
+    ):
+      export_lib.export_known_failure_skip(
+          spec_name="model",
+          platform=target_lib.Platform.V7_1X1X1,
+          framework=mode_lib.Framework.TORCH,
+          run_mode=common.RunMode.COMPILED,
+      )
+    mock_export_benchmark_skip.assert_not_called()
+
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_export_logs_non_finite_metrics_as_null(self, unused_mock_export):
+    with self.assertLogs(level="INFO") as logs:
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="model",
+              platform=target_lib.Platform.CPU,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=metrics_lib.PerformanceMetrics(
+                  post_warmup_step_time_seconds=float("nan"),
+                  first_step_time_seconds=float("inf"),
+                  warmup_overhead_seconds=float("-inf"),
+                  peak_device_memory_mb=12.0,
+              ),
+          )
+      )
+
+    (line,) = _result_lines(logs.output)
+    # Strict JSON: no NaN or Infinity tokens.
+    self.assertNotIn("NaN", line)
+    self.assertNotIn("Infinity", line)
+    (record,) = self._read_results(logs.output)
+    metrics = record["metrics"]
+    self.assertIsNone(metrics["post_warmup_step_time_seconds"])
+    self.assertIsNone(metrics["first_step_time_seconds"])
+    self.assertIsNone(metrics["warmup_overhead_seconds"])
+    self.assertEqual(metrics["peak_device_memory_mb"], 12.0)
+
+  @mock.patch.object(export_adapter, "export_benchmark_results")
+  def test_export_survives_result_serialization_failure(self, mock_export):
+    with (
+        mock.patch.object(
+            export_lib.json, "dumps", side_effect=TypeError("not serializable")
+        ),
+        self.assertLogs(level="INFO") as logs,
+    ):
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="model",
+              platform=target_lib.Platform.CPU,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=metrics_lib.PerformanceMetrics(),
+          )
+      )
+    # The results still reach the export adapter.
+    mock_export.assert_called_once()
+    self.assertEmpty(_result_lines(logs.output))
+
+  @mock.patch.object(
+      export_adapter,
+      "export_benchmark_results",
+      side_effect=RuntimeError("adapter failed"),
+  )
+  def test_export_logs_result_before_adapter_failure(self, unused_mock_export):
+    with (
+        self.assertLogs(level="INFO") as logs,
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=export propagates adapter errors after logging the record.
+            RuntimeError, "adapter failed"
+        ),
+    ):
+      export_lib.export(
+          export_lib.BenchmarkData(
+              spec_name="model",
+              platform=target_lib.Platform.CPU,
+              framework=mode_lib.Framework.TORCH,
+              run_mode=common.RunMode.COMPILED,
+              succeeded=True,
+              metrics=metrics_lib.PerformanceMetrics(),
+          )
+      )
+    (record,) = self._read_results(logs.output)
+    self.assertEqual(record["spec_name"], "model")
+    self.assertEqual(record["status"], "ok")
 
 
 if __name__ == "__main__":
