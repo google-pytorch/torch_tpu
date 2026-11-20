@@ -24,6 +24,7 @@ import copy
 import dataclasses
 import enum
 import functools
+import gc
 import gzip
 import importlib
 import itertools
@@ -45,6 +46,7 @@ from etils import epath
 import safetensors.torch as st
 import sympy
 import torch
+from torch._inductor import utils as inductor_utils
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
 from torch.testing._internal import autograd_function_db
@@ -6450,6 +6452,20 @@ def _dynamism_mode(*, use_compiled: bool, compute_grad: bool) -> DynamismMode:
   return DynamismMode.EAGER
 
 
+def _free_compiled_code() -> None:
+  """Clears Dynamo and Inductor in-memory caches between compiled golden calls.
+
+  Inductor retains loaded code entries in `PyCodeCache` and related in-memory
+  caches across `torch.compiler.reset()`. Clearing Inductor's in-memory caches
+  and collecting garbage keeps host memory bounded across thousands of compiled
+  graphs per shard, while leaving on-disk compile caches intact so recompiling
+  stays cheap (and leaving `sys.modules` entries untouched for safety).
+  """
+  torch.compiler.reset()
+  inductor_utils.clear_caches()
+  gc.collect()
+
+
 def _requires_grad_input(input_value: _pytree.PyTree) -> _pytree.PyTree:
   """Sets requires_grad=True for the non-empty float/complex input tensors."""
 
@@ -7246,6 +7262,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       dtype: torch.dtype,
       variant: OpVariant,
       max_samples: int,
+      *,
+      use_compiled: bool = False,
       **run_op_kwargs: Any,
   ) -> Sequence[tuple[OpInput, OpOutput]]:
     """Generates up to `max_samples` golden pairs on the golden device."""
@@ -7260,29 +7278,34 @@ class OpInfoTestBase(TorchTpuTestBase):
       golden_samples = random.sample(golden_samples, max_samples)
 
     pairs = []
-    for golden_sample in golden_samples:
-      # sample_inputs for scaled_dot_product_attention sometimes includes a
-      # non-zero dropout parameter, but we don't guarantee randomness matches
-      # and would need to compare distributions.
-      if op.name == "nn.functional.scaled_dot_product_attention":
-        golden_sample.kwargs.update({"dropout_p": 0.0})
+    try:
+      for golden_sample in golden_samples:
+        # sample_inputs for scaled_dot_product_attention sometimes includes a
+        # non-zero dropout parameter, but we don't guarantee randomness matches
+        # and would need to compare distributions.
+        if op.name == "nn.functional.scaled_dot_product_attention":
+          golden_sample.kwargs.update({"dropout_p": 0.0})
 
-      golden_input = OpInput(golden_sample)
-      golden_result = self._run_op(
-          op=op,
-          variant=variant,
-          dtype=dtype,
-          op_input=golden_input,
-          device=self.golden_device,
-          subtest_name="golden",
-          # When generating golden results, we should trust the op's output
-          # to be correct and not check the device. E.g. even in the
-          # gen_gpu_golden mode, torch.arange(5) should return a tensor on
-          # CPU instead of GPU.
-          check_device=False,
-          **run_op_kwargs,
-      )
-      pairs.append((golden_input, OpOutput(golden_result)))
+        golden_input = OpInput(golden_sample)
+        golden_result = self._run_op(
+            op=op,
+            variant=variant,
+            dtype=dtype,
+            op_input=golden_input,
+            device=self.golden_device,
+            subtest_name="golden",
+            # When generating golden results, we should trust the op's output
+            # to be correct and not check the device. E.g. even in the
+            # gen_gpu_golden mode, torch.arange(5) should return a tensor on
+            # CPU instead of GPU.
+            check_device=False,
+            use_compiled=use_compiled,
+            **run_op_kwargs,
+        )
+        pairs.append((golden_input, OpOutput(golden_result)))
+    finally:
+      if use_compiled:
+        _free_compiled_code()
     return pairs
 
   def _run_op(
