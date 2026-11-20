@@ -125,8 +125,9 @@ implementation.
 
 ### 3. Testing
 
-*   Follow guidelines in [testing skill](../tt-write-tests/SKILL.md) for TDD and
-    test locations.
+*   Remove `@op_testing.unimplemented_on_tpu` from the existing `test_<op>` stub
+    in `tests/ops_test.py` once the op is implemented, and follow
+    [testing skill](../tt-write-tests/SKILL.md) for TDD and test locations.
 
 ### 4. Code Health and Formatting
 

@@ -35,7 +35,13 @@ Cheatsheet for testing in TorchTPU.
 ## Test Locations
 
 *   **`tests/ops_test.py`**: Data-driven tests using PyTorch `op_db`. Use
-    `self.do_test_op("{op_name}")`.
+    `self.do_test_op("{op_name}")`. Unimplemented ATen `OpInfo`s already have
+    stubs tagged with `@op_testing.unimplemented_on_tpu`. When your change makes
+    an op or feature testable on TPU, update the existing `test_<op>` method
+    instead of adding a duplicate: remove `@op_testing.unimplemented_on_tpu`,
+    remove newly supported dtypes from `exclude_dtypes` /
+    `exclude_inplace_dtypes`, and drop `check_grad=False` or
+    `check_out_variant=False` once those paths work.
 *   **`tests/ops_unit_test.py`**: Thorough unit tests for edge cases, dtypes,
     shapes, and non-contiguous inputs. **Always** add tests here.
 *   **`tests/errors_test.py`**: Tests ensuring quality and parity (w.r.t. GPU)

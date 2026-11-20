@@ -135,14 +135,13 @@ Analyze the test failure traceback to determine the root cause:
 ## 5. Verify and Clean Up
 
 1.  Make sure the test passes successfully for the target dtype.
-2.  Remove the target dtype from `exclude_dtypes` or `exclude_inplace_dtypes` in
-    `tests/ops_test.py`. Remember that newly supported dtypes shouldn't be
-    excluded from GPU comparison tests.
-3.  **Regenerate GPU Golden Files & Tolerances:** If you enabled dtypes that
-    were previously excluded, follow
+2.  In `tests/ops_test.py`, remove the target dtype from `exclude_dtypes` or
+    `exclude_inplace_dtypes` (and remove `@op_testing.unimplemented_on_tpu` if
+    the op itself was previously unimplemented). Newly supported dtypes
+    shouldn't be excluded from comparison tests.
+3.  **Tolerances:** If you enabled dtypes that were previously excluded, follow
     [tt-update-tolerances](../tt-update-tolerances/SKILL.md) to verify and
-    adjust error bounds (if new GPU golden artifacts are needed, maintainers
-    regenerate them during review).
+    adjust error bounds if needed.
 
     > [!IMPORTANT] **Tolerance Overrides Policy:** Tolerance overrides in
     > `ops_test.py` (`ACCURACY_OVERRIDES_VS_GPU` and

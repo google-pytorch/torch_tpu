@@ -4,15 +4,28 @@ This reference file contains examples for different types of tests in TorchTPU.
 
 ## Examples
 
-### 1. Adding a test to `tests/ops_test.py`
+### 1. Enabling or adding a test in `tests/ops_test.py`
 
-If the op is supported by PyTorch's `op_db`, you can add it to
-`tests/ops_test.py`:
+Most PyTorch `op_db` ops already have a stub in `tests/ops_test.py` tagged with
+`@op_testing.unimplemented_on_tpu`. When you implement an op so it is now
+testable on TPU, remove `@op_testing.unimplemented_on_tpu` from its existing
+stub instead of adding a duplicate method:
 
 ```python
+# Before (skipped until implemented on TPU):
+@op_testing.unimplemented_on_tpu
 def test_{op_name}(self):
-    self.do_test_op("{op_name}")
+  self.do_test_op("{op_name}")
+
+# After (enabled on TPU):
+def test_{op_name}(self):
+  self.do_test_op("{op_name}")
 ```
+
+If your change also makes additional dtypes, gradients, or `out=` variants
+testable, remove the corresponding `exclude_dtypes` / `exclude_inplace_dtypes`
+entries or `check_grad=False` / `check_out_variant=False` flags. Only add a new
+`test_{op_name}` method if you are adding a brand-new `OpInfo` to `_KNOWN_OPS`.
 
 ### 2. Adding a unit test to `tests/ops_unit_test.py`
 
