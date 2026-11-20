@@ -92,8 +92,14 @@ void PySynchronizeDevice(int device_index, bool wait) {
 
     impl->synchronizeDevice(device_index);
   } else {
-    TT_THROW_IF_ERROR(
+    TT_ASSIGN_OR_THROW(
+        std::vector<EventSnapshot> device_snapshots,
         MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
+    // Wait until each stream has enqueued its materialization task, but don't
+    // wait for the materialization to complete.
+    for (const auto& snapshot : device_snapshots) {
+      TT_THROW_IF_ERROR(snapshot.BlockUntilStarted());
+    }
   }
 }
 
@@ -119,6 +125,7 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
   TT_ASSIGN_OR_THROW(
       EventSnapshot event_snapshot,
       MaterializeStream(index, id, MaterializationReason::kExplicitSync));
+  TT_THROW_IF_ERROR(event_snapshot.BlockUntilStarted());
   return PyTpuEventBase(std::move(event_snapshot));
 }
 

@@ -156,7 +156,6 @@ class StreamIntegrationTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act.untyped_storage().size(), 0)
     utils.assert_close(pinned_cpu, torch.full(_LARGE_SHAPE, 3.0))
 
-
   def test_wait_event_holds_the_called_stream(self):
     """wait_event() holds the stream it is called on, not the current one."""
     a, b = _BACKEND.Stream(), _BACKEND.Stream()
@@ -168,14 +167,12 @@ class StreamIntegrationTest(seed_test_utils.RepeatableTest):
     ev_b = b.record_event()
     ev_default = _BACKEND.default_stream().record_event()
     b_held = not ev_b.query()
-    # Synchronizing the default stream doesn't sync `a`, so `ev` (on `a`) will
-    # still be pending.
-    ev_default.synchronize()
-    self.assertFalse(ev.query())
+    default_held = not ev_default.query()
     ev.synchronize()
     ev_b.synchronize()
 
     self.assertTrue(b_held, 'b.wait_event(ev) must hold later work on b')
+    self.assertFalse(default_held, 'the current stream must not be held')
     utils.assert_close(y[0, :2].to('cpu'), torch.full((2,), 1 / 8192))
 
   def test_non_blocking_d2h_into_pageable_memory_is_synchronous(self):

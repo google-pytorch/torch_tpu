@@ -174,109 +174,6 @@ void ReleaseNextSnapshot(xla::Promise<void> promise) {
   releaser->Release(std::move(promise));
 }
 
-// The collective does not need to be delayed by any cross-stream data
-// dependencies.
-struct NoDataDependency {};
-
-// The collective must be delayed by the given data dependency, but earlier ops
-// on the same stream do not need to be. Here, we insert a graph break, then
-// the data dependency, then the collective.
-// This is used when the collective is SplitBefore or SplitBoth.
-struct GraphBreakThenDataDependency {
-  xla::Future<void> future;
-};
-
-// The collective must be delayed by the given data dependency, and may be
-// fused with earlier ops; do not insert a graph break, and instead prepend the
-// data dependency before the current deferred ops.
-// This is used when the collective is neither SplitBefore nor SplitBoth.
-struct PrependDataDependency {
-  xla::Future<void> future;
-};
-
-using CollectiveDataDependency =
-    std::variant<NoDataDependency, GraphBreakThenDataDependency,
-                 PrependDataDependency>;
-
-// Distributed collectives on TPU must be executed in a consistent order
-// across all process ranks, otherwise a deadlock will occur.
-// If collectives are issued on the same device and stream, they will be
-// already be well-ordered, so no additional timing dependency is needed.
-// However if multiple streams are used, then each time we change which stream
-// is being used for collectives, we must insert a data dependency to ensure
-// a unique, consistent order.
-//
-// TODO: this does not consider collectives inside compiled mode executables;
-// executing collectives both eagerly and in compiled executables on different
-// streams without Event.waits to order them could cause deadlocks. Fixing this
-// would require including a "has_collective" indicator on
-// LoadedExecutableWithMetadata, populating it during compiled mode, and
-// forwarding it through RecordCompiledExecutionTask.
-class GlobalCollectivesOrder {
- public:
-  static GlobalCollectivesOrder& Get() {
-    static absl::NoDestructor<GlobalCollectivesOrder> collectives_order;
-    return *collectives_order;
-  }
-
-  // Records the given collective as the most recent, and if necessary,
-  // returns a future that must be awaited before the argument is executed,
-  // along with where the data dependency should be inserted (before or after
-  // the unpackaged deferred ops).
-  CollectiveDataDependency GetImpliedDataDependency(
-      const SharedDeviceBufferList& next_collective,
-      const bool is_split_before) {
-    absl::MutexLock lock(mu_);
-
-    // Check the state before updating it.
-    const bool is_same_stream =
-        next_collective->device_index() == prev_collective_device_index_ &&
-        next_collective->stream_id() == prev_collective_stream_id_;
-
-    // Pull the prior future, and update the state.
-    xla::Future<void> prev_future = std::move(prev_collective_materialized_);
-    prev_collective_materialized_ = next_collective->GetMaterializationFuture();
-    prev_collective_device_index_ = next_collective->device_index();
-    prev_collective_stream_id_ = next_collective->stream_id();
-
-    if (is_same_stream || prev_future.IsKnownReady()) {
-      // If the previous collective is on the same stream as the next one, then
-      // there is no dependency needed; collectives on the same stream are
-      // already well-ordered.
-      // If there is no previous collective, then there is no dependency
-      // needed.
-      // If the previous collective has already started execution, then the
-      // correct order is already guaranteed and we don't need an explicit wait.
-      return NoDataDependency{};
-    }
-    if (is_split_before) {
-      // If there was already going to be a graph break before this op, then
-      // we can safely insert a graph break before it. This avoids delaying
-      // earlier non-collective ops unnecessarily.
-      return GraphBreakThenDataDependency{std::move(prev_future)};
-    } else {
-      // If the collective should be fused with earlier ops, then these earlier
-      // ops must also be delayed by the data dependency.
-      return PrependDataDependency{std::move(prev_future)};
-    }
-  }
-
-  // Resets the tracked collectives order to the default state.
-  void Reset() {
-    absl::MutexLock lock(mu_);
-    prev_collective_materialized_ = absl::OkStatus();
-    prev_collective_device_index_ = -1;
-    prev_collective_stream_id_ = -1;
-  }
-
- private:
-  absl::Mutex mu_;
-  xla::Future<void> prev_collective_materialized_ ABSL_GUARDED_BY(mu_) =
-      absl::OkStatus();
-  c10::DeviceIndex prev_collective_device_index_ ABSL_GUARDED_BY(mu_) = -1;
-  c10::StreamId prev_collective_stream_id_ ABSL_GUARDED_BY(mu_) = -1;
-};
-
 class StreamState {
  public:
   // Clears all tracked DeviceBufferLists from the events queue, and resets the
@@ -294,12 +191,13 @@ class StreamState {
     absl::Status cancel_status = TT_ERROR(  // ERROR_COV_INFEASIBLE=see above
                                      error::kCancelled)
                                  << "stream state was cleared";
-    for (auto& work_item : work_queue_) {
-      if (auto* snapshot_request = std::get_if<SnapshotRequest>(&work_item)) {
+    for (auto& ready_work_item : ready_work_) {
+      if (auto* snapshot_request =
+              std::get_if<SnapshotRequest>(&ready_work_item)) {
         snapshot_request->snapshot_to_start.Start(cancel_status);
       }
     }
-    work_queue_.clear();
+    ready_work_.clear();
 
     // At this point, there are no "live nodes" holding onto deferred ops, so
     // all ops that have no side effects (directly or indirectly) should be
@@ -329,15 +227,11 @@ class StreamState {
   // side effects, it must be kept alive until it is executed, even if it is
   // dead code.
   //
-  // Distributed collectives may have an implied data dependency that must be
-  // recorded to ensure a consistent global execution order.
-  //
   // When using the repeated ops heuristic, we also need to hash the deferred op
   // to efficiently detect repetitions.
   struct DeferredOpEvent {
     static std::optional<DeferredOpEvent> FromDeferredOp(
         const SharedDeviceBufferList& device_buffer_list,
-        CollectiveDataDependency& implied_data_dependency,
         bool compute_hash = false) {
       if (device_buffer_list->is_constant()) {
         // Compiled mode constants and empty tensors are handled specially;
@@ -358,10 +252,6 @@ class StreamState {
                      << device_buffer_list.get() << "("
                      << ToString(deferred_op->op_name()) << ")";
         event.side_effects = device_buffer_list;
-        const bool is_split_before = IsSplitBefore(deferred_op->split_mode());
-        implied_data_dependency =
-            GlobalCollectivesOrder::Get().GetImpliedDataDependency(
-                device_buffer_list, is_split_before);
       } else {
         ABSL_VLOG(3)
             << "[DeferredOpEvent] Created non-side-effecting event for "
@@ -390,25 +280,19 @@ class StreamState {
     size_t deferred_op_hash = 0;
   };
 
-  void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list,
-                               const EagerMode eager_mode) {
-    CollectiveDataDependency implied_data_dependency = NoDataDependency{};
-    if (auto event = DeferredOpEvent::FromDeferredOp(device_buffer_list,
-                                                     implied_data_dependency,
-                                                     /*compute_hash=*/false);
+  void RecordDeferredOpCreated(
+      const SharedDeviceBufferList& device_buffer_list) {
+    if (auto event = DeferredOpEvent::FromDeferredOp(device_buffer_list);
         event.has_value()) {
       absl::MutexLock lock(mu_);
-      HandleCollectiveDataDependency(implied_data_dependency, eager_mode);
       deferred_ops_.push_back(std::move(*event));
     }
   }
 
   bool RecordDeferredOpAndDetectRepetition(
-      const SharedDeviceBufferList& device_buffer_list,
-      const EagerMode eager_mode) {
-    CollectiveDataDependency implied_data_dependency = NoDataDependency{};
-    auto maybe_event = DeferredOpEvent::FromDeferredOp(
-        device_buffer_list, implied_data_dependency, /*compute_hash=*/true);
+      const SharedDeviceBufferList& device_buffer_list) {
+    auto maybe_event = DeferredOpEvent::FromDeferredOp(device_buffer_list,
+                                                       /*compute_hash=*/true);
     if (!maybe_event.has_value()) {
       return false;
     }
@@ -416,7 +300,6 @@ class StreamState {
     const size_t new_hash = event.deferred_op_hash;
 
     absl::MutexLock lock(mu_);
-    HandleCollectiveDataDependency(implied_data_dependency, eager_mode);
     deferred_ops_.push_back(std::move(event));
 
     // Fast path: assume that the last sequence is still repeating.
@@ -483,49 +366,9 @@ class StreamState {
                                       eager_mode);
   }
 
-  ReadyWork GetReadyWork() {
+  std::vector<ReadyWork> GetReadyWork() {
     absl::MutexLock lock(mu_);
-    std::vector<ReadyWorkItem> ready_work_items;
-    std::optional<xla::Future<void>> blocked_after = std::nullopt;
-
-    // Pull from the front of the work queue until we find a blocking wait or
-    // the queue is empty.
-    while (!work_queue_.empty()) {
-      // TODO: this is more defensive than necessary. If both this stream and
-      // the waited-on stream are on the TensorCore, and the waited-on stream
-      // has no pending d2h/h2d transfers, then it's safe to ignore it as any
-      // EagerExecution or CompiledExecution will not start until the event is
-      // reached. This requires recording stream pinning and differentiating
-      // future types on an EventSnapshot so we can identify this case.
-      if (auto* wait = std::get_if<CrossStreamWait>(&work_queue_.front())) {
-        // Found a wait event; do we need to block on it?
-        xla::Future<void> wait_ok_callback = wait->OkCallback();
-        if (wait_ok_callback.IsReady()) {
-          // The cross-stream wait is ready; discard it and continue.
-          work_queue_.pop_front();
-          continue;
-        }
-        // Found a blocking wait; record it and stop.
-        blocked_after = std::move(wait_ok_callback);
-        break;
-      }
-      if (auto* data_dependency =
-              std::get_if<CrossStreamDataDependency>(&work_queue_.front())) {
-        // Found a data dependency; do we need to block on it?
-        if (data_dependency->IsReady()) {
-          // The data dependency is resolved; discard it and continue.
-          work_queue_.pop_front();
-          continue;
-        }
-        // Found a blocking data dependency; record it and stop.
-        blocked_after = *data_dependency;
-        break;
-      }
-      ready_work_items.push_back(
-          ExtractReadyWorkItem(std::move(work_queue_.front())));
-      work_queue_.pop_front();
-    }
-    return {std::move(ready_work_items), std::move(blocked_after)};
+    return std::move(ready_work_);
   }
 
   // Records that a graph capture begins on this stream. Returns false, and
@@ -619,7 +462,7 @@ class StreamState {
     }
   }
 
-  void InsertStreamWait(EventSnapshot snapshot, EagerMode eager_mode) {
+  void InsertStreamWait(EventSnapshot& snapshot) {
     absl::MutexLock lock(mu_);
     xla::Future<void> snapshot_ok_callback = snapshot.OkCallback();
     // The next event will not be ready until the awaited snapshot is ready.
@@ -631,17 +474,6 @@ class StreamState {
       PruneCompletedFutures(transfer_blocks_);
     }
     transfer_blocks_.push_back(std::move(snapshot_ok_callback));
-
-    // Any executions (eager or compiled) on this stream must delay until the
-    // awaited snapshot is ready.
-    GraphSplitMode graph_split_mode =
-        (eager_mode == EagerMode::kDeferAndFuse ? GraphSplitMode::kSplitGraph
-                                                : GraphSplitMode::kFullGraph);
-    InsertGraphBreakLocked(/*must_materialize=*/{},
-                           MaterializationReason::kExplicitSync,
-                           graph_split_mode, eager_mode,
-                           /*execution_task=*/std::nullopt);
-    work_queue_.push_back(std::move(snapshot));
   }
 
   void MarkActive(std::vector<xla::Future<void>>&& new_futures) {
@@ -672,8 +504,9 @@ class StreamState {
     // `~PjRtCApiBuffer()` while holding `StreamState::mu_` on the hot path.
     std::optional<DeviceBufferRef> old_device_output;
     absl::MutexLock lock(mu_);
-    for (auto& work_item : work_queue_) {
-      if (auto* snapshot_request = std::get_if<SnapshotRequest>(&work_item)) {
+    for (auto& ready_work_item : ready_work_) {
+      if (auto* snapshot_request =
+              std::get_if<SnapshotRequest>(&ready_work_item)) {
         auto& existing_futures = snapshot_request->futures;
         existing_futures.insert(existing_futures.end(),
                                 std::make_move_iterator(futures.begin()),
@@ -761,33 +594,9 @@ class StreamState {
     // executed; any which have a current live Tensor reference must be
     // materialized.
     std::vector<SharedDeviceBufferList> must_execute;
-    std::vector<xla::Future<void>> cross_stream_data_dependencies;
     for (const auto& deferred_op_event : deferred_ops_) {
-      // Check for dead code elimination; if a node is dropped without being
-      // read, it doesn't need to be executed.
       auto maybe_node = deferred_op_event.lock();
       if (!maybe_node) continue;
-
-      // Check for cross-stream data dependencies; if we find any, insert them
-      // into the work queue as blockers for this eager execution block.
-      auto deferred_op = maybe_node->deferred_op();
-      if (!deferred_op) continue;
-      for (const auto& input : deferred_op->inputs()) {
-        if (input.is_executing()) continue;
-        if (input.is_constant()) {
-          // Constants are not typically materialized, so we don't wait for them
-          // to be materialized.
-          continue;
-        }
-        if (input.device_index() == maybe_node->device_index() &&
-            input.stream_id() == maybe_node->stream_id()) {
-          continue;
-        }
-        cross_stream_data_dependencies.push_back(
-            input.GetMaterializationFuture());
-      }
-
-      // Populate must_execute and must_materialize (if needed) for this node.
       if (maybe_node->live_data_ptrs() > 0) {
         must_materialize.push_back(maybe_node);
       }
@@ -804,36 +613,13 @@ class StreamState {
     repeated_ops_graph_breaks_suspended_ = false;
     repeated_ops_graph_break_requested_ = false;
     if (!must_execute.empty() || !must_materialize.empty()) {
-      if (!cross_stream_data_dependencies.empty()) {
-        work_queue_.push_back(xla::JoinFutures(cross_stream_data_dependencies));
-        cross_stream_data_dependencies.clear();
-      }
-      work_queue_.push_back(
+      ready_work_.push_back(
           EagerExecution{std::move(must_execute), std::move(must_materialize),
                          core_pinning_mode_,
                          MaterializationSettings(reason, mode, eager_mode)});
     }
     if (execution_task.has_value()) {
-      // Check for cross-stream data dependencies for compiled executions.
-      const c10::DeviceIndex device_index =
-          execution_task->outputs().front().device_index();
-      const c10::StreamId stream_id =
-          execution_task->outputs().front().stream_id();
-      for (const auto& argument : execution_task->arguments()) {
-        if (argument.is_executing()) continue;
-        if (argument.device_index() == device_index &&
-            argument.stream_id() == stream_id) {
-          continue;
-        }
-        cross_stream_data_dependencies.push_back(
-            argument.GetMaterializationFuture());
-      }
-
-      if (!cross_stream_data_dependencies.empty()) {
-        work_queue_.push_back(xla::JoinFutures(cross_stream_data_dependencies));
-        cross_stream_data_dependencies.clear();
-      }
-      work_queue_.push_back(std::move(execution_task.value()));
+      ready_work_.push_back(std::move(execution_task.value()));
     }
   }
 
@@ -851,7 +637,7 @@ class StreamState {
     // each event snapshot will have a future that will be set by the prior
     // event snapshot.
     EventSnapshot new_snapshot(device_index, stream_id);
-    work_queue_.push_back(SnapshotRequest{
+    ready_work_.push_back(SnapshotRequest{
         .futures = std::move(futures_),
         .last_device_output = std::exchange(last_device_output_, std::nullopt),
         .snapshot_to_start = new_snapshot,  // intentional copy
@@ -866,50 +652,7 @@ class StreamState {
   std::vector<xla::Future<void>> transfer_blocks_ ABSL_GUARDED_BY(mu_);
 
   std::deque<DeferredOpEvent> deferred_ops_ ABSL_GUARDED_BY(mu_);
-
-  // Device-side execution may be blocked by either:
-  //   - Explicit user-inserted waits (Stream.wait_event or Event.wait(stream))
-  //   - Implied data dependencies on ops on other streams, including
-  //     distributed collectives.
-  using CrossStreamWait = EventSnapshot;
-  using CrossStreamDataDependency = xla::Future<void>;
-  using WorkQueueItem =
-      std::variant<EagerExecution, CompiledExecution, SnapshotRequest,
-                   CrossStreamWait, CrossStreamDataDependency>;
-  std::deque<WorkQueueItem> work_queue_ ABSL_GUARDED_BY(mu_);
-
-  // Asserts that work_item is not a CrossStreamWait or
-  // CrossStreamDataDependency, and returns the underlying item.
-  static ReadyWorkItem ExtractReadyWorkItem(WorkQueueItem&& work_item) {
-    if (auto* snapshot_request = std::get_if<SnapshotRequest>(&work_item)) {
-      return std::move(*snapshot_request);
-    } else if (auto* eager_execution =
-                   std::get_if<EagerExecution>(&work_item)) {
-      return std::move(*eager_execution);
-    } else {
-      auto& compiled_execution = std::get<CompiledExecution>(work_item);
-      return std::move(compiled_execution);
-    }
-  }
-
-  void HandleCollectiveDataDependency(CollectiveDataDependency& dependency,
-                                      const EagerMode eager_mode)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-    if (auto* graph_break =
-            std::get_if<GraphBreakThenDataDependency>(&dependency)) {
-      GraphSplitMode graph_split_mode =
-          (eager_mode == EagerMode::kDeferAndFuse ? GraphSplitMode::kSplitGraph
-                                                  : GraphSplitMode::kFullGraph);
-      InsertGraphBreakLocked(
-          /*must_materialize=*/{}, MaterializationReason::kDistributedOp,
-          graph_split_mode, eager_mode, /*execution_task=*/std::nullopt);
-      work_queue_.push_back(std::move(graph_break->future));
-    } else if (auto* prepend =
-                   std::get_if<PrependDataDependency>(&dependency)) {
-      work_queue_.push_back(std::move(prepend->future));
-    }
-    // Do nothing for NoDataDependency{}.
-  }
+  std::vector<ReadyWork> ready_work_ ABSL_GUARDED_BY(mu_);
 
   // If a sequence repeats twice, we anticipate that it may repeat three or
   // more times.
@@ -1185,14 +928,12 @@ void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
 }  // namespace internal
 
 void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
-  const EagerMode eager_mode = GetEagerMode();
-  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
     // In FX trace mode, nothing happens on device, so we don't add anything to
     // any stream.
     return;
   }
-  GetStreamFor(device_buffer_list)
-      ->RecordDeferredOpCreated(device_buffer_list, eager_mode);
+  GetStreamFor(device_buffer_list)->RecordDeferredOpCreated(device_buffer_list);
 }
 
 void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
@@ -1205,14 +946,15 @@ void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
       ->RecordCompiledExecutionTask(std::move(execution_task), eager_mode);
 }
 
-ReadyWork GetReadyWork(c10::DeviceIndex device_index, c10::StreamId stream_id) {
+std::vector<ReadyWork> GetReadyWork(c10::DeviceIndex device_index,
+                                    c10::StreamId stream_id) {
   StreamState* stream_state = GetOrCreateStreamState(device_index, stream_id);
   // Take all the deferred ops and live nodes from the stream state.
   // This is the only part than needs to hold the lock.
-  ReadyWork ready_work = stream_state->GetReadyWork();
-  for (auto& ready_work_item : ready_work.ready_work_items) {
+  std::vector<ReadyWork> ready_work = stream_state->GetReadyWork();
+  for (auto& ready_work_block : ready_work) {
     if (auto* snapshot_request =
-            std::get_if<SnapshotRequest>(&ready_work_item)) {
+            std::get_if<SnapshotRequest>(&ready_work_block)) {
       PruneCompletedFutures(snapshot_request->futures);
     }
   }
@@ -1234,13 +976,8 @@ void ScheduleDeviceToHostTransfer(
 }
 
 void InsertStreamWait(c10::DeviceIndex device_index, c10::StreamId stream_id,
-                      EventSnapshot snapshot) {
-  const auto eager_mode = GetEagerMode();
-  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
-    return;
-  }
-  GetOrCreateStreamState(device_index, stream_id)
-      ->InsertStreamWait(std::move(snapshot), eager_mode);
+                      EventSnapshot& snapshot) {
+  GetOrCreateStreamState(device_index, stream_id)->InsertStreamWait(snapshot);
 }
 
 std::vector<EventSnapshot> RecordDeviceSnapshots(
@@ -1363,7 +1100,6 @@ bool EventSnapshot::operator==(const EventSnapshot& other) const {
 void ClearAllStreams() {
   GetStreamStates().Clear();
   ResetStreamIdCounters();
-  GlobalCollectivesOrder::Get().Reset();
 }
 
 void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,
@@ -1373,14 +1109,13 @@ void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,
 
 bool RecordDeferredOpAndDetectRepetition(
     const SharedDeviceBufferList& device_buffer_list) {
-  const EagerMode eager_mode = GetEagerMode();
-  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
     // In FX trace mode, nothing happens on device, so we don't add anything to
     // any stream and never materialize.
     return false;
   }
   return GetStreamFor(device_buffer_list)
-      ->RecordDeferredOpAndDetectRepetition(device_buffer_list, eager_mode);
+      ->RecordDeferredOpAndDetectRepetition(device_buffer_list);
 }
 
 void SuspendRepeatedOpsGraphBreaks(

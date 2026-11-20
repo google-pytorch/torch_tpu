@@ -5553,15 +5553,12 @@ class DeviceGuardErrorsTest(et.TpuOnlyErrorTestBase):
       unsupported = _glu_with_dynamic_split_dimension()
       event = torch.Event(device=et.device())
 
-      # Recording materializes the deferred ops of the stream but the error
-      # is raised later, when the event is synchronized (or queried late enough)
-      event.record()
-
       with et.assert_raises_message(
           NotImplementedError,
           tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
       ):
-        event.synchronize()
+        # Recording materializes the deferred ops of the stream.
+        event.record()
     del unsupported
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
@@ -5569,19 +5566,15 @@ class DeviceGuardErrorsTest(et.TpuOnlyErrorTestBase):
     default_stream = torch.accelerator.current_stream()
     self.addCleanup(torch.accelerator.set_stream, default_stream)
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
-      side_stream = torch.tpu.Stream()
-      torch.accelerator.set_stream(side_stream)
+      torch.accelerator.set_stream(torch.tpu.Stream())
       unsupported = _glu_with_dynamic_split_dimension()
-
-      # Leaving a stream materializes its deferred ops but the error
-      # is raised later, when the stream is synchronized
-      torch.accelerator.set_stream(default_stream)
 
       with et.assert_raises_message(
           NotImplementedError,
           tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
       ):
-        side_stream.synchronize()
+        # Leaving a stream materializes its deferred ops.
+        torch.accelerator.set_stream(default_stream)
     del unsupported
 
 

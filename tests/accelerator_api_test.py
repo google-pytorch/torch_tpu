@@ -425,21 +425,11 @@ class AcceleratorStreamAndSyncTest(seed_test_utils.RepeatableTest):
     self.assertEqual(torch.accelerator.current_stream(), default_stream)
 
     # Switching away from a stream via set_stream materializes pending lazy ops
-    # on that stream in the background.
+    # on that stream.
     x = torch.ones(4, device="tpu")
     self.assertFalse(sync.is_materializing(x))
     torch.accelerator.set_stream(new_tpu_stream)
-
-    time_slept = 0.0
-    while time_slept < 30.0 and not sync.is_materializing(x):
-      time.sleep(0.1)
-      time_slept += 0.1
-    self.assertLess(
-        time_slept,
-        30.0,
-        "tensor did not start materializing within 30.0 seconds",
-    )
-
+    self.assertTrue(sync.is_materializing(x))
     torch.accelerator.set_stream(default_stream)
 
   def test_synchronize_device_args_and_errors(self):
