@@ -2126,6 +2126,24 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     torch.ones(0, device=et.device(), dtype=torch.float32)
     torch.ones(3, 0, 2, device=et.device(), dtype=torch.float32)
 
+  def test_eye_negative_n(self):
+    out = torch.empty((0, 0), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""eye.m_out(): expected n to be >= 0, got -1""",
+        gpu="""n must be greater or equal to 0, got -1""",
+    ):
+      torch.eye(-1, out=out)
+
+  def test_eye_negative_m(self):
+    out = torch.empty((0, 0), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""eye.m_out(): expected m to be >= 0, got -2""",
+        gpu="""m must be greater or equal to 0, got -2""",
+    ):
+      torch.eye(3, -2, out=out)
+
   def test_negative_dim_size_in_ones(self):
     """Tests that torch.ones(...) with negative dimension sizes fails with expected error."""
     with et.assert_raises_message(
