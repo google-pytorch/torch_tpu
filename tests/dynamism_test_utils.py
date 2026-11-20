@@ -665,6 +665,9 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "min": {COMPILE},
         "native_dropout_backward": {COMPILE, COMPILE_GRAD},
         "neg": {COMPILE},
+        # OpInfo runs `x.clone().resize_(shape)` and compiles the
+        # pre-graph-break `clone`.
+        "resize_": {COMPILE},
         "round": {COMPILE},
         "scatter_add": {COMPILE},
         "scatter_reduce": {COMPILE},
