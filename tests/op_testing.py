@@ -5556,6 +5556,18 @@ def is_tpu_vs_gpu_compiled() -> bool:
   return _torch_tpu_vs_gpu_mode() and is_compiled_mode()
 
 
+def runs_all_samples(max_samples_per_op_dtype: int | None = None) -> bool:
+  """Returns True if neither --dtypes nor a sample limit filter the samples.
+
+  Args:
+    max_samples_per_op_dtype: The sample limit passed to do_test_op(), if any.
+      If None, --max_samples_per_op_dtype applies.
+  """
+  if max_samples_per_op_dtype is None:
+    max_samples_per_op_dtype = _MAX_SAMPLES_PER_OP_DTYPE.value
+  return "all" in _DTYPES.value and max_samples_per_op_dtype < 0
+
+
 def _is_enum(obj: Any) -> bool:
   """Returns True if obj is a Python enum or a pybind11 enum object."""
   cls = obj if isinstance(obj, type) else type(obj)
