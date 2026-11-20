@@ -823,6 +823,49 @@ absl::StatusOr<DynamicMlirOpResults> ToResultVector(
 absl::StatusOr<DynamicMlirOpResults> ToResultVector(
     absl::StatusOr<mlir::MlirOp> results);
 
+// Computes the NumPy-broadcasted shape of `lhs_dims` and `rhs_dims`,
+// preserving bounded dynamic dimension metadata.
+absl::StatusOr<mlir::stablehlo::Dimensions> InferBroadcastDimensions(
+    absl::Span<const mlir::stablehlo::DimensionInfo> lhs_dims,
+    absl::Span<const mlir::stablehlo::DimensionInfo> rhs_dims);
+
+enum class MatrixSide {
+  kLeft,
+  kRight,
+};
+
+enum class MatrixTriangular {
+  kLower,
+  kUpper,
+};
+
+enum class DiagonalKind {
+  kNonUnit,
+  kUnit,
+};
+
+enum class MatrixTranspose {
+  kNoTranspose,
+  kTranspose,
+  kAdjoint,
+};
+
+struct TriangularSolveOptions {
+  MatrixSide side = MatrixSide::kLeft;
+  MatrixTriangular triangular = MatrixTriangular::kLower;
+  DiagonalKind diagonal = DiagonalKind::kNonUnit;
+  MatrixTranspose transpose_a = MatrixTranspose::kNoTranspose;
+};
+
+// Builds a `stablehlo.triangular_solve` that also supports bounded dynamic
+// batch and matrix dimensions. Expects `a` and `b` to have equal rank >= 2 and
+// matching batch dimensions; runs the triangular solve at static upper bounds
+// when bounded (padding `a` past runtime sizes with an identity diagonal and
+// zeroing `b` past runtime sizes), and restores bounded dynamic dimension
+// sizes on the result.
+absl::StatusOr<mlir::MlirOp> TriangularSolveLike(
+    mlir::MlirOp a, mlir::MlirOp b, const TriangularSolveOptions& options);
+
 // Builds a module name from the current Python stack frame.
 // In most cases this frame is the one that triggered a materialization.
 //
