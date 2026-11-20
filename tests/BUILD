@@ -1233,18 +1233,11 @@ torch_tpu_py_test(
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
-    # Each shard generates one golden file that contains one slice of the
-    # golden data. Therefore the smaller the count, the bigger each file
-    # will be.
-    #
-    # We should minimize the shard count without making a golden file larger
-    # than 100 MB (a limit imposed by GitHub). The problem with a large shard
-    # count is that it makes updating the golden files more tedious as it's
-    # still done manually.
-    #
-    # If we adjust this, we must also adjust the data attribute in the
-    # ops_test_vs_gpu target.
-    shard_count = 3,
+    # Each shard generates one golden archive slice. Keeping shard_count tied
+    # to the explicit list length lets each mode (eager, grad, compiled,
+    # Hopper) scale independently. Golden .gz files are excluded from GitHub
+    # export and fetched from GCS in OSS builds (see oss/bazel/goldens.bzl).
+    shard_count = len(_GPU_GOLDENS_BASE),
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1273,7 +1266,7 @@ torch_tpu_py_test(
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 3,
+    shard_count = len(_GPU_GOLDENS_COMPILED_BASE),
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1298,7 +1291,7 @@ torch_tpu_py_test(
     ],
     main = "ops_test.py",
     nolocal = "slow test",
-    shard_count = 1,
+    shard_count = len(_GPU_GOLDENS_HOPPER),
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":op_testing",
@@ -1444,7 +1437,7 @@ torch_tpu_py_test(
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 3,
+    shard_count = len(_GPU_GOLDENS_GRAD_BASE),
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1468,7 +1461,7 @@ torch_tpu_py_test(
     ],
     main = "ops_test.py",
     nolocal = "slow test",
-    shard_count = 1,
+    shard_count = len(_GPU_GOLDENS_GRAD_HOPPER),
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":op_testing",
@@ -1493,7 +1486,7 @@ torch_tpu_py_test(
     env = {"TORCHINDUCTOR_COMPILE_THREADS": "0"},
     main = "ops_test.py",
     nolocal = "slow test",
-    shard_count = 1,
+    shard_count = len(_GPU_GOLDENS_COMPILED_HOPPER),
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":op_testing",

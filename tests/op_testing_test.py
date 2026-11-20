@@ -65,6 +65,40 @@ class FakeSample:
     self.kwargs = kwargs
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _SampleDataclassOptions:
+  """Local dataclass fixture for OSS-compatible $$dataclass round-trip tests."""
+
+  mode: str
+  chunk_size: int
+  tags: frozenset[str] = frozenset()
+  derived: str = dataclasses.field(init=False)
+
+  def __post_init__(self):
+    object.__setattr__(self, "derived", f"{self.mode}:{self.chunk_size}")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _InitVarDataclassOptions:
+  """Dataclass with InitVar to verify the object.__new__ TypeError fallback."""
+
+  base: int
+  scale: dataclasses.InitVar[int]
+  scaled: int = dataclasses.field(init=False)
+
+  def __post_init__(self, scale: int):
+    object.__setattr__(self, "scaled", self.base * scale)
+
+
+class _SlotsOnlyObject:
+  """Fixture without __dict__ to verify unsupported types fail loudly."""
+
+  __slots__ = ("value",)
+
+  def __init__(self, value: int):
+    self.value = value
+
+
 class OpTestingTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""
 
@@ -202,15 +236,19 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       ("bsc", lambda t: t.to_sparse_bsc(blocksize=(1, 1))),
   )
   def test_plistlib_sparse_tensor_serialization(self, to_sparse_fn):
-    dense = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    sparse = to_sparse_fn(dense)
-    encoded = op_testing._to_plistlib_compatible(sparse)
-    restored = op_testing._from_plistlib_compatible(encoded)
-    if sparse.layout == torch.sparse_coo:
-      self.assertEqual(restored.layout, torch.sparse_coo)
-      test_utils.assert_close(restored, sparse)
-    else:
-      test_utils.assert_close(restored, dense)
+    for dtype in (torch.float32, torch.complex64):
+      dense = torch.tensor(
+          [[1.0, 2.0], [3.0, 4.0]], dtype=dtype, requires_grad=True
+      )
+      sparse = to_sparse_fn(dense.detach()).requires_grad_(True)
+      encoded = op_testing._to_plistlib_compatible(sparse)
+      restored = op_testing._from_plistlib_compatible(encoded)
+      self.assertEqual(restored.layout, sparse.layout)
+      self.assertEqual(restored.dtype, dtype)
+      if sparse.layout == torch.sparse_coo:
+        test_utils.assert_close(restored, sparse)
+      else:
+        test_utils.assert_close(restored.to_dense(), dense.detach())
 
   def test_plistlib_float8_e8m0fnu_serialization(self):
     # TODO: b/576283069 - Remove hasattr check once minimum OSS PyTorch is
@@ -729,6 +767,343 @@ class OpTestingTest(op_testing.OpInfoTestBase):
 
     self.assertEqual(cnt.frame_count, num_subtests)
 
+  def test_unimplemented_on_tpu_tags_function_in_place(self):
+    def sample_bare(self):
+      del self
+
+    def sample_reason(self):
+      del self
+
+    decorated_bare = op_testing.unimplemented_on_tpu(sample_bare)
+    self.assertIs(decorated_bare, sample_bare)
+    self.assertTrue(
+        getattr(decorated_bare, op_testing._UNIMPLEMENTED_ON_TPU_ATTR, None)
+    )
+
+    decorated_reason = op_testing.unimplemented_on_tpu("needs lowering")(
+        sample_reason
+    )
+    self.assertIs(decorated_reason, sample_reason)
+    self.assertEqual(
+        getattr(decorated_reason, op_testing._UNIMPLEMENTED_ON_TPU_ATTR, None),
+        "needs lowering",
+    )
+
+    with self.assertRaises(  # ASSERT_RAISES_OK=Testing framework decorator error.
+        ValueError
+    ):
+      op_testing.unimplemented_on_tpu("")
+
+  @parameterized.named_parameters(
+      (
+          "gen_gpu_golden_eager",
+          op_testing.TestMode.GEN_GPU_GOLDEN,
+          False,
+          False,
+          True,
+      ),
+      (
+          "gen_gpu_golden_grad",
+          op_testing.TestMode.GEN_GPU_GOLDEN,
+          False,
+          True,
+          True,
+      ),
+      (
+          "gen_gpu_golden_compiled",
+          op_testing.TestMode.GEN_GPU_GOLDEN,
+          True,
+          False,
+          False,
+      ),
+      (
+          "torch_tpu_vs_gpu_eager",
+          op_testing.TestMode.TORCH_TPU_VS_GPU,
+          False,
+          False,
+          False,
+      ),
+      (
+          "torch_tpu_vs_gpu_compiled",
+          op_testing.TestMode.TORCH_TPU_VS_GPU,
+          True,
+          False,
+          False,
+      ),
+      ("perf", op_testing.TestMode.PERF, False, False, False),
+      (
+          "dump_dtype_exclusions",
+          op_testing.TestMode.DUMP_DTYPE_EXCLUSIONS,
+          False,
+          False,
+          False,
+      ),
+  )
+  def test_unimplemented_on_tpu_mode_gating(
+      self, mode, use_compiled, compute_grad, expect_run
+  ):
+    ran = []
+
+    class DummyUnimplementedTest(op_testing.OpInfoTestBase):
+
+      @op_testing.unimplemented_on_tpu
+      def test_bare(self):
+        ran.append(self._testMethodName)
+
+      @op_testing.unimplemented_on_tpu("custom reason")
+      def test_with_reason(self):
+        ran.append(self._testMethodName)
+
+    with (
+        flagsaver.flagsaver(
+            test_mode=mode,
+            use_compiled=use_compiled,
+            compute_grad=compute_grad,
+        ),
+        mock.patch.object(
+            op_testing,
+            "golden_target_gpu_arch",
+            return_value=op_testing.GPU_SM100,
+        ),
+    ):
+      for method_name in ("test_bare", "test_with_reason"):
+        result = unittest.TestResult()
+        DummyUnimplementedTest(method_name).run(result)
+        self.assertEmpty(result.errors)
+        self.assertEmpty(result.failures)
+        if expect_run:
+          self.assertEmpty(result.skipped)
+        else:
+          self.assertLen(result.skipped, 1)
+
+    if expect_run:
+      self.assertEqual(ran, ["test_bare", "test_with_reason"])
+    else:
+      self.assertEmpty(ran)
+
+  def test_unimplemented_on_tpu_does_not_corrupt_dtype_exclusions(self):
+    class SharedOpTest(op_testing.OpInfoTestBase):
+
+      def test_implemented(self):
+        op_testing._record_gpu_dtype_exclusions(
+            "shared_op",
+            exclude_dtypes=(torch.float64,),
+            exclude_inplace_dtypes=(),
+        )
+
+      @op_testing.unimplemented_on_tpu
+      def test_unimplemented_variant(self):
+        op_testing._record_gpu_dtype_exclusions(
+            "shared_op",
+            exclude_dtypes=(),
+            exclude_inplace_dtypes=(),
+        )
+
+    exclusions: dict[str, dict[str, set[str]]] = {}
+    with (
+        flagsaver.flagsaver(
+            test_mode=op_testing.TestMode.DUMP_DTYPE_EXCLUSIONS
+        ),
+        mock.patch.object(op_testing, "_DTYPE_EXCLUSIONS", exclusions),
+    ):
+      for method_name in ("test_implemented", "test_unimplemented_variant"):
+        result = unittest.TestResult()
+        SharedOpTest(method_name).run(result)
+        self.assertEmpty(result.errors)
+        self.assertEmpty(result.failures)
+
+    self.assertEqual(
+        exclusions["shared_op"]["exclude_dtypes"],
+        {"torch.float64"},
+    )
+
+  def test_unimplemented_on_tpu_respects_gpu_arch_in_gen_mode(self):
+    ran = []
+
+    class ArchTaggedTest(op_testing.OpInfoTestBase):
+
+      @op_testing.unimplemented_on_tpu
+      def test_default_blackwell(self):
+        ran.append(self._testMethodName)
+
+      @op_testing.record_gpu_goldens_on(op_testing.GPU_SM90)
+      @op_testing.unimplemented_on_tpu
+      def test_hopper_tagged(self):
+        ran.append(self._testMethodName)
+
+    with (
+        flagsaver.flagsaver(
+            test_mode=op_testing.TestMode.GEN_GPU_GOLDEN,
+            use_compiled=False,
+        ),
+        mock.patch.object(
+            op_testing,
+            "golden_target_gpu_arch",
+            return_value=op_testing.GPU_SM90,
+        ),
+    ):
+      for method_name in ("test_default_blackwell", "test_hopper_tagged"):
+        result = unittest.TestResult()
+        ArchTaggedTest(method_name).run(result)
+        self.assertEmpty(result.errors)
+        self.assertEmpty(result.failures)
+
+    self.assertEqual(ran, ["test_hopper_tagged"])
+
+  def test_get_op_variant_matching(self):
+    # Omitting variant_test_name preserves first-match behavior (e.g.
+    # test_normal_ -> "in_place" and torch._scaled_mm -> "rowwise").
+    self.assertEqual(op_testing._get_op("normal").variant_test_name, "in_place")
+    self.assertEqual(
+        op_testing._get_op("normal", variant_test_name="").variant_test_name,
+        "",
+    )
+    self.assertEqual(
+        op_testing._get_op("torch._scaled_mm").variant_test_name,
+        "rowwise",
+    )
+    self.assertEqual(
+        op_testing._get_op(
+            "torch._scaled_mm", variant_test_name=""
+        ).variant_test_name,
+        "",
+    )
+    # Ops with no "" variant still resolve when variant_test_name is omitted.
+    self.assertEqual(
+        op_testing._get_op("div").variant_test_name,
+        "no_rounding_mode",
+    )
+    self.assertEqual(
+        op_testing._get_op(
+            "round", variant_test_name="decimals_0"
+        ).variant_test_name,
+        "decimals_0",
+    )
+    self.assertEqual(
+        op_testing._get_op("round", variant_test_name="").variant_test_name,
+        "",
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing framework _get_op error.
+        ValueError, "variant_test_name='nonexistent'"
+    ):
+      op_testing._get_op("abs", variant_test_name="nonexistent")
+
+  def test_plistlib_extended_types_serialization(self):
+    payload: dict[str, Any] = {
+        "slice": slice(0, 3, None),
+        "slice_step": slice(1, 10, 2),
+        "ellipsis": Ellipsis,
+        "layout": torch.sparse_csr,
+        "empty_set": set(),
+        "set_vals": {"b", "a", "c"},
+        "frozenset_vals": frozenset({3, 1, 2}),
+        "local_options": _SampleDataclassOptions(
+            mode="accurate",
+            chunk_size=64,
+            tags=frozenset({"fp32", "bf16"}),
+        ),
+        "initvar_options": _InitVarDataclassOptions(base=7, scale=3),
+    }
+    if hasattr(torch.nn, "LinearCrossEntropyOptions"):
+      payload["lce_options"] = torch.nn.LinearCrossEntropyOptions(
+          acc_policy="accurate",
+          chunking_method="aspect_ratio",
+      )
+    encoded = op_testing._to_plistlib_compatible(payload)
+    dumped = plistlib.dumps(encoded, fmt=plistlib.FMT_BINARY)
+    loaded = plistlib.loads(dumped, fmt=plistlib.FMT_BINARY)
+    restored = op_testing._from_plistlib_compatible(loaded)
+    self.assertEqual(restored, payload)
+    self.assertEqual(restored["local_options"].derived, "accurate:64")
+    self.assertEqual(restored["initvar_options"].scaled, 21)
+    self.assertIsInstance(restored["empty_set"], set)
+    self.assertIsInstance(restored["set_vals"], set)
+    self.assertIsInstance(restored["frozenset_vals"], frozenset)
+
+    # Set serialization order must be deterministic.
+    enc_a = op_testing._to_plistlib_compatible({"s": {"z", "a", "m"}})
+    enc_b = op_testing._to_plistlib_compatible({"s": {"m", "z", "a"}})
+    self.assertEqual(enc_a, enc_b)
+
+  def test_plistlib_pairwise_distance_roundtrip(self):
+    orig = torch.nn.PairwiseDistance(p=2.0, eps=1e-6)
+    encoded = op_testing._to_plistlib_compatible(orig)
+    dumped = plistlib.dumps(encoded, fmt=plistlib.FMT_BINARY)
+    loaded = plistlib.loads(dumped, fmt=plistlib.FMT_BINARY)
+    restored = op_testing._from_plistlib_compatible(loaded)
+    self.assertIsInstance(restored, torch.nn.PairwiseDistance)
+    self.assertIsInstance(restored._non_persistent_buffers_set, set)
+    self.assertEqual(restored._non_persistent_buffers_set, set())
+    x1 = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    x2 = torch.tensor([[0.5, 1.5], [2.5, 3.5]])
+    test_utils.assert_close(restored(x1, x2), orig(x1, x2))
+
+  def test_plistlib_unsupported_object_raises_type_error(self):
+    with self.assertRaises(  # ASSERT_RAISES_OK=Testing framework plistlib error.
+        TypeError
+    ):
+      op_testing._to_plistlib_compatible(_SlotsOnlyObject(42))
+
+  @parameterized.named_parameters(
+      ("csr", lambda t: t.to_sparse_csr()),
+      ("csc", lambda t: t.to_sparse_csc()),
+      ("bsr", lambda t: t.to_sparse_bsr(blocksize=(1, 1))),
+      ("bsc", lambda t: t.to_sparse_bsc(blocksize=(1, 1))),
+  )
+  def test_op_input_and_out_handle_compressed_sparse_tensors(self, to_sparse):
+    sparse = to_sparse(torch.tensor([[1.0, 0.0], [0.0, 2.0]]))
+    sample = op_testing.SampleInput(
+        sparse, args=(sparse,), kwargs={"other": sparse}
+    )
+    op_in = op_testing.OpInput(sample)
+    self.assertEqual(op_in.input_value.layout, sparse.layout)
+    self.assertEqual(op_in.args[0].layout, sparse.layout)
+    self.assertEqual(op_in.kwargs["other"].layout, sparse.layout)
+    test_utils.assert_close(op_in.args[0].to_dense(), sparse.to_dense())
+
+    op_out = op_testing.OpOutput(sparse)
+    self.assertEqual(op_out.output_value.layout, sparse.layout)
+
+    zero_out = op_testing._prepare_zero_element_out_tensors(
+        sparse, out_dtype_override=torch.float64
+    )
+    self.assertEqual(zero_out.layout, sparse.layout)
+    self.assertEqual(zero_out.dtype, torch.float64)
+
+  def test_golden_gpu_data_pre_encodes_in_gen_gpu_golden_mode(self):
+    golden_data = op_testing.GoldenGpuData()
+    tensor = torch.tensor([3.5])
+    with flagsaver.flagsaver(test_mode=op_testing.TestMode.GEN_GPU_GOLDEN):
+      golden_data.add(
+          "test_fake_op",
+          op_testing.OpVariant.BASE,
+          torch.float32,
+          op_testing.OpInput(FakeSample("s0", tensor, (), {})),
+          op_testing.OpOutput(tensor),
+      )
+    stored = golden_data._data["test_fake_op"][op_testing.OpVariant.BASE.value][
+        "float32"
+    ]
+    self.assertLen(stored, 1)
+    self.assertIsInstance(stored[0], op_testing._PreEncodedSample)
+
+    tree = golden_data.to_plistlib_pytree()
+    self.assertIn("test_fake_op", tree)
+    decoded = golden_data.get_samples(
+        "test_fake_op", op_testing.OpVariant.BASE, torch.float32
+    )
+    self.assertLen(decoded, 1)
+    self.assertEqual(decoded[0][1].output_value.item(), 3.5)
+
+  def test_grid_sampler_3d_sample_inputs_caps_tensor_size(self):
+    gs3d_op = op_testing._get_op("grid_sampler_3d")
+    samples = op_testing._sample_inputs(
+        gs3d_op, torch.device("cpu"), torch.float32
+    )
+    self.assertNotEmpty(samples)
+    for sample in samples:
+      self.assertLessEqual(op_testing._sample_max_tensor_numel(sample), 100_000)
+
 
 @dataclasses.dataclass(frozen=True)
 class _RecordedDoTestOpCall:
@@ -785,6 +1160,8 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
           continue
         method = getattr(test_instance, attr_name)
         if not callable(method):
+          continue
+        if getattr(method, op_testing._UNIMPLEMENTED_ON_TPU_ATTR, None):
           continue
         before = len(calls)
         current_test_name = attr_name
