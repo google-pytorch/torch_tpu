@@ -509,6 +509,38 @@ class FusedAdamWTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_fn)
 
+  def test_optim_adamw_fused_multi_step_with_0_element_param(self):
+    """Tests fused AdamW over several steps with an empty parameter.
+
+    FSDP ranks can hold empty parameter shards. The empty parameter's buffer
+    must stay valid across steps.
+    """
+
+    def run_fn(device):
+      p_empty = torch.empty((0, 4), dtype=torch.float32, device=device)
+      p = torch.tensor([1.0, 2.0, -1.0], dtype=torch.float32, device=device)
+      optimizer = torch.optim.AdamW(
+          [p_empty, p], lr=0.01, weight_decay=0.01, fused=True
+      )
+      for step in range(1, 4):
+        p_empty.grad = torch.empty((0, 4), dtype=torch.float32, device=device)
+        p.grad = torch.tensor(
+            [0.1, -0.2, 0.3], dtype=torch.float32, device=device
+        ) * float(step)
+        optimizer.step()
+      state = optimizer.state[p]
+      state_empty = optimizer.state[p_empty]
+      return (
+          p_empty,
+          p,
+          state_empty["exp_avg"],
+          state_empty["exp_avg_sq"],
+          state["exp_avg"],
+          state["exp_avg_sq"],
+      )
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
   @parameterized.parameters(torch.float16, torch.float64)
   def test_fused_adamw_precision_dtypes(self, dtype):
     """Tests _fused_adamw_ on float16 and float64 dtypes."""
