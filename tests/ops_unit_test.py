@@ -22022,6 +22022,43 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             atol=1e-3,
         )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="overrideable",
+          op=torch.ops.aten._scaled_dot_product_fused_attention_overrideable,
+          extra_args=(),
+          dropout_p=0.0,
+      ),
+      dict(
+          testcase_name="cudnn_no_dropout",
+          op=torch.ops.aten._scaled_dot_product_cudnn_attention,
+          extra_args=(True,),
+          dropout_p=0.0,
+      ),
+      dict(
+          testcase_name="cudnn_with_dropout",
+          op=torch.ops.aten._scaled_dot_product_cudnn_attention,
+          extra_args=(True,),
+          dropout_p=0.1,
+      ),
+  )
+  def test_scaled_dot_product_attention_philox_metadata(
+      self, op, extra_args, dropout_p: float
+  ):
+    q = torch.randn(2, 4, 128, 64, device="tpu", dtype=torch.bfloat16)
+    k = torch.randn(2, 4, 128, 64, device="tpu", dtype=torch.bfloat16)
+    v = torch.randn(2, 4, 128, 64, device="tpu", dtype=torch.bfloat16)
+
+    res = op(q, k, v, None, *extra_args, dropout_p, False)
+    philox_seed, philox_offset = res[6], res[7]
+
+    self.assertEqual(philox_seed.shape, ())
+    self.assertEqual(philox_seed.stride(), ())
+    self.assertEqual(philox_seed.dtype, torch.int64)
+    self.assertEqual(philox_offset.shape, ())
+    self.assertEqual(philox_offset.stride(), ())
+    self.assertEqual(philox_offset.dtype, torch.int64)
+
   @parameterized.product(
       use_mask=[False, True],
       dropout_p=[0.0, 0.1],
