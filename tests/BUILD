@@ -97,6 +97,9 @@ _GPU_GOLDENS_BASE = [
     "ops_test_gpu_golden0.gz",
     "ops_test_gpu_golden1.gz",
     "ops_test_gpu_golden2.gz",
+    "ops_test_gpu_golden3.gz",
+    "ops_test_gpu_golden4.gz",
+    "ops_test_gpu_golden5.gz",
 ]
 
 _GPU_GOLDENS_HOPPER = [
@@ -107,6 +110,9 @@ _GPU_GOLDENS_GRAD_BASE = [
     "ops_test_gpu_golden_grad0.gz",
     "ops_test_gpu_golden_grad1.gz",
     "ops_test_gpu_golden_grad2.gz",
+    "ops_test_gpu_golden_grad3.gz",
+    "ops_test_gpu_golden_grad4.gz",
+    "ops_test_gpu_golden_grad5.gz",
 ]
 
 _GPU_GOLDENS_GRAD_HOPPER = [
