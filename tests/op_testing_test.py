@@ -23,6 +23,7 @@ import pathlib
 import plistlib
 import re
 import tempfile
+import types
 from typing import Any
 import unittest
 from unittest import mock
@@ -1251,6 +1252,90 @@ class OpTestingTest(op_testing.OpInfoTestBase):
           " methods in ops_test.TestOps. Add the following stubs to"
           f" ops_test.py:\n\n{stubs_text[:4000]}"
       )
+
+  @parameterized.named_parameters(
+      ("denied_op", "randn", torch.ones(2)),
+      ("empty_input", "add", torch.ones(0)),
+  )
+  def test_compile_ignores_tpu_deny_list_on_golden_device(
+      self, op_name, input_value
+  ):
+    # Skipping during GPU golden generation drops remaining samples for the
+    # op/dtype, whereas TPU devices must still skip denied ops and empty inputs.
+    op = next(op for op in op_db if op.name == op_name)
+    op_input = op_testing.OpInput(FakeSample("s", input_value, (), {}))
+    compiled = self._compile(
+        op,
+        op,
+        op_testing.OpVariant.BASE,
+        torch.device("cpu"),
+        op_input,
+        is_dynamic_test=False,
+    )
+    self.assertTrue(callable(compiled))
+    # CPU-only unit tests do not register the `tpu` PyTorch device, so pass a
+    # lightweight device-like object with `type == "tpu"`.
+    tpu_device = types.SimpleNamespace(type="tpu")
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing TPU deny-list skip.
+        unittest.SkipTest, r"TpuBackend does not support"
+    ):
+      self._compile(
+          op,
+          op,
+          op_testing.OpVariant.BASE,
+          tpu_device,  # pytype: disable=wrong-arg-types
+          op_input,
+          is_dynamic_test=False,
+      )
+
+  def test_generate_compiled_golden_pairs_records_empty_and_compiler_errors(
+      self,
+  ):
+    class _FakeOp:
+      name = "randn"
+      variant_test_name = ""
+      ref = None
+      inplace_variant = None
+
+      def __call__(self, x):
+        return x + 1.0
+
+    def _failing_backend(gm, example_inputs):
+      if example_inputs and example_inputs[0].numel() == 0:
+        raise RuntimeError("inductor crash")
+      return gm.forward
+
+    real_compile = torch.compile
+    self.golden_device = torch.device("cpu")
+    samples = [
+        FakeSample("ok", torch.ones(2), (), {}),
+        FakeSample("empty_crash", torch.ones(0), (), {}),
+    ]
+    with (
+        mock.patch.object(
+            op_testing, "_sample_inputs", return_value=samples, autospec=True
+        ),
+        mock.patch.object(
+            torch,
+            "compile",
+            side_effect=lambda fn, **kw: real_compile(
+                fn, **{**kw, "backend": _failing_backend}
+            ),
+            autospec=True,
+        ),
+    ):
+      pairs = self._generate_golden_pairs(
+          _FakeOp(),  # pytype: disable=wrong-arg-types
+          torch.float32,
+          op_testing.OpVariant.BASE,
+          max_samples=-1,
+          use_compiled=True,
+      )
+    self.assertLen(pairs, 2)
+    test_utils.assert_close(pairs[0][1].output_value, torch.full((2,), 2.0))
+    self.assertEqual(
+        type(pairs[1][1].output_value).__name__, "BackendCompilerFailed"
+    )
 
 
 @dataclasses.dataclass(frozen=True)
