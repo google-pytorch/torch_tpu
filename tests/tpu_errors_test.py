@@ -4881,94 +4881,6 @@ module {
     ):
       torch.tpu.ops.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
 
-  @parameterized.named_parameters(
-      dict(
-          testcase_name="all_gather_dim_scalar",
-          op="_all_gather_dim",
-          shape=(),
-          args=(0, 2),
-          expected_error="""all_gather_dim(): expected input to have at least 1 dimension, got 0""",
-      ),
-      dict(
-          testcase_name="all_gather_dim_out_of_range",
-          op="_all_gather_dim",
-          shape=(2, 4),
-          args=(2, 2),
-          exception=IndexError,
-          expected_error="""all_gather_dim(): expected dimension to be in range [-2, 1], got 2""",
-      ),
-      dict(
-          testcase_name="all_gather_dim_nonpositive_group_size",
-          op="_all_gather_dim",
-          shape=(2, 4),
-          args=(0, 0),
-          expected_error="""all_gather_dim(): expected group_size to be > 0, got 0""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_not_divisible",
-          op="_reduce_scatter_dim",
-          shape=(2, 3),
-          args=("sum", -1, 2),
-          expected_error="""reduce_scatter_dim(): expected the size of dim 1 to be divisible by group_size 2, got 3""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_unknown_reduce_op",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("premul_sum", 0, 2),
-          expected_error="""reduce_scatter_dim(): expected reduce_op to be one of sum, avg, product, min, max, band, bor, bxor, got premul_sum""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_bitwise_float",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("band", 0, 2),
-          expected_error="""reduce_scatter_dim(): expected the tensors dtype to be integer on bitwise reduction ops (BAND, BOR, BXOR), got float32""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_64bit_non_sum",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("min", 0, 2),
-          dtype=torch.int64,
-          exception=NotImplementedError,
-          expected_error="""reduce_scatter_dim(): reduce op min is not supported for int64 tensors; only sum and avg are supported for 64-bit dtypes""",
-      ),
-      dict(
-          testcase_name="all_gather_dim_group_size_mismatch",
-          op="_all_gather_dim",
-          shape=(2, 4),
-          args=(0, 3),
-          expected_error="""all_gather_dim(): expected group_size to match process group size, got 3 vs 2""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_non_tpu_backend",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("sum", 0, 2),
-          expected_error="""reduce_scatter_dim(): expected the TPU backend of process group 0 to be an unwrapped ProcessGroupTpu, got a wrapped or non-TPU backend""",
-      ),
-  )
-  @et.why_tpu_only("torch.ops.tpu dimensional collectives are TPU-specific ops")
-  def test_dimensional_collectives(
-      self,
-      op,
-      shape,
-      args,
-      expected_error,
-      exception=RuntimeError,
-      dtype=torch.float32,
-  ):
-    # The default group is named "0", and its TPU backend is a
-    # FakeProcessGroup rather than a ProcessGroupTpu.
-    dist.init_process_group(
-        "tpu:fake", store=fake_pg.FakeStore(), rank=0, world_size=2
-    )
-    self.addCleanup(dist.destroy_process_group)
-    x = torch.ones(shape, dtype=dtype, device=et.device())
-    with et.assert_raises_message(exception, tpu=expected_error):
-      getattr(torch.ops.tpu, op)(x, *args, "0")
-
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_cpu_tensor(self):
     _ensure_ao_ops_registered()
@@ -6399,6 +6311,141 @@ class SpmdSafeCompileErrorsTest(et.TpuOnlyErrorTestBase):
         ),
     ):
       compiled_fn(x)
+
+
+class DimensionalCollectivesErrorTest(et.TpuOnlyErrorTestBase):
+  """Tests dimensional collective error handling on TPU."""
+
+  def setUp(self):
+    super().setUp()
+    dist.init_process_group(
+        f"{et.device().type}:fake",
+        store=fake_pg.FakeStore(),
+        rank=0,
+        world_size=2,
+    )
+
+  def tearDown(self):
+    if dist.is_initialized():
+      dist.destroy_process_group()
+    super().tearDown()
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_scalar(self):
+    x = torch.ones((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""all_gather_dim(): expected input to have at least 1 dimension, got 0""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_out_of_range(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""all_gather_dim(): expected dimension to be in range [-2, 1], got 2""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 2, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_nonpositive_group_size(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""all_gather_dim(): expected group_size to be > 0, got 0""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 0, 0, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_group_size_mismatch(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""all_gather_dim(): expected group_size to match process group size, got 3 vs 2""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 0, 3, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_not_divisible(self):
+    x = torch.ones((2, 3), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected the size of dim 1 to be divisible by group_size 2, got 3""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "sum", -1, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_unknown_reduce_op(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected reduce_op to be one of sum, avg, product, min, max, band, bor, bxor, got premul_sum""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "premul_sum", 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_bitwise_float(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected the tensors dtype to be integer on bitwise reduction ops (BAND, BOR, BXOR), got float32""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "band", 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_64bit_non_sum(self):
+    x = torch.ones((2, 4), dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""reduce_scatter_dim(): reduce op min is not supported for int64 tensors; only sum and avg are supported for 64-bit dtypes""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "min", 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_non_tpu_backend(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected the TPU backend of process group 0 to be an unwrapped ProcessGroupTpu, got a wrapped or non-TPU backend""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "sum", 0, 2, "0")
 
 
 if __name__ == "__main__":
