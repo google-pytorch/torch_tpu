@@ -487,6 +487,52 @@ mlir::MlirOp FillPastRuntimeSizes(
   return mlir::stablehlo::Select(*in_bounds, input, fill_tensor);
 }
 
+mlir::MlirOp MakeStaticAndFillPastRuntimeSizes(mlir::MlirOp input,
+                                               mlir::MlirOp fill_value) {
+  const StaticAtBounds static_input = MakeStaticAtBounds(input);
+  return FillPastRuntimeSizes(static_input.op, fill_value,
+                              static_input.runtime_sizes);
+}
+
+mlir::MlirOp PadAndSliceLike(mlir::MlirOp input, mlir::MlirOp pad_value,
+                             mlir::MlirOp shape_reference,
+                             absl::Span<const int64_t> start_indices) {
+  const int64_t rank = GetTensorTypeOrDie(input).getRank();
+  ABSL_CHECK_EQ(  // CRASH_OK
+      rank, GetTensorTypeOrDie(shape_reference).getRank())
+      << "Expected input rank to match shape_reference rank. This is a "
+         "TorchTPU bug.";
+  ABSL_CHECK_EQ(rank, static_cast<int64_t>(start_indices.size()))  // CRASH_OK
+      << "Expected one start index per input dimension. This is a TorchTPU "
+         "bug.";
+
+  mlir::MlirOp result = MakeStaticAndFillPastRuntimeSizes(input, pad_value);
+  const Dimensions input_shape = GetStaticShape(result);
+  const stablehlo::Dimensions reference_dims = GetDimensions(shape_reference);
+  const Dimensions reference_shape = GetStaticShape(reference_dims);
+
+  Dimensions limit_indices(rank, 0);
+  Dimensions high_pad(rank, 0);
+  bool needs_pad = false;
+  for (int64_t dim = 0; dim < rank; ++dim) {
+    ABSL_CHECK_GE(start_indices[dim], 0)  // CRASH_OK
+        << "Expected non-negative start indices. This is a TorchTPU bug.";
+    limit_indices[dim] = start_indices[dim] + reference_shape[dim];
+    if (limit_indices[dim] > input_shape[dim]) {
+      high_pad[dim] = limit_indices[dim] - input_shape[dim];
+      needs_pad = true;
+    }
+  }
+  if (needs_pad) {
+    const Dimensions zero_pad(rank, 0);
+    result = stablehlo::Pad(result, pad_value, zero_pad, high_pad, zero_pad);
+  }
+  result = stablehlo::Slice(
+      result, Dimensions(start_indices.begin(), start_indices.end()),
+      limit_indices, /*strides=*/Dimensions(rank, 1));
+  return BoundFromDimensions(result, reference_dims);
+}
+
 std::string DebugString(mlir::Operation* absl_nonnull op,
                         DebugStringOptions opts) {
   std::string result;

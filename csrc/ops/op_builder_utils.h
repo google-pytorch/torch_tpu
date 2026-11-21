@@ -218,6 +218,21 @@ mlir::MlirOp FillPastRuntimeSizes(
     mlir::MlirOp input, mlir::MlirOp fill_value,
     absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
 
+// Makes `input` static at its upper bounds and replaces its elements past the
+// runtime sizes, which XLA leaves undefined, with `fill_value`. For ops that
+// read across bounded dimensions. Returns static `input` unchanged.
+[[nodiscard]] mlir::MlirOp MakeStaticAndFillPastRuntimeSizes(
+    mlir::MlirOp input, mlir::MlirOp fill_value);
+
+// Slices `input` from `start_indices` to the shape of `shape_reference`,
+// padding with the scalar `pad_value` where the slice reaches past the end of
+// `input`. The elements of `input` past its runtime sizes read as `pad_value`,
+// and the result has the bounded dimensions and runtime sizes of
+// `shape_reference`.
+[[nodiscard]] mlir::MlirOp PadAndSliceLike(
+    mlir::MlirOp input, mlir::MlirOp pad_value, mlir::MlirOp shape_reference,
+    absl::Span<const int64_t> start_indices);
+
 // Returns the bytecode of the module.
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module);
 

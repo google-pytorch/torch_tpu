@@ -1546,6 +1546,235 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     act_even = compiled_fn(even_input.to(self.device))
     utils.assert_close(act_even.to("cpu"), pool_fn(even_input))
 
+  # pool_args are kernel_size, stride, padding, ceil_mode, count_include_pad
+  # and divisor_override.
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="avg_pool2d_spatial",
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(2, 3, 16, 4),
+          pool_args=([3, 1], [2, 1], [1, 0], False, True, None),
+          dim=2,
+          upper_bound=30,
+      ),
+      dict(
+          testcase_name="avg_pool2d_spatial_ceil_mode",
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(2, 3, 4, 16),
+          pool_args=([3, 3], [2, 2], [1, 1], True, True, None),
+          dim=3,
+          upper_bound=30,
+      ),
+      dict(
+          testcase_name="avg_pool2d_spatial_ceil_mode_count_include_pad_false",
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(2, 3, 4, 16),
+          pool_args=([3, 3], [2, 2], [1, 1], True, False, None),
+          dim=3,
+          upper_bound=30,
+      ),
+      dict(
+          # grad_output is bounded above the divisor, which is padded to match.
+          testcase_name="avg_pool2d_spatial_ceil_mode_larger_grad_bound",
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(2, 3, 4, 16),
+          pool_args=([3, 3], [2, 2], [1, 1], True, True, None),
+          dim=3,
+          upper_bound=30,
+          extra_grad_output_bound=5,
+      ),
+      dict(
+          testcase_name=(
+              "avg_pool2d_spatial_count_include_pad_false_larger_grad_bound"
+          ),
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(2, 3, 4, 16),
+          pool_args=([3, 3], [2, 2], [1, 1], False, False, None),
+          dim=3,
+          upper_bound=30,
+          extra_grad_output_bound=5,
+      ),
+      dict(
+          testcase_name="avg_pool2d_spatial_divisor_override",
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(2, 3, 4, 16),
+          pool_args=([3, 3], [2, 2], [1, 1], True, True, 2),
+          dim=3,
+          upper_bound=30,
+      ),
+      dict(
+          testcase_name="avg_pool2d_batch",
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(3, 2, 5, 6),
+          pool_args=([2, 2], [2, 2], [1, 1], True, False, None),
+          dim=0,
+          upper_bound=8,
+      ),
+      dict(
+          testcase_name="avg_pool2d_channel",
+          pool_fn=torch.ops.aten.avg_pool2d,
+          pool_backward_fn=torch.ops.aten.avg_pool2d_backward,
+          input_shape=(2, 3, 5, 6),
+          pool_args=([2, 2], [2, 2], [1, 1], False, False, None),
+          dim=1,
+          upper_bound=8,
+      ),
+      dict(
+          testcase_name="avg_pool3d_spatial",
+          pool_fn=torch.ops.aten.avg_pool3d,
+          pool_backward_fn=torch.ops.aten.avg_pool3d_backward,
+          input_shape=(2, 2, 3, 4, 10),
+          pool_args=([1, 2, 3], [1, 2, 2], [0, 1, 1], False, True, None),
+          dim=4,
+          upper_bound=20,
+      ),
+  )
+  def test_avg_pool_backward_dynamic(
+      self,
+      pool_fn: Callable[..., torch.Tensor],
+      pool_backward_fn: Callable[..., torch.Tensor],
+      input_shape: tuple[int, ...],
+      pool_args: tuple[list[int], list[int], list[int], bool, bool, int | None],
+      dim: int,
+      upper_bound: int,
+      extra_grad_output_bound: int = 0,
+  ) -> None:
+    # `+ 1` leaves nonzero values past the runtime sizes of the bounded inputs,
+    # which the backward must ignore.
+    def backward_fn(grad_output: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+      return pool_backward_fn(grad_output + 1, x + 1, *pool_args)
+
+    # Integer values keep the pooling sums exact.
+    x = torch.randint(-3, 4, input_shape, dtype=torch.float32)
+    grad_output = torch.randint(-3, 4, pool_fn(x, *pool_args).shape).float()
+    bounded_shape = list(input_shape)
+    bounded_shape[dim] = upper_bound
+    grad_output_upper_bound = (
+        pool_fn(torch.zeros(bounded_shape), *pool_args).shape[dim]
+        + extra_grad_output_bound
+    )
+
+    def mark_dynamic(grad_output: torch.Tensor, x: torch.Tensor) -> None:
+      dynamism.mark_dynamic(grad_output, dim, 2, grad_output_upper_bound)
+      dynamism.mark_dynamic(x, dim, 2, upper_bound)
+
+    act = self._run_bounded_dynamism_test(
+        backward_fn, mark_dynamic, grad_output, x
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, dim)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, upper_bound)
+
+  def test_avg_pool_backward_dynamic_autograd(self) -> None:
+    """Tests a static grad_output for a bounded input, as from y.sum()."""
+
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      return torch.nn.functional.avg_pool2d(
+          tensor,
+          3,
+          stride=2,
+          padding=1,
+          ceil_mode=True,
+          count_include_pad=False,
+      )
+
+    x = torch.randint(-3, 4, (2, 3, 4, 16), dtype=torch.float32)
+    x_tpu = x.to(self.device)
+    dynamism.mark_dynamic(x_tpu, 3, 2, 30)
+    x.requires_grad_(True)
+    x_tpu.requires_grad_(True)
+    pool_fn(x).sum().backward()
+    pool_fn(x_tpu).sum().backward()
+    utils.assert_close(x_tpu.grad.to("cpu"), x.grad)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="avg_pool1d",
+          pool_fn=torch.nn.functional.avg_pool1d,
+          input_shape=(2, 3, 16),
+      ),
+      dict(
+          testcase_name="avg_pool2d",
+          pool_fn=torch.nn.functional.avg_pool2d,
+          input_shape=(2, 3, 4, 16),
+      ),
+      dict(
+          testcase_name="avg_pool3d",
+          pool_fn=torch.nn.functional.avg_pool3d,
+          input_shape=(2, 2, 3, 4, 10),
+      ),
+  )
+  def test_avg_pool_backward_compiled_dynamic_spatial(
+      self, pool_fn: Callable[..., torch.Tensor], input_shape: tuple[int, ...]
+  ) -> None:
+    def pool(tensor: torch.Tensor) -> torch.Tensor:
+      return pool_fn(tensor, kernel_size=3, stride=2, padding=1)
+
+    compiled_pool = torch.compile(pool, backend="tpu", fullgraph=True)
+
+    def check(size: int, mark_dynamic: bool) -> None:
+      x = torch.randn(*input_shape[:-1], size, requires_grad=True)
+      x_tpu = x.detach().to(self.device).requires_grad_(True)
+      if mark_dynamic:
+        torch._dynamo.mark_dynamic(x_tpu, x_tpu.dim() - 1)
+      expected = pool(x)
+      act = compiled_pool(x_tpu)
+      utils.assert_close(act.to("cpu"), expected)
+      grad_output = torch.randn_like(expected)
+      expected.backward(grad_output)
+      act.backward(grad_output.to(self.device))
+      utils.assert_close(x_tpu.grad.to("cpu"), x.grad)
+
+    check(input_shape[-1], mark_dynamic=True)
+    # Keep the last dimension even because PyTorch < 2.12 guards on its parity
+    # with stride 2.
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      check(input_shape[-1] + 8, mark_dynamic=False)
+
+  def test_avg_pool_backward_compiled_ceil_mode_multi_dynamic_spatial(
+      self,
+  ) -> None:
+    def pool_fn(tensor: torch.Tensor) -> torch.Tensor:
+      return torch.nn.functional.avg_pool2d(
+          tensor,
+          3,
+          stride=2,
+          padding=1,
+          ceil_mode=True,
+          count_include_pad=False,
+      )
+
+    compiled_fn = torch.compile(pool_fn, backend="tpu", dynamic=None)
+
+    def check(shape: tuple[int, ...], mark_dynamic: bool) -> None:
+      x = (-torch.rand(*shape)).requires_grad_(True)
+      x_tpu = x.detach().to(self.device).requires_grad_(True)
+      if mark_dynamic:
+        torch._dynamo.mark_dynamic(x_tpu, 2)
+        torch._dynamo.mark_dynamic(x_tpu, 3)
+      expected = pool_fn(x)
+      act = compiled_fn(x_tpu)
+      utils.assert_close(act.to("cpu"), expected)
+      grad_output = torch.randn_like(expected)
+      expected.backward(grad_output)
+      act.backward(grad_output.to(self.device))
+      utils.assert_close(x_tpu.grad.to("cpu"), x.grad)
+
+    check((1, 2, 7, 5), mark_dynamic=True)
+    # Keep spatial sizes odd because PyTorch < 2.12's meta `div_rtn` guards on
+    # `(size % stride) != 0`.
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      check((1, 2, 5, 9), mark_dynamic=False)
+
   @parameterized.named_parameters(
       dict(testcase_name="max_pool1d", spatial_dim_count=1),
       dict(testcase_name="max_pool2d", spatial_dim_count=2),
