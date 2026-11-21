@@ -5138,7 +5138,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         tpu_result = torch.histc(tpu_input, bins=8, min=0, max=7)
         self.assertEqual(tpu_result, torch.tensor(int_result, dtype=int_dtype))
 
-  @utils.skip_if_asan("b/585144709: Slow (~425s) in ASAN mode.")
   def test_histc_mixed_int_float_bounds(self):
     # Regression test for b/579088881: mixed int/float Python scalar bounds
     # (including the default min=0 with float max).
@@ -5248,6 +5247,63 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           compiled_histc_out(x_cpu.to("tpu"), out_tpu).cpu(), expected
       )
       utils.assert_close(out_tpu.cpu(), expected)
+
+  def test_histc_int_div_width_and_cache_key(self):
+    # Exercises kI32 clamping on extreme out-of-range inputs, kI64 fallback on
+    # wide bounds (span * bins > INT32_MAX), and cache-key separation via
+    # `use_i32_div` across both histc and histc.out.
+    for int_dtype, extremum_min, extremum_max in [
+        (torch.int32, -(2**31), 2**31 - 1),
+        (torch.int64, -(2**63), 2**63 - 1),
+    ]:
+      vals = [extremum_min, 1, 9, 1, 0, 6, extremum_max]
+      tpu_input = torch.tensor(vals, dtype=int_dtype, device="tpu")
+
+      # Narrow explicit bounds -> kI32 path (out-of-range extrema clamped).
+      expected_narrow = torch.tensor(
+          [1, 2, 0, 0, 0, 0, 1, 0, 0, 1], dtype=int_dtype, device="tpu"
+      )
+      self.assertEqual(
+          torch.histc(tpu_input, bins=10, min=0, max=10), expected_narrow
+      )
+      out_narrow = torch.empty((10,), dtype=int_dtype, device="tpu")
+      self.assertEqual(
+          torch.histc(tpu_input, bins=10, min=0, max=10, out=out_narrow),
+          expected_narrow,
+      )
+
+      # Wide explicit bounds with the same tensor shape, dtype, and bins=10
+      # -> span * bins > INT32_MAX, must fall back to kI64 and not hit kI32.
+      expected_wide = torch.tensor(
+          [0, 0, 0, 0, 0, 5, 0, 0, 0, 0], dtype=int_dtype, device="tpu"
+      )
+      self.assertEqual(
+          torch.histc(tpu_input, bins=10, min=-(2**30), max=2**30),
+          expected_wide,
+      )
+      out_wide = torch.empty((10,), dtype=int_dtype, device="tpu")
+      self.assertEqual(
+          torch.histc(
+              tpu_input, bins=10, min=-(2**30), max=2**30, out=out_wide
+          ),
+          expected_wide,
+      )
+
+    # Narrow int64 bounds outside int32 -> exercises subtracting min_op in I64
+    # before converting to I32.
+    base = 2**40
+    tpu_i64_shifted = torch.tensor(
+        [-(2**63), base, base + 1, base + 6, base + 9, 2**63 - 1],
+        dtype=torch.int64,
+        device="tpu",
+    )
+    expected_shifted = torch.tensor(
+        [1, 1, 0, 0, 0, 0, 1, 0, 0, 1], dtype=torch.int64, device="tpu"
+    )
+    self.assertEqual(
+        torch.histc(tpu_i64_shifted, bins=10, min=base, max=base + 10),
+        expected_shifted,
+    )
 
   def test_lerp_complex128(self):
     # Regression test for b/451684563: lerp() supports complex128.
