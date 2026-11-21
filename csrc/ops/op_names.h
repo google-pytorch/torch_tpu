@@ -127,6 +127,7 @@ enum class OpName {
   kCdistForward,
   kCeilOut,
   kChannelShuffle,
+  kChunkCatOut,
   kClampMaxOut,
   kClampMaxTensorOut,
   kClampMinOut,
@@ -1118,6 +1119,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "ceil.out";
     case OpName::kChannelShuffle:
       return "channel_shuffle";
+    case OpName::kChunkCatOut:
+      return "_chunk_cat.out";
     case OpName::kClampMaxOut:
       return "clamp_max.out";
     case OpName::kClampMaxTensorOut:
