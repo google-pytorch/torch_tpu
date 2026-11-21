@@ -145,9 +145,13 @@ absl::StatusOr<Dimensions> CanonicalizeDims(
   }
 
   if (rank == 0) {
+    bool seen_zero = false;
     for (const auto& d : *dim) {
       TT_RET_CHECK(d == 0 || d == -1, error::kPythonIndexError)
           << "expected dimension to be in range of [-1, 0], got " << d;
+      TT_RET_CHECK(!seen_zero, error::kInvalidArgument)
+          << "dim 0 appears multiple times in the list of dims";
+      seen_zero = true;
     }
     return log_and_return({});
   }
