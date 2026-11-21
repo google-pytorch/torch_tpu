@@ -18,7 +18,7 @@
 # multi-ABI glue dispatch supports multiple PyTorch releases and picks the glue
 # at runtime, so switching PyTorch versions is a runtime input, not a build reconfiguration.
 #
-# Two settings come from the job environment rather than from inputs, because
+# Four settings come from the job environment rather than from inputs, because
 # they are per-run rather than per-environment and BAP cannot set an action
 # input from the workflow -- inputs come only from the registry -- while it
 # does export the workflow's custom_env_vars into every benchmark job:
@@ -26,8 +26,11 @@
 #   TORCH_TPU_WHEEL           the wheel to benchmark: a local path, an
 #                             https:// URL, or a gs:// path. Required. This
 #                             action never builds one; see the build_wheel
-#                             job in .github/workflows/run_pip_benchmarks.yml
+#                             job in .github/workflows/run_benchmarks.yml
 #                             for how a caller builds once and shares it.
+#   TORCH_TPU_BASELINE_WHEEL  optional baseline wheel for BAP ab_mode; used
+#   TORCH_TPU_BASELINE_SHA    instead of TORCH_TPU_WHEEL when the checked-out
+#                             repository HEAD matches TORCH_TPU_BASELINE_SHA.
 #   TORCH_TPU_PYTHON_VERSION  the interpreter for the benchmark environment.
 #                             Defaults to 3.12. Must be the Python the wheel
 #                             was built for; the workflow passes one value to
@@ -208,9 +211,22 @@ runs:
         echo "::group::Fetch torch_tpu wheel"
         set -euo pipefail
 
+        rm -rf "$BENCHMARK_WHEEL_DIR"
         mkdir -p "$BENCHMARK_WHEEL_DIR"
 
         WHEEL_SOURCE="${TORCH_TPU_WHEEL:-}"
+        if [[ -n "${TORCH_TPU_BASELINE_WHEEL:-}" && -n "${TORCH_TPU_BASELINE_SHA:-}" ]]; then
+          if [[ "$TORCH_TPU_BASELINE_WHEEL" == "$WHEEL_SOURCE" ]]; then
+            echo "error: TORCH_TPU_BASELINE_WHEEL and TORCH_TPU_WHEEL are identical ($WHEEL_SOURCE); refusing to run A/B against the same wheel." >&2
+            exit 1
+          fi
+          REPO_REALPATH="$(cd "$BENCHMARK_REPO_ROOT" && pwd -P)"
+          HEAD_SHA="$(git -c safe.directory="$REPO_REALPATH" -C "$REPO_REALPATH" rev-parse HEAD)"
+          if [[ "$HEAD_SHA" == "$TORCH_TPU_BASELINE_SHA" ]]; then
+            echo "Checked-out commit matches TORCH_TPU_BASELINE_SHA; using baseline wheel."
+            WHEEL_SOURCE="$TORCH_TPU_BASELINE_WHEEL"
+          fi
+        fi
 
         if [[ -z "$WHEEL_SOURCE" ]]; then
           echo "error: TORCH_TPU_WHEEL is not set; there is no wheel to benchmark." >&2
