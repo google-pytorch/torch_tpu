@@ -14,12 +14,14 @@
 
 import concurrent.futures
 from typing import TypeAlias
+from unittest import mock
 
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
@@ -138,6 +140,26 @@ class SynchronizeTest(seed_test_utils.RepeatableTest):
     self.assertTrue(sync.is_materialized(y))
     expected = torch.full((256, 256), 256.0, dtype=torch.float32, device='cpu')
     utils.assert_close(y.cpu(), expected)
+
+  def test_tpu_synchronize_in_torch_compile(self):
+    def fn(x):
+      y = x + 1
+      torch.get_device_module('tpu').synchronize()
+      return y + 1
+
+    x = torch.ones(16, device='tpu')
+    with mock.patch.object(
+        annotations, '_internal_apis_allowed_for_testing', True
+    ):
+      explanation = torch._dynamo.explain(fn)(x)
+      self.assertLen(explanation.break_reasons, 1)
+      self.assertIn('torch.compiler.disable', str(explanation.break_reasons[0]))
+      self.assertIn('synchronize', str(explanation.break_reasons[0]))
+
+      cnt = torch._dynamo.testing.CompileCounterWithBackend('tpu')
+      out = torch.compile(fn, backend=cnt)(x)
+      self.assertEqual(cnt.frame_count, 2)
+      utils.assert_close(out.cpu(), torch.full((16,), 3.0))
 
   def test_blocking_to_tpu_synchronizes_stream(self):
     execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
