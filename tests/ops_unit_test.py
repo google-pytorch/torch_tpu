@@ -14970,6 +14970,192 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         actual = torch.roll(tpu_empty, shifts=shifts, dims=dims)
         self.assertEqual(actual.shape, expected.shape)
         utils.assert_close(actual.cpu(), expected)
+  # ============================================================================
+  # aten::huber_loss and aten::huber_loss.out tests
+  # ============================================================================
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.float64, torch.bfloat16, torch.float16],
+      reduction=[0, 1, 2],
+      delta=[0.25, 1.0, 2.5],
+  )
+  def test_huber_loss_simple(self, dtype, reduction, delta):
+    """Tests aten::huber_loss and aten::huber_loss.out across dtypes, reductions, and deltas."""
+    # Span both quadratic (|x - y| < delta) and linear (|x - y| >= delta) regions.
+    x = torch.linspace(-4.0, 4.0, 12, dtype=dtype).reshape(3, 4)
+    target = torch.linspace(-1.0, 1.0, 12, dtype=dtype).reshape(3, 4)
+
+    def compute(device):
+      inp = to(x, device)
+      tgt = to(target, device)
+      res = torch.ops.aten.huber_loss(inp, tgt, reduction, delta)
+      out = torch.empty_like(res)
+      torch.ops.aten.huber_loss.out(inp, tgt, reduction, delta, out=out)
+      return res, out
+
+    rtol = 1e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-5
+    atol = 1e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-5
+    self.assert_close_tpu_vs_cpu(compute, rtol=rtol, atol=atol)
+
+  @parameterized.product(
+      reduction=[0, 1, 2],
+      shapes=[
+          ((2, 1, 4), (2, 3, 4)),  # self broadcasts
+          ((2, 3, 4), (1, 3, 1)),  # target broadcasts
+          ((), ()),  # 0-d scalars
+          ((), (2, 3)),  # 0-d broadcasts to 2-d
+          ((0,), (0,)),  # 1-d zero-sized
+          ((0, 4), (0, 4)),  # 2-d zero-sized
+      ],
+  )
+  def test_huber_loss_shapes_and_broadcast(self, reduction, shapes):
+    """Tests broadcasting, 0-d scalars, and empty tensors for huber_loss and huber_loss.out."""
+    self_shape, target_shape = shapes
+    x = torch.randn(self_shape, dtype=torch.float32) * 3.0
+    target = torch.randn(target_shape, dtype=torch.float32) * 3.0
+
+    def compute(device):
+      inp = to(x, device)
+      tgt = to(target, device)
+      res = torch.ops.aten.huber_loss(inp, tgt, reduction, 1.0)
+      out = torch.empty_like(res)
+      torch.ops.aten.huber_loss.out(inp, tgt, reduction, 1.0, out=out)
+      return res, out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(torch.float32, torch.bfloat16)
+  def test_huber_loss_boundary_and_special_values(self, dtype):
+    """Checks exact |x - y| == delta transition points and +/-inf, nan propagation."""
+    delta = 1.5
+    diffs = torch.tensor(
+        [
+            -float("inf"),
+            -3.0,
+            -delta,
+            -0.5,
+            -0.0,
+            0.0,
+            0.5,
+            delta,
+            3.0,
+            float("inf"),
+            float("nan"),
+        ],
+        dtype=dtype,
+    )
+    target = torch.ones_like(diffs)
+    x = target + diffs
+
+    def compute(device):
+      inp = to(x, device)
+      tgt = to(target, device)
+      res = torch.ops.aten.huber_loss(inp, tgt, 0, delta)
+      out = torch.empty_like(res)
+      torch.ops.aten.huber_loss.out(inp, tgt, 0, delta, out=out)
+      return res, out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      ("float32_self_bfloat16_target", torch.float32, torch.bfloat16),
+      ("bfloat16_self_float32_target", torch.bfloat16, torch.float32),
+      ("float16_self_bfloat16_target", torch.float16, torch.bfloat16),
+      ("float32_self_float64_target", torch.float32, torch.float64),
+      ("float32_self_int32_target", torch.float32, torch.int32),
+  )
+  def test_huber_loss_mixed_dtypes(self, self_dtype, target_dtype):
+    """Tests TensorIterator-style common dtype promotion with self output dtype."""
+    x = torch.randn(2, 3).mul(3).to(self_dtype)
+    target = torch.randn(2, 3).mul(3).to(target_dtype)
+
+    def compute(device):
+      inp = to(x, device)
+      tgt = to(target, device)
+      res = torch.ops.aten.huber_loss(inp, tgt, 1, 1.0)
+      out = torch.empty_like(res)
+      torch.ops.aten.huber_loss.out(inp, tgt, 1, 1.0, out=out)
+      return res, out
+
+    rtol = 1e-2 if self_dtype in (torch.bfloat16, torch.float16) else 1e-4
+    atol = 1e-2 if self_dtype in (torch.bfloat16, torch.float16) else 1e-4
+    self.assert_close_tpu_vs_cpu(compute, rtol=rtol, atol=atol)
+
+  @parameterized.named_parameters(
+      ("empty_out_resized_unreduced", 0, (0,), torch.float32, False),
+      ("wrong_shape_out_resized_mean", 1, (5,), torch.float32, False),
+      ("wrong_shape_out_resized_sum", 2, (2, 3), torch.float32, False),
+      ("downcast_out_dtype", 0, (2, 3), torch.bfloat16, False),
+      ("upcast_out_dtype", 1, (), torch.float64, False),
+      ("integral_out_dtype", 0, (2, 3), torch.int32, True),
+  )
+  def test_huber_loss_out_variants(
+      self, reduction, out_shape, out_dtype, allow_failure
+  ):
+    """Tests aten::huber_loss.out output resizing and output dtype casting."""
+    x = torch.randn(2, 3, dtype=torch.float32) * 2.0
+    target = torch.randn(2, 3, dtype=torch.float32) * 2.0
+
+    def compute(device):
+      out = torch.empty(out_shape, dtype=out_dtype, device=device)
+      torch.ops.aten.huber_loss.out(
+          to(x, device), to(target, device), reduction, 1.0, out=out
+      )
+      return out
+
+    rtol = 1e-2 if out_dtype == torch.bfloat16 else 1e-5
+    atol = 1e-2 if out_dtype == torch.bfloat16 else 1e-5
+    self.assert_close_tpu_vs_cpu(
+        compute, allow_failure=allow_failure, rtol=rtol, atol=atol
+    )
+
+  def test_huber_loss_non_contiguous(self):
+    """Tests aten::huber_loss and aten::huber_loss.out with non-contiguous inputs."""
+    x = torch.randn(4, 6) * 2.0
+    target = torch.randn(6, 4) * 2.0
+
+    def compute(device):
+      inp = to(x, device)[:, ::2]
+      tgt = to(target, device).t()[:, ::2]
+      res = torch.ops.aten.huber_loss(inp, tgt, 0, 1.0)
+      out = torch.empty_like(res)
+      torch.ops.aten.huber_loss.out(inp, tgt, 0, 1.0, out=out)
+      return res, out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      ("zero_delta", torch.float32, (2, 3), (2, 3), 1, 0.0),
+      ("negative_delta", torch.float32, (2, 3), (2, 3), 1, -0.5),
+      ("int32_inputs", torch.int32, (2, 3), (2, 3), 1, 1.0),
+      ("bool_inputs", torch.bool, (2, 3), (2, 3), 1, 1.0),
+      ("complex64_inputs", torch.complex64, (2, 3), (2, 3), 1, 1.0),
+      ("incompatible_shapes", torch.float32, (2, 3), (2, 4), 1, 1.0),
+  )
+  def test_huber_loss_invalid_inputs(
+      self, dtype, self_shape, target_shape, reduction, delta
+  ):
+    """Tests error parity between TPU and CPU for invalid inputs."""
+    x = torch.ones(self_shape, dtype=dtype)
+    target = torch.ones(target_shape, dtype=dtype)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.huber_loss(
+            to(x, device), to(target, device), reduction, delta
+        ),
+        allow_failure=True,
+    )
+    out_dtype = dtype if dtype.is_floating_point else torch.float32
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.huber_loss.out(
+            to(x, device),
+            to(target, device),
+            reduction,
+            delta,
+            out=torch.empty(0, dtype=out_dtype, device=device),
+        ),
+        allow_failure=True,
+    )
 
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
