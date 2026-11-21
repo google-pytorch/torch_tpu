@@ -1047,15 +1047,14 @@ absl::Status TranslateXlaTensorOomError(absl::Status status,
   return status;
 }
 
-absl::Status AdaptXlaError(const absl::Status& status,
-                           const std::string_view context) {
+absl::Status WrapXlaError(const absl::Status& status,
+                          const std::string_view context) {
   if (status.ok()) {
     return status;
   }
 
-  const std::string adapted = AdaptExternalErrorMessage(status.message());
-  return StatusBuilder(std::move(status)).SetOverride()
-         << absl::StrCat(context, kXlaCompilerFailedWith, adapted);
+  return StatusBuilder(status).SetPrepend()
+         << context << kXlaCompilerFailedWith;
 }
 
 namespace {

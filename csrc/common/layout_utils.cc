@@ -146,10 +146,10 @@ absl::StatusOr<std::vector<xla::Layout>> ResolveXlaLayouts(
   for (const Shape& shape : shapes) {
     TT_ASSIGN_OR_RETURN(
         xla::Layout layout,
-        AdaptXlaError(PjrtBackend::GetInstance().GetDefaultLayout(
-                          ConvertTo<xla::PrimitiveType>(shape.dtype()),
-                          shape.dimensions()),
-                      /*context=*/"failed to get default layout"));
+        WrapXlaError(PjrtBackend::GetInstance().GetDefaultLayout(
+                         ConvertTo<xla::PrimitiveType>(shape.dtype()),
+                         shape.dimensions()),
+                     /*context=*/"failed to get default layout"));
     ApplyCustomLayout(shape, layout);
     layouts.push_back(std::move(layout));
   }
@@ -163,7 +163,7 @@ ExtractCustomLayoutIfDifferentFromDefault(const Shape& shape) {
   }
   TT_ASSIGN_OR_RETURN(
       const xla::Layout default_layout,
-      AdaptXlaError(
+      WrapXlaError(
           PjrtBackend::GetInstance().GetDefaultLayout(
               ConvertTo<xla::PrimitiveType>(shape.dtype()), shape.dimensions()),
           /*context=*/"failed to get default layout"));

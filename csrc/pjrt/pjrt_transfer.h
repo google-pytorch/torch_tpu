@@ -203,7 +203,7 @@ class DeviceToHostTransfer {
   // A callback invoked when the PjRtBuffer has been copied to host memory.
   // This will then:
   //   1. Pack FP4 data if necessary.
-  //   2. Format the transfer error using AdaptXlaError.
+  //   2. Format the transfer error using WrapXlaError.
   //   3. Set the chained promise.
   //   4. Free the impl object, dropping the reference to the device buffer.
   static void OnToLiteralReady(

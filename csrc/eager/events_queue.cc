@@ -429,18 +429,18 @@ class StreamState {
         transfer.RunAfter(transfer_blocks);
     if (!device_buffer_ref.ok()) {
       error_map_promise.Set(
-          AdaptXlaError(device_buffer_ref.status(),
-                        /*context=*/"failed to copy buffer from host to "
-                                    "device"));
+          WrapXlaError(device_buffer_ref.status(),
+                       /*context=*/"failed to copy buffer from host to "
+                                   "device"));
     } else {
       // Satisfy TorchTPU error formatting requirements.
       device_buffer_ref->GetReadyFuture().OnReady(
           [error_map_promise = std::move(error_map_promise)](
               const absl::Status& status) mutable {
             error_map_promise.Set(
-                AdaptXlaError(status,
-                              /*context=*/"failed to copy buffer from host to "
-                                          "device"));
+                WrapXlaError(status,
+                             /*context=*/"failed to copy buffer from host to "
+                                         "device"));
           });
     }
     return device_buffer_ref;

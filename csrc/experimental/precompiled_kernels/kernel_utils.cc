@@ -66,7 +66,7 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
   compile_options->argument_layouts =
       std::vector<xla::Shape>(inputs.begin(), inputs.end());
   const xla::XlaComputation computation(hlo->ToProto());
-  return AdaptXlaError(
+  return WrapXlaError(
       client.CompileAndLoad(computation, std::move(*compile_options)),
       /*context=*/"failed to compile the Mosaic kernel");
 }

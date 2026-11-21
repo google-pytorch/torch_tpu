@@ -573,9 +573,8 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
   const Dimensions dims = logical.dimensions();
   TT_ASSIGN_OR_RETURN(
       results[0],
-      AdaptXlaError(
-          results[0]->Bitcast(xla::S64, dims, &layout),
-          /*context=*/"failed to bitcast the nonzero indices to S64"));
+      WrapXlaError(results[0]->Bitcast(xla::S64, dims, &layout),
+                   /*context=*/"failed to bitcast the nonzero indices to S64"));
   return results;
 }
 

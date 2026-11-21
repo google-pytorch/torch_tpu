@@ -204,11 +204,11 @@ absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>> ToLogicalOutputs(
     absl::Span<const Shape> /*logical_output_shapes*/) {
   const xla::Layout layout = VectorLayout();
   TT_ASSIGN_OR_RETURN(
-      results[0], AdaptXlaError(results[0]->Bitcast(xla::S32, {kTile}, &layout),
-                                /*context=*/"failed to bitcast sorted values"));
+      results[0], WrapXlaError(results[0]->Bitcast(xla::S32, {kTile}, &layout),
+                               /*context=*/"failed to bitcast sorted values"));
   TT_ASSIGN_OR_RETURN(
-      results[1], AdaptXlaError(results[1]->Bitcast(xla::S64, {kTile}, &layout),
-                                /*context=*/"failed to bitcast sort indices"));
+      results[1], WrapXlaError(results[1]->Bitcast(xla::S64, {kTile}, &layout),
+                               /*context=*/"failed to bitcast sort indices"));
   return results;
 }
 

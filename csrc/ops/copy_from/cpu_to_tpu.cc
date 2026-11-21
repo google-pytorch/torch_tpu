@@ -160,7 +160,7 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
     // Do the transfer immediately and block on completion; don't touch any
     // streams.
     TT_ASSIGN_OR_RETURN(DeviceBufferRef tpu_buf, transfer.Run());
-    TT_RETURN_IF_ERROR(AdaptXlaError(
+    TT_RETURN_IF_ERROR(WrapXlaError(
         tpu_buf.Synchronize(),
         /* context= */ "failed to copy buffer from host to device"));
     TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(tpu_buf), dest));

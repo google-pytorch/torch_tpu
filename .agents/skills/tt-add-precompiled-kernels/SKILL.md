@@ -129,7 +129,7 @@ Add `csrc/experimental/precompiled_kernels/{kernel}.{h,cc}` (e.g.
     metadata parameter, -1 for none, and `aliased_parameter` names the donated
     output's parameter), sets `set_run_backend_only(true)` so that no HLO pass
     rewrites the custom call, sets the result layout and `argument_layouts`, and
-    compiles with `client.CompileAndLoad`, wrapped in `AdaptXlaError`.
+    compiles with `client.CompileAndLoad`, wrapped in `WrapXlaError`.
 *   **Header**: exposes only `Get{Op}UnboundedDynamicKernels()`, returning a
     `std::vector<UnboundedDynamicKernelRegistration>` (or
     `Get{Op}UnboundedDynamicKernel()`, returning one
