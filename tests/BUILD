@@ -1263,6 +1263,7 @@ torch_tpu_py_test(
     name = "ops_test_gen_gpu_golden_compiled",
     srcs = ["ops_test.py"],
     args = [
+        "--max_samples_per_op_dtype=20",
         "--test_mode=gen_gpu_golden",
         "--use_compiled=True",
     ],
@@ -1273,7 +1274,8 @@ torch_tpu_py_test(
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = len(_GPU_GOLDENS_COMPILED_BASE),
+    # Folded back into len(_GPU_GOLDENS_COMPILED_BASE) pinned archives.
+    shard_count = 30,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1489,6 +1491,7 @@ torch_tpu_py_test(
     name = "ops_test_gen_gpu_golden_compiled_hopper",
     srcs = ["ops_test.py"],
     args = [
+        "--max_samples_per_op_dtype=20",
         "--test_mode=gen_gpu_golden",
         "--use_compiled=True",
     ],
