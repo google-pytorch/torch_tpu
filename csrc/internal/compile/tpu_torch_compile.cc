@@ -234,6 +234,28 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
   if (!is_pinned_host) {
     is_pinned_host = PyIsPinnedHost(arg_tensor);
   }
+  // Placeholder DeviceBufferRefs are always contiguous. When arg_tensor already
+  // has a trivial layout (contiguous, offset 0, non-empty), its own shape is
+  // the base shape and no view needs to be reconstructed, matching the fast
+  // path in PrepareCompiledModeArgumentsImpl (compiled_mode.cc). Non-trivial
+  // tensors (non-contiguous views, non-zero offset, or empty) fall through
+  // below to compute the minimal contiguous base shape and wrap the
+  // placeholder with as_strided.
+  if (TensorHasTrivialLayout(arg_tensor)) {
+    TT_ASSIGN_OR_THROW(
+        at::Tensor placeholder,
+        MakePlaceholder(arg_tensor.sizes(), arg_tensor.scalar_type(),
+                        arg_tensor.requires_grad(), is_pinned_host),
+        _.SetPrepend() << "failed to create placeholder tensor: ");
+    // If given, traced ops see the on-device layout of the argument.
+    if (!layout.is_none()) {
+      TT_ASSIGN_OR_THROW(const DeviceBufferRef buffer_ref,
+                         GetBuffer(placeholder));
+      buffer_ref.set_layout(
+          ParseCustomLayout(layout, placeholder, /*arg_index=*/0));
+    }
+    return placeholder;
+  }
 
   // arg_tensor may be a view, but placeholder DeviceBufferRefs are always
   // interpreted as contiguous.
@@ -272,18 +294,10 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
         ParseCustomLayout(layout, base_tensor, /*arg_index=*/0));
   }
 
-  // NOTE: This logic must match the logic from PrepareCompiledModeArguments in
-  // compiled_mode.cc
-  at::Tensor view_tensor;  // UNINITIALIZED_TENSOR_OK
-  if (TensorHasTrivialLayout(arg_tensor)) {
-    view_tensor = base_tensor;
-  } else {
-    // Finally, we create a view of the base tensor with the same striding as
-    // the original view, and preserve the requires_grad property.
-    view_tensor =
-        base_tensor.as_strided(arg_tensor.sizes(), arg_tensor.strides(),
-                               /*storage_offset=*/0);
-  }
+  // Finally, we create a view of the base tensor with the same striding as
+  // the original view, and preserve the requires_grad property.
+  at::Tensor view_tensor = base_tensor.as_strided(
+      arg_tensor.sizes(), arg_tensor.strides(), /*storage_offset=*/0);
 
   if (arg_tensor.requires_grad()) {
     view_tensor.requires_grad_(true);
