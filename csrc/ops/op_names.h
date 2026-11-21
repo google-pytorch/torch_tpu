@@ -562,6 +562,7 @@ enum class OpName {
   kMaskedFillTensor,
   kMaskedFill_Scalar,
   kMaskedFill_Tensor,
+  kMaskedScale,
   kMaskedScatter_,
   kMaskedSelect,
   kMaskedSelectOut,
@@ -1988,6 +1989,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "masked_fill_.Scalar";
     case OpName::kMaskedFill_Tensor:
       return "masked_fill_.Tensor";
+    case OpName::kMaskedScale:
+      return "_masked_scale";
     case OpName::kMaskedScatter_:
       return "masked_scatter_";
     case OpName::kMaskedSelect:

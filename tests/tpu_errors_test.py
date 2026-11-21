@@ -47,6 +47,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._subclasses import fake_tensor
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
@@ -5365,6 +5366,71 @@ module {
         ),
     ):
       fn(t, repeats)
+
+  @parameterized.named_parameters(
+      ("masked_scale_expand_self", True, (1, 8), (4, 8)),
+      ("dropout_bwd_expand_grad", False, (1, 8), (4, 8)),
+  )
+  @et.why_tpu_only(
+      "Testing TPU-specific one-way mask broadcast validation; CUDA allows"
+      " expanding the output tensor to match the mask."
+  )
+  def test_masked_scale_and_dropout_backward_invalid_mask_shape(
+      self,
+      is_masked_scale: bool,
+      out_shape: tuple[int, ...],
+      mask_shape: tuple[int, ...],
+  ):
+    op, op_label, mask_dtype = (
+        (torch.ops.aten._masked_scale, "masked_scale", torch.uint8)
+        if is_masked_scale
+        else (
+            torch.ops.aten.native_dropout_backward,
+            "native_dropout_backward",
+            torch.bool,
+        )
+    )
+    grad_or_self = torch.ones(
+        out_shape, device=et.device(), dtype=torch.float32
+    )
+    mask = torch.ones(mask_shape, device=et.device(), dtype=mask_dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_label}(): expected mask to be broadcastable to output shape, got {list(mask_shape)} vs {list(out_shape)}""",
+    ):
+      op(grad_or_self, mask, 2.0)
+
+  @parameterized.named_parameters(
+      ("negative_p", -0.5),
+      ("p_greater_than_one", 1.5),
+  )
+  @et.why_tpu_only(
+      "Testing TPU Meta _fused_dropout probability range validation."
+  )
+  def test_fused_dropout_meta_invalid_p(self, p: float):
+    with fake_tensor.FakeTensorMode():
+      x = torch.empty((2, 3), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""fused_dropout(): expected p to be in the range [0, 1], got {p}""",
+      ):
+        torch.ops.aten._fused_dropout(x, p=p)
+
+  @parameterized.named_parameters(
+      ("int32", torch.int32),
+      ("bool", torch.bool),
+  )
+  @et.why_tpu_only(
+      "Testing TPU Meta _fused_dropout unsupported input dtype validation."
+  )
+  def test_fused_dropout_meta_unsupported_dtype(self, dtype: torch.dtype):
+    with fake_tensor.FakeTensorMode():
+      x = torch.empty((2, 3), device=et.device(), dtype=dtype)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""fused_dropout(): expected input to be floating point or complex, got {dtype}""",
+      ):
+        torch.ops.aten._fused_dropout(x, p=0.5)
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):

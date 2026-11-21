@@ -23,6 +23,16 @@
 
 namespace torch_tpu {
 
+enum class DropoutProbabilityType {
+  kDropProbability,
+  kKeepProbability,
+};
+
+enum class DropoutMaskType {
+  kBool,
+  kUInt8,
+};
+
 // Builds the SHLO for dropout in the train mode. When train=False, dropout is
 // a no-op, so doesn't require a builder.
 //
@@ -30,7 +40,9 @@ namespace torch_tpu {
 //   A pair of MlirOpResults, the first for the output tensor and the second for
 //   the mask tensor.
 absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
-    mlir::MlirOp rng_input_state, mlir::MlirOp input, double p);
+    mlir::MlirOp rng_input_state, mlir::MlirOp input, double p,
+    DropoutProbabilityType prob_type = DropoutProbabilityType::kDropProbability,
+    DropoutMaskType mask_type = DropoutMaskType::kBool);
 
 // Builds the SHLO for dropout backward.
 absl::StatusOr<MlirOpResults<1>> BuildDropoutBackwardShlo(
