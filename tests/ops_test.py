@@ -1351,8 +1351,17 @@ if oss_utils.is_oss():
 
 
 def _if_tpu_vs_gpu_compiled(true_value: Any, false_value: Any) -> Any:
-  """Returns true_value if the test is TPU vs GPU compiled, false_value otherwise."""
-  return true_value if op_testing.is_tpu_vs_gpu_compiled() else false_value
+  """Returns true_value for compiled GPU-golden exclusions.
+
+  Evaluates to `true_value` during compiled TPU replay and golden recording
+  so `_out_casting_tests` selects matching pairs. Call
+  `op_testing.is_tpu_vs_gpu_compiled()` for replay-only options.
+  """
+  if op_testing.is_tpu_vs_gpu_compiled() or (
+      op_testing._gen_gpu_golden_mode() and op_testing.is_compiled_mode()
+  ):
+    return true_value
+  return false_value
 
 
 class TestOps(op_testing.OpInfoTestBase):
