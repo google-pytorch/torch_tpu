@@ -18593,6 +18593,148 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, rtol=1e-5, atol=1e-5)
 
+  @parameterized.product(
+      input_dtype=(torch.bfloat16, torch.float16),
+      params=("weight_and_bias", "weight", "bias"),
+  )
+  def test_layer_norm_mixed_dtype(self, input_dtype, params):
+    """Tests layer_norm with a reduced-precision input and float32 params.
+
+    This happens e.g. under torch.autocast, where a Linear layer produces a
+    bfloat16 activation that feeds a LayerNorm with float32 parameters. Like
+    PyTorch CPU, the output has the input dtype and mean/rstd are float32.
+
+    Args:
+      input_dtype: The dtype of the input.
+      params: Which float32 affine parameters to pass.
+    """
+    x = torch.randn(4, 3, 32).to(input_dtype)
+    weight = torch.randn(32) if params != "bias" else None
+    bias = torch.randn(32) if params != "weight" else None
+
+    def fn(device):
+      return torch.ops.aten.native_layer_norm(
+          to(x, device), [32], to(weight, device), to(bias, device), 1e-5
+      )
+
+    self.assert_close_tpu_vs_cpu(fn)
+
+  @parameterized.product(
+      input_dtype=(torch.bfloat16, torch.float16),
+      params=("weight_and_bias", "weight", "bias"),
+  )
+  def test_layer_norm_backward_mixed_dtype(self, input_dtype, params):
+    """Tests native_layer_norm_backward with float32 params.
+
+    Calls the op directly rather than through autograd, which would silently
+    cast parameter gradients to the parameter dtype. The input gradient must
+    have the input dtype, and the parameter gradients the parameter dtypes.
+
+    PyTorch CPU accumulates the parameter gradients in the input dtype and
+    rejects a float32 bias without a weight, so the reference is computed in
+    float32 on CPU.
+
+    Args:
+      input_dtype: The dtype of the input and output gradient.
+      params: Which float32 affine parameters to pass.
+    """
+    x = torch.randn(4, 3, 32).to(input_dtype)
+    dy = torch.randn(4, 3, 32).to(input_dtype)
+    weight = torch.randn(32) if params != "bias" else None
+    bias = torch.randn(32) if params != "weight" else None
+
+    def fn(device):
+      x_d, dy_d, weight_d, bias_d = to((x, dy, weight, bias), device)
+      if device == "cpu":
+        x_d, dy_d = x_d.float(), dy_d.float()
+      _, mean, rstd = torch.ops.aten.native_layer_norm(
+          x_d, [32], weight_d, bias_d, 1e-5
+      )
+      grad_input, grad_weight, grad_bias = (
+          torch.ops.aten.native_layer_norm_backward(
+              dy_d,
+              x_d,
+              [32],
+              mean,
+              rstd,
+              weight_d,
+              bias_d,
+              [True, weight is not None, bias is not None],
+          )
+      )
+      if device == "cpu":
+        grad_input = grad_input.to(input_dtype)
+      grads = (grad_input, grad_weight, grad_bias)
+      return tuple(grad for grad in grads if grad is not None)
+
+    self.assert_close_tpu_vs_cpu(fn)
+
+  def test_layer_norm_backward_bias_dtype_change(self):
+    """Tests calls of the backward op that differ only in the bias dtype.
+
+    The bias is not an input of the backward computation, only its presence and
+    dtype (which determines the dtype of the bias gradient) matter. Calls that
+    differ only in the bias dtype must not reuse the same compiled op. The
+    reference is computed in float32 on CPU (see
+    test_layer_norm_backward_mixed_dtype).
+    """
+    x = torch.randn(4, 32).to(torch.bfloat16)
+    dy = torch.randn(4, 32).to(torch.bfloat16)
+    for bias_dtype in (torch.float32, torch.bfloat16, torch.float32):
+      bias = torch.randn(32).to(bias_dtype)
+
+      def fn(device, bias=bias):
+        x_d, dy_d, bias_d = to((x, dy, bias), device)
+        if device == "cpu":
+          x_d, dy_d, bias_d = x_d.float(), dy_d.float(), bias_d.float()
+        _, mean, rstd = torch.ops.aten.native_layer_norm(
+            x_d, [32], None, bias_d, 1e-5
+        )
+        grad_input, _, grad_bias = torch.ops.aten.native_layer_norm_backward(
+            dy_d, x_d, [32], mean, rstd, None, bias_d, [True, False, True]
+        )
+        if device == "cpu":
+          grad_input = grad_input.to(x.dtype)
+          grad_bias = grad_bias.to(bias.dtype)
+        return grad_input, grad_bias
+
+      with self.subTest(bias_dtype=bias_dtype):
+        self.assert_close_tpu_vs_cpu(fn)
+
+  @parameterized.parameters(False, True)
+  def test_layer_norm_module_mixed_dtype(self, compiled):
+    """Tests a float32 nn.LayerNorm on a bfloat16 input, forward and backward.
+
+    The reference is computed in float32 on CPU (see
+    test_layer_norm_backward_mixed_dtype).
+
+    Args:
+      compiled: Whether to run with torch.compile(backend="tpu") on TPU.
+    """
+    x = torch.randn(8, 64).to(torch.bfloat16)
+    dy = torch.randn(8, 64).to(torch.bfloat16)
+    weight = torch.randn(64)
+    bias = torch.randn(64)
+
+    def fn(device):
+      module = torch.nn.LayerNorm(64, device=device)
+      module.load_state_dict({"weight": weight, "bias": bias})
+      x_d, dy_d = to((x, dy), device)
+      forward = module
+      if device == "cpu":
+        x_d, dy_d = x_d.float(), dy_d.float()
+      elif compiled:
+        forward = torch.compile(module, backend="tpu")
+      x_d = x_d.detach().requires_grad_()
+      out = forward(x_d)
+      out.backward(dy_d)
+      grad_input = x_d.grad
+      if device == "cpu":
+        out, grad_input = out.to(x.dtype), grad_input.to(x.dtype)
+      return out, grad_input, module.weight.grad, module.bias.grad
+
+    self.assert_close_tpu_vs_cpu(fn)
+
   def test_rms_norm_multidim_normalized_shape(self):
     """Tests nn.functional.rms_norm with multi-dimensional normalized_shape."""
 

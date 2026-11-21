@@ -17,6 +17,7 @@
 import re
 from typing import TypeAlias
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
@@ -217,6 +218,52 @@ class AmpTest(seed_test_utils.RepeatableTest):
       self.assertEqual(rnn_hy.dtype, torch.bfloat16)
       test_utils.assert_close(rnn_out.cpu(), ref_rnn_out.cpu())
       test_utils.assert_close(rnn_hy.cpu(), ref_rnn_hy.cpu())
+
+  @parameterized.parameters(False, True)
+  def test_autocast_linear_layer_norm(self, compiled):
+    """Tests Linear -> LayerNorm with float32 parameters under autocast.
+
+    The Linear layer produces a bfloat16 activation, so the LayerNorm sees a
+    bfloat16 input with float32 parameters (layer_norm has no autocast policy,
+    as on CPU). Compares the forward and backward results with CPU autocast.
+
+    Args:
+      compiled: Whether to run with torch.compile(backend="tpu") on TPU.
+    """
+    x = torch.randn(8, 32)
+    state_dict = {
+        "0.weight": torch.randn(64, 32),
+        "0.bias": torch.randn(64),
+        "1.weight": torch.randn(64),
+        "1.bias": torch.randn(64),
+    }
+
+    def run(device):
+      model = torch.nn.Sequential(
+          torch.nn.Linear(32, 64), torch.nn.LayerNorm(64)
+      ).to(device)
+      model.load_state_dict(state_dict)
+
+      def forward(x_in):
+        with torch.autocast(device, dtype=torch.bfloat16):
+          return model(x_in)
+
+      if compiled and device == "tpu":
+        forward = torch.compile(forward, backend="tpu")
+      out = forward(x.to(device))
+      out.float().sum().backward()
+      return [out] + [param.grad for param in model.parameters()]
+
+    expected = run("cpu")
+    actual = run("tpu")
+    self.assertEqual(actual[0].dtype, torch.bfloat16)
+    for actual_tensor, expected_tensor in zip(actual, expected, strict=True):
+      test_utils.assert_close(
+          actual=actual_tensor.cpu(),
+          expected=expected_tensor,
+          rtol=2e-2,
+          atol=2e-2,
+      )
 
 
 if __name__ == "__main__":
