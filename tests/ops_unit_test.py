@@ -25481,6 +25481,80 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         utils.assert_close(actual=tpu_comp_sm.cpu(), expected=cpu_sm)
         utils.assert_close(actual=tpu_comp_lsm.cpu(), expected=cpu_lsm)
 
+  def test_softmax_zero_dim_scalar_out_and_backward(self):
+    # ops_test covers 0-D scalar (dim=0) forward, .out, and autograd backward;
+    # cover dim=-1, half_to_float=True, and explicit backward .out here.
+    def test_fn(device: str):
+      x = torch.tensor(3.5, dtype=torch.bfloat16, device=device)
+      grad = torch.tensor(2.0, dtype=torch.bfloat16, device=device)
+
+      sm_f32 = torch.empty((), dtype=torch.float32, device=device)
+      lsm_f32 = torch.empty((), dtype=torch.float32, device=device)
+      # CPU rejects half_to_float=True, so its reference upcasts the input.
+      half_to_float = device != "cpu"
+      src = x.float() if device == "cpu" else x
+      torch.ops.aten._softmax.out(src, -1, half_to_float, out=sm_f32)
+      torch.ops.aten._log_softmax.out(src, -1, half_to_float, out=lsm_f32)
+
+      sm_out = torch.softmax(x, dim=-1)
+      lsm_out = torch.log_softmax(x, dim=-1)
+      sm_grad = torch.empty((), dtype=torch.bfloat16, device=device)
+      torch.ops.aten._softmax_backward_data.out(
+          grad, sm_out, -1, torch.bfloat16, grad_input=sm_grad
+      )
+      lsm_grad = torch.empty((), dtype=torch.bfloat16, device=device)
+      torch.ops.aten._log_softmax_backward_data.out(
+          grad, lsm_out, -1, torch.bfloat16, out=lsm_grad
+      )
+      return sm_f32, lsm_f32, sm_grad, lsm_grad
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_masked_softmax_empty_and_scalar_out(self):
+    # Upstream CPU masked_softmax divides by dim_size unconditionally and
+    # crashes on empty reduction dims, so verify empty shapes against empty
+    # tensors directly alongside scalar dim=None .out.
+    for shape, dim in (((0, 3), -1), ((3, 0), None), ((3, 0), -1)):
+      expected = torch.empty(shape, dtype=torch.float32)
+      x = expected.to("tpu")
+      mask = torch.empty(shape, dtype=torch.bool, device="tpu")
+      res = torch.ops.aten._masked_softmax(x, mask, dim=dim, mask_type=2)
+      utils.assert_close(actual=res.cpu(), expected=expected)
+      out = torch.empty((2, 2), dtype=torch.float32, device="tpu")
+      torch.ops.aten._masked_softmax.out(x, mask, dim=dim, mask_type=2, out=out)
+      utils.assert_close(actual=out.cpu(), expected=expected)
+      grad_res = torch.ops.aten._masked_softmax_backward(x, out, mask, dim=dim)
+      utils.assert_close(actual=grad_res.cpu(), expected=expected)
+      grad_out = torch.empty((2, 2), dtype=torch.float32, device="tpu")
+      torch.ops.aten._masked_softmax_backward.out(
+          x, out, mask, dim=dim, out=grad_out
+      )
+      utils.assert_close(actual=grad_out.cpu(), expected=expected)
+
+    # _masked_softmax_backward short-circuits 0-element grad_output before dim
+    # validation, matching upstream PyTorch.
+    empty_x = torch.empty((0, 3), dtype=torch.float32, device="tpu")
+    empty_mask = torch.empty((0, 3), dtype=torch.bool, device="tpu")
+    utils.assert_close(
+        actual=torch.ops.aten._masked_softmax_backward(
+            empty_x, empty_x, empty_mask, dim=10
+        ).cpu(),
+        expected=torch.empty((0, 3), dtype=torch.float32),
+    )
+
+    x_0d = torch.tensor(3.14, dtype=torch.float32, device="tpu")
+    mask_0d = torch.tensor(False, dtype=torch.bool, device="tpu")
+    out_0d = torch.empty((), dtype=torch.float32, device="tpu")
+    torch.ops.aten._masked_softmax.out(
+        x_0d, mask_0d, dim=None, mask_type=2, out=out_0d
+    )
+    utils.assert_close(actual=out_0d.cpu(), expected=torch.tensor(1.0))
+    grad_0d = torch.empty((), dtype=torch.float32, device="tpu")
+    torch.ops.aten._masked_softmax_backward.out(
+        x_0d, out_0d, mask_0d, dim=None, out=grad_0d
+    )
+    utils.assert_close(actual=grad_0d.cpu(), expected=torch.tensor(0.0))
+
   def test_softmax_dynamic_reduction_dim(self):
     for dtype in (torch.float32, torch.bfloat16):
       for dim in (0, 1, -1):

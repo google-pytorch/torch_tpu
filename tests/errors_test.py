@@ -11971,6 +11971,186 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.log_softmax(t, 0, out=out_f64)
 
+  def test_softmax_dim_out_of_bounds(self):
+    t_1d = torch.ones(2, device=et.device(), dtype=torch.float32)
+    out_1d = torch.empty(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax(): expected dimension to be in range [-1, 0], got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 5)""",
+    ):
+      torch.ops.aten._softmax.out(t_1d, 5, False, out=out_1d)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax(): expected dimension to be in range [-1, 0], got -2""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+    ):
+      torch.ops.aten._softmax.out(t_1d, -2, False, out=out_1d)
+
+    t_0d = torch.ones((), device=et.device(), dtype=torch.float32)
+    out_0d = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 5)""",
+    ):
+      torch.softmax(t_0d, dim=5, out=out_0d)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+    ):
+      torch.ops.aten._softmax.out(t_0d, -2, False, out=out_0d)
+
+    t_empty = torch.ones((0, 3), device=et.device(), dtype=torch.float32)
+    out_empty = torch.empty((0, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax(): expected dimension to be in range [-2, 1], got 10""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 10)""",
+    ):
+      torch.softmax(t_empty, dim=10, out=out_empty)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax(): expected dimension to be in range [-2, 1], got -3""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got -3)""",
+    ):
+      torch.ops.aten._softmax.out(t_empty, -3, False, out=out_empty)
+
+  def test_log_softmax_dim_out_of_bounds(self):
+    t_1d = torch.ones(2, device=et.device(), dtype=torch.float32)
+    out_1d = torch.empty(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax(): expected dimension to be in range [-1, 0], got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 5)""",
+    ):
+      torch.ops.aten._log_softmax.out(t_1d, 5, False, out=out_1d)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax(): expected dimension to be in range [-1, 0], got -2""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+    ):
+      torch.ops.aten._log_softmax.out(t_1d, -2, False, out=out_1d)
+
+    t_0d = torch.ones((), device=et.device(), dtype=torch.float32)
+    out_0d = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 5)""",
+    ):
+      torch.log_softmax(t_0d, dim=5, out=out_0d)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+    ):
+      torch.ops.aten._log_softmax.out(t_0d, -2, False, out=out_0d)
+
+    t_empty = torch.ones((0, 3), device=et.device(), dtype=torch.float32)
+    out_empty = torch.empty((0, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax(): expected dimension to be in range [-2, 1], got 10""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 10)""",
+    ):
+      torch.log_softmax(t_empty, dim=10, out=out_empty)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax(): expected dimension to be in range [-2, 1], got -3""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got -3)""",
+    ):
+      torch.ops.aten._log_softmax.out(t_empty, -3, False, out=out_empty)
+
+  def test_softmax_backward_dim_out_of_bounds(self):
+    t_0d = torch.ones((), device=et.device(), dtype=torch.float32)
+    out_0d = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax_backward_data(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 5)""",
+    ):
+      torch.ops.aten._softmax_backward_data.out(
+          t_0d, t_0d, 5, torch.float32, grad_input=out_0d
+      )
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax_backward_data(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+    ):
+      torch.ops.aten._softmax_backward_data.out(
+          t_0d, t_0d, -2, torch.float32, grad_input=out_0d
+      )
+
+    t_empty = torch.ones((0, 3), device=et.device(), dtype=torch.float32)
+    out_empty = torch.empty((0, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax_backward_data(): expected dimension to be in range [-2, 1], got 10""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 10)""",
+    ):
+      torch.ops.aten._softmax_backward_data.out(
+          t_empty, t_empty, 10, torch.float32, grad_input=out_empty
+      )
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""softmax_backward_data(): expected dimension to be in range [-2, 1], got -3""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got -3)""",
+    ):
+      torch.ops.aten._softmax_backward_data.out(
+          t_empty, t_empty, -3, torch.float32, grad_input=out_empty
+      )
+
+  def test_log_softmax_backward_dim_out_of_bounds(self):
+    t_0d = torch.ones((), device=et.device(), dtype=torch.float32)
+    out_0d = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax_backward_data(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 5)""",
+    ):
+      torch.ops.aten._log_softmax_backward_data.out(
+          t_0d, t_0d, 5, torch.float32, out=out_0d
+      )
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax_backward_data(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+    ):
+      torch.ops.aten._log_softmax_backward_data.out(
+          t_0d, t_0d, -2, torch.float32, out=out_0d
+      )
+
+    t_empty = torch.ones((0, 3), device=et.device(), dtype=torch.float32)
+    out_empty = torch.empty((0, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax_backward_data(): expected dimension to be in range [-2, 1], got 10""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 10)""",
+    ):
+      torch.ops.aten._log_softmax_backward_data.out(
+          t_empty, t_empty, 10, torch.float32, out=out_empty
+      )
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""log_softmax_backward_data(): expected dimension to be in range [-2, 1], got -3""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got -3)""",
+    ):
+      torch.ops.aten._log_softmax_backward_data.out(
+          t_empty, t_empty, -3, torch.float32, out=out_empty
+      )
+
   def test_log_sigmoid_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device(), dtype=torch.float32)
     out_int = torch.empty(5, device=et.device(), dtype=torch.int32)
@@ -18924,6 +19104,51 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
           torch.tensor(3.14, dtype=torch.float32, device=et.device()),
           torch.tensor(False, dtype=torch.bool, device=et.device()),
           dim=1,
+      )
+
+  def test_masked_softmax_dim_out_of_bounds(self):
+    empty_x = torch.ones((0, 3), dtype=torch.float32, device=et.device())
+    empty_mask = torch.zeros((0, 3), dtype=torch.bool, device=et.device())
+    empty_out = torch.empty((0, 3), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 10)""",
+        tpu="""masked_softmax(): expected dimension to be in range [-2, 1], got 10""",
+    ):
+      torch.ops.aten._masked_softmax(empty_x, empty_mask, dim=10, mask_type=2)
+
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got -3)""",
+        tpu="""masked_softmax(): expected dimension to be in range [-2, 1], got -3""",
+    ):
+      torch.ops.aten._masked_softmax.out(
+          empty_x, empty_mask, dim=-3, mask_type=2, out=empty_out
+      )
+
+    scalar_x = torch.ones((), dtype=torch.float32, device=et.device())
+    scalar_mask = torch.zeros((), dtype=torch.bool, device=et.device())
+    scalar_out = torch.empty((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+        tpu="""masked_softmax(): expected dimension to be in range [-1, 0], got -2""",
+    ):
+      torch.ops.aten._masked_softmax.out(
+          scalar_x, scalar_mask, dim=-2, mask_type=2, out=scalar_out
+      )
+
+  def test_masked_softmax_backward_out_scalar_dim_out_of_bounds(self):
+    scalar_x = torch.ones((), dtype=torch.float32, device=et.device())
+    scalar_mask = torch.zeros((), dtype=torch.bool, device=et.device())
+    scalar_out = torch.empty((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+        tpu="""masked_softmax_backward(): expected dimension to be in range [-1, 0], got -2""",
+    ):
+      torch.ops.aten._masked_softmax_backward.out(
+          scalar_x, scalar_x, scalar_mask, dim=-2, out=scalar_out
       )
 
   def test_histc_bfloat16_unsupported(self):

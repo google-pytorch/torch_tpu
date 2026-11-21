@@ -145,6 +145,15 @@ absl::Status ValidateMaskedSoftmaxBackwardInputs(const at::Tensor& grad_output,
   return absl::OkStatus();
 }
 
+// Resolves optional `dim` for `_masked_softmax`, which treats 0-D scalars as
+// rank 1 (valid `dim` in [-1, 0], defaulting to 0).
+absl::StatusOr<int64_t> ResolveMaskedSoftmaxDim(
+    const std::optional<int64_t> dim, const int64_t rank) {
+  const int64_t default_dim = rank > 0 ? rank - 1 : 0;
+  const int64_t effective_rank = rank == 0 ? 1 : rank;
+  return SafeWrapDim(dim.value_or(default_dim), effective_rank);
+}
+
 absl::Status MaskedSoftmaxInternalOut(const at::Tensor& self,
                                       const at::Tensor& mask,
                                       std::optional<int64_t> dim,
@@ -154,15 +163,14 @@ absl::Status MaskedSoftmaxInternalOut(const at::Tensor& self,
   TT_ASSIGN_OR_RETURN(const int64_t resolved_mask_type,
                       ValidateMaskedSoftmaxInputs(self, mask, mask_type));
 
+  // Validate dim before the 0-element early return to match PyTorch's forward
+  // error contract.
+  TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim,
+                      ResolveMaskedSoftmaxDim(dim, self.dim()));
+
   if (self.numel() == 0) {
     return ResizeTensorIfShapeDiffers(out, self.sizes());
   }
-
-  const int64_t default_dim = self.dim() > 0 ? self.dim() - 1 : 0;
-  const int64_t dim_val = dim.value_or(default_dim);
-  const int64_t input_rank = self.dim() == 0 ? 1 : self.dim();
-  TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim,
-                      SafeWrapDim(dim_val, input_rank));
 
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -193,15 +201,14 @@ absl::Status MaskedSoftmaxBackwardInternalOut(const at::Tensor& grad_output,
   TT_RETURN_IF_ERROR(
       ValidateMaskedSoftmaxBackwardInputs(grad_output, output, mask));
 
+  // Upstream PyTorch's _masked_softmax_backward returns an empty grad_input on
+  // 0-element grad_output before wrapping or validating dim.
   if (grad_output.numel() == 0) {
     return ResizeTensorIfShapeDiffers(grad_input, output.sizes());
   }
 
-  const int64_t default_dim = output.dim() > 0 ? output.dim() - 1 : 0;
-  const int64_t dim_val = dim.value_or(default_dim);
-  const int64_t input_rank = output.dim() == 0 ? 1 : output.dim();
   TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim,
-                      SafeWrapDim(dim_val, input_rank));
+                      ResolveMaskedSoftmaxDim(dim, output.dim()));
 
   const auto precision = GetAndAddPrecisionTo(param_keys);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,

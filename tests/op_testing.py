@@ -3197,6 +3197,21 @@ def _sample_inputs_masked_softmax(
       kwargs={"dim": 1, "mask_type": 2},
       name="2d_mask_type2",
   )
+  # 0D scalar inputs (unmasked with default dim=None, masked with dim=-1).
+  # 0-element inputs are omitted here because upstream GPU _masked_softmax
+  # divides by size(dim) / size(0) unconditionally and crashes with SIGFPE.
+  yield SampleInput(
+      make_arg((), offset=2),
+      args=(torch.tensor(False, device=device, dtype=torch.bool),),
+      kwargs={"dim": None, "mask_type": 2},
+      name="0d_unmasked_dim_none",
+  )
+  yield SampleInput(
+      make_arg((), offset=3),
+      args=(torch.tensor(True, device=device, dtype=torch.bool),),
+      kwargs={"dim": -1, "mask_type": 2},
+      name="0d_masked_dim_neg1",
+  )
 
 
 def _sample_inputs_masked_softmax_backward(
@@ -3254,6 +3269,37 @@ def _sample_inputs_masked_softmax_backward(
       args=(make_arg((l, s), offset=3).masked_fill(mask_2d, 0.0), mask_2d),
       kwargs={"dim": 1},
       name="2d_dim1",
+  )
+  yield SampleInput(
+      make_arg((), offset=4),
+      args=(
+          torch.tensor(1.0, device=device, dtype=dtype),
+          torch.tensor(False, device=device, dtype=torch.bool),
+      ),
+      # Upstream GPU defaults a 0-D dim=None to -1 and rejects it, so pass an
+      # explicit dim.
+      kwargs={"dim": 0},
+      name="0d_unmasked_dim0",
+  )
+  yield SampleInput(
+      make_arg((), offset=5),
+      args=(
+          torch.tensor(float("nan"), device=device, dtype=dtype),
+          torch.tensor(True, device=device, dtype=torch.bool),
+      ),
+      kwargs={"dim": -1},
+      name="0d_masked_dim_neg1",
+  )
+  # Empty non-reduction dim; empty reduction dim ((l, 0)) is omitted because
+  # upstream CPU softmax backward divides by size(dim) and crashes with SIGFPE.
+  yield SampleInput(
+      make_arg((0, s), offset=6),
+      args=(
+          make_arg((0, s), offset=7),
+          torch.zeros((0, s), device=device, dtype=torch.bool),
+      ),
+      kwargs={"dim": -1},
+      name="empty_batch_dim",
   )
 
 
