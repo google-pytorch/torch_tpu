@@ -845,6 +845,7 @@ torch_tpu_cc_library(
         "//csrc/ops/hardswish:hardswish_aten_kernels",
         "//csrc/ops/hardtanh:hardtanh_aten_kernels",
         "//csrc/ops/histc:histc_aten_kernels",
+        "//csrc/ops/huber_loss:huber_loss_aten_kernels",
         "//csrc/ops/im2col:im2col_aten_kernels",
         "//csrc/ops/index:index_aten_kernels",
         "//csrc/ops/index_add:index_add_aten_kernels",
