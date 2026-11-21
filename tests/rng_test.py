@@ -17,7 +17,9 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._prims import rng_prims
 from torch._subclasses import fake_tensor
+from torch.fx.experimental import proxy_tensor
 from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import annotations
 from tests import seed_test_utils
@@ -277,6 +279,117 @@ class RngTest(seed_test_utils.RepeatableTest):
       self.assertFalse(torch.equal(initial_state, new_state))
     else:
       self.assertTrue(torch.equal(initial_state, new_state))
+
+  def test_run_and_save_and_run_with_rng_state_tpu(self):
+    device = torch.device("tpu")
+    torch.manual_seed(123)
+    ref1 = torch.rand(10, device=device)
+    ref2 = torch.rand(10, device=device)
+
+    torch.manual_seed(123)
+    rng_state1, res1 = rng_prims.run_and_save_rng_state(
+        torch.rand, 10, device=device
+    )
+    rng_state2, res2 = rng_prims.run_and_save_rng_state(
+        torch.rand, 10, device=device
+    )
+    self.assertEqual(rng_state1.device.type, "cpu")
+    self.assertEqual(rng_state1.dtype, torch.uint8)
+    self.assertEqual(rng_state1.shape, (16,))
+
+    state_before_replay = torch.tpu.get_rng_state(device)
+    res3 = rng_prims.run_with_rng_state(
+        rng_state1, torch.rand, 10, device=device
+    )
+    res4 = rng_prims.run_with_rng_state(
+        rng_state2, torch.rand, 10, device=device
+    )
+    self.assertTrue(
+        torch.equal(state_before_replay, torch.tpu.get_rng_state(device))
+    )
+    self.assertTrue(torch.equal(ref1, res1))
+    self.assertTrue(torch.equal(ref2, res2))
+    self.assertTrue(torch.equal(ref1, res3))
+    self.assertTrue(torch.equal(ref2, res4))
+
+  def test_run_with_rng_state_restores_state_on_error(self):
+    device = torch.device("tpu")
+    torch.manual_seed(42)
+    saved_state = torch.tpu.get_rng_state(device)
+    torch.rand(10, device=device)
+    current_state = torch.tpu.get_rng_state(device)
+    self.assertFalse(torch.equal(saved_state, current_state))
+
+    def _failing_op(x):
+      del x
+      raise RuntimeError("boom")
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifying RNG state cleanup on op exception
+        RuntimeError, "boom"
+    ):
+      rng_prims.run_with_rng_state(
+          saved_state, _failing_op, torch.zeros(4, device=device)
+      )
+    self.assertTrue(torch.equal(current_state, torch.tpu.get_rng_state(device)))
+
+  def test_run_and_save_rng_state_fake_and_proxy_mode(self):
+    device = torch.device("tpu")
+    with fake_tensor.FakeTensorMode(allow_non_fake_inputs=False):
+      x_fake = torch.empty((4, 4), device=device)
+      rng_state, (out, mask) = rng_prims.run_and_save_rng_state(
+          torch.ops.aten.native_dropout.default, x_fake, 0.5, True
+      )
+      self.assertEqual(rng_state.device.type, "cpu")
+      self.assertEqual(rng_state.dtype, torch.uint8)
+      self.assertEqual(rng_state.shape, (16,))
+      self.assertEqual(out.device.type, "tpu")
+      self.assertEqual(out.shape, (4, 4))
+      self.assertEqual(mask.dtype, torch.bool)
+
+    def _traced(x):
+      state, (out, _) = rng_prims.run_and_save_rng_state(
+          torch.ops.aten.native_dropout.default, x, 0.5, True
+      )
+      replayed, _ = rng_prims.run_with_rng_state(
+          state, torch.ops.aten.native_dropout.default, x, 0.5, True
+      )
+      return out, replayed
+
+    gm = proxy_tensor.make_fx(_traced, tracing_mode="fake")(
+        torch.empty((4, 4), device=device)
+    )
+    targets = {
+        node.target for node in gm.graph.nodes if node.op == "call_function"
+    }
+    self.assertIn(rng_prims.run_and_save_rng_state, targets)
+    self.assertIn(rng_prims.run_with_rng_state, targets)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="reentrant", use_reentrant=True),
+      dict(testcase_name="non_reentrant", use_reentrant=False),
+  )
+  def test_eager_checkpoint_preserves_tpu_rng_state(self, use_reentrant):
+    device = torch.device("tpu")
+    x = torch.randn(4, 4, device=device, requires_grad=True)
+    self.assertTrue(getattr(torch.tpu, "_initialized", False))
+
+    def _fn(t):
+      return torch.sigmoid(torch.dropout(torch.sigmoid(t), p=0.5, train=True))
+
+    torch.manual_seed(0)
+    x_ref = x.detach().clone().requires_grad_(True)
+    ref_out = _fn(x_ref)
+    ref_out.sum().backward()
+
+    torch.manual_seed(0)
+    x_ckpt = x.detach().clone().requires_grad_(True)
+    ckpt_out = torch.utils.checkpoint.checkpoint(
+        _fn, x_ckpt, use_reentrant=use_reentrant, preserve_rng_state=True
+    )
+    ckpt_out.sum().backward()
+
+    self.assertTrue(torch.equal(ref_out, ckpt_out))
+    self.assertTrue(torch.equal(x_ref.grad, x_ckpt.grad))
 
 
 if __name__ == "__main__":

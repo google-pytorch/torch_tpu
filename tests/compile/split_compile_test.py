@@ -16,6 +16,7 @@ import collections
 from collections.abc import Callable, Iterator
 import contextlib
 import gc
+import operator
 import pickle
 import re
 from typing import Any
@@ -387,6 +388,52 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     self.assertEqual(num_partitions, [1, 1])
     utils.assert_close(x.grad.cpu(), torch.full((2, 2), 7.0))
 
+  def test_eager_rng_hop_preserves_order_with_compiled_tpu_random_ops(self):
+    device = torch.device("tpu")
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    r1 = graph.call_function(
+        torch.ops.aten.rand.default, ([4],), {"device": device}
+    )
+    r2_hop = graph.call_function(
+        torch.ops.higher_order.run_and_save_rng_state,
+        (torch.ops.aten.rand.default, [4]),
+        {"device": device},
+    )
+    r2_state = graph.call_function(operator.getitem, (r2_hop, 0))
+    r2 = graph.call_function(operator.getitem, (r2_hop, 1))
+    r3 = graph.call_function(
+        torch.ops.aten.rand.default, ([4],), {"device": device}
+    )
+    out = graph.call_function(torch.ops.aten.add.Tensor, (x, r3))
+    graph.output((r1, r2, out, r2_state))
+    gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    example_x = torch.zeros(4, device=device)
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()  # pylint: disable=protected-access
+    with fake_mode:
+      fake_x = fake_mode.from_tensor(example_x)
+      torch.fx.passes.shape_prop.ShapeProp(gm).propagate(fake_x)
+
+    executable = split_compiler.SplitCompiler(compiler.StaticCompiler())(
+        gm, (example_x,)
+    )
+
+    torch.manual_seed(0)
+    ref1 = torch.rand(4, device=device)
+    ref2 = torch.rand(4, device=device)
+    ref3 = torch.rand(4, device=device)
+
+    torch.manual_seed(0)
+    got1, got2, got3, got_state = executable(example_x)
+    self.assertTrue(torch.equal(got1.cpu(), ref1.cpu()))
+    self.assertTrue(torch.equal(got2.cpu(), ref2.cpu()))
+    self.assertTrue(torch.equal(got3.cpu(), ref3.cpu()))
+    replayed = torch.ops.higher_order.run_with_rng_state(
+        got_state, torch.ops.aten.rand.default, [4], device=device
+    )
+    self.assertTrue(torch.equal(replayed.cpu(), ref2.cpu()))
+
 
 class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
 
@@ -526,6 +573,140 @@ class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
     self.assertLen(graphs, 2)
     for gm in graphs:
       self.assertTrue(split_compiler._is_fully_spmd_safe(gm))
+
+  def test_assign_devices_routes_eager_rng_hops_and_getitems_to_cpu(self):
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    x.meta["val"] = torch.empty((4, 4), device="meta")
+    sigmoid = graph.call_function(torch.ops.aten.sigmoid.default, (x,))
+    sigmoid.meta["val"] = torch.empty((4, 4), device="meta")
+    rng_hop = graph.call_function(
+        torch.ops.higher_order.run_and_save_rng_state,
+        (torch.ops.aten.native_dropout.default, sigmoid, 0.5, True),
+    )
+    state = graph.call_function(operator.getitem, (rng_hop, 0))
+    state.meta["val"] = torch.empty((16,), dtype=torch.uint8, device="cpu")
+    dropout_tuple = graph.call_function(operator.getitem, (rng_hop, 1))
+    dropout_out = graph.call_function(operator.getitem, (dropout_tuple, 0))
+    dropout_out.meta["val"] = torch.empty((4, 4), device="meta")
+    replayed = graph.call_function(
+        torch.ops.higher_order.run_with_rng_state,
+        (state, torch.ops.aten.native_dropout.default, sigmoid, 0.5, True),
+    )
+    replayed_mask = graph.call_function(operator.getitem, (replayed, 1))
+    replayed_mask.meta["val"] = torch.empty(
+        (4, 4), dtype=torch.bool, device="meta"
+    )
+    out = graph.call_function(torch.ops.aten.sigmoid.default, (dropout_out,))
+    out.meta["val"] = torch.empty((4, 4), device="meta")
+    graph.output((out, replayed_mask))
+
+    devices = split_compiler._assign_devices(graph)  # pylint: disable=protected-access
+    self.assertEqual(devices[sigmoid], split_compiler._Device.TPU)  # pylint: disable=protected-access
+    self.assertEqual(devices[out], split_compiler._Device.TPU)  # pylint: disable=protected-access
+    for node in (
+        rng_hop,
+        state,
+        dropout_tuple,
+        dropout_out,
+        replayed,
+        replayed_mask,
+    ):
+      self.assertEqual(devices[node], split_compiler._Device.CPU)  # pylint: disable=protected-access
+
+  def test_eager_rng_hop_partition_order_with_tpu_random_ops(self):
+    class _RecordingCompiler(compiler.Compiler):
+
+      def __init__(self):
+        super().__init__()
+        self.compiled_submods: list[torch.fx.GraphModule] = []
+
+      def __call__(
+          self,
+          graph_module: torch.fx.GraphModule,
+          example_inputs,
+          is_fwd: bool = True,
+          module_name: str | None = None,
+          **kwargs,
+      ):
+        del example_inputs, is_fwd, module_name, kwargs
+        self.compiled_submods.append(graph_module)
+        return graph_module
+
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()  # pylint: disable=protected-access
+    with fake_mode:
+      device = torch.device("tpu")
+      graph = torch.fx.Graph()
+      x = graph.placeholder("x")
+      x.meta["val"] = torch.empty((4,), device=device)
+      r1 = graph.call_function(
+          torch.ops.aten.rand.default, ([4],), {"device": device}
+      )
+      r1.meta["val"] = torch.empty((4,), device=device)
+      r2_hop = graph.call_function(
+          torch.ops.higher_order.run_and_save_rng_state,
+          (torch.ops.aten.rand.default, [4]),
+          {"device": device},
+      )
+      r2_hop.meta["val"] = (
+          torch.empty((16,), dtype=torch.uint8, device="cpu"),
+          torch.empty((4,), device=device),
+      )
+      r2_state = graph.call_function(operator.getitem, (r2_hop, 0))
+      r2_state.meta["val"] = torch.empty((16,), dtype=torch.uint8, device="cpu")
+      r2 = graph.call_function(operator.getitem, (r2_hop, 1))
+      r2.meta["val"] = torch.empty((4,), device=device)
+      r3 = graph.call_function(
+          torch.ops.aten.rand.default, ([4],), {"device": device}
+      )
+      r3.meta["val"] = torch.empty((4,), device=device)
+      out = graph.call_function(torch.ops.aten.add.Tensor, (x, r3))
+      out.meta["val"] = torch.empty((4,), device=device)
+      graph.output((r1, r2, out, r2_state))
+      gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+      base = _RecordingCompiler()
+      fake_x = torch.empty((4,), device=device)
+      executable = split_compiler.SplitCompiler(base)._compile_graph(  # pylint: disable=protected-access
+          gm, [fake_x], materialize_collectives=False
+      )
+
+    split_gm = executable._split_gm  # pylint: disable=protected-access
+    call_order = [
+        node.target for node in split_gm.graph.nodes if node.op == "call_module"
+    ]
+    self.assertEqual(
+        call_order, ["compiled_submod_0", "submod_1", "compiled_submod_2"]
+    )
+    self.assertLen(base.compiled_submods, 2)
+    submod_0_targets = [
+        n.target
+        for n in base.compiled_submods[0].graph.nodes
+        if n.op == "call_function"
+    ]
+    submod_1_targets = [
+        n.target
+        for n in split_gm.submod_1.graph.nodes
+        if n.op == "call_function"
+    ]
+    submod_2_targets = [
+        n.target
+        for n in base.compiled_submods[1].graph.nodes
+        if n.op == "call_function"
+    ]
+    self.assertEqual(submod_0_targets, [torch.ops.aten.rand.default])
+    self.assertEqual(
+        submod_1_targets,
+        [
+            torch.ops.higher_order.run_and_save_rng_state,
+            operator.getitem,
+            operator.getitem,
+        ],
+    )
+    self.assertEqual(
+        submod_2_targets,
+        [torch.ops.aten.rand.default, torch.ops.aten.add.Tensor],
+    )
 
 
 if __name__ == "__main__":

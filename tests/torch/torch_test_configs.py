@@ -97,7 +97,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
     "dynamo/test_activation_checkpointing": {
         "ActivationCheckpointingViaTagsTests": [
             "test_autocast_flash_attention",
-            "test_compile_selective_checkpoint_random_op",
             "test_pattern_matcher",
             "test_tags_dropout",
             "test_tags_rand",
@@ -722,7 +721,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
         "TestPrimsDevice": [
             "test_cbrt_prim",
             "test_fft_meta_layout",
-            "test_functional_rng_wrappers",
         ],
         "TestRefs": [
             "test_logspace_with_complex_input",
@@ -968,9 +966,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
         ],
     },
     "test_utils": {
-        "TestCheckpointDeviceType": [
-            "test_checkpoint_rng_accelerator",
-        ],
         "TestDeviceLazyInit": [
             "test_fork_poison_on_lazy_init",
         ],
