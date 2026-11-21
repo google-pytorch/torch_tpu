@@ -46,6 +46,7 @@ from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.fx_passes import clone_mutated_returned_placeholders
 from torch_tpu._internal.compile.fx_passes import force_collectives_output
+from torch_tpu._internal.compile.fx_passes import fuse_collective_relayouts
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.fx_passes import propagate_symints
 from torch_tpu._internal.compile.fx_passes import reorder_symints
@@ -1174,6 +1175,16 @@ class SplitCompiler(compiler.Compiler):
       module_name: str | None = None,
   ) -> _SplitCompiledExecutable:
     """Splits the graph on collectives and compiles the submodules."""
+    # This must run before the graph is split on collectives, which would
+    # separate the collectives from their chunk/cat relayouts. It runs on the
+    # GraphModule so that it is recompiled, since the handshake below
+    # fingerprints `graph_module.code`.
+    if env.get_bool_env_once(
+        "TORCH_TPU_INTERNAL_FUSE_COLLECTIVE_RELAYOUTS", default_value=True
+    ):
+      graph_transform_observer.GraphTransformObserver(
+          graph_module, "fuse_collective_relayouts"
+      ).apply_gm_pass(fuse_collective_relayouts.apply)
 
     handshake_stage = tpu_torch_compile.get_handshake_stage_env_var_once()
     materialize_collectives = env.get_bool_env_once(
