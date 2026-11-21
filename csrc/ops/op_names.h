@@ -455,6 +455,8 @@ enum class OpName {
   kGtOut,
   kGtScalarOut,
   kGtTensorOut,
+  kHardshrinkBackwardGradInput,
+  kHardshrinkOut,
   kHardsigmoidBackwardGradInput,
   kHardsigmoidOut,
   kHardswish,
@@ -787,6 +789,8 @@ enum class OpName {
   kSoftmaxOut,
   kSoftplusBackwardGradInput,
   kSoftplusOut,
+  kSoftshrinkBackwardGradInput,
+  kSoftshrinkOut,
   kSortValuesStable,
   kSparseCooTensorWithDims,
   kSparseCooTensorWithDimsAndTensors,
@@ -1774,6 +1778,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "gt.Scalar_out";
     case OpName::kGtTensorOut:
       return "gt.Tensor_out";
+    case OpName::kHardshrinkBackwardGradInput:
+      return "hardshrink_backward.grad_input";
+    case OpName::kHardshrinkOut:
+      return "hardshrink.out";
     case OpName::kHardsigmoidBackwardGradInput:
       return "hardsigmoid_backward.grad_input";
     case OpName::kHardsigmoidOut:
@@ -2442,6 +2450,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "softplus_backward.grad_input";
     case OpName::kSoftplusOut:
       return "softplus.out";
+    case OpName::kSoftshrinkBackwardGradInput:
+      return "softshrink_backward.grad_input";
+    case OpName::kSoftshrinkOut:
+      return "softshrink.out";
     case OpName::kSortValuesStable:
       return "sort.values_stable";
     case OpName::kSparseCooTensorWithDims:
