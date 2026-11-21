@@ -23019,6 +23019,42 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       torch.set_float32_matmul_precision(prev_prec)
 
   @parameterized.named_parameters(
+      ("small_head_dim_long_seq", 256, 256, 64, 3),
+      ("large_head_dim", 256, 256, 128, 0),
+      ("small_head_dim_short_seq", 64, 64, 64, 0),
+      ("cross_attn_short_q_long_kv", 64, 256, 64, 2),
+  )
+  def test_scaled_dot_product_attention_flash_small_head_dim_layout_constraint(
+      self, q_seq_len, kv_seq_len, head_dim, expected_constraints
+  ):
+    """Verifies @LayoutConstraint emission for small head_dim FlashAttention."""
+    q = torch.randn(
+        1, 2, q_seq_len, head_dim, device="tpu", dtype=torch.bfloat16
+    )
+    k = torch.randn(
+        1, 2, kv_seq_len, head_dim, device="tpu", dtype=torch.bfloat16
+    )
+    v = torch.randn(
+        1, 2, kv_seq_len, head_dim, device="tpu", dtype=torch.bfloat16
+    )
+    torch.accelerator.synchronize()
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      with torch.nn.attention.sdpa_kernel(
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION
+      ):
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([out], [q, k, v])
+    )
+    self.assertEqual(
+        mlir_text.count("stablehlo.custom_call @LayoutConstraint"),
+        expected_constraints,
+        msg=mlir_text,
+    )
+    if expected_constraints > 0:
+      self.assertIn("dense<[2, 3, 1, 0]>", mlir_text)
+
+  @parameterized.named_parameters(
       ("causal", lambda b, h, q_i, kv_i: q_i >= kv_i, True),
       ("unmasked", flex_attention.noop_mask, False),
       ("prefix", lambda b, h, q_i, kv_i: (kv_i < 128) | (q_i >= kv_i), False),

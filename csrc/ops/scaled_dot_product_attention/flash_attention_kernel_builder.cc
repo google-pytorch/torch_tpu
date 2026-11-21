@@ -32,6 +32,7 @@
 #include "ATen/core/TensorBase.h"
 #include "ATen/core/grad_mode.h"
 #include "ATen/ops/empty.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -65,8 +66,11 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/TypeRange.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -542,6 +546,44 @@ mlir::MlirOp ReshapeMask(mlir::MlirOp mask_mlir, int batch_size) {
   return mask_mlir;
 }
 
+// Inserts a sequence-minor (`{2, 3, 1, 0}`) `@LayoutConstraint` barrier before
+// forward FlashAttention when `head_dim < kLanes` and `seq_len >= kLanes`.
+//
+// Otherwise XLA LayoutAssignment propagates the kernel's `head_dim`-minor
+// `{3, 2, 1, 0}` layout backward into fused QKV/RoPE ops, wasting TPU lanes
+// and HBM padding. Mosaic `tpu_custom_call` only supports C-order layouts, so
+// avoiding the boundary relayout copy altogether would require a separate
+// `[B, H, D, S]` kernel variant (still needing `[B, H, S, D]` for short
+// sequences). Backward keeps the native `{3, 2, 1, 0}` layout.
+[[nodiscard]] mlir::MlirOp MaybeConstrainSmallHeadDimLayout(
+    mlir::MlirBuilder& builder, mlir::MlirOp tensor_4d) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(tensor_4d);
+  ABSL_DCHECK_EQ(type.getRank(), 4);
+  const int64_t seq_len = type.getDimSize(2);
+  const int64_t head_dim = type.getDimSize(3);
+  if (head_dim <= 0 || head_dim >= kLanes || seq_len < kLanes) {
+    return tensor_4d;
+  }
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  const mlir::DenseIntElementsAttr seq_minor_layout =
+      op_builder.getIndexTensorAttr({2, 3, 1, 0});
+  auto custom_call = mlir::stablehlo::CustomCallOp::create(
+      op_builder, builder.getLoc(), mlir::TypeRange{type},
+      mlir::ValueRange{tensor_4d.getValue()},
+      op_builder.getStringAttr("LayoutConstraint"),
+      /*has_side_effect=*/op_builder.getBoolAttr(false),
+      /*backend_config=*/op_builder.getStringAttr(""),
+      mlir::stablehlo::CustomCallApiVersionAttr::get(
+          op_builder.getContext(),
+          mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL),
+      /*called_computations=*/op_builder.getArrayAttr({}),
+      /*operand_layouts=*/op_builder.getArrayAttr({seq_minor_layout}),
+      /*result_layouts=*/op_builder.getArrayAttr({seq_minor_layout}),
+      /*output_operand_aliases=*/nullptr,
+      /*result_tilings=*/nullptr);
+  return mlir::MlirOp(builder, custom_call.getResult(0));
+}
+
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>>
 CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
                                const at::Tensor& value,
@@ -607,12 +649,12 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
 
     // The sequences are not padded to a multiple of the tile sizes: the kernel
     // handles the out-of-bounds tail of the last tile itself.
-    mlir::MlirOp query_4d =
-        flatten_batch_dims(query_mlir, config.batch_size, rank - 3);
-    mlir::MlirOp key_4d =
-        flatten_batch_dims(key_mlir, config.batch_size, rank - 3);
-    mlir::MlirOp value_4d =
-        flatten_batch_dims(value_mlir, config.batch_size, rank - 3);
+    mlir::MlirOp query_4d = MaybeConstrainSmallHeadDimLayout(
+        builder, flatten_batch_dims(query_mlir, config.batch_size, rank - 3));
+    mlir::MlirOp key_4d = MaybeConstrainSmallHeadDimLayout(
+        builder, flatten_batch_dims(key_mlir, config.batch_size, rank - 3));
+    mlir::MlirOp value_4d = MaybeConstrainSmallHeadDimLayout(
+        builder, flatten_batch_dims(value_mlir, config.batch_size, rank - 3));
 
     Dimensions out_dims_4d = {config.batch_size, config.num_heads,
                               config.q_sequence_length, config.vo_head_dim};
