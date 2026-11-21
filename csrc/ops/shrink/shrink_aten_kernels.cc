@@ -34,7 +34,6 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/binary.h"
-#include "csrc/ops/clamp/clamp.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -68,9 +67,11 @@ absl::StatusOr<mlir::MlirOp> BuildHardshrinkShlo(mlir::MlirOp input,
 absl::StatusOr<mlir::MlirOp> BuildSoftshrinkShlo(mlir::MlirOp input,
                                                  mlir::MlirOp lambd) {
   // softshrink(x) = x - clamp(x, -lambd, lambd); lambd >= 0 is validated.
+  // The clamp is written as maximum + minimum, whose binary broadcasts preserve
+  // bounded dynamic dimensions.
   TT_ASSIGN_OR_RETURN(mlir::MlirOp neg_lambd, BuildNegShlo(lambd));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp clamped,
-                      BuildClampShlo(input, neg_lambd, lambd));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp lower, BuildMaximumShlo(input, neg_lambd));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp clamped, BuildMinimumShlo(lower, lambd));
   return BuildSubShlo(input, clamped);
 }
 

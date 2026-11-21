@@ -40,7 +40,6 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:unary",
-        "//csrc/ops/clamp",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/where",
         "//shims/torch:aten_headers",

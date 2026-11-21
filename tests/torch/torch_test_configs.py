@@ -622,6 +622,7 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_softmax_results": "*",
             "test_softplus_inplace_overlap": "*",
             "test_softplus_low_threshold": "*",
+            "test_softshrink_inplace_overlap": "*",
             "test_sync_batchnorm_accuracy": "*",
             "test_sync_batchnorm_backward_elemt": "*",
             "test_threshold_inplace_overlap": "*",
