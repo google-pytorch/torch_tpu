@@ -203,12 +203,11 @@ bool IsSupportedFlashAttentionShape(
   }
 
   // Above VMEM score capacity, FlashAttention pipelines multi-block (> 256)
-  // tiles in VMEM without materializing [B, N, S_q, S_kv] to HBM; prefer
-  // StableHLO only on sub-128 sequences or single-split-tile (<= 256) sub-tile
-  // head dimensions where FlashAttention's padding waste meets or exceeds the
-  // score footprint.
-  return has_sub_tile_seq ||
-         (within_single_split_tile && flash_padding_meets_or_exceeds_score);
+  // tiles in VMEM without materializing [B, N, S_q, S_kv] to HBM; with XLA's
+  // HLO FlashAttention rewrite disabled, XLA's native fusion pipelines
+  // single-split-tile (<= 256) and sub-128-sequence inference tiles directly
+  // in VMEM across all head dimensions.
+  return has_sub_tile_seq || within_single_split_tile;
 }
 
 }  // namespace

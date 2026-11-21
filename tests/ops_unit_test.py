@@ -22218,13 +22218,15 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       self.assertNotIn(fused_overrideable, ops3_train)
 
       # Case 4: single-split-tile (<= 256) with head_dim == 128 routes to
-      # OVERRIDEABLE when total score bytes fit in VMEM, and to CUDNN_ATTENTION
-      # when large batch pushes total score bytes past VMEM (issue #6304).
+      # OVERRIDEABLE when group_live_score_bytes fits in VMEM, and multi-block
+      # (> 256) routes to CUDNN_ATTENTION (issue #6304).
       for shape, expected_op, unexpected_op in (
           ((2, 8, 256, 128), fused_overrideable, cudnn_attention),
-          ((3264, 8, 128, 128), cudnn_attention, fused_overrideable),
-          ((1632, 8, 256, 128), cudnn_attention, fused_overrideable),
+          ((3264, 8, 128, 128), fused_overrideable, cudnn_attention),
+          ((1632, 8, 256, 128), fused_overrideable, cudnn_attention),
           ((8192, 8, 51, 128), fused_overrideable, cudnn_attention),
+          ((2, 8, 512, 128), cudnn_attention, fused_overrideable),
+          ((816, 8, 512, 128), cudnn_attention, fused_overrideable),
       ):
         with self.subTest(case="head_dim_128", shape=shape):
           q = torch.randn(*shape, dtype=torch.bfloat16, device="tpu")
@@ -22234,12 +22236,11 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           self.assertIn(expected_op, ops)
           self.assertNotIn(unexpected_op, ops)
 
-      # Case 5: unified VMEM and lane-padding cost model built from hardware
-      # constants: sub-tile head_dim (< 128) prefers OVERRIDEABLE when
-      # FlashAttention's padded memory traffic meets or exceeds the score tensor
-      # footprint within single-split-tile (<= 256) or when score fits in VMEM,
-      # and falls back to CUDNN_ATTENTION when padding is smaller than score or
-      # multi-block (> 256) large batch pushes total score past VMEM.
+      # Case 5: sub-tile head_dim (< 128) prefers OVERRIDEABLE within a single
+      # split tile (<= 256) or when total score fits in VMEM and FlashAttention
+      # lane padding meets or exceeds the score footprint, and falls back to
+      # CUDNN_ATTENTION on multi-block (> 256) shapes that exceed VMEM or have
+      # smaller lane padding than score.
       for shape, expected_op, unexpected_op in (
           ((3264, 8, 128, 32), fused_overrideable, cudnn_attention),
           ((1632, 8, 256, 32), fused_overrideable, cudnn_attention),
@@ -22249,7 +22250,9 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           ((408, 8, 1024, 32), cudnn_attention, fused_overrideable),
           ((3264, 8, 128, 64), fused_overrideable, cudnn_attention),
           ((1632, 8, 256, 64), fused_overrideable, cudnn_attention),
-          ((32, 16, 256, 80), cudnn_attention, fused_overrideable),
+          ((32, 16, 256, 80), fused_overrideable, cudnn_attention),
+          ((2, 16, 512, 80), cudnn_attention, fused_overrideable),
+          ((32, 16, 512, 80), cudnn_attention, fused_overrideable),
           ((816, 8, 512, 64), cudnn_attention, fused_overrideable),
       ):
         with self.subTest(case="sub_tile_head_dim", shape=shape):
