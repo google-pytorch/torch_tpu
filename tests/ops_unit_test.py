@@ -7090,6 +7090,44 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         allow_failure=True,
     )
 
+  def test_linalg_lu_factor_ex_empty_and_aliasing(self):
+    # Empty tensors with pivot=False must return early without raising
+    # (ops_test.py skips all pivot=False samples via
+    # _linalg_lu_without_pivot_gpu).
+    for shape in ((0, 0), (0, 3, 3)):
+      with self.subTest(shape=shape):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, s=shape: torch.linalg.lu_factor_ex(
+                torch.empty(s, dtype=torch.float32, device=device), pivot=False
+            )
+        )
+
+    # When pivots and info share underlying storage (b/568044491), CPU LAPACK
+    # writes info=0 before writing 1-based pivot indices, leaving the shared
+    # element holding 1 rather than 0. Verify both outputs match CPU for
+    # check_errors=False, and verify check_errors=True checks the true info
+    # on TPU without falsely raising before restoring pivots.
+    def run_aliased(device):
+      a = torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0)
+      lu = torch.empty_like(a)
+      base = torch.zeros(3, dtype=torch.int32, device=device)
+      pivots_alias = base.view(1, 3)
+      info_alias = base[:1]
+      torch.linalg.lu_factor_ex(a, out=(lu, pivots_alias, info_alias))
+      return lu, pivots_alias, info_alias
+
+    self.assert_close_tpu_vs_cpu(run_aliased)
+
+    a_tpu = torch.eye(3, dtype=torch.float32, device="tpu").unsqueeze(0)
+    lu_tpu = torch.empty_like(a_tpu)
+    base_tpu = torch.zeros(3, dtype=torch.int32, device="tpu")
+    pivots_tpu = base_tpu.view(1, 3)
+    info_tpu = base_tpu[:1]
+    torch.linalg.lu_factor_ex(
+        a_tpu, check_errors=True, out=(lu_tpu, pivots_tpu, info_tpu)
+    )
+    self.assertEqual(pivots_tpu.cpu().tolist(), [[1, 2, 3]])
+
   def test_solve_ex_singular(self):
     torch.manual_seed(1234)
     # Create a singular matrix to trigger the unsolvable case.
