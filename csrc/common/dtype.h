@@ -138,6 +138,19 @@ int64_t TorchEquivalentBitwidth(mlir::ElementType element_type);
 // TorchEquivalentBitwidth.
 int64_t XlaEquivalentBitwidth(mlir::ElementType element_type);
 
+// Returns the number of unpacked MLIR elements stored in a single PyTorch
+// container element for `element_type` (e.g. 2 for `F4E2M1FN`, which maps to
+// `torch.float4_e2m1fn_x2`; 1 for 1-to-1 element types).
+[[nodiscard]] int64_t TorchPackingFactor(mlir::ElementType element_type);
+
+// Returns true if PyTorch packs multiple logical elements of `element_type`
+// into a single container element (i.e. `TorchPackingFactor(element_type) >
+// 1`), causing on-device dimensions to expand relative to
+// `at::Tensor::sizes()`.
+[[nodiscard]] inline bool IsPackedSubByteType(mlir::ElementType element_type) {
+  return TorchPackingFactor(element_type) > 1;
+}
+
 // Returns the real component type of the input type.
 //
 // If the input is a complex type, returns the type of its real component;
