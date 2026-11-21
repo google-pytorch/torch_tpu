@@ -65,6 +65,18 @@ RUN_IN_SUBPROCESS = flags.DEFINE_bool(  # PYTHON_FLAG_OK=benchmark
     " in-process, e.g. to attach a debugger or use --pdb_post_mortem.",
 )
 
+# 1800 s gives headroom over the slowest passing target on Borg:
+# b200_8/qwen3_5_397b_a17b_forward_compiled has taken up to ~1150 s end-to-end
+# (~330 s spawning 8 CUDA workers + ~750 s compile/measure + ~40 s cleanup).
+DISTRIBUTED_TARGET_TIMEOUT_SECONDS = flags.DEFINE_float(  # PYTHON_FLAG_OK=benchmark
+    "distributed_target_timeout_seconds",
+    1800.0,
+    "Time limit in seconds for one distributed benchmark target, from spawning"
+    " its workers to their exit. Past it, the launcher kills the workers and"
+    " reports the target as TIMED_OUT. 0 disables the limit.",
+    lower_bound=0.0,
+)
+
 FAKE_TENSOR_MODE = flags.DEFINE_bool(  # PYTHON_FLAG_OK=benchmark
     "fake_tensor_mode",
     False,

@@ -691,6 +691,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
         "//tests/distributed:distributed_utils",
+        "//tests/distributed:worker_supervisor",
         "@pypi//portpicker",
     ],
 )

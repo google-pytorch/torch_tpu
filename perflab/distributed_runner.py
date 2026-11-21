@@ -62,6 +62,7 @@ from perflab import target as target_lib
 from perflab import torch_device_ops
 from perflab import workload as workload_lib
 from tests.distributed import distributed_utils
+from tests.distributed import worker_supervisor
 
 # Import all models and steps to trigger benchmark registration. Failures are
 # collected instead of raised here so one broken module does not prevent the
@@ -106,6 +107,11 @@ class TargetStatus(enum.Enum):
   PASSED = "PASSED"
   FAILED = "FAILED"
   SKIPPED = "SKIPPED"
+  TIMED_OUT = "TIMED_OUT"
+
+
+# The statuses that fail the run.
+_FAILING_STATUSES = frozenset({TargetStatus.FAILED, TargetStatus.TIMED_OUT})
 
 
 def _get_skip_reason(
@@ -184,11 +190,12 @@ def _format_summary(
       f"Distributed benchmark summary ({platform.value}):"
       f" {counts[TargetStatus.PASSED]} passed,"
       f" {counts[TargetStatus.FAILED]} failed,"
-      f" {counts[TargetStatus.SKIPPED]} skipped"
+      f" {counts[TargetStatus.SKIPPED]} skipped,"
+      f" {counts[TargetStatus.TIMED_OUT]} timed out"
   ]
   for r in results:
     lines.append(
-        f"  {r.name:<{name_width}}  {r.status.value:<7}  {r.reason}".rstrip()
+        f"  {r.name:<{name_width}}  {r.status.value:<9}  {r.reason}".rstrip()
     )
   return "\n".join(lines)
 
@@ -214,7 +221,7 @@ def _write_test_xml(
       "testsuite",
       name="distributed_runner",
       tests=str(len(results)),
-      failures=str(sum(r.status == TargetStatus.FAILED for r in results)),
+      failures=str(sum(r.status in _FAILING_STATUSES for r in results)),
       skipped=str(sum(r.status == TargetStatus.SKIPPED for r in results)),
       time=f"{sum(r.duration_seconds for r in results):.3f}",
   )
@@ -230,7 +237,7 @@ def _write_test_xml(
     # XML 1.0 forbids; one (e.g. an ANSI color code in an exception message)
     # would make Sponge drop every test case of the shard.
     reason = _XML_INVALID_CHARS.sub("", r.reason)
-    if r.status == TargetStatus.FAILED:
+    if r.status in _FAILING_STATUSES:
       ElementTree.SubElement(case, "failure", message=reason).text = reason
     elif r.status == TargetStatus.SKIPPED:
       ElementTree.SubElement(case, "skipped", message=reason)
@@ -695,8 +702,12 @@ def _run_target(
     bench_target: _BenchmarkTarget,
     platform: target_lib.Platform,
     local_nproc: int,
+    timeout_seconds: float | None = None,
 ) -> _TargetResult:
   """Runs a single target across `local_nproc` workers and collects its outcome.
+
+  The target is reported as TIMED_OUT if its workers are still running after
+  `timeout_seconds`; None means no time limit.
 
   Rank 0 writes a target's skip reason to the IPC directory if its factory
   raises `UnsupportedBenchmark` at run time, and its metrics once every rank
@@ -723,13 +734,23 @@ def _run_target(
             platform.value,
             skip_reason_file,
             metrics_file,
+            timeout_seconds=timeout_seconds,
         )
     except Exception as e:  # pylint: disable=broad-exception-caught
-      logging.exception("Benchmark target %s FAILED.", bench_target.name)
+      if isinstance(e, worker_supervisor.WorkerTimeoutError):
+        status = TargetStatus.TIMED_OUT
+        reason = f"Did not finish within {timeout_seconds:.0f} s."
+        logging.error(
+            "Benchmark target %s TIMED_OUT: %s", bench_target.name, reason
+        )
+      else:
+        status = TargetStatus.FAILED
+        reason = _failure_reason(e)
+        logging.exception("Benchmark target %s FAILED.", bench_target.name)
       return _TargetResult(
           bench_target.name,
-          TargetStatus.FAILED,
-          _failure_reason(e),
+          status,
+          reason,
           time.monotonic() - start,
           metrics=_read_metrics(metrics_file),
       )
@@ -836,16 +857,19 @@ class _Reporter:
 
     The launcher, not the worker, exports every result, so each target has
     exactly one record, and failures that never reach the worker's exception
-    handler (e.g. a rank killed by a signal) are still visible on dashboards.
+    handler (e.g. a rank killed by a signal or at the time limit) are still
+    visible on dashboards.
 
-    If a target failed after rank 0 wrote metrics (e.g. in teardown), every
-    rank measured and the metrics are valid, so the dashboard records them as a
-    success while the run summary, test XML, and exit code still report FAILED.
+    If a target failed or timed out after rank 0 wrote metrics (e.g. in
+    teardown), every rank measured and the metrics are valid, so the dashboard
+    records them as a success while the run summary, test XML, and exit code
+    still report FAILED or TIMED_OUT.
     """
     if result.status not in (
         TargetStatus.PASSED,
         TargetStatus.FAILED,
         TargetStatus.SKIPPED,
+        TargetStatus.TIMED_OUT,
     ):
       raise ValueError(f"Unsupported executed target status: {result.status}")
     self._target_results.append(result)
@@ -889,7 +913,7 @@ class _Reporter:
           all_results if self._is_first_shard else list(self._target_results)
       )
       _write_test_xml(self._xml_output_file, self._platform, xml_results)
-    return 1 if any(r.status == TargetStatus.FAILED for r in all_results) else 0
+    return 1 if any(r.status in _FAILING_STATUSES for r in all_results) else 0
 
 
 def main(argv: Sequence[str]) -> None:
@@ -962,6 +986,7 @@ def main(argv: Sequence[str]) -> None:
       local_nproc,
   )
 
+  target_timeout = flags_lib.DISTRIBUTED_TARGET_TIMEOUT_SECONDS.value or None
   for idx, bench_target in enumerate(shard_targets):
     logging.info(
         "Executing batched target %d/%d: %s",
@@ -969,7 +994,9 @@ def main(argv: Sequence[str]) -> None:
         len(shard_targets),
         bench_target.name,
     )
-    result = _run_target(bench_target, platform, local_nproc)
+    result = _run_target(
+        bench_target, platform, local_nproc, timeout_seconds=target_timeout
+    )
     reporter.record(bench_target, result)
 
   if exit_code := reporter.finish():

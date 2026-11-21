@@ -653,6 +653,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests/distributed:distributed_utils",
+        "//tests/distributed:worker_supervisor",
         "@pypi//fairscale",
     ],
 )
