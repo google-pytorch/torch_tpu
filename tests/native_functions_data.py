@@ -288,7 +288,6 @@ UNREGISTERED_OPS = frozenset([
     'mode',
     'mps_convolution_backward',
     'mps_convolution_transpose_backward',
-    'mse_loss_backward.grad_input',
     'multi_margin_loss',
     'multi_margin_loss.out',
     'multi_margin_loss_backward',
