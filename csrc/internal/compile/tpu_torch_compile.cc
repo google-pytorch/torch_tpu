@@ -376,6 +376,53 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
   return ToPyLayout(layout);
 }
 
+// Returns the on-device layout of `tensor` if it differs from the default
+// layout for `tensor`'s dtype and shape, or `std::nullopt` if `tensor` uses the
+// default layout or does not have a materialized, static-shaped buffer in
+// device memory.
+std::optional<PyLayout> PyGetNonDefaultDeviceLayout(const at::Tensor& tensor) {
+  if (!tensor.has_storage()) {
+    return std::nullopt;
+  }
+  absl::StatusOr<std::optional<DeviceBufferRef>> existing_buffer =
+      GetBufferWithoutCreatingView(tensor);
+  if (!existing_buffer.ok() || !existing_buffer->has_value()) {
+    return std::nullopt;
+  }
+  const DeviceBufferRef buffer_ref = std::move(**existing_buffer);
+  // Check non-waiting flags (`is_pinned_host`, `is_materializing`, and
+  // `on_device_shape_is_dynamic`) before `AwaitBuffer()`, which waits for
+  // in-flight buffers.
+  if (buffer_ref.is_pinned_host() || !buffer_ref.is_materializing() ||
+      buffer_ref.on_device_shape_is_dynamic()) {
+    return std::nullopt;
+  }
+  const absl::StatusOr<xla::PjRtBuffer* absl_nonnull> pjrt_buffer =
+      buffer_ref.AwaitBuffer();
+  if (!pjrt_buffer.ok()) {
+    return std::nullopt;
+  }
+  const std::shared_ptr<const xla::PjRtLayout> pjrt_layout =
+      (*pjrt_buffer)->layout();
+  if (pjrt_layout == nullptr) {
+    return std::nullopt;
+  }
+  const absl::StatusOr<xla::Layout> default_layout =
+      PjrtBackend::GetInstance().GetDefaultLayout(
+          (*pjrt_buffer)->element_type(), (*pjrt_buffer)->dimensions());
+  if (!default_layout.ok()) {
+    return std::nullopt;
+  }
+  const xla::Layout& layout = pjrt_layout->xla_layout();
+  // Like eager execution (`IsDefaultDeviceLayout` in pjrt_utils.h), compares
+  // only minor_to_major and tiles.
+  if (layout.minor_to_major() == default_layout->minor_to_major() &&
+      layout.tiles() == default_layout->tiles()) {
+    return std::nullopt;
+  }
+  return ToPyLayout(layout);
+}
+
 bool PyIsDeviceShapeDynamic(const at::Tensor& tensor) {
   TT_ASSIGN_OR_THROW(std::optional<DeviceBufferRef> buffer_ref,
                      GetBufferWithoutCreatingView(tensor));
@@ -2267,6 +2314,8 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("is_pinned_host", &PyIsPinnedHost, py::arg("tensor"),
         "Returns whether the given tensor is host offloaded.");
   m.def("get_device_layout_if_materialized", &PyGetDeviceLayoutIfMaterialized,
+        py::arg("tensor"));
+  m.def("get_non_default_device_layout", &PyGetNonDefaultDeviceLayout,
         py::arg("tensor"));
   m.def("get_default_layout", &PyGetDefaultLayout, py::arg("dtype"),
         py::arg("shape"));

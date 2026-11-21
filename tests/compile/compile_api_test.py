@@ -25,6 +25,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 import torch._dynamo.backends.registry as backend_registry
+from torch._subclasses import fake_tensor
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
@@ -37,6 +38,14 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
+
+try:
+  # pylint: disable=g-import-not-at-top
+  from torch._functorch._activation_offloading import offload_ops
+
+  _HAS_AO_OPS = offload_ops is not None
+except (ImportError, AttributeError):
+  _HAS_AO_OPS = False
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 
@@ -316,6 +325,83 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       tiled_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
     res_tiled = executable(tiled_x)
     utils.assert_close(res_tiled.cpu(), tiled_x.cpu() * 2.0)
+
+  def test_get_non_default_device_layout(self):
+    default_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    self.assertIsNone(compiler.get_non_default_device_layout(default_x))
+
+    # Non-TPU and FakeTensor inputs return None without hitting C++.
+    self.assertIsNone(
+        compiler.get_non_default_device_layout(torch.ones(16, 128))
+    )
+    with fake_tensor.FakeTensorMode():
+      fake_x = torch.ones(16, 128, device='tpu')
+    self.assertIsNone(compiler.get_non_default_device_layout(fake_x))
+
+    layout = annotations.TpuLayout(minor_to_major=[0, 1])
+    with annotations.LayoutContext(layout):
+      custom_x = torch.ones(16, 128, device='cpu').to(
+          device=torch.device('tpu')
+      )
+    self.assertEqual(
+        compiler.get_non_default_device_layout(custom_x)[0], [0, 1]
+    )
+
+    # Views have no direct materialized buffer, so C++ returns None without
+    # creating a deferred view op.
+    self.assertIsNone(
+        compiler.get_non_default_device_layout(custom_x.view(8, 256))
+    )
+
+    # Dynamic-shaped materialized buffers return None.
+    pad_result = tpu_torch_compile.get_dynamic_pad_module(
+        [([1, 4], torch.int32)], [([1], [8])]
+    )
+    padded = tpu_torch_compile.execute(
+        pad_result.executable,
+        [torch.ones(1, 4, dtype=torch.int32, device='tpu')],
+        output_shapes=[tpu_torch_compile.OutputShape(is_dynamic=True)],
+    )[0]
+    self.assertTrue(tpu_torch_compile.is_device_shape_dynamic(padded))
+    self.assertIsNone(compiler.get_non_default_device_layout(padded))
+
+    # Pinned-host buffers must return None from C++ without querying layout.
+    pinned_placeholder = tpu_torch_compile.placeholder(
+        [16, 128], torch.float32, is_pinned_host=True
+    )
+    self.assertIsNone(
+        compiler.get_non_default_device_layout(pinned_placeholder)
+    )
+
+    # `_is_pinned_host` on a materialized non-default tensor must short-circuit
+    # in Python (without it, C++ would return the [0, 1] layout).
+    with annotations.LayoutContext(layout):
+      marked_pinned = torch.ones(16, 128, device='cpu').to(
+          device=torch.device('tpu')
+      )
+    marked_pinned._is_pinned_host = True
+    self.assertIsNone(compiler.get_non_default_device_layout(marked_pinned))
+
+    # A contiguous same-shape view whose `_base` has `_is_pinned_host` would
+    # return `[0, 1]` from C++ if Python did not walk `_base`.
+    marked_view = marked_pinned.view(16, 128)
+    self.assertIs(marked_view._base, marked_pinned)
+    self.assertEqual(
+        tpu_torch_compile.get_non_default_device_layout(marked_view)[0], [0, 1]
+    )
+    self.assertIsNone(compiler.get_non_default_device_layout(marked_view))
+
+  @absltest.skipIf(
+      not _HAS_AO_OPS,
+      '`torch._functorch._activation_offloading.offload_ops` is not available'
+      ' in this PyTorch version',
+  )
+  def test_get_non_default_device_layout_offloaded(self):
+    default_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    offloaded = torch.ops.ao.offload(default_x)
+    torch.accelerator.synchronize()
+    self.assertTrue(tpu_torch_compile.is_pinned_host(offloaded))
+    self.assertIsNone(compiler.get_non_default_device_layout(offloaded))
 
   def test_build_mlir(self):
     with eager_mode_compile_fx_graph():
