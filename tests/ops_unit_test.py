@@ -906,6 +906,89 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  def test_ldexp_float_exponents_and_edge_cases(self):
+    """Tests ldexp with floating-point exponents, NaN/Inf, and negative frac."""
+    dtypes = [torch.float16, torch.bfloat16, torch.float32]
+    if (
+        not torch.tensor([1e100], dtype=torch.float64, device="tpu")
+        .isinf()
+        .any()
+    ):
+      dtypes.append(torch.float64)
+    for dtype in dtypes:
+      x = torch.tensor([1.5, -2.25, 3.0, 1.0, 1.0, 1.0], dtype=dtype)
+      exp = torch.tensor(
+          [0.5, -0.5, -1.5, float("nan"), float("-inf"), float("inf")],
+          dtype=dtype,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, exp=exp: torch.ldexp(x.to(device), exp.to(device))
+      )
+
+    # Values near finite max with negative fractional exponent must not
+    # overflow to +inf before applying the negative integer step.
+    max_f16 = torch.tensor([65504.0], dtype=torch.float16)
+    neg_half_f16 = torch.tensor([-0.5], dtype=torch.float16)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ldexp(max_f16.to(device), neg_half_f16.to(device))
+    )
+
+  def test_ldexp_three_step_scaling(self):
+    """Tests 3-step integer scaling with finite results and step-3 coverage."""
+    # bfloat16 finite scaling across multiple steps and extreme zero-base exp.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ldexp(
+            torch.tensor(
+                [1e-20, 1e20, 0.0], dtype=torch.bfloat16, device=device
+            ),
+            torch.tensor([130, -150, 400], dtype=torch.int32, device=device),
+        )
+    )
+    # Nonzero bases with |exp| > 2 * max_exp (240) to exercise step 3.
+    for dtype in [torch.float32, torch.bfloat16]:
+      self.assert_close_tpu_vs_cpu(
+          lambda device, dtype=dtype: torch.ldexp(
+              torch.tensor([2e-38, 3e38], dtype=dtype, device=device),
+              torch.tensor([250, -250], dtype=torch.int32, device=device),
+          )
+      )
+
+  def test_ldexp_complex(self):
+    """Tests complex ldexp with integral and floating-point exponents."""
+    c_in = torch.tensor([1.0 + 2.0j, -3.0 + 0.5j], dtype=torch.complex64)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ldexp(
+            c_in.to(device),
+            torch.tensor([2, -3], dtype=torch.int32, device=device),
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ldexp(
+            c_in.to(device),
+            torch.tensor([1.5, -0.5], dtype=torch.float32, device=device),
+        )
+    )
+
+  def test_ldexp_variants(self):
+    """Tests functional, out=, and in-place variants across exp dtypes."""
+    x = torch.tensor([2.0, 4.0], dtype=torch.float32)
+    for exp_tensor in [
+        torch.tensor([3, -1], dtype=torch.int32),
+        torch.tensor([2.5, -0.5], dtype=torch.float32),
+    ]:
+
+      def run_variants(device, exp_tensor=exp_tensor):
+        xt = x.to(device)
+        et = exp_tensor.to(device)
+        r1 = torch.ldexp(xt, et)
+        r2 = torch.empty_like(r1)
+        torch.ldexp(xt, et, out=r2)
+        r3 = xt.clone()
+        r3.ldexp_(et)
+        return r1, r2, r3
+
+      self.assert_close_tpu_vs_cpu(run_variants)
+
   def test_addmm_input_broadcasting(self):
     """Tests torch.addmm input broadcasting rules."""
     mat1 = torch.arange(6, dtype=torch.float32).reshape(2, 3)
@@ -22733,7 +22816,9 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       with self.subTest(f"{name}_grad"):
         utils.assert_close(compiled, eager, rtol=1e-2, atol=1e-2)
 
-  @utils.skip_if_asan("b/585144512: Slow (~805s) in ASAN mode.")
+  @utils.skip_if_asan(
+      "b/588028973: Slow (~740s) in ASAN mode due to pow/atan2."
+  )
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 
