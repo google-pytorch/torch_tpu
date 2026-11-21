@@ -7166,6 +7166,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assertEqual(cpu_info.item(), tpu_info.cpu().item())
 
+    b_empty = torch.zeros(2, 0)
+    _, cpu_empty_info = torch.linalg.solve_ex(a, b_empty, check_errors=False)
+    _, tpu_empty_info = torch.linalg.solve_ex(
+        a.to(tpu_device), b_empty.to(tpu_device), check_errors=False
+    )
+    self.assertEqual(cpu_empty_info.item(), tpu_empty_info.cpu().item())
+
   def test_solve_ex_singular_check_errors_true(self):
     """Tests that singular inputs raise an error when check_errors=True."""
     torch.manual_seed(1234)
@@ -7184,6 +7191,71 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       torch.linalg.solve_ex(
           a.to(tpu_device), b.to(tpu_device), check_errors=True
       )
+
+  def test_solve_ex_batch_broadcast(self):
+    # Use non-identity invertible matrices (batch 0 has a zero [0, 0] entry to
+    # exercise pivoting, and both batches are distinct).
+    a_single = torch.tensor(
+        [[0.0, 2.0, 1.0], [3.0, -1.0, 2.0], [1.0, 4.0, -1.0]],
+        dtype=torch.float32,
+    )
+    a_other = torch.tensor(
+        [[2.0, 1.0, 1.0], [4.0, -6.0, 0.0], [-2.0, 7.0, 2.0]],
+        dtype=torch.float32,
+    )
+    a_3d = torch.stack([a_single, a_other])
+
+    # Broadcast 2D b over batched 3D a (left=True and left=False).
+    b_left = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.linalg.solve_ex(
+            a_3d.to(device), b_left.to(device), left=True
+        ),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+    # Use 4 rows (not 2) so b_right is not treated as a batched vector RHS of
+    # shape a_3d.shape[:-1] == (2, 3).
+    b_right = torch.arange(1, 13, dtype=torch.float32).reshape(4, 3)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.linalg.solve_ex(
+            a_3d.to(device), b_right.to(device), left=False
+        ),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+    # Broadcast 1D vector RHS over batched 3D a (left=True).
+    b_vec = torch.tensor([1.0, -2.0, 3.0], dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.linalg.solve_ex(
+            a_3d.to(device), b_vec.to(device), left=True
+        ),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+    # Broadcast a (2D and singleton-batch 3D) to b's batch dims so
+    # lu.expand / pivots.expand are actually exercised.
+    b_batched_left = torch.arange(1, 25, dtype=torch.float32).reshape(2, 3, 4)
+    b_batched_right = torch.arange(1, 25, dtype=torch.float32).reshape(2, 4, 3)
+    for a_in in (a_single, a_single.unsqueeze(0)):
+      with self.subTest(a_shape=tuple(a_in.shape), left=True):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a_in: torch.linalg.solve_ex(
+                a.to(device), b_batched_left.to(device), left=True
+            ),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+      with self.subTest(a_shape=tuple(a_in.shape), left=False):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a_in: torch.linalg.solve_ex(
+                a.to(device), b_batched_right.to(device), left=False
+            ),
+            rtol=1e-4,
+            atol=1e-4,
+        )
 
   def test_fill_tensor(self):
     self.assert_close_tpu_vs_cpu(

@@ -11648,6 +11648,62 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.linalg.solve_ex(a_non_square, b_non_square, out=(res, info))
 
+  def test_linalg_solve_ex_invalid_rhs_b(self):
+    res = torch.empty(0, device=et.device(), dtype=torch.float32)
+    info = torch.empty(0, device=et.device(), dtype=torch.int32)
+    a = torch.eye(3, device=et.device(), dtype=torch.float32)
+
+    b_0d = torch.tensor(1.0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected the rhs tensor to have at least 1 dimension, got shape []""",
+        gpu="""linalg.solve: The input tensor B must have at least 2 dimensions.""",
+    ):
+      torch.linalg.solve_ex(a, b_0d, out=(res, info))
+
+    b_mismatch_left = torch.ones(2, 1, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected a and b to have compatible shapes for equation AX = B, got [3, 3] and [2, 1]""",
+        gpu="""linalg.solve: Incompatible shapes of A and B for the equation AX = B (3x3 and 2x1)""",
+    ):
+      torch.linalg.solve_ex(a, b_mismatch_left, left=True, out=(res, info))
+
+    b_1d = torch.ones(3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected a and b to have compatible shapes for equation XA = B, got [3, 3] and [3, 1]""",
+        gpu="""linalg.solve: Incompatible shapes of A and B for the equation XA = B (3x3 and 3x1)""",
+    ):
+      torch.linalg.solve_ex(a, b_1d, left=False, out=(res, info))
+
+    a_1x1 = torch.ones(1, 1, device=et.device(), dtype=torch.float32)
+    b_1x1_vec = torch.ones(1, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected a 2D or higher rhs tensor when left=False, got vector rhs of shape [1]""",
+        gpu="""linalg.solve: Vector broadcasting of the left hand side is not supported for left=False. In this case linalg.solve is equivalent to B / A.squeeze(-1)""",
+    ):
+      torch.linalg.solve_ex(a_1x1, b_1x1_vec, left=False, out=(res, info))
+
+  def test_linalg_solve_ex_singular_check_errors(self):
+    a = torch.zeros(3, 3, device=et.device(), dtype=torch.float32)
+    b = torch.ones(3, 1, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        torch._C._LinAlgError,
+        tpu="""torch.linalg.solve_ex: The solver failed because the input matrix is singular.""",
+        gpu="""torch.linalg.solve_ex: The solver failed because the input matrix is singular.""",
+    ):
+      torch.linalg.solve_ex(a, b, check_errors=True)
+
+    b_empty = torch.zeros(3, 0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        torch._C._LinAlgError,
+        tpu="""torch.linalg.solve_ex: The solver failed because the input matrix is singular.""",
+        gpu="""torch.linalg.solve_ex: The solver failed because the input matrix is singular.""",
+    ):
+      torch.linalg.solve_ex(a, b_empty, check_errors=True)
+
   def test_linalg_solve_triangular_out_dtype_mismatch(self):
     a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
     b = torch.randn(3, 1, device=et.device(), dtype=torch.float32)
