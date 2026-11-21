@@ -5454,6 +5454,39 @@ module {
     ):
       fn(t, repeats)
 
+  @parameterized.named_parameters(
+      ("masked_scale_expand_self", True, (1, 8), (4, 8)),
+      ("dropout_bwd_expand_grad", False, (1, 8), (4, 8)),
+  )
+  @et.why_tpu_only(
+      "Testing TPU-specific one-way mask broadcast validation; CUDA allows"
+      " expanding the output tensor to match the mask."
+  )
+  def test_masked_scale_and_dropout_backward_invalid_mask_shape(
+      self,
+      is_masked_scale: bool,
+      out_shape: tuple[int, ...],
+      mask_shape: tuple[int, ...],
+  ):
+    op, op_label, mask_dtype = (
+        (torch.ops.aten._masked_scale, "masked_scale", torch.uint8)
+        if is_masked_scale
+        else (
+            torch.ops.aten.native_dropout_backward,
+            "native_dropout_backward",
+            torch.bool,
+        )
+    )
+    grad_or_self = torch.ones(
+        out_shape, device=et.device(), dtype=torch.float32
+    )
+    mask = torch.ones(mask_shape, device=et.device(), dtype=mask_dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_label}(): expected mask to be broadcastable to output shape, got {list(mask_shape)} vs {list(out_shape)}""",
+    ):
+      op(grad_or_self, mask, 2.0)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 

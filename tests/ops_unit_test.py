@@ -6866,6 +6866,124 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         golden_result=z.to("cpu"), torch_tpu_result=z_again.to("cpu")
     )
 
+  def _run_in_mode(self, mode, fn, *args):
+    if mode == "defer_and_fuse":
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        return fn(*args)
+    if mode == "compiled":
+      return torch.compile(fn, backend="tpu")(*args)
+    return fn(*args)
+
+  def _mark_dynamic_dim0(self, mode, *tensors):
+    for t in tensors:
+      if mode == "compiled":
+        torch._dynamo.mark_dynamic(t, 0, min=2, max=32)
+      else:
+        dynamism.mark_dynamic(t, dimension=0, lower_bound=2, upper_bound=32)
+
+  @parameterized.parameters(
+      *(
+          (dtype, 2.5, mode)
+          for dtype in (
+              torch.bfloat16,
+              torch.float16,
+              torch.float32,
+              torch.float64,
+              torch.complex64,
+          )
+          for mode in ("immediate", "defer_and_fuse", "compiled")
+      ),
+      (torch.float16, 1e5, "immediate"),
+      (torch.bfloat16, 1e5, "immediate"),
+  )
+  def test_masked_scale_dtypes_and_modes(self, dtype, scale, mode):
+    shape = (16, 16)
+    x = (
+        torch.full(shape, 0.001, dtype=dtype, device="tpu")
+        if scale > 10.0
+        else torch.randn(shape, dtype=dtype).to("tpu")
+    )
+    mask = (torch.arange(256).reshape(shape) % 2).to(
+        device="tpu", dtype=torch.uint8
+    )
+    out = self._run_in_mode(
+        mode, lambda t, m: torch.ops.aten._masked_scale(t, m, scale), x, mask
+    )
+    self.assertEqual(out.dtype, dtype)
+    self.assertEqual(out.shape, shape)
+    calc_dtype = (
+        torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+    )
+    golden = torch.where(
+        mask.cpu().bool(),
+        (x.cpu().to(calc_dtype) * scale).to(dtype),
+        torch.zeros_like(x.cpu()),
+    )
+    self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  @parameterized.product(
+      case=[
+          ("_masked_scale", (4, 8), (4, 1)),
+          ("_masked_scale", (4, 8), (8,)),
+          ("_masked_scale", (4, 8), ()),
+          ("_masked_scale", (), ()),
+          ("_masked_scale", (0, 8), (0, 8)),
+          ("native_dropout_backward", (4, 8), (4, 1)),
+          ("native_dropout_backward", (4, 8), (8,)),
+          ("native_dropout_backward", (4, 8), ()),
+      ],
+      mode=["immediate", "compiled"],
+  )
+  def test_masked_scale_shapes_and_broadcast(self, case, mode):
+    op_name, x_shape, mask_shape = case
+    is_masked_scale = op_name == "_masked_scale"
+    op = (
+        torch.ops.aten._masked_scale
+        if is_masked_scale
+        else torch.ops.aten.native_dropout_backward
+    )
+    mask_dtype = torch.uint8 if is_masked_scale else torch.bool
+    x = torch.randn(x_shape, dtype=torch.float32).to("tpu")
+    mask = (
+        torch.arange(math.prod(mask_shape)).reshape(mask_shape) % 2 == 0
+    ).to(device="tpu", dtype=mask_dtype)
+
+    out = self._run_in_mode(mode, lambda t, m: op(t, m, 2.0), x, mask)
+    self.assertEqual(out.shape, x_shape)
+    self.assertEqual(out.dtype, torch.float32)
+    golden = torch.where(
+        mask.cpu().bool(), x.cpu() * 2.0, torch.zeros_like(x.cpu())
+    )
+    self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
+  def test_masked_scale_dynamic_shape(self):
+    scale = 2.5
+    # Same-shape dynamic native_dropout_backward is already covered in
+    # tests/dynamism/compile_test.py and ops_test_dynamic.
+    op_cases = [
+        (torch.ops.aten._masked_scale, torch.uint8, [(0, 16), (1, 16), (0, 1)]),
+        (torch.ops.aten.native_dropout_backward, torch.bool, [(1, 16), (0, 1)]),
+    ]
+    for op, mask_dtype, mask_templates in op_cases:
+      fn = lambda inp, m, op=op: op(inp, m, scale)
+      for mask_d0, mask_d1 in mask_templates:
+        compiled_fn = torch.compile(fn, backend="tpu")
+        for mode in ("compiled", "immediate"):
+          for dim_size in (4, 12):
+            x = torch.randn(dim_size, 16, dtype=torch.float32, device="tpu")
+            m_shape = (mask_d0 or dim_size, mask_d1)
+            mask = (torch.rand(m_shape, device="tpu") > 0.5).to(mask_dtype)
+            dyn_tensors = (x, mask) if mask_d0 == 0 else (x,)
+            self._mark_dynamic_dim0(mode, *dyn_tensors)
+            out = compiled_fn(x, mask) if mode == "compiled" else fn(x, mask)
+            self.assertEqual(out.shape, (dim_size, 16))
+            golden = torch.where(
+                mask.cpu().bool(), x.cpu() * scale, torch.zeros_like(x.cpu())
+            )
+            self.assert_close(golden_result=golden, torch_tpu_result=out.cpu())
+
   def test_exponential(self):
     """Tests the exponential_ op."""
     tpu_device = torch.device("tpu")
