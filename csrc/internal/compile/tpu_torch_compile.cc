@@ -356,7 +356,6 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
         << client_or.status();
     return PyLayout();
   }
-  xla::PjRtClient& checked_client = **client_or;
   TT_ASSIGN_OR_THROW(const xla::PrimitiveType element_type,
                      ConvertTo<xla::PrimitiveType>(dtype));
   // PyTorch packs two FP4 values per byte in the last dimension, whereas PJRT
@@ -371,9 +370,10 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
     xla_shape = *unpacked_shape;
   }
 
-  TT_ASSIGN_OR_THROW(xla::Layout layout,
-                     checked_client.GetDefaultLayout(element_type, xla_shape));
-  return ToPyLayout(std::move(layout));
+  TT_ASSIGN_OR_THROW(
+      const xla::Layout layout,
+      PjrtBackend::GetInstance().GetDefaultLayout(element_type, xla_shape));
+  return ToPyLayout(layout);
 }
 
 bool PyIsDeviceShapeDynamic(const at::Tensor& tensor) {

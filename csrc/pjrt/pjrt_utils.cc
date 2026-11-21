@@ -79,18 +79,12 @@ bool TpuDeviceSupportsSparseCore() {
 bool IsDefaultDeviceLayout(const CustomLayout& layout,
                            const mlir::ElementType element_type,
                            const absl::Span<const int64_t> dimensions) {
-  const absl::StatusOr<xla::PjRtClient* absl_nonnull> client =
-      PjrtBackend::GetInstance().GetClient();
-  if (!client.ok()) {
-    ABSL_LOG_FIRST_N(WARNING, 1)
-        << "IsDefaultDeviceLayout: PjRt backend unavailable: "
-        << client.status();
-    return false;
-  }
   const absl::StatusOr<xla::Layout> default_layout =
-      (*client)->GetDefaultLayout(ConvertTo<xla::PrimitiveType>(element_type),
-                                  dimensions);
+      GetDefaultDeviceLayout(element_type, dimensions);
   if (!default_layout.ok()) {
+    ABSL_LOG_FIRST_N(WARNING, 1)
+        << "IsDefaultDeviceLayout: default layout unavailable: "
+        << default_layout.status();
     return false;
   }
   if (layout.minor_to_major != default_layout->minor_to_major()) {
@@ -110,10 +104,8 @@ bool IsDefaultDeviceLayout(const CustomLayout& layout,
 absl::StatusOr<xla::Layout> GetDefaultDeviceLayout(
     const mlir::ElementType element_type,
     const absl::Span<const int64_t> dimensions) {
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
-                      PjrtBackend::GetInstance().GetClient());
-  return client->GetDefaultLayout(ConvertTo<xla::PrimitiveType>(element_type),
-                                  dimensions);
+  return PjrtBackend::GetInstance().GetDefaultLayout(
+      ConvertTo<xla::PrimitiveType>(element_type), dimensions);
 }
 
 }  // namespace torch_tpu

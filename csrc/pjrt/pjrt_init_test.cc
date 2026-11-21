@@ -27,11 +27,14 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 namespace {
 
+using absl_testing::IsOkAndHolds;
 using absl_testing::StatusIs;
 using testing::ExitedWithCode;
 using testing::HasSubstr;
@@ -113,6 +116,17 @@ TEST_F(PjRtInitTest, GetClientAndGetDeviceSucceedAfterInit) {
   ASSERT_NE(client, nullptr);
   ASSERT_NE(device, nullptr);
   EXPECT_EQ(device->client(), client);
+}
+
+TEST_F(PjRtInitTest, GetDefaultLayoutMatchesClient) {
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu"});
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  TT_ASSERT_OK_AND_ASSIGN(const xla::Layout expected,
+                          client->GetDefaultLayout(xla::BF16, {16, 128}));
+  EXPECT_THAT(PjrtBackend::GetInstance().GetDefaultLayout(xla::BF16, {16, 128}),
+              IsOkAndHolds(expected));
 }
 
 TEST_F(PjRtInitTest, GetClientAndGetDeviceFailForUnsupportedDeviceType) {

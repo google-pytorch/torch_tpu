@@ -181,7 +181,6 @@ torch_tpu_cc_library(
         "@xla//xla:shape_util",
         "@xla//xla:util",
         "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 
