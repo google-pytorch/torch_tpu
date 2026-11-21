@@ -17,6 +17,9 @@
 #include "csrc/ops/dynamic/dynamic_reshape/dynamic_reshape.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -39,12 +42,222 @@
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
+namespace {
+
+// Returns true when flattening `input` to a 1D bounded dynamic tensor of bound
+// `out_bound` would require XLA's `dynamic_padder` to compact non-major
+// dynamic dimensions via an O(N log N) stable sort + gather.
+//
+// In that case, we can compute the exact source indices in closed form via
+// integer division/modulo and emit a direct 1D gather, avoiding massive sort
+// codegen and compile-time blowups.
+bool ShouldUseGatherForDynamicFlatten(const mlir::MlirOp& input,
+                                      const Dimensions& out_dims,
+                                      const std::vector<bool>& is_dynamic) {
+  if (out_dims.size() != 1 || !is_dynamic[0]) {
+    return false;
+  }
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const int64_t rank = input_type.getRank();
+  if (rank < 2) {
+    return false;
+  }
+
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  int64_t input_numel = 1;
+  bool has_leading_extent = false;
+  bool has_non_major_dynamic_dim = false;
+  for (int64_t dim = 0; dim < rank; ++dim) {
+    const int64_t bound = input_dims[dim].size;
+    if (bound <= 0 ||
+        input_numel > std::numeric_limits<int32_t>::max() / bound) {
+      return false;
+    }
+    if (input_type.isDynamicDim(dim) && has_leading_extent) {
+      has_non_major_dynamic_dim = true;
+    }
+    if (bound > 1) {
+      has_leading_extent = true;
+    }
+    input_numel *= bound;
+  }
+
+  const int64_t out_bound = out_dims[0];
+  return has_non_major_dynamic_dim && out_bound > 0 &&
+         out_bound <= std::numeric_limits<int32_t>::max();
+}
+
+// Computes exact `(rem / d, rem % d)` for non-negative `rem < out_bound` and
+// `d >= 1`. When `out_bound <= (1 << 22)`, uses a scalar f32 reciprocal plus
+// a single-step +/-1 correction to avoid expensive TPU s32 vector division.
+struct DivModResult {
+  mlir::MlirOp quotient;
+  mlir::MlirOp remainder;
+};
+
+DivModResult ComputeDivMod(mlir::MlirOp rem, mlir::MlirOp dim_scalar,
+                           mlir::MlirOp dim_vec,
+                           mlir::RankedTensorType idx_tensor_type,
+                           const int64_t out_bound,
+                           mlir::MlirBuilder& builder) {
+  constexpr int64_t kMaxExactF32RecipBound = 1LL << 22;
+  if (out_bound > kMaxExactF32RecipBound) {
+    mlir::MlirOp quotient = mlir::stablehlo::Div(rem, dim_vec);
+    mlir::MlirOp product = mlir::stablehlo::Mul(quotient, dim_vec);
+    mlir::MlirOp remainder = mlir::stablehlo::Subtract(rem, product);
+    return {.quotient = quotient, .remainder = remainder};
+  }
+
+  mlir::Type f32_type = builder.getOpBuilder().getF32Type();
+  mlir::RankedTensorType f32_scalar_type =
+      mlir::RankedTensorType::get({}, f32_type);
+  mlir::RankedTensorType f32_vec_type =
+      mlir::RankedTensorType::get({out_bound}, f32_type);
+
+  mlir::MlirOp one_f32 = MakeScalarConstant(builder, 1.0f, f32_type);
+  mlir::MlirOp dim_f32 = mlir::stablehlo::Convert(f32_scalar_type, dim_scalar);
+  mlir::MlirOp recip_scalar = mlir::stablehlo::Div(one_f32, dim_f32);
+  mlir::MlirOp recip_vec = mlir::stablehlo::BroadcastInDim(
+      f32_vec_type, recip_scalar, /*broadcast_dimensions=*/{});
+
+  mlir::MlirOp rem_f32 = mlir::stablehlo::Convert(f32_vec_type, rem);
+  mlir::MlirOp quot_f32 = mlir::stablehlo::Mul(rem_f32, recip_vec);
+  mlir::MlirOp quotient = mlir::stablehlo::Convert(idx_tensor_type, quot_f32);
+  mlir::MlirOp product = mlir::stablehlo::Mul(quotient, dim_vec);
+  mlir::MlirOp remainder = mlir::stablehlo::Subtract(rem, product);
+
+  // Correct off-by-one rounding from f32 reciprocal multiplication.
+  mlir::MlirOp zero_vec = MakeConstant(builder, int32_t{0}, idx_tensor_type);
+  mlir::MlirOp one_vec = MakeConstant(builder, int32_t{1}, idx_tensor_type);
+
+  mlir::MlirOp underflow = mlir::stablehlo::Compare(
+      remainder, zero_vec, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp quot_dec = mlir::stablehlo::Subtract(quotient, one_vec);
+  mlir::MlirOp rem_inc = mlir::stablehlo::Add(remainder, dim_vec);
+  quotient = mlir::stablehlo::Select(underflow, quot_dec, quotient);
+  remainder = mlir::stablehlo::Select(underflow, rem_inc, remainder);
+
+  mlir::MlirOp overflow = mlir::stablehlo::Compare(
+      remainder, dim_vec, mlir::stablehlo::ComparisonDirection::GE);
+  mlir::MlirOp quot_inc = mlir::stablehlo::Add(quotient, one_vec);
+  mlir::MlirOp rem_dec = mlir::stablehlo::Subtract(remainder, dim_vec);
+  quotient = mlir::stablehlo::Select(overflow, quot_inc, quotient);
+  remainder = mlir::stablehlo::Select(overflow, rem_dec, remainder);
+
+  return {.quotient = quotient, .remainder = remainder};
+}
+
+// Accumulates `coord * stride` into `acc`, avoiding redundant multiplies or
+// adds for unit stride or the first term.
+void AddScaledCoordinate(std::optional<mlir::MlirOp>& acc, mlir::MlirOp coord,
+                         const int64_t stride,
+                         mlir::RankedTensorType idx_tensor_type,
+                         mlir::MlirBuilder& builder) {
+  mlir::MlirOp term = coord;
+  if (stride != 1) {
+    mlir::MlirOp stride_vec =
+        MakeConstant(builder, static_cast<int32_t>(stride), idx_tensor_type);
+    term = mlir::stablehlo::Mul(coord, stride_vec);
+  }
+  acc = acc.has_value() ? mlir::stablehlo::Add(*acc, term) : term;
+}
+
+// Flattens a bounded-dynamic tensor `input` into a 1D bounded-dynamic tensor of
+// bound `out_bound` and runtime size `out_size` using closed-form index
+// arithmetic and a single 1D `stablehlo.gather`.
+mlir::MlirOp BuildDynamicFlattenWithGather(mlir::MlirOp input,
+                                           mlir::MlirOp out_size,
+                                           const int64_t out_bound,
+                                           mlir::MlirBuilder& builder) {
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  const int64_t rank = static_cast<int64_t>(input_dims.size());
+  int64_t input_numel = 1;
+  for (const mlir::stablehlo::DimensionInfo& dim_info : input_dims) {
+    input_numel *= dim_info.size;
+  }
+
+  // Strip dynamic bounds to get the static padded buffer and capture each
+  // dynamic dimension's runtime size.
+  StaticAtBounds static_input = MakeStaticAtBounds(input);
+  mlir::MlirOp flat_static =
+      mlir::stablehlo::Reshape(static_input.op, {input_numel});
+
+  mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  mlir::RankedTensorType idx_tensor_type =
+      mlir::RankedTensorType::get({out_bound}, i32_type);
+  mlir::MlirOp rem =
+      mlir::stablehlo::Iota(builder, idx_tensor_type, /*iota_dimension=*/0);
+  mlir::MlirOp one_scalar = MakeScalarConstant(builder, int32_t{1}, i32_type);
+
+  // Map each output flat index `k` in `[0, out_bound)` to its logical
+  // coordinates `(i_0, ..., i_{rank-1})` under the runtime sizes
+  // `(d_0, ..., d_{rank-1})`, then linearize into the padded static buffer
+  // using static strides `stride_d = prod_{j > d} B_j`.
+  std::optional<mlir::MlirOp> src_idx;
+  int64_t stride = 1;
+  for (int64_t dim = rank - 1; dim >= 1; --dim) {
+    const int64_t bound = input_dims[dim].size;
+    if (bound == 1) {
+      continue;
+    }
+    mlir::MlirOp dim_scalar;
+    mlir::MlirOp dim_size_vec;
+    if (static_input.runtime_sizes[dim].has_value()) {
+      // Clamp runtime size to >= 1 to avoid division by zero when a dynamic
+      // dimension has runtime size 0 (in which case `out_size == 0` and all
+      // output elements are padding).
+      dim_scalar =
+          mlir::stablehlo::Max(*static_input.runtime_sizes[dim], one_scalar);
+      dim_size_vec = mlir::stablehlo::BroadcastInDim(
+          idx_tensor_type, dim_scalar, /*broadcast_dimensions=*/{});
+    } else {
+      dim_scalar =
+          MakeScalarConstant(builder, static_cast<int32_t>(bound), i32_type);
+      dim_size_vec =
+          MakeConstant(builder, static_cast<int32_t>(bound), idx_tensor_type);
+    }
+    DivModResult div_mod = ComputeDivMod(rem, dim_scalar, dim_size_vec,
+                                         idx_tensor_type, out_bound, builder);
+    rem = div_mod.quotient;
+    AddScaledCoordinate(src_idx, div_mod.remainder, stride, idx_tensor_type,
+                        builder);
+    stride *= bound;
+  }
+
+  // Clamp the major-most coordinate to `[0, B_0 - 1]` so padding indices
+  // (`k >= out_size`) remain strictly in bounds for the gather.
+  const int64_t bound_0 = input_dims[0].size;
+  if (bound_0 > 1) {
+    mlir::MlirOp max_coord_0 = MakeConstant(
+        builder, static_cast<int32_t>(bound_0 - 1), idx_tensor_type);
+    mlir::MlirOp coord_0 = mlir::stablehlo::Min(rem, max_coord_0);
+    AddScaledCoordinate(src_idx, coord_0, stride, idx_tensor_type, builder);
+  }
+
+  const mlir::stablehlo::GatherDimensionNumbersAttr gather_dims =
+      mlir::stablehlo::GatherDimensionNumbersAttr::get(
+          &builder.getContext(),
+          /*offset_dims=*/{},
+          /*collapsed_slice_dims=*/{0},
+          /*operand_batching_dims=*/{},
+          /*start_indices_batching_dims=*/{},
+          /*start_index_map=*/{0},
+          /*index_vector_dim=*/1);
+  mlir::MlirOp gathered = mlir::stablehlo::Gather(
+      flat_static, *src_idx, gather_dims, /*slice_sizes=*/{1},
+      /*indices_are_sorted=*/false);
+  return mlir::stablehlo::SetDimensionSize(gathered, out_size, /*dimension=*/0);
+}
+
+}  // namespace
 
 at::Tensor DynamicReshape(const at::Tensor& input, at::TensorList shape,
                           at::IntArrayRef static_shape,
@@ -93,6 +306,12 @@ at::Tensor DynamicReshape(const at::Tensor& input, at::TensorList shape,
             [shape_len = shape.size(), out_dims, is_dynamic_vec](
                 absl::Span<mlir::MlirOp> inputs,
                 mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
+          if (ShouldUseGatherForDynamicFlatten(inputs[0], out_dims,
+                                               is_dynamic_vec)) {
+            return BuildDynamicFlattenWithGather(inputs[0], inputs[1],
+                                                 out_dims[0], builder);
+          }
+
           // 1. Process and concatenate shape inputs to a single 1D tensor
           std::vector<mlir::MlirOp> shape_ops;
           shape_ops.reserve(shape_len);

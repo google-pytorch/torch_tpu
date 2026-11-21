@@ -2106,7 +2106,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_fill(self):
     self.do_test_op("fill")
 
-  @test_utils.skip_if_asan("b/585576468: Slow / times out in ASAN mode.")
   def test_flatten(self):
     # TODO: check flatten is being properly exercised.
     self.do_test_op("flatten")
