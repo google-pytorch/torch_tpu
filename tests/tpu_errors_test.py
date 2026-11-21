@@ -5448,6 +5448,30 @@ module {
     ):
       fn(t, repeats)
 
+  @et.why_tpu_only(
+      "CUDA softmax skips dtype dispatch on empty tensors and isneginf succeeds"
+      " for integral types."
+  )
+  def test_safe_softmax_empty_tensor_unsupported_dtype(self):
+    t = torch.empty(0, 4, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""safe_softmax(): not implemented for input type int32""",
+    ):
+      torch.ops.aten._safe_softmax(t, -1)
+
+  @et.why_tpu_only(
+      "CUDA softmax skips dtype dispatch on empty tensors and allows"
+      " unsupported target dtype."
+  )
+  def test_safe_softmax_empty_tensor_target_float8_unsupported(self):
+    t = torch.empty(0, 4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""safe_softmax(): not implemented for float8_e4m3fn""",
+    ):
+      torch.ops.aten._safe_softmax(t, -1, dtype=torch.float8_e4m3fn)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
