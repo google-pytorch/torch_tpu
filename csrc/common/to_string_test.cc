@@ -16,6 +16,8 @@
 
 #include "csrc/common/to_string.h"
 
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -142,6 +144,26 @@ TEST(ToStringTensorTest, ContainersOfTensorsUseTheTensorOverload) {
             absl::StrCat("[", expected, "]"));
   EXPECT_EQ(ToString(at::ITensorListRef({tensor})),
             absl::StrCat("[", expected, "]"));
+}
+
+TEST(ToStringScalarTest, FormatsUnsignedUint64AboveInt64Max) {
+  constexpr uint64_t kInt64MaxPlusOne =
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1;
+
+  EXPECT_EQ(ToString(at::Scalar(kInt64MaxPlusOne)), "9223372036854775808");
+  EXPECT_EQ(ToString(at::Scalar(kInt64MaxPlusOne), "alpha"),
+            "alpha: 9223372036854775808");
+  EXPECT_EQ(ToString(at::Scalar(std::numeric_limits<uint64_t>::max())),
+            "18446744073709551615");
+}
+
+TEST(ToStringScalarTest, FormatsSignedIntegralBooleanAndFloatingPointScalars) {
+  EXPECT_EQ(ToString(at::Scalar(int64_t{-42})), "-42");
+  EXPECT_EQ(ToString(at::Scalar(std::numeric_limits<int64_t>::max())),
+            "9223372036854775807");
+  EXPECT_EQ(ToString(at::Scalar(true)), "true");
+  EXPECT_EQ(ToString(at::Scalar(false)), "false");
+  EXPECT_EQ(ToString(at::Scalar(1.5)), "1.5");
 }
 
 TEST(ToStringScalarTypeTest, ScalarTypes) {
