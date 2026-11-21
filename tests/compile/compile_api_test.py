@@ -1199,6 +1199,29 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     actual = y.cpu()
     utils.assert_close(actual=actual, expected=expected)
 
+  def test_force_strides_strided_middle_dimension(self):
+    # Arrange: create a strided slice on the CPU, where the size of the sliced
+    # middle dimension is not a multiple of the step, and a contiguous copy of
+    # it on the TPU.
+    expected = torch.arange(384, device='cpu').view(12, 4, 8, 1)[:, 0:4:3]
+    x = expected.to(device='tpu')
+    self.assertTrue(x.is_contiguous())
+
+    # Act: force the strides to match expected
+    y = tpu_torch_compile.force_strides(
+        x, expected.stride(), expected.storage_offset()
+    )
+
+    # Assert: the tensor metadata is changed to match expected
+    self.assertEqual(y.shape, expected.shape)
+    self.assertEqual(y.dtype, expected.dtype)
+    self.assertEqual(y.stride(), expected.stride())
+    self.assertEqual(y.storage_offset(), expected.storage_offset())
+
+    # Assert: the tensor values are unchanged
+    actual = y.cpu()
+    utils.assert_close(actual=actual, expected=expected)
+
   def test_force_strides_broadcast(self):
     # Arrange: create a broadcasted tensor on the CPU, and a contiguous copy of
     # it on the TPU.

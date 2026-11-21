@@ -592,6 +592,118 @@ TEST(ComputeInverseViewOperation,
   EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
 }
 
+TEST(ComputeInverseViewOperation, StridedSliceOfMiddleDimension) {
+  const Dimensions contiguous_base_shape = {2, 3, 4};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::F32;
+  // View layout: torch.ones(2, 3, 4)[:, ::2].
+  const StridedLayout view_layout = {.strided_dims = {{.size = 2, .stride = 12},
+                                                      {.size = 2, .stride = 8},
+                                                      {.size = 4, .stride = 1}},
+                                     .storage_offset = 0};
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype));
+
+  // Each row of 12 elements is padded to 16 elements, which can be reshaped
+  // to (2, 8) and sliced to (2, 4).
+  InverseViewOperation expected = {
+      .base_transform = {ReshapePrimitive{.base_sizes = {2, 3, 4},
+                                          .new_sizes = {2, 12}}},
+      .bitcast_view = {},
+      .stages = {InverseViewStage{
+                     .forward = {PadPrimitive{
+                                     .pad_dims = {PadDimension(),
+                                                  PadDimension{.high_padding =
+                                                                   4}}},
+                                 ReshapePrimitive{.base_sizes = {2, 16},
+                                                  .new_sizes = {2, 2, 8}}},
+                     .slice = SlicePrimitive{.slice_dims = {{.start_index = 0,
+                                                             .limit_index = 2,
+                                                             .stride = 1},
+                                                            {.start_index = 0,
+                                                             .limit_index = 2,
+                                                             .stride = 1},
+                                                            {.start_index = 0,
+                                                             .limit_index = 4,
+                                                             .stride = 1}}},
+                     .inverse = {ReshapePrimitive{.base_sizes = {2, 2, 8},
+                                                  .new_sizes = {2, 16}},
+                                 SlicePrimitive{
+                                     .slice_dims = {{.start_index = 0,
+                                                     .limit_index = 2,
+                                                     .stride = 1},
+                                                    {.start_index = 0,
+                                                     .limit_index = 12,
+                                                     .stride = 1}}}}},
+                 InverseViewStage()},
+      .final_shape = Shape({2, 12}, mlir::ElementType::F32)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
+TEST(ComputeInverseViewOperation, StridedSliceOfMiddleDimensionWithUnitDim) {
+  // The base that torch.compile creates for an output with the view layout.
+  const Dimensions contiguous_base_shape = {12, 32};
+  const mlir::ElementType contiguous_base_dtype = mlir::ElementType::F32;
+  // View layout: torch.ones(12, 4, 8, 1)[:, 0:4:3].
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 12, .stride = 32},
+                       {.size = 2, .stride = 24},
+                       {.size = 8, .stride = 1},
+                       {.size = 1, .stride = 1}},
+      .storage_offset = 0};
+  const mlir::ElementType view_dtype = mlir::ElementType::F32;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto inverse_view_operation,
+      ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype));
+
+  InverseViewOperation expected = {
+      .base_transform = {},
+      .bitcast_view = {},
+      .stages = {InverseViewStage{
+                     .forward = {PadPrimitive{
+                                     .pad_dims = {PadDimension(),
+                                                  PadDimension{.high_padding =
+                                                                   16}}},
+                                 ReshapePrimitive{.base_sizes = {12, 48},
+                                                  .new_sizes = {12, 2, 24}}},
+                     .slice = SlicePrimitive{.slice_dims = {{.start_index = 0,
+                                                             .limit_index = 12,
+                                                             .stride = 1},
+                                                            {.start_index = 0,
+                                                             .limit_index = 2,
+                                                             .stride = 1},
+                                                            {.start_index = 0,
+                                                             .limit_index = 8,
+                                                             .stride = 1}}},
+                     .inverse = {ReshapePrimitive{.base_sizes = {12, 2, 24},
+                                                  .new_sizes = {12, 48}},
+                                 SlicePrimitive{
+                                     .slice_dims = {{.start_index = 0,
+                                                     .limit_index = 12,
+                                                     .stride = 1},
+                                                    {.start_index = 0,
+                                                     .limit_index = 32,
+                                                     .stride = 1}}}}},
+                 InverseViewStage{
+                     .forward = {ReshapePrimitive{.base_sizes = {12, 2, 8},
+                                                  .new_sizes = {12, 2, 8, 1}}},
+                     .inverse = {ReshapePrimitive{.base_sizes = {12, 2, 8, 1},
+                                                  .new_sizes = {12, 2, 8}}}}},
+      .final_shape = Shape({12, 32}, mlir::ElementType::F32)};
+  EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
+  EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
+  EXPECT_EQ(inverse_view_operation.stages, expected.stages);
+  EXPECT_EQ(inverse_view_operation.final_shape, expected.final_shape);
+}
+
 TEST(ComputeInverseViewOperation, NoDtypeChange) {
   const Dimensions contiguous_base_shape = {2, 3, 4};
   const mlir::ElementType contiguous_base_dtype = mlir::ElementType::F32;
