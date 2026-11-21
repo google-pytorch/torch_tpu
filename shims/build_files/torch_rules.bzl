@@ -24,9 +24,12 @@ def torch_tpu_torch_test(
         **kwargs):
     """Creates a test target to run an upstream PyTorch test suite with TorchTPU.
 
-    The test execution is not hermetic: it is required to set up a https://github.com/pytorch/pytorch
-    checkout and specify its path via `TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR` environment variable:
-      $ bazel test --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=/path/to/pytorch/test ...
+    The PyTorch `test/` checkout is mounted via `@pytorch_test` (configured with
+    `--repo_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=/path/to/pytorch/test`) so
+    each target tracks only its own test module and subsystem helpers in `data`
+    runfiles for per-target Bazel remote caching and RBE execution. Passing
+    `--test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=/path/to/pytorch/test` at
+    test time remains supported as a runtime override.
 
     Args:
         name: Name of the test target.
@@ -37,10 +40,16 @@ def torch_tpu_torch_test(
         **kwargs: Additional arguments passed to `torch_tpu_torch_test_impl` macro
             defined in build_files/torch_rules_common.bzl.
     """
+    module_target = "@pytorch_test//:{}_module".format(
+        torch_test_module.replace("/", "_"),
+    )
+    data = [module_target] + list(kwargs.pop("data", []))
+
     torch_tpu_torch_test_impl(
         name = name,
         torch_test_module = torch_test_module,
         nolocal = nolocal,
+        data = data,
         **kwargs
     )
 

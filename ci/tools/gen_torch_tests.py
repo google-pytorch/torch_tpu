@@ -96,8 +96,7 @@ def torch_test_target(test_module: str) -> str:
     The formatted Bazel target definition.
   """
   # Normalize the module path to a test target name.
-  *dirs, basename = test_module.split("/")
-  name = "_".join([*dirs, basename.removeprefix("test_"), "test"])
+  name = torch_test_module_utils.torch_test_target_name(test_module)
 
   notap = (
       '    notap = "b/563402379",  # NOTAP_OK=torch tests\n'
