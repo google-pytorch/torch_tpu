@@ -27,6 +27,7 @@ import functools
 import gzip
 import importlib
 import itertools
+import json
 import logging  # PYTHON_LOGGING_OK=Setting module log level for compile testing
 import os
 import plistlib
@@ -202,6 +203,14 @@ _CHECK_SYMBOLIC_SHAPES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
     " fails if TorchTPU specializes (pins to a constant) or throws on a"
     " symbolic dim that CPU keeps symbolic. Such specializations make"
     " torch.compile recompile for every new input shape.",
+)
+
+_DUMP_DYNAMISM_COVERAGE: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "dump_dynamism_coverage",
+    False,
+    "If set with --check_dynamism, writes the bounded dynamism coverage of each"
+    " do_test_op() call to dynamism_coverage<shard>.jsonl in the undeclared"
+    " outputs directory.",
 )
 
 _OPT_LEVEL: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
@@ -4960,6 +4969,62 @@ def _save_perf_data() -> None:
   print(f"Saved perf data to {output_file}", flush=True)
 
 
+@dataclasses.dataclass
+class DynamismCoverage:
+  """Bounded dynamism coverage of a single `do_test_op()` call.
+
+  Attributes:
+    test_name: Name of the test method that called `do_test_op()`.
+    op_name: Name of the tested op.
+    mode: Value of the active `DynamismMode`.
+    subtests_run: Number of dynamism subtests run across variants and dtypes.
+    plans: Labels of the marking plans that ran.
+    skips: Number of skips per `dynamism_test_utils.SkipCategory` value. Skips
+      without a category are counted under `"other"`.
+  """
+
+  test_name: str
+  op_name: str
+  mode: str
+  subtests_run: int = 0
+  plans: set[str] = dataclasses.field(default_factory=set)
+  skips: collections.Counter[str] = dataclasses.field(
+      default_factory=collections.Counter
+  )
+
+  def to_json(self) -> dict[str, Any]:
+    """Returns a JSON-serializable representation of the coverage."""
+    return {
+        "test_name": self.test_name,
+        "op_name": self.op_name,
+        "mode": self.mode,
+        "subtests_run": self.subtests_run,
+        "plans": sorted(self.plans),
+        "skips": dict(sorted(self.skips.items())),
+    }
+
+
+_DYNAMISM_COVERAGE: MutableSequence[DynamismCoverage] = []
+
+
+def _save_dynamism_coverage() -> None:
+  """Saves the dynamism coverage to the undeclared outputs directory.
+
+  Writes one JSON object per `do_test_op()` call to
+  `dynamism_coverage<shard>.jsonl`, so that coverage can be aggregated across
+  shards.
+  """
+  output_dir = epath.Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp"))
+  output_file = output_dir / f"dynamism_coverage{_get_test_shard():02d}.jsonl"
+  output_file.write_text(
+      "".join(
+          json.dumps(coverage.to_json(), sort_keys=True) + "\n"
+          for coverage in _DYNAMISM_COVERAGE
+      )
+  )
+  print(f"Saved dynamism coverage to {output_file}", flush=True)
+
+
 def _print_perf_debug_guide() -> None:
   """Prints the performance debug guide."""
 
@@ -6395,10 +6460,13 @@ def _compiled_supports_op(
   ):
     return False
 
-  key = op.name
-  if variant == OpVariant.OUT:
-    key += ".out"
-  return key not in _COMPILED_DENY_LIST
+  return not _is_compiled_deny_listed(op, variant)
+
+
+def _is_compiled_deny_listed(op: OpInfo, variant: OpVariant) -> bool:
+  """Returns True if `variant` of `op` is in `_COMPILED_DENY_LIST`."""
+  key = op.name + (".out" if variant == OpVariant.OUT else "")
+  return key in _COMPILED_DENY_LIST
 
 
 def _target_device(dtype: torch.dtype, device: torch.device) -> torch.device:
@@ -6780,6 +6848,8 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     self._do_test_op_called = False
     self._subtests_run = 0
     self._dynamism_subtests_run = 0
+    # Dynamism coverage of the current `do_test_op()` call, if any.
+    self._dynamism_coverage: DynamismCoverage | None = None
     tt_testing.reset_eager_state()
     # Show long diffs in assertEqual.
     self.maxDiff = None  # pylint: disable=invalid-name
@@ -7145,6 +7215,21 @@ class OpInfoTestBase(TorchTpuTestBase):
           f" {_op_name_for_logging(op, variant)}() with dtype {dtype}. Please"
           " re-generate the GPU golden files to cover the new (op, dtype)."
       )
+    if not samples:
+      op_name = _op_name_for_logging(op, variant)
+      if is_compiled_mode() and _is_compiled_deny_listed(op, variant):
+        # Golden generation skips compiled deny-listed ops, so report the root
+        # cause instead of the missing goldens.
+        skip = dynamism_test_utils.DynamismSkip(
+            f"{op_name} is in _COMPILED_DENY_LIST.",
+            dynamism_test_utils.SkipCategory.COMPILED_DENY_LISTED,
+        )
+      else:
+        skip = dynamism_test_utils.DynamismSkip(
+            f"No GPU golden samples for {op_name}() with dtype {dtype}.",
+            dynamism_test_utils.SkipCategory.NO_GOLDEN_SAMPLES,
+        )
+      self._record_dynamism_skip(skip)
     if max_samples >= 0 and len(samples) > max_samples:
       print(
           f">>> Taking {max_samples} samples from "
@@ -7510,6 +7595,14 @@ class OpInfoTestBase(TorchTpuTestBase):
         _target_device(dtype, device),
     )
 
+  def _record_dynamism_skip(self, skip: str) -> None:
+    """Counts `skip` in the dynamism coverage of the current `do_test_op()`."""
+    if self._dynamism_coverage is None:
+      return
+    category = getattr(skip, "category", None)
+    key = category.value if category is not None else "other"
+    self._dynamism_coverage.skips[key] += 1
+
   def _mark_dynamic(
       self,
       op: OpInfo,
@@ -7542,6 +7635,7 @@ class OpInfoTestBase(TorchTpuTestBase):
         kwargs=device_op_input.kwargs,
     )
     if skip is not None:
+      self._record_dynamism_skip(skip)
       self.skipTest(skip)
 
     print(
@@ -8066,6 +8160,12 @@ class OpInfoTestBase(TorchTpuTestBase):
             f"Error: {golden_result}\n",
             flush=True,
         )
+        self._record_dynamism_skip(
+            dynamism_test_utils.DynamismSkip(
+                f"{op_name}() failed on {self.golden_device_name()}.",
+                dynamism_test_utils.SkipCategory.GOLDEN_FAILED,
+            )
+        )
         continue
 
       if skip_if and skip_if(variant, golden_input):
@@ -8074,6 +8174,12 @@ class OpInfoTestBase(TorchTpuTestBase):
             " TorchTPU as filtered by the skip_if function.\n"
             f"{golden_input}",
             flush=True,
+        )
+        self._record_dynamism_skip(
+            dynamism_test_utils.DynamismSkip(
+                f"{op_name}() sample filtered by skip_if.",
+                dynamism_test_utils.SkipCategory.FILTERED_BY_SKIP_IF,
+            )
         )
         continue
 
@@ -8112,6 +8218,7 @@ class OpInfoTestBase(TorchTpuTestBase):
             f" with dtype {dtype}: {dynamism_skip}",
             flush=True,
         )
+        self._record_dynamism_skip(dynamism_skip)
         self._subtests_run += 1
         with self.subTest(subtest_name=subtest_name, run_index=0):
           _run_and_print_exception(
@@ -8125,6 +8232,8 @@ class OpInfoTestBase(TorchTpuTestBase):
             if marking_plan is not None
             else subtest_name
         )
+        if marking_plan is not None and self._dynamism_coverage is not None:
+          self._dynamism_coverage.plans.add(marking_plan.label)
         for perf_run_idx in range(_NUM_RUNS_PER_SUBTEST.value):
           self._subtests_run += 1
           if marking_plan is not None:
@@ -8155,7 +8264,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       *,
       variant: OpVariant = OpVariant.BASE,
       compute_grad: bool = False,
-  ) -> tuple[str | None, Any]:
+  ) -> tuple[dynamism_test_utils.DynamismSkip | None, Any]:
     """Checks if `golden_input` is eligible for dynamism before plan generation.
 
     Args:
@@ -8174,9 +8283,10 @@ class OpInfoTestBase(TorchTpuTestBase):
       input_value = _requires_grad_input(_clone_pytree(input_value))
       if not _can_compute_grad(variant, input_value):
         return (
-            (
+            dynamism_test_utils.DynamismSkip(
                 f"Gradients cannot be computed for variant={variant.value} on"
-                " this sample."
+                " this sample.",
+                dynamism_test_utils.SkipCategory.NO_GRAD,
             ),
             input_value,
         )
@@ -8199,7 +8309,10 @@ class OpInfoTestBase(TorchTpuTestBase):
       use_compiled: bool,
       golden_result: Any = None,
       out_dtype_override: torch.dtype | None = None,
-  ) -> tuple[str | None, Sequence[DynamicMarkingPlan | None]]:
+  ) -> tuple[
+      dynamism_test_utils.DynamismSkip | None,
+      Sequence[DynamicMarkingPlan | None],
+  ]:
     """Resolves dynamism skip reason and marking plans for a sample.
 
     Args:
@@ -8232,6 +8345,16 @@ class OpInfoTestBase(TorchTpuTestBase):
     )
     if skip is not None:
       return skip, ()
+    # `_compile()` skips compiled deny-listed ops; skip them here instead so
+    # that no plan or dynamism subtest is counted for them.
+    if use_compiled and _is_compiled_deny_listed(op, variant):
+      return (
+          dynamism_test_utils.DynamismSkip(
+              f"{_op_name_for_logging(op, variant)} is in _COMPILED_DENY_LIST.",
+              dynamism_test_utils.SkipCategory.COMPILED_DENY_LISTED,
+          ),
+          (),
+      )
 
     skip, input_value = self._check_dynamism_sample_supported(
         op,
@@ -8255,18 +8378,32 @@ class OpInfoTestBase(TorchTpuTestBase):
               golden_result, out_dtype_override=out_dtype_override
           ),
       }
-    plans = list(
-        dynamism_test_utils.generate_exhaustive_input_marking_plans(
-            op,
-            input_value,
-            golden_input.args,
-            mode=dynamism_mode,
-            kwargs=plan_kwargs,
-            op_func=_op_func(op, variant, torch.device("tpu")),
-        )
-    )
+    try:
+      plans = list(
+          dynamism_test_utils.generate_exhaustive_input_marking_plans(
+              op,
+              input_value,
+              golden_input.args,
+              mode=dynamism_mode,
+              kwargs=plan_kwargs,
+              op_func=_op_func(op, variant, torch.device("tpu")),
+          )
+      )
+    except dynamism_test_utils.UntraceableOpError as e:
+      return (
+          dynamism_test_utils.DynamismSkip(
+              str(e), dynamism_test_utils.SkipCategory.UNTRACEABLE
+          ),
+          (),
+      )
     if not plans:
-      return "No valid input dimensions to mark dynamic.", ()
+      return (
+          dynamism_test_utils.DynamismSkip(
+              "No valid input dimensions to mark dynamic.",
+              dynamism_test_utils.SkipCategory.NO_CANDIDATES,
+          ),
+          (),
+      )
 
     plan_filter = _DYNAMISM_PLAN_FILTER.value
     if plan_filter:
@@ -8274,10 +8411,11 @@ class OpInfoTestBase(TorchTpuTestBase):
       plans = [p for p in plans if p.label == plan_filter]
       if not plans:
         return (
-            (
+            dynamism_test_utils.DynamismSkip(
                 "No dynamic marking plan matched"
                 f" --dynamism_plan_filter={plan_filter!r} (available:"
-                f" {available})."
+                f" {available}).",
+                dynamism_test_utils.SkipCategory.NO_PLAN_MATCHED,
             ),
             (),
         )
@@ -8418,10 +8556,16 @@ class OpInfoTestBase(TorchTpuTestBase):
           _should_skip_dtype(d, exclude_dtypes=exclude_dtypes)
           for d in dtypes_to_test
       ):
-        self.skipTest(
+        message = (
             f"All dtypes excluded for {op_name} on"
             f" {self.golden_device_name()}: exclude_dtypes={exclude_dtypes}"
         )
+        self._record_dynamism_skip(
+            dynamism_test_utils.DynamismSkip(
+                message, dynamism_test_utils.SkipCategory.ALL_DTYPES_EXCLUDED
+            )
+        )
+        self.skipTest(message)
 
       if _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value:
         dynamism_mode = _dynamism_mode(
@@ -8431,6 +8575,7 @@ class OpInfoTestBase(TorchTpuTestBase):
             op, mode=dynamism_mode
         )
         if skip is not None:
+          self._record_dynamism_skip(skip)
           self.skipTest(skip)
 
       # (variant, excluded dtypes, check_op_failures) for each variant to test.
@@ -8499,13 +8644,25 @@ class OpInfoTestBase(TorchTpuTestBase):
                 out_dtype_override=out_dtype,
             )
 
-    _run_and_print_exception(_test_op_variants)
+    track_dynamism = _CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value
+    if track_dynamism and _DUMP_DYNAMISM_COVERAGE.value:
+      self._dynamism_coverage = DynamismCoverage(
+          test_name=self._testMethodName,
+          op_name=op_name,
+          mode=_dynamism_mode(
+              use_compiled=use_compiled, compute_grad=compute_grad
+          ).value,
+      )
+    try:
+      _run_and_print_exception(_test_op_variants)
+    finally:
+      # Record coverage even if the test is skipped or fails.
+      if self._dynamism_coverage is not None:
+        self._dynamism_coverage.subtests_run = self._dynamism_subtests_run
+        _DYNAMISM_COVERAGE.append(self._dynamism_coverage)
+        self._dynamism_coverage = None
 
-    if (
-        _CHECK_DYNAMISM.value
-        and not _CHECK_SYMBOLIC_SHAPES.value
-        and self._dynamism_subtests_run == 0
-    ):
+    if track_dynamism and self._dynamism_subtests_run == 0:
       print(
           f">>> No valid sample for dynamism found for op {op_name} across all"
           " tested variants and dtypes.",
@@ -8947,3 +9104,6 @@ def tear_down_test_module() -> None:
     _save_perf_data()
   elif _dump_dtype_exclusions_mode():
     _print_dtype_exclusions()
+
+  if _DYNAMISM_COVERAGE:
+    _save_dynamism_coverage()
