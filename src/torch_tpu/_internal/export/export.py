@@ -411,6 +411,101 @@ class _TensorDedupeKey:
     )
 
 
+def _storage_key(tensor: torch.Tensor) -> tuple[int, torch.dtype]:
+  """Returns a key that is equal for tensors that view the same storage."""
+  storage_data_ptr = (
+      tensor.data_ptr() - tensor.storage_offset() * tensor.element_size()
+  )
+  return storage_data_ptr, tensor.dtype
+
+
+def _covers_storage(tensor: torch.Tensor) -> bool:
+  """Returns whether `tensor` is the contiguous view of its full storage."""
+  return (
+      tensor.storage_offset() == 0
+      and tensor.is_contiguous()
+      and tensor.numel() * tensor.element_size()
+      == tensor.untyped_storage().nbytes()
+  )
+
+
+def _find_output_views(
+    flat_outputs: Sequence[Any],
+) -> tuple[list[tuple[int, torch.Tensor]], dict[int, int]]:
+  """Finds the tensor outputs to return as views of another tensor.
+
+  Outputs that are different views of the same storage form a group. Each
+  group has a base tensor that covers the full storage. The base is an output
+  of the group if one covers the full storage, else a flat view of the storage.
+  The other outputs of the group become views of the base.
+
+  Args:
+    flat_outputs: The flattened outputs of the graph.
+
+  Returns:
+    The index of the first output and the base tensor of each group, and a map
+    from the index of each output that becomes a view to the index of the base
+    of its group.
+  """
+  indices_by_storage: dict[tuple[int, torch.dtype], list[int]] = {}
+  for idx, item in enumerate(flat_outputs):
+    if isinstance(item, torch.Tensor):
+      indices_by_storage.setdefault(_storage_key(item), []).append(idx)
+
+  bases: list[tuple[int, torch.Tensor]] = []
+  base_index_by_view: dict[int, int] = {}
+  for indices in indices_by_storage.values():
+    outputs = [flat_outputs[idx] for idx in indices]
+    dedupe_keys = [_TensorDedupeKey.from_tensor(output) for output in outputs]
+    if len(set(dedupe_keys)) == 1:
+      continue
+    base = next(
+        (output for output in outputs if _covers_storage(output)),
+        None,
+    )
+    if base is None:
+      storage_numel = (
+          outputs[0].untyped_storage().nbytes() // outputs[0].element_size()
+      )
+      base = outputs[0].as_strided((storage_numel,), (1,), storage_offset=0)
+    base_key = _TensorDedupeKey.from_tensor(base)
+    for idx, dedupe_key in zip(indices, dedupe_keys, strict=True):
+      if dedupe_key != base_key:
+        base_index_by_view[idx] = len(bases)
+    bases.append((indices[0], base))
+  return bases, base_index_by_view
+
+
+@dataclasses.dataclass(frozen=True)
+class _AliasedOutputReconstructor:
+  """Reconstructs FX outputs, some of them as views of other MLIR outputs.
+
+  This keeps the aliasing of eager mode between outputs, so that an in-place
+  write to one output is seen through the others.
+
+  Attributes:
+    leaf_reconstructor: Reconstructs the flat list of output leaves. It
+      returns `None` for the outputs that are views.
+    aliased_layouts: For the leaf index of each output that is a view, the index
+      of its base in the MLIR outputs and the layout of the view.
+    spec: The PyTree spec of the original FX graph outputs.
+  """
+
+  leaf_reconstructor: tpu_torch_compile.FxOutputReconstructor
+  aliased_layouts: Mapping[int, tuple[int, _TensorLayout]]
+  spec: pytree.TreeSpec
+
+  def __call__(
+      self, inputs: Sequence[Any], deduped_outputs: Sequence[torch.Tensor]
+  ) -> Any:
+    leaves = self.leaf_reconstructor(inputs, deduped_outputs)
+    for leaf_idx, (base_idx, layout) in self.aliased_layouts.items():
+      leaves[leaf_idx] = deduped_outputs[base_idx].as_strided(
+          layout.shape, layout.stride, layout.storage_offset
+      )
+    return pytree.tree_unflatten(leaves, self.spec)
+
+
 def _process_fx_outputs(
     gm: torch.fx.GraphModule,
     outputs: Any,
@@ -430,6 +525,11 @@ def _process_fx_outputs(
   function filters `None` values, maps passthrough values, and reduces to unique
   tensors. It returns a tuple containing a list of result tensors and a function
   to reconstruct the original FX output structure.
+
+  Outputs that are different views of the same storage are returned as views
+  of one MLIR output that covers the full storage, as in eager mode.
+  AOTAutograd regenerates such views only for outputs that require grad, so
+  without this an inference graph would return independent copies.
 
   Args:
     gm: The original torch.fx.GraphModule instance.
@@ -453,9 +553,16 @@ def _process_fx_outputs(
   unique_output_indices: list[int] = []
   output_map: list[_DedupedTensorOutput | _NonTensorPassthrough | None] = []
   index_by_dedupe_key: dict[_TensorDedupeKey, int] = {}
+  # Bounded dynamism computes the MLIR output shapes from the shapes of the
+  # original outputs, so it cannot add a base output.
+  bases, base_index_by_view = (
+      _find_output_views(flat_outputs) if dynamic_outputs is None else ([], {})
+  )
 
   for idx, item in enumerate(flat_outputs):
     if item is None:
+      output_map.append(None)
+    elif idx in base_index_by_view:
       output_map.append(None)
     elif isinstance(item, torch.Tensor):
       key = _TensorDedupeKey.from_tensor(item)
@@ -479,14 +586,46 @@ def _process_fx_outputs(
           f" but got {item}"
       )
 
+  # Adds each base to the MLIR outputs once. The views are rebuilt from it.
+  base_output_indices: list[int] = []
+  for first_idx, base in bases:
+    key = _TensorDedupeKey.from_tensor(base)
+    if key not in index_by_dedupe_key:
+      index_by_dedupe_key[key] = len(deduped_outputs)
+      deduped_outputs.append(base)
+      expected_layouts.append(key.layout)
+      unique_output_indices.append(first_idx)
+      deduped_dynamic_outputs.append(False)
+    base_output_indices.append(index_by_dedupe_key[key])
+  aliased_layouts = {
+      idx: (
+          base_output_indices[base_idx],
+          _TensorDedupeKey.from_tensor(flat_outputs[idx]).layout,
+      )
+      for idx, base_idx in base_index_by_view.items()
+  }
+
+  if aliased_layouts:
+    reconstructor = _AliasedOutputReconstructor(
+        leaf_reconstructor=tpu_torch_compile.FxOutputReconstructor(
+            output_map,
+            expected_layouts,
+            pytree.tree_structure([0] * len(flat_outputs)),
+            deduped_dynamic_outputs,
+        ),
+        aliased_layouts=aliased_layouts,
+        spec=spec,
+    )
+  else:
+    reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        output_map,
+        expected_layouts,
+        spec,
+        deduped_dynamic_outputs,
+    )
   return (
       deduped_outputs,
-      tpu_torch_compile.FxOutputReconstructor(
-          output_map,
-          expected_layouts,
-          spec,
-          deduped_dynamic_outputs,
-      ),
+      reconstructor,
       deduped_dynamic_outputs,
       unique_output_indices,
   )
