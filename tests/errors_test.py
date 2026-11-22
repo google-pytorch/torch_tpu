@@ -9582,6 +9582,44 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch._foreach_norm([x, x_empty], ord=-1.0)
 
+  def test_native_norm_empty_reduction(self):
+    x_empty = torch.empty((0,), device=et.device(), dtype=torch.float32)
+    gpu_not_impl = re.compile(
+        r".*Could not run 'aten::native_norm.*", re.DOTALL
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 0""",
+        gpu=gpu_not_impl,
+    ):
+      torch.ops.aten.native_norm.default(x_empty, float("inf"))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm(): expected non-empty reduction dimension for ord -1, got size 0 along dim 0""",
+        gpu=gpu_not_impl,
+    ):
+      torch.ops.aten.native_norm.default(x_empty, -1.0)
+
+    x_2d = torch.empty((2, 0), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 1""",
+        gpu=gpu_not_impl,
+    ):
+      torch.ops.aten.native_norm.ScalarOpt_dim_dtype(
+          x_2d, float("inf"), [1], False, None
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm(): expected non-empty reduction dimension for ord -1, got size 0 along dim 1""",
+        gpu=gpu_not_impl,
+    ):
+      torch.ops.aten.native_norm.ScalarOpt_dim_dtype(
+          x_2d, -1.0, [1], False, None
+      )
+
   def test_rms_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)
     normalized_shape = (5,)
