@@ -106,17 +106,23 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
     // but it might be a net win overall given that scalar buffers are cheap
     // to create.
     //
-    // The cache has two generations. A new scalar is always `fresh`; once
-    // `fresh` has received kMaxCachedScalarBuffers misses, its entries become
-    // `stale` and the previous `stale` entries are dropped. A hit in `stale`
-    // makes the scalar fresh again, so a scalar used within the last
-    // kMaxCachedScalarBuffers misses always survives, a working set of up to
-    // 2 * kMaxCachedScalarBuffers distinct values keeps hitting after one
-    // warm-up pass, and values that are never used again (a learning-rate
-    // schedule) are freed after two generations. The two maps together never
-    // hold more than 2 * kMaxCachedScalarBuffers entries. Pending ops hold
-    // their own references to the buffers they use, so dropping a generation
-    // cannot free a buffer in flight.
+    // RATIONALE FOR TWO GENERATIONS:
+    // A single-generation cache with a hard limit (e.g., 1024 entries) causes a
+    // performance cliff: when the working set exceeds the limit, every miss
+    // triggers a full cache clear. During that clear, scalars used before and
+    // after the boundary end up on the graph input AND in the cache, breaking
+    // deduplication and forcing recompilation (#6037). Two generations solve
+    // this: scalars always survive at least 1024 misses after their last use,
+    // so a working set up to 2048 distinct values avoids the cliff, stale values
+    // are still freed (after two generations), and the common hit path is a
+    // single lookup in the fresh map.
+    //
+    // IMPLEMENTATION: A new scalar is `fresh`; once `fresh` has received
+    // kMaxCachedScalarBuffers misses, its entries become `stale` and the
+    // previous `stale` entries are dropped. A hit in `stale` moves the scalar
+    // back to `fresh`. The two maps together hold at most 2*kMaxCachedScalarBuffers
+    // entries. Pending ops hold their own references to the buffers they use,
+    // so dropping a generation cannot free a buffer in flight.
     static thread_local  // CPP_THREAD_LOCAL_OK=unrelated to Python threads.
         absl::flat_hash_map<HashableScalar, DeviceBufferRef>
             fresh_scalars;
