@@ -1,0 +1,27 @@
+##### checkout logaddexp2 18:29:27
+458c993eb Implement aten::logaddexp2.out for TPU
+##### build 18:29:28
+BUILD_EXIT=0
+##### tests 18:57:10
+--- semantics vs CPU (/home/joinal/checks/check_logaddexp2.py)
+cpu [1.0, 1.3219281435012817, 1.3219281435012817, 100.0, 100.0, inf, -inf, inf, nan]
+tpu [1.0, 1.3219280242919922, 1.3219280242919922, 100.0, 100.0, inf, -inf, inf, nan]
+vectors allclose: True
+broadcast allclose: True
+bfloat16 allclose: True
+int -> logaddexp2(): "logaddexp2" not implemented for 'int64'
+
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2 passed, 4343 deselected, 14 warnings in 6.85s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 12.9s
+Executed 1 out of 1 test: 1 test passes.
+//tests:errors_test_tpu                                                  PASSED in 11.5s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.4s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 19:11:56
+
+238930 bash /home/joinal/vm_branch_tests.sh std_mean std_mean /home/joinal/check

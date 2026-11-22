@@ -1,0 +1,84 @@
+##### stopping ^bash /home/joinal/vm_suite_chain.sh (2798866) 17:36:07
+##### stopping ^bash /home/joinal/vm_full_suite.sh (2798870) 17:36:07
+##### checkout 988b22f12 + clear 17:36:12
+988b22f12 Document which XLA flags go in XLA_FLAGS vs LIBTPU_INIT_ARGS.
+##### build wheel (clear) 17:36:19
+BUILD_EXIT=0
+##### bench (clear) 18:09:53
+[clear] torch 2.11.0+cpu torch_tpu ?
+  with execution_mode.set_eager_mode(mode):
+[clear] hit: same scalar                   DEFER_NEVER        53.7 us/op  dispatch p50     9.4  p99    17.0  max    143.7 us  live +0  compiles +0
+[clear] miss: distinct scalar stream       DEFER_NEVER        61.1 us/op  dispatch p50    30.4  p99    53.3  max   1814.7 us  live +928  compiles +0
+[clear] cycle of 1500 distinct scalars     DEFER_NEVER        60.1 us/op  dispatch p50    31.0  p99    52.3  max   1562.0 us  live +880  compiles +0
+[clear] cycle of 512 distinct scalars      DEFER_NEVER        55.1 us/op  dispatch p50    12.4  p99    38.2  max   4494.8 us  live -465  compiles +0
+[clear] hit: same scalar                   DEFER_AND_FUSE     27.0 us/op  dispatch p50     8.7  p99    17.9  max    126.7 us  live +0  compiles +0
+[clear] miss: distinct scalar stream       DEFER_AND_FUSE     44.8 us/op  dispatch p50    27.4  p99    50.6  max   2840.8 us  live +416  compiles +0
+[clear] cycle of 1500 distinct scalars     DEFER_AND_FUSE     48.6 us/op  dispatch p50    32.3  p99    56.7  max   3388.7 us  live +880  compiles +0
+[clear] cycle of 512 distinct scalars      DEFER_AND_FUSE     27.3 us/op  dispatch p50    11.7  p99    39.2  max   4353.3 us  live -465  compiles +0
+[clear] fused region, hot 0.9 + new scalar DEFER_AND_FUSE    417.0 us/op  dispatch p50   402.1  p99   445.1  max  33114.0 us  live -68  compiles +1
+[clear] adamw+cosine 1500 steps            DEFER_NEVER        1.55 ms/step  live +401  compiles +0
+[clear] adamw+cosine 1500 steps            DEFER_AND_FUSE     1.01 ms/step  live +404  compiles +3
+[clear] done
+
+--- pytest accelerator_api_test -k scalar
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 38 deselected, 15 warnings in 5.73s
+
+##### apply sweep 18:10:20
+ M csrc/eager/op_dispatcher.cc
+ M csrc/eager/op_dispatcher.h
+ M tests/accelerator_api_test.py
+##### build wheel (sweep) 18:10:20
+BUILD_EXIT=0
+##### bench (sweep) 18:11:03
+[sweep] torch 2.11.0+cpu torch_tpu ?
+  with execution_mode.set_eager_mode(mode):
+[sweep] hit: same scalar                   DEFER_NEVER        54.9 us/op  dispatch p50    12.5  p99    22.7  max    146.4 us  live +0  compiles +0
+[sweep] miss: distinct scalar stream       DEFER_NEVER        82.1 us/op  dispatch p50    30.0  p99    52.1  max   1948.8 us  live -34  compiles +0
+[sweep] cycle of 1500 distinct scalars     DEFER_NEVER        64.0 us/op  dispatch p50    29.1  p99    50.9  max   2147.6 us  live +789  compiles +0
+[sweep] cycle of 512 distinct scalars      DEFER_NEVER        57.2 us/op  dispatch p50    12.5  p99    34.3  max   4154.2 us  live -436  compiles +0
+[sweep] hit: same scalar                   DEFER_AND_FUSE     27.7 us/op  dispatch p50    11.5  p99    20.4  max    151.3 us  live +0  compiles +0
+[sweep] miss: distinct scalar stream       DEFER_AND_FUSE     45.4 us/op  dispatch p50    26.3  p99    48.2  max   2585.0 us  live -162  compiles +0
+[sweep] cycle of 1500 distinct scalars     DEFER_AND_FUSE     49.5 us/op  dispatch p50    28.3  p99    49.6  max   2548.0 us  live -299  compiles +0
+[sweep] cycle of 512 distinct scalars      DEFER_AND_FUSE     32.1 us/op  dispatch p50    10.6  p99    35.9  max    251.2 us  live +448  compiles +0
+[sweep] fused region, hot 0.9 + new scalar DEFER_AND_FUSE    427.6 us/op  dispatch p50   423.6  p99   467.8  max   4359.5 us  live -69  compiles +0
+[sweep] adamw+cosine 1500 steps            DEFER_NEVER        1.40 ms/step  live +31  compiles +0
+[sweep] adamw+cosine 1500 steps            DEFER_AND_FUSE     0.98 ms/step  live -813  compiles +3
+[sweep] done
+
+--- pytest accelerator_api_test -k scalar
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+4 passed, 38 deselected, 15 warnings in 5.85s
+
+##### reset to clear, apply twogen 18:11:29
+ M csrc/eager/op_dispatcher.cc
+ M csrc/eager/op_dispatcher.h
+ M tests/accelerator_api_test.py
+##### build wheel (twogen) 18:11:29
+BUILD_EXIT=0
+##### bench (twogen) 18:24:35
+[twogen] torch 2.11.0+cpu torch_tpu ?
+  with execution_mode.set_eager_mode(mode):
+[twogen] hit: same scalar                   DEFER_NEVER        55.0 us/op  dispatch p50    12.8  p99    22.0  max    146.1 us  live +0  compiles +0
+[twogen] miss: distinct scalar stream       DEFER_NEVER        76.0 us/op  dispatch p50    26.3  p99    48.4  max   3152.9 us  live +1952  compiles +0
+[twogen] cycle of 1500 distinct scalars     DEFER_NEVER        57.5 us/op  dispatch p50    10.6  p99    41.9  max   3496.3 us  live +443  compiles +0
+[twogen] cycle of 512 distinct scalars      DEFER_NEVER        54.9 us/op  dispatch p50    10.0  p99    17.7  max    138.6 us  live +0  compiles +0
+[twogen] hit: same scalar                   DEFER_AND_FUSE     27.3 us/op  dispatch p50    10.4  p99    25.1  max    129.2 us  live +0  compiles +0
+[twogen] miss: distinct scalar stream       DEFER_AND_FUSE     38.3 us/op  dispatch p50    22.6  p99    69.1  max   5216.2 us  live -89  compiles +0
+[twogen] cycle of 1500 distinct scalars     DEFER_AND_FUSE     33.5 us/op  dispatch p50     9.4  p99    38.9  max   3654.6 us  live +412  compiles +0
+[twogen] cycle of 512 distinct scalars      DEFER_AND_FUSE     29.1 us/op  dispatch p50     8.8  p99    14.3  max    138.8 us  live +0  compiles +0
+[twogen] fused region, hot 0.9 + new scalar DEFER_AND_FUSE    390.2 us/op  dispatch p50   384.1  p99   425.1  max   5828.0 us  live +477  compiles +0
+[twogen] adamw+cosine 1500 steps            DEFER_NEVER        1.56 ms/step  live +400  compiles +0
+[twogen] adamw+cosine 1500 steps            DEFER_AND_FUSE     1.02 ms/step  live +404  compiles +3
+[twogen] done
+
+--- pytest accelerator_api_test -k scalar
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+5 passed, 38 deselected, 15 warnings in 6.92s
+
+##### ALL DONE 18:25:02
+/dev/root        97G   61G   37G  63% /
+##### restarting chain: origin/logaddexp2 logaddexp2 origin/std_mean std_mean origin/nansum nansum origin/trace trace origin/addbmm addbmm origin/smooth_l1_loss smooth_l1_loss origin/huber_loss huber_loss 18:25:05

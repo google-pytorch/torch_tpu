@@ -1,0 +1,7 @@
+device TPU v6e x4
+memory_allocated 4296704
+max_memory_allocated 4296704
+memory_reserved 0
+get_memory_info (33541746176, 33546042880)
+hbm_bytes_per_device 34359738368
+

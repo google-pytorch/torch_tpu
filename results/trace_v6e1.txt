@@ -1,0 +1,44 @@
+##### checkout trace 20:36:20
+01dc5fe83 Implement aten::trace for TPU
+##### build 20:36:22
+BUILD_EXIT=0
+##### tests 21:02:48
+--- semantics vs CPU (/home/joinal/checks/check_trace.py)
+3x3 float32: allclose: True (cpu=12.0, tpu=12.0)
+2x3 wide: allclose: True (cpu=4.0, tpu=4.0)
+3x2 tall: allclose: True (cpu=3.0, tpu=3.0)
+0x0: allclose: True (cpu=0.0, tpu=0.0)
+1x1: allclose: True (cpu=2.5, tpu=2.5)
+Traceback (most recent call last):
+  File "/home/joinal/checks/check_trace.py", line 19, in <module>
+    check(
+    ~~~~~^
+        "bfloat16",
+        ^^^^^^^^^^^
+        lambda d: torch.trace(torch.arange(9.0, device=d).reshape(3, 3).to(torch.bfloat16)),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/joinal/checks/check_trace.py", line 8, in check
+    cpu = fn("cpu")
+  File "/home/joinal/checks/check_trace.py", line 21, in <lambda>
+    lambda d: torch.trace(torch.arange(9.0, device=d).reshape(3, 3).to(torch.bfloat16)),
+              ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+NotImplementedError: "trace" not implemented for 'BFloat16'
+
+--- pytest
+FAILED tests/ops_unit_test.py::OpsUnitTest::test_trace_dtypes - AssertionErro...
+1 failed, 1 passed, 4343 deselected, 14 warnings in 7.11s
+
+--- bazel, as CI runs it
+FAILED (failures=1)
+INFO: Build completed, 1 test FAILED, 1334 total actions
+//tests:ops_unit_test_tpu-v6e                                            FAILED in 1 out of 50 in 12.6s
+Executed 1 out of 1 test: 1 fails locally.
+//tests:errors_test_tpu                                                  PASSED in 9.4s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.4s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 21:17:14
+
+241756 bash /home/joinal/vm_branch_tests.sh addbmm addbmm /home/joinal/checks/ch

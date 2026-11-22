@@ -1,0 +1,61 @@
+{
+  "device_type": "native-tpu",
+  "torch": "2.15.0+cu132",
+  "python": "3.12.16",
+  "host": "t1v-n-5106e19d-w-0",
+  "torch_tpu": "0.2.0",
+  "captum": "0.9.0",
+  "accelerator": "unknown",
+  "n_steps": 50,
+  "agreement": [
+    {
+      "method": "Saliency/MLP",
+      "precision": "default",
+      "max_rel_err": 0.002216066000983119
+    },
+    {
+      "method": "IntegratedGradients/MLP",
+      "precision": "default",
+      "max_rel_err": 0.0020730753894895315
+    },
+    {
+      "method": "LayerIntegratedGradients/MLP[0]",
+      "precision": "default",
+      "max_rel_err": 0.0031286701560020447
+    },
+    {
+      "method": "IntegratedGradients/CNN",
+      "precision": "default",
+      "max_rel_err": 0.010189615190029144
+    },
+    {
+      "method": "Saliency/MLP",
+      "precision": "highest",
+      "max_rel_err": 1.6526396962035506e-07
+    },
+    {
+      "method": "IntegratedGradients/MLP",
+      "precision": "highest",
+      "max_rel_err": 4.3619586165277724e-08
+    },
+    {
+      "method": "LayerIntegratedGradients/MLP[0]",
+      "precision": "highest",
+      "max_rel_err": 1.0107156356298219e-07
+    },
+    {
+      "method": "IntegratedGradients/CNN",
+      "precision": "highest",
+      "max_rel_err": 3.0745073331672756e-07
+    }
+  ],
+  "convergence": {
+    "attribution_sum": -0.6224159002304077,
+    "max_abs_convergence_delta": 7.450580596923828e-08
+  },
+  "ig_warm_median_s": {
+    "tpu": 0.025262750000365486,
+    "cpu": 0.0037145300002521253
+  },
+  "xprof": "captured (5634477 bytes)"
+}

@@ -1,0 +1,110 @@
+From 1cc767d4f3472e9330f356a7eff0697afc8837d6 Mon Sep 17 00:00:00 2001
+From: Paul Ganssle <pganssle@google.com>
+Date: Thu, 5 Nov 2026 20:08:26 +0300
+Subject: [PATCH 1/2] Evict only unreferenced scalar buffers when the
+ per-thread cache is full
+
+Instead of clearing the whole cache, erase the entries whose device buffer
+only the cache still references. Scalars held by a tensor or a pending
+deferred op stay cached, so a fused region that reuses a value across the
+eviction keeps a single graph input for it. If every entry is in use, the
+cache is cleared as before, so the bound still holds.
+
+Assisted-by: Claude Fable 5.1
+---
+ csrc/eager/op_dispatcher.cc | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/csrc/eager/op_dispatcher.cc b/csrc/eager/op_dispatcher.cc
+index 85c8a0e22..af9eafba4 100644
+--- a/csrc/eager/op_dispatcher.cc
++++ b/csrc/eager/op_dispatcher.cc
+@@ -139,10 +139,18 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
+                         ScheduleHostToDeviceTransfer(std::move(transfer)));
+     // Every cached scalar keeps its device buffer alive, so a stream of
+     // distinct values (e.g. a learning rate schedule) would grow device memory
+-    // without bound. Start over when the cache is full; pending ops hold their
+-    // own references to the buffers they use.
++    // without bound. When the cache is full, drop the entries that only the
++    // cache still references. Scalars that a tensor or a pending deferred op
++    // holds stay cached, so a fused region that uses the same value before and
++    // after the sweep keeps seeing one buffer for it instead of getting a
++    // second graph input. If every entry is in use, start over as before.
+     if (scalar_map.size() >= kMaxCachedScalarBuffers) {
+-      scalar_map.clear();
++      absl::erase_if(scalar_map, [](const auto& entry) {
++        return entry.second.device_buffer_list().use_count() == 1;
++      });
++      if (scalar_map.size() >= kMaxCachedScalarBuffers) {
++        scalar_map.clear();
++      }
+     }
+     scalar_map.insert({hashable_scalar, buf_ref});
+     return buf_ref;
+-- 
+2.54.0 (Apple Git-157)
+
+
+From 6423248dc41a5781ae1d0afe255c8fb1072351d1 Mon Sep 17 00:00:00 2001
+From: Paul Ganssle <pganssle@google.com>
+Date: Thu, 5 Nov 2026 20:12:33 +0300
+Subject: [PATCH 2/2] Test that an in-use scalar buffer survives cache eviction
+ and that hits allocate nothing
+
+Assisted-by: Claude Fable 5.1
+---
+ tests/accelerator_api_test.py | 31 ++++++++++++++++++++++++++++---
+ 1 file changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/tests/accelerator_api_test.py b/tests/accelerator_api_test.py
+index 7c911aa28..8edba19cf 100644
+--- a/tests/accelerator_api_test.py
++++ b/tests/accelerator_api_test.py
+@@ -710,16 +710,41 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
+       x = torch.ones(8, device="tpu")
+       y = x + 0.25
+       # Pass 2048 distinct scalars, twice kMaxCachedScalarBuffers (1024, in
+-      # op_dispatcher.cc), so the cache is cleared at least once. Then only the
+-      # queued add for y holds its 0.25 buffer.
++      # op_dispatcher.cc), so the cache evicts at least once. The queued add
++      # for y holds its 0.25 buffer, so the eviction keeps that entry.
+       for i in range(2048):
+         _ = x + (2.0 + i / 4096)
+       self.assertFalse(sync.is_materializing(y))
+-      # 0.25 now misses the cache, so the graph gets a second 0.25 buffer.
++      # Scalar buffers are allocated when the op is queued, while the deferred
++      # outputs are not. A cache hit therefore allocates nothing and a miss
++      # allocates one buffer.
++      before = torch.accelerator.memory_stats()["allocation.all.current"]
+       z = y + 0.25
++      after_hit = torch.accelerator.memory_stats()["allocation.all.current"]
++      w = y + 0.75
++      after_miss = torch.accelerator.memory_stats()["allocation.all.current"]
+       torch.accelerator.synchronize()
+     utils.assert_close(y.cpu(), torch.full((8,), 1.25))
+     utils.assert_close(z.cpu(), torch.full((8,), 1.5))
++    utils.assert_close(w.cpu(), torch.full((8,), 2.0))
++    # The 0.25 buffer that y still uses survived the eviction; 0.75 is new.
++    self.assertLess(after_hit - before, after_miss - after_hit)
++
++  def test_repeated_scalar_reuses_cached_device_buffer(self):
++    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
++      t = torch.ones(8, device="tpu")
++      t = t + 0.5
++      torch.accelerator.synchronize()
++      gc.collect()
++      before = torch.accelerator.memory_stats()["allocation.all.current"]
++      for _ in range(1000):
++        t = t + 0.5
++      torch.accelerator.synchronize()
++      gc.collect()
++      growth = torch.accelerator.memory_stats()["allocation.all.current"] - before
++    utils.assert_close(t.cpu(), torch.full((8,), 501.5))
++    # One cached 0.5 buffer serves every add; only the result tensor is new.
++    self.assertLessEqual(growth, 2)
+ 
+   @parameterized.named_parameters(
+       ("top_level", torch.accelerator.get_memory_info),
+-- 
+2.54.0 (Apple Git-157)
+

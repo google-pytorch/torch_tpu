@@ -1,0 +1,23 @@
+##### device: TPU v6e x4, test variant: tpu-v6e 11:27:36
+##### max-unpool2d: checkout 11:27:36
+73321c439 Implement aten::max_unpool2d and aten::max_unpool3d for TPU
+##### max-unpool2d: build 11:27:36
+##### device: TPU v6e x4, test variant: tpu-v6e 11:27:40
+##### fix-scalar-buffer-cache-bound: checkout 11:27:40
+ba5986128 Merge remote-tracking branch 'origin/main' into fix-scalar-buffer-cache-bound
+##### fix-scalar-buffer-cache-bound: build 11:27:40
+##### max-unpool2d: BUILD FAILED 11:27:42
+469:ERROR: /home/joinal/torch_tpu/src/torch_tpu/_internal/execution_mode/BUILD:47:17: Compiling csrc/internal/execution_mode/execution_mode_impl.cc failed: error reading file '//csrc/ops/pooling:max_unpool_aten_kernels.h': /home/joinal/torch_tpu/csrc/ops/pooling/max_unpool_aten_kernels.h (No such file or directory)
+470:ERROR: /home/joinal/torch_tpu/src/torch_tpu/_internal/execution_mode/BUILD:47:17: Compiling csrc/internal/execution_mode/execution_mode_impl.cc failed: 1 input file(s) are in error
+473:ERROR: /home/joinal/torch_tpu/src/torch_tpu/_internal/execution_mode/BUILD:47:17 Compiling csrc/internal/execution_mode/execution_mode_impl.cc failed: 1 input file(s) are in error
+476:ERROR: Build did NOT complete successfully
+##### cpu-view-args-split-compile: checkout 11:27:42
+c32405eea Compile TPU partitions against the layout CPU arguments are copied with
+##### cpu-view-args-split-compile: build 11:27:42
+##### fix-scalar-buffer-cache-bound: tests 11:28:26
+##### cpu-view-args-split-compile: tests 11:28:35
+4 failed, 13 deselected, 14 warnings, 4 errors in 2.56s
+##### missing-ops-batch: checkout 11:28:39
+647e61761 Implement smooth_l1_loss, huber_loss, logaddexp, logaddexp2, nansum, std_mean, trace and addbmm
+##### missing-ops-batch: build 11:28:39
+##### missing-ops-batch: tests 11:28:48

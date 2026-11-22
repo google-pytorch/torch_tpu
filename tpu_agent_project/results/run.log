@@ -1,0 +1,62 @@
+Using ssh batch size of 1. Attempting to SSH into 1 nodes with a total of 1 workers.
+SSH: Attempting to connect to worker 0...
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1793545607.170835  238565 pjrt_api.cc:119] GetPjrtApi was found for TPU at /home/joinal/env/lib/python3.12/site-packages/libtpu/libtpu.so
+I0000 00:00:1793545608.155324  238565 device_rt.cc:166] PjRt runtime initialization deferred for tpu
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+I0000 00:00:1793545608.157968  238565 libtpu_version.cc:63] Setting libtpu version to: 0.0.51
+I0000 00:00:1793545608.438982  238565 pjrt_api.cc:168] The PJRT plugin has PJRT API version 0.116. The framework PJRT API version is 0.116.
+I0000 00:00:1793545613.410159  238565 pjrt_c_api_client.cc:187] PjRtCApiClient created.
+W0000 00:00:1793545613.410212  238565 pjrt_state.cc:313] Only using 1 device out of all the 4 addressable devices.
+I0000 00:00:1793545613.434857  239148 compilation_cache_utils.cc:218] Tier-3 compilation cache root directory: 
+I0000 00:00:1793545613.434892  239148 tier2_compilation_cache.cc:80] Tier-2 compilation cache is disabled for world size 1.
+I0000 00:00:1793545613.434895  239148 tier3_compilation_cache.cc:50] Backup compilation for tier-3 cache read is disabled as tier-3 cache is disabled.
+/home/joinal/env/lib/python3.12/site-packages/torch/nn/modules/linear.py:134: UserWarning: <TorchTpu/Performance/> TPU is using HIGHEST precision as requested, but performance may be significantly lower. Consider using torch.set_float32_matmul_precision('medium') for better performance. (Triggered internally at csrc/ops/precision_context.cc:70.)
+  return F.linear(input, self.weight, self.bias)
+/tmp/tpu_agent_suite_run_job-20261101150630-40822c/script.py:112: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  return {"attribution_sum": attr.sum().item(),
+/tmp/tpu_agent_suite_run_job-20261101150630-40822c/script.py:123: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  ig.attribute(xi, target=2, n_steps=N_STEPS).cpu()
+/tmp/tpu_agent_suite_run_job-20261101150630-40822c/script.py:127: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  ig.attribute(xi, target=2, n_steps=N_STEPS).cpu()
+/tmp/tpu_agent_suite_run_job-20261101150630-40822c/script.py:144: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  ig.attribute(xi, target=2, n_steps=N_STEPS).cpu()
+I0000 00:00:1793545616.372330  238565 profiler_api.cc:152] Starting trace, logdir: xprof
+I0000 00:00:1793545616.372357  238565 profiler_session.cc:171] Profiler session initializing.
+I0000 00:00:1793545616.372360  238565 profiler_session.cc:186] Profiler session started.
+/tmp/tpu_agent_suite_run_job-20261101150630-40822c/script.py:149: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  ig.attribute(xi, target=2, n_steps=N_STEPS).cpu()
+I0000 00:00:1793545616.531482  238565 profiler_session.cc:134] Profiler session collecting data.
+I0000 00:00:1793545617.116833  238565 profiler_api.cc:186] Collected 5 planes.
+I0000 00:00:1793545617.131797  238565 profiler_api.cc:204] Writing 5634477 bytes to xprof/plugins/profile/2026_11_01_15_06_56/t1v-n-5106e19d-w-0.xplane.pb
+I0000 00:00:1793545617.146588  238565 profiler_session.cc:217] Profiler session tear down.
+I0000 00:00:1793545618.193025  238565 compilation_cache.cc:356] Compilation cache evicted.
+I0000 00:00:1793545618.193062  238565 compilation_cache.cc:203] CompilationCache final stats: num_cache_reqs=5991
+num_cache_hits=5902 {98.5%}
+num_compilations=89
+peak_compilation_memory_bytes=unknown
+
+[CAPTUM-TPU] device=tpu (native-tpu) torch=2.15.0+cu132 torch_tpu=0.2.0 captum=0.9.0 accelerator=unknown
+[CAPTUM-TPU] Result table follows -- reproduce it verbatim when reporting.
+
+| field                                            | value                        |
+| ------------------------------------------------ | ---------------------------- |
+| device_type                                      | native-tpu                   |
+| accelerator                                      | unknown                      |
+| torch / torch_tpu / captum                       | 2.15.0+cu132 / 0.2.0 / 0.9.0 |
+| Saliency/MLP rel err @default                    | 2.22e-03                     |
+| IntegratedGradients/MLP rel err @default         | 2.07e-03                     |
+| LayerIntegratedGradients/MLP[0] rel err @default | 3.13e-03                     |
+| IntegratedGradients/CNN rel err @default         | 1.02e-02                     |
+| Saliency/MLP rel err @highest                    | 1.65e-07                     |
+| IntegratedGradients/MLP rel err @highest         | 4.36e-08                     |
+| LayerIntegratedGradients/MLP[0] rel err @highest | 1.01e-07                     |
+| IntegratedGradients/CNN rel err @highest         | 3.07e-07                     |
+| IG convergence |delta| (highest)                 | 7.45e-08                     |
+| IG 50 steps warm median s: tpu / cpu             | 0.0253 / 0.0037              |
+| xprof                                            | captured (5634477 bytes)     | 
+
+[CAPTUM-TPU] SUCCESS: Captum attributions on native-tpu match the CPU reference.

@@ -1,0 +1,23 @@
+device TPU v6e x4
+  return F.linear(input, self.weight, self.bias)
+model=tiny mode=strict precision=highest steps=64
+CPU reference (one run):           1.801 s
+first call (includes compilation): 0.500 s
+warm median of 3 runs:    0.031 s
+max relative error vs CPU:         2.00e-07
+
+[W1101 11:26:12.806771917 env_vars.h:406] Warning: <TorchTpu/ApiStage/ExperimentalApi/> the TORCH_TPU_DEFER_AND_FUSE environment variable is an experimental feature and may change or be removed without notice. (function operator())
+  return F.linear(input, self.weight, self.bias)
+model=tiny mode=defer_and_fuse precision=highest steps=64
+CPU reference (one run):           1.811 s
+first call (includes compilation): 0.530 s
+warm median of 3 runs:    0.022 s
+max relative error vs CPU:         2.00e-07
+
+[W1101 11:26:22.563654220 precision_context.cc:84] Warning: <TorchTpu/Performance/> TPU is using HIGHEST precision as requested, but performance may be significantly lower. Consider using torch.set_float32_matmul_precision('medium') for better performance. (function operator())
+model=tiny mode=compile precision=highest steps=64
+CPU reference (one run):           1.777 s
+first call (includes compilation): 0.998 s
+warm median of 3 runs:    0.029 s
+max relative error vs CPU:         2.00e-07
+

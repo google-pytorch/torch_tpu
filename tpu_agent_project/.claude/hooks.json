@@ -1,0 +1,126 @@
+{
+   "enforce-skill-tools" : {
+      "PreToolUse" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook enforce-skill-tools --event PreToolUse --timeout 10 --on-failure allow --builtin skill-tools || { echo 'tpu-agent-suite: hook enforce-skill-tools: hook-dispatch exited' \"$?\" 'before a verdict; on_failure=allow' >&2; exit 0; }",
+                  "timeout" : 15,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "*"
+         }
+      ]
+   },
+   "knowledge-base-cache-sweep" : {
+      "SessionStart" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook knowledge-base-cache-sweep --event SessionStart --timeout 30 --on-failure allow --script scripts/tpu-knowledge-base/cache_sweep.py || { echo 'tpu-agent-suite: hook knowledge-base-cache-sweep: hook-dispatch exited' \"$?\" 'before a verdict; allowing: on_failure=allow would loop on SessionStart' >&2; exit 0; }",
+                  "timeout" : 35,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "*"
+         }
+      ]
+   },
+   "record-active-skill" : {
+      "PostToolUse" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook record-active-skill --event PostToolUse --timeout 10 --on-failure allow --builtin skill-tools || { echo 'tpu-agent-suite: hook record-active-skill: hook-dispatch exited' \"$?\" 'before a verdict; on_failure=allow' >&2; exit 0; }",
+                  "timeout" : 15,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "Skill"
+         }
+      ]
+   },
+   "resume-after-quota" : {
+      "Stop" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook resume-after-quota --event Stop --timeout 90 --on-failure allow --script scripts/tpu-agent/resume_after_quota.py || { echo 'tpu-agent-suite: hook resume-after-quota: hook-dispatch exited' \"$?\" 'before a verdict; allowing: on_failure=allow would loop on Stop' >&2; exit 0; }",
+                  "timeout" : 95,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "*"
+         }
+      ]
+   },
+   "session-end-reap" : {
+      "SessionEnd" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook session-end-reap --event SessionEnd --timeout 60 --on-failure allow --builtin reap-jobs || { echo 'tpu-agent-suite: hook session-end-reap: hook-dispatch exited' \"$?\" 'before a verdict; allowing: on_failure=allow would loop on SessionEnd' >&2; exit 0; }",
+                  "timeout" : 65,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "*"
+         }
+      ]
+   },
+   "session-run-init" : {
+      "SessionStart" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook session-run-init --event SessionStart --timeout 30 --on-failure allow --builtin start-run || { echo 'tpu-agent-suite: hook session-run-init: hook-dispatch exited' \"$?\" 'before a verdict; allowing: on_failure=allow would loop on SessionStart' >&2; exit 0; }",
+                  "timeout" : 35,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "*"
+         }
+      ]
+   },
+   "validate-delegate-request" : {
+      "PreToolUse" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook validate-delegate-request --event PreToolUse --timeout 10 --on-failure allow --builtin validate-schema || { echo 'tpu-agent-suite: hook validate-delegate-request: hook-dispatch exited' \"$?\" 'before a verdict; on_failure=allow' >&2; exit 0; }",
+                  "timeout" : 15,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "Agent"
+         }
+      ]
+   },
+   "validate-subagent-result" : {
+      "PreToolUse" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook validate-subagent-result --event SubagentStop --timeout 10 --on-failure allow --handback-event PreToolUse --builtin validate-schema || { echo 'tpu-agent-suite: hook validate-subagent-result: hook-dispatch exited' \"$?\" 'before a verdict; allowing: on_failure=allow would loop on SubagentStop' >&2; exit 0; }",
+                  "timeout" : 15,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "SubagentHandback"
+         }
+      ],
+      "SubagentStop" : [
+         {
+            "hooks" : [
+               {
+                  "command" : "python3 ~/.tpu-agent-suite/packages/tpu-agent-suite@0.7.0/framework/runtime.py hook-dispatch --harness claude-code --package tpu-agent-suite@0.7.0 --hook validate-subagent-result --event SubagentStop --timeout 10 --on-failure allow --builtin validate-schema || { echo 'tpu-agent-suite: hook validate-subagent-result: hook-dispatch exited' \"$?\" 'before a verdict; allowing: on_failure=allow would loop on SubagentStop' >&2; exit 0; }",
+                  "timeout" : 15,
+                  "type" : "command"
+               }
+            ],
+            "matcher" : "*"
+         }
+      ]
+   }
+}

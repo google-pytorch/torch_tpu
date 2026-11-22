@@ -1,0 +1,46 @@
+From eea94500fc0ea0320280185ce576735e789030b5 Mon Sep 17 00:00:00 2001
+From: Paul Ganssle <pganssle@google.com>
+Date: Thu, 5 Nov 2026 20:08:26 +0300
+Subject: [PATCH] Evict only unreferenced scalar buffers when the per-thread
+ cache is full
+
+Instead of clearing the whole cache, erase the entries whose device buffer
+only the cache still references. Scalars held by a tensor or a pending
+deferred op stay cached, so a fused region that reuses a value across the
+eviction keeps a single graph input for it. If every entry is in use, the
+cache is cleared as before, so the bound still holds.
+
+Assisted-by: Claude Fable 5.1
+---
+ csrc/eager/op_dispatcher.cc | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/csrc/eager/op_dispatcher.cc b/csrc/eager/op_dispatcher.cc
+index 7e82d4aeb..b954a16fc 100644
+--- a/csrc/eager/op_dispatcher.cc
++++ b/csrc/eager/op_dispatcher.cc
+@@ -139,10 +139,18 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
+                         ScheduleHostToDeviceTransfer(std::move(transfer)));
+     // Every cached scalar keeps its device buffer alive, so a stream of
+     // distinct values (e.g. a learning rate schedule) would grow device memory
+-    // without bound. Start over when the cache is full; pending ops hold their
+-    // own references to the buffers they use.
++    // without bound. When the cache is full, drop the entries that only the
++    // cache still references. Scalars that a tensor or a pending deferred op
++    // holds stay cached, so a fused region that uses the same value before and
++    // after the sweep keeps seeing one buffer for it instead of getting a
++    // second graph input. If every entry is in use, start over as before.
+     if (scalar_map.size() >= kMaxCachedScalarBuffers) {
+-      scalar_map.clear();
++      absl::erase_if(scalar_map, [](const auto& entry) {
++        return entry.second.device_buffer_list().use_count() == 1;
++      });
++      if (scalar_map.size() >= kMaxCachedScalarBuffers) {
++        scalar_map.clear();
++      }
+     }
+     scalar_map.insert({hashable_scalar, buf_ref});
+     return buf_ref;
+-- 
+2.54.0 (Apple Git-157)
+

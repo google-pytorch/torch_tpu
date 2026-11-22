@@ -1,0 +1,39 @@
+
+Checking the compute target...
+
+Backend:   gce_tpu_vm
+Target:    Cloud TPU VM 'xai-v6e4' (zone us-east5-b, project gen-lang-client-0320701242)
+Reachable: yes
+
+[ok  ] tool:gcloud     /Users/joinal/google-cloud-sdk/bin/gcloud
+[ok  ] gcloud:account  joinalahmed@gmail.com
+[ok  ] tpu_vm          READY (v6e-4)
+
+Status: ok
+
+Checking the software on the target...
+
+[ok  ] python                3.12.16 (/home/joinal/env/bin/python3)
+[ok  ] torch_tpu             0.2.0
+[FAIL] torch                 2.15.0 installed; needs >=2.13.0,<2.14
+                             fix: reinstall torch_tpu, which brings a matching torch; see docs/install.md#6-set-up-the-compute-target
+[ok  ] libtpu                0.0.51 >=0.0.44
+[FAIL] jax                   not installed; needs >=0.11.0
+                             fix: pip install 'jax>=0.11.0'
+[ok  ] transformers          5.22.1 >=4.40.0
+[FAIL] diffusers             not installed; needs >=0.28.0
+                             fix: pip install 'diffusers>=0.28.0'
+[FAIL] tpu-info              not installed; needs >=0.7.1
+                             fix: pip install 'tpu-info>=0.7.1'
+[FAIL] pandas                not installed; needs >=2.0.0
+                             fix: pip install 'pandas>=2.0.0'
+[ok  ] pytest                9.2.0 >=8.0.0
+[FAIL] google-cloud-storage  not installed; needs >=2.10.0
+                             fix: pip install 'google-cloud-storage>=2.10.0'
+[FAIL] ml_dtypes             not installed; needs >=0.5.0
+                             fix: pip install 'ml_dtypes>=0.5.0'
+[ok  ] tpu_devices           4 device(s)
+
+Status: fail
+
+{"status": "FAILED", "profile": "default", "passed": false, "smoke_test": false, "version": "0.7.0", "checked_at": "2026-11-01T15:02:01.848607Z", "target_versions": {"packages": {"jax": null, "jaxlib": null, "libtpu": "0.0.51", "torch": "2.15.0", "torch_tpu": "0.2.0"}, "image": null, "checked_at": "2026-11-01T15:02:01.848607Z"}, "backend": "gce_tpu_vm", "target": "Cloud TPU VM 'xai-v6e4' (zone us-east5-b, project gen-lang-client-0320701242)", "profile_hash": "7158a6b8075c2a90", "checks": [{"name": "tool:gcloud", "status": "ok", "detail": "/Users/joinal/google-cloud-sdk/bin/gcloud", "fix": "", "fields": []}, {"name": "gcloud:account", "status": "ok", "detail": "joinalahmed@gmail.com", "fix": "", "fields": []}, {"name": "tpu_vm", "status": "ok", "detail": "READY (v6e-4)", "fix": "", "fields": []}, {"name": "software", "status": "fail", "detail": "[ok  ] python                3.12.16 (/home/joinal/env/bin/python3)\n[ok  ] torch_tpu             0.2.0\n[FAIL] torch                 2.15.0 installed; needs >=2.13.0,<2.14\n                             fix: reinstall torch_tpu, which brings a matching torch; see docs/install.md#6-set-up-the-compute-target\n[ok  ] libtpu                0.0.51 >=0.0.44\n[FAIL] jax                   not installed; needs >=0.11.0\n                             fix: pip install 'jax>=0.11.0'\n[ok  ] transformers          5.22.1 >=4.40.0\n[FAIL] diffusers             not installed; needs >=0.28.0\n                             fix: pip install 'diffusers>=0.28.0'\n[FAIL] tpu-info              not installed; needs >=0.7.1\n                             fix: pip install 'tpu-info>=0.7.1'\n[FAIL] pandas                not installed; needs >=2.0.0\n                             fix: pip install 'pandas>=2.0.0'\n[ok  ] pytest                9.2.0 >=8.0.0\n[FAIL] google-cloud-storage  not installed; needs >=2.10.0\n                             fix: pip install 'google-cloud-storage>=2.10.0'\n[FAIL] ml_dtypes             not installed; needs >=0.5.0\n                             fix: pip install 'ml_dtypes>=0.5.0'\n[ok  ] tpu_devices           4 device(s)\n\nStatus: fail", "fix": "Install what is marked FAIL, or set python_interpreter to one that has it", "fields": ["python_interpreter"]}], "fields": ["python_interpreter"]}

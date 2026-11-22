@@ -1,0 +1,38 @@
+##### checkout nansum 19:55:05
+270b400be Implement aten::nansum for TPU
+##### build 19:55:06
+BUILD_EXIT=0
+##### tests 20:21:56
+--- semantics vs CPU (/home/joinal/checks/check_nansum.py)
+full reduction: allclose: True (cpu=2.5, tpu=2.5)
+dim=(): allclose: True (cpu=2.5, tpu=2.5)
+dim=1 (all-NaN row is 0): allclose: True (cpu=[4.0, 0.0, -1.5], tpu=[4.0, 0.0, -1.5])
+dim=0 keepdim: allclose: True (cpu=[[-1.0, 0.5, 3.0]], tpu=[[-1.0, 0.5, 3.0]])
+dim=(0, 1) keepdim: allclose: True (cpu=[[2.5]], tpu=[[2.5]])
+out=: allclose: True (cpu=[4.0, 0.0, -1.5], tpu=[4.0, 0.0, -1.5])
+dtype=bfloat16: allclose: True (cpu=2.5, tpu=2.5)
+bfloat16 input: allclose: True (cpu=[4.0, 0.0, -1.5], tpu=[4.0, 0.0, -1.5])
+int32 input -> int64: allclose: True (cpu=10, tpu=10)
+int32 input dtype=float32: allclose: True (cpu=[3.0, 7.0], tpu=[3.0, 7.0])
+bool input -> int64: allclose: True (cpu=2, tpu=2)
+0-d NaN: allclose: True (cpu=0.0, tpu=0.0)
+empty: allclose: True (cpu=[0.0, 0.0, 0.0], tpu=[0.0, 0.0, 0.0])
+--- error cases
+dtype/out mismatch: RuntimeError: nansum(): provided dtype must match dtype of result. Got float32 and bfloat16.
+complex input: NotImplementedError: nansum(): complex inputs are not supported
+dim out of range: IndexError: nansum(): expected dimension to be in range of [-2, 1], got 2
+
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2 passed, 4343 deselected, 14 warnings in 6.69s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 12.7s
+Executed 1 out of 1 test: 1 test passes.
+//tests:errors_test_tpu                                                  PASSED in 9.5s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.6s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 20:36:16
+
+241411 bash /home/joinal/vm_branch_tests.sh trace test_trace /home/joinal/checks

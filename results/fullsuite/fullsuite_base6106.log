@@ -1,0 +1,152 @@
+##### checkout base6106: f7172418b Update XLA dependency to use revision http://github.com/openxla/xla/commit/dbe0225676f32caebe200452d817b3c5a32049a3 08:58:13
+##### host: accelerator=v6e-1 gen=v6 chips=1 08:58:15
+##### build test targets 08:58:15
+BUILD_EXIT=0
+/dev/root        97G   85G   13G  88% /
+##### test 09:11:08
+##### test targets under //tests/...: 714 09:11:09
+##### chunk 0 exit=0 12G free 09:20:03
+##### chunk 40 exit=0 22G free 11:08:16
+##### chunk 80 exit=0 19G free 16:22:29
+##### chunk 120 exit=3 18G free 16:54:29
+##### chunk 160 exit=3 18G free 17:05:34
+##### chunk 200 exit=3 19G free 17:14:23
+##### chunk 240 exit=0 21G free 17:20:29
+##### chunk 280 exit=0 20G free 17:24:14
+##### chunk 320 exit=3 18G free 17:31:41
+##### chunk 360 exit=3 20G free 17:36:39
+##### chunk 400 exit=3 21G free 17:38:50
+##### chunk 440 exit=3 19G free 17:43:27
+##### chunk 480 exit=3 19G free 17:48:38
+##### chunk 520 exit=3 20G free 17:52:42
+##### chunk 560 exit=3 20G free 17:56:35
+##### chunk 600 exit=3 19G free 18:02:47
+##### chunk 640 exit=3 19G free 18:07:39
+##### chunk 680 exit=3 20G free 18:12:12
+TEST_EXIT=3
+targets: 242  passed: 118  failed: 124  other: 0
+//tests/compile:activation_checkpointing_mem_test FAILED
+//tests/torch:accelerator_test FAILED
+//tests/torch:ao_sparsity_test FAILED
+//tests/torch:autocast_test FAILED
+//tests/torch:autograd_functional_test FAILED
+//tests/torch:autograd_test FAILED
+//tests/torch:bmm_outer_product_test FAILED
+//tests/torch:comparison_utils_test FAILED
+//tests/torch:compile_benchmark_util_test FAILED
+//tests/torch:content_store_test FAILED
+//tests/torch:custom_ops_test FAILED
+//tests/torch:dataloader_test FAILED
+//tests/torch:distributed__composable_fsdp_fully_shard_comm_test FAILED
+//tests/torch:distributed_c10d_torchcomms_test FAILED
+//tests/torch:distributed_checkpoint__experimental_staging_test FAILED
+//tests/torch:distributed_dynamo_distributed_test FAILED
+//tests/torch:distributed_fsdp_distributed_checkpoint_test FAILED
+//tests/torch:distributed_fsdp_utils_test FAILED
+//tests/torch:distributed_pipelining_backward_test FAILED
+//tests/torch:distributed_pipelining_microbatch_test FAILED
+//tests/torch:distributed_pipelining_schedule_test FAILED
+//tests/torch:distributed_pipelining_transformer_test FAILED
+//tests/torch:distributed_pipelining_unflatten_test FAILED
+//tests/torch:dlpack_test FAILED
+//tests/torch:dynamic_shapes_test FAILED
+//tests/torch:dynamo_activation_checkpointing_test FAILED
+//tests/torch:dynamo_after_aot_test FAILED
+//tests/torch:dynamo_backends_test FAILED
+//tests/torch:dynamo_ctx_manager_test FAILED
+//tests/torch:dynamo_debug_utils_test FAILED
+//tests/torch:dynamo_deviceguard_test FAILED
+//tests/torch:dynamo_export_test FAILED
+//tests/torch:dynamo_fx_annotate_test FAILED
+//tests/torch:dynamo_higher_order_ops_test FAILED
+//tests/torch:dynamo_hooks_test FAILED
+//tests/torch:dynamo_minifier_test FAILED
+//tests/torch:dynamo_misc_test FAILED in 8 out of 8
+//tests/torch:dynamo_model_output_test FAILED
+//tests/torch:dynamo_modules_test FAILED
+//tests/torch:dynamo_python_dispatcher_test FAILED
+//tests/torch:dynamo_repros_test FAILED
+//tests/torch:dynamo_streams_test FAILED
+//tests/torch:dynamo_tp_richcompare_test FAILED
+//tests/torch:dynamo_unspec_test FAILED
+//tests/torch:dynamo_utils_test FAILED
+//tests/torch:expanded_weights_test FAILED in 2 out of 2
+//tests/torch:export_converter_test FAILED
+//tests/torch:export_passes_test FAILED
+//tests/torch:export_serialize_test FAILED
+//tests/torch:fake_tensor_test FAILED
+//tests/torch:functorch_ac_test FAILED
+//tests/torch:functorch_aot_joint_with_descriptors_test FAILED
+//tests/torch:functorch_compile_to_python_test FAILED
+//tests/torch:functorch_dim_split_test FAILED
+//tests/torch:functorch_dims_test FAILED
+//tests/torch:functorch_eager_transforms_test FAILED in 2 out of 2
+//tests/torch:functorch_memory_efficient_fusion_test FAILED
+//tests/torch:fx_experimental_test FAILED
+//tests/torch:higher_order_ops_invoke_subgraph_test FAILED
+//tests/torch:indexing_test FAILED in 8 out of 8
+//tests/torch:inductor_analysis_test FAILED
+//tests/torch:inductor_flex_attention_test FAILED
+//tests/torch:inductor_fused_attention_test FAILED
+//tests/torch:inductor_mix_order_reduction_test FAILED
+//tests/torch:inductor_mmdecomp_test FAILED
+//tests/torch:inductor_op_dtype_prop_test FAILED
+//tests/torch:inductor_selective_lowering_test FAILED
+//tests/torch:inductor_slice_scatter_chunking_test FAILED
+//tests/torch:inductor_torchinductor_dynamic_shapes_test FAILED in 8 out of 8
+//tests/torch:inductor_torchinductor_opinfo_properties_test FAILED in 8 out of 8
+//tests/torch:inductor_utils_test FAILED
+//tests/torch:legacy_vmap_test FAILED
+//tests/torch:matmul_cuda_test FAILED
+//tests/torch:native_mha_test FAILED
+//tests/torch:nn_convolution_test FAILED in 8 out of 8
+//tests/torch:nn_dropout_test FAILED
+//tests/torch:nn_embedding_test FAILED in 8 out of 8
+//tests/torch:nn_init_test FAILED
+//tests/torch:nn_lazy_modules_test FAILED
+//tests/torch:nn_multihead_attention_test FAILED
+//tests/torch:nn_packed_sequence_test FAILED
+//tests/torch:nn_parametrization_test FAILED
+//tests/torch:nn_pooling_test FAILED in 4 out of 4
+//tests/torch:nn_test FAILED in 10 out of 10
+//tests/torch:numpy_interop_test FAILED
+//tests/torch:opaque_obj_v2_test FAILED
+//tests/torch:optim_test FAILED in 2 out of 2
+//tests/torch:out_dtype_op_test FAILED
+//tests/torch:precompile_test FAILED
+//tests/torch:prims_test FAILED
+//tests/torch:profiler_execution_trace_test FAILED
+//tests/torch:profiler_profiler_test FAILED in 4 out of 4
+//tests/torch:profiler_trace_validator_test FAILED
+//tests/torch:proxy_tensor_test FAILED
+//tests/torch:python_dispatch_test FAILED
+//tests/torch:quantization_core_experimental_bits_test FAILED
+//tests/torch:quantization_core_experimental_floatx_test FAILED
+//tests/torch:scaled_matmul_cuda_test FAILED
+//tests/torch:serialization_test FAILED
+//tests/torch:shape_ops_test FAILED
+//tests/torch:sort_and_select_test FAILED in 4 out of 4
+//tests/torch:sparse_semi_structured_test FAILED
+//tests/torch:stateless_test FAILED
+//tests/torch:tensor_iterator_test FAILED
+//tests/torch:tensorboard_test FAILED
+//tests/torch:testing_test FAILED in 4 out of 4
+//tests/torch:torch_np_basic_test FAILED
+//tests/torch:torch_test FAILED in 4 out of 4
+//tests/torch:transformers_test FAILED
+//tests/torch:type_promotion_test FAILED in 4 out of 4
+//tests/torch:utils_test FAILED
+//tests/torch:view_ops_test FAILED in 4 out of 4
+//tests:run_upstream_example_dcgan_tpu FAILED
+//tests:run_upstream_example_fast_neural_style_tpu FAILED
+//tests:run_upstream_example_fx_invert_tpu FAILED
+//tests:run_upstream_example_fx_module_tracer_tpu FAILED
+//tests:run_upstream_example_gat_tpu FAILED
+//tests:run_upstream_example_imagenet_tpu FAILED
+//tests:run_upstream_example_mnist_forward_forward_tpu FAILED
+//tests:run_upstream_example_mnist_tpu FAILED
+//tests:run_upstream_example_regression_tpu FAILED
+//tests:run_upstream_example_siamese_network_tpu FAILED
+//tests:run_upstream_example_super_resolution_tpu FAILED
+//tests:run_upstream_example_vae_tpu FAILED
+##### ALL DONE 18:12:48

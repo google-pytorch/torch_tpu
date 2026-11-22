@@ -1,0 +1,86 @@
+=== trace rerun
+##### tests 04:25:15
+--- semantics vs CPU (/home/joinal/checks/check_trace.py)
+3x3 float32: allclose: True (cpu=12.0, tpu=12.0)
+2x3 wide: allclose: True (cpu=4.0, tpu=4.0)
+3x2 tall: allclose: True (cpu=3.0, tpu=3.0)
+0x0: allclose: True (cpu=0.0, tpu=0.0)
+1x1: allclose: True (cpu=2.5, tpu=2.5)
+bfloat16: allclose: True (cpu=12.0, tpu=12.0, dtype=torch.bfloat16)
+int64: allclose: True (cpu=15, tpu=15)
+int32 -> int64: allclose: True (cpu=15, tpu=15)
+--- error cases
+shape (3,): RuntimeError: trace(): expected a matrix, but got tensor with dim 1
+shape (2, 2, 2): RuntimeError: trace(): expected a matrix, but got tensor with dim 3
+shape (): RuntimeError: trace(): expected a matrix, but got tensor with dim 0
+
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 4343 deselected, 14 warnings in 6.60s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 12.7s
+Executed 1 out of 1 test: 1 test passes.
+//tests:errors_test_tpu                                                  PASSED in 9.3s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.4s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 04:34:57
+
+=== tpu_errors
+tpu_errors target: //tests:tpu_errors_test
+##### nansum 270b400be Implement aten::nansum for TPU 04:34:59
+//tests:tpu_errors_test                                                  PASSED in 11.6s
+Executed 1 out of 1 test: 1 test passes.
+##### smooth_l1_loss adf1a4009 Reach the kernel's beta check in the smooth_l1_loss errors test 04:35:17
+//tests:tpu_errors_test                                                  PASSED in 11.5s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 04:35:31
+
+=== smooth_l1 rerun
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+21 passed, 4343 deselected, 14 warnings in 7.25s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 12.6s
+Executed 1 out of 1 test: 1 test passes.
+//tests:errors_test_tpu                                                  PASSED in 12.8s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.4s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 04:46:39
+
+=== cpuview
+##### checkout cpu-view-args-split-compile 04:46:39
+de1abb50c Preserve CPU argument strides when compiling TPU partitions
+##### build 04:46:40
+BUILD_EXIT=0
+##### tests 05:16:44
+--- check_cpu_view_args.py
+  based on TorchTPU binary version 6 and PjRt version:
+TFRT TPU v6 lite
+Built on Oct 21 2026 06:24:49 (1792589089) cl/1003875606
+C API version: 0.116
+  expected = f(*[a.cpu() if isinstance(a, torch.Tensor) else a for a in args])
+  get_attr_node = submod.graph.get_attr(attr_name)
+x * cum[1]: OK
+x * cumf[1]: OK
+x + cum[1]: OK
+x * cum[1::2]: OK
+f1 transpose scaled by its own sum: OK
+f2 as_strided of transpose: OK
+f3 transpose.t().reshape: OK
+f4 channels_last permute reshape: OK
+SUMMARY: 8/8 OK
+
+--- pytest split_compile_test
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+18 passed, 18 warnings, 4 subtests passed in 10.52s
+
+--- bazel
+//tests/compile:split_compile_test                                       PASSED in 21.0s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 05:24:29
+
+523617 bazel(torch_tpu) --add-opens=java.base/java.lang=ALL-UNNAMED -Xverify:non

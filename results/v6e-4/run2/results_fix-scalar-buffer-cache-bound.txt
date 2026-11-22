@@ -1,0 +1,32 @@
+device TPU v6e x4
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 15 warnings in 6.65s
+
+same scalar x5000     : +2 live allocations
+new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+after empty_cache     : +903 vs before loop
+captum IG same n_steps x20   : +0 live allocations
+captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+
+--- multi-device: one torchrun worker per chip
+[rank 0] after empty_cache     : +903 vs before loop
+[rank 0] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 0] captum IG same n_steps x20   : +0 live allocations
+[rank 0] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+[rank 0] same scalar x5000     : +2 live allocations
+[rank 1] after empty_cache     : +903 vs before loop
+[rank 1] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 1] captum IG same n_steps x20   : +0 live allocations
+[rank 1] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+[rank 1] same scalar x5000     : +2 live allocations
+[rank 2] after empty_cache     : +903 vs before loop
+[rank 2] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 2] captum IG same n_steps x20   : +0 live allocations
+[rank 2] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+[rank 2] same scalar x5000     : +2 live allocations
+[rank 3] after empty_cache     : +903 vs before loop
+[rank 3] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 3] captum IG same n_steps x20   : +0 live allocations
+[rank 3] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+[rank 3] same scalar x5000     : +2 live allocations

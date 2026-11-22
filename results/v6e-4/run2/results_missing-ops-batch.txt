@@ -1,0 +1,7 @@
+device TPU v6e x4
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+53 passed, 4335 deselected, 17 warnings in 8.48s
+
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.

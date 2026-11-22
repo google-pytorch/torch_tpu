@@ -1,0 +1,7 @@
+device TPU v6e x4
+=========================== short test summary info ============================
+ERROR tests/ops_unit_test.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 4.41s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.

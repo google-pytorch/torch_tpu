@@ -1,0 +1,33 @@
+##### checkout smooth_l1_loss 22:00:44
+11ee12b29 Implement aten::smooth_l1_loss for TPU
+##### build 22:00:45
+BUILD_EXIT=0
+##### tests 22:27:42
+--- semantics vs CPU (/home/joinal/checks/check_smooth_l1_loss.py)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+f32 none beta=1: allclose: True
+f32 mean beta=1: allclose: True
+f32 sum beta=1: allclose: True
+bf16 mean beta=0.5: allclose: True
+f32 none beta=0 (l1, grad -1 at d == 0): allclose: True
+f32 none |d| == beta boundary: allclose: True
+f32 mean broadcast target: allclose: True
+negative beta: RuntimeError: smooth_l1_loss does not support negative values for beta.
+int64 inputs: NotImplementedError: smooth_l1_loss(): "smooth_l1" not implemented for 'int64'
+
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+21 passed, 4343 deselected, 14 warnings in 7.42s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 15.9s
+Executed 1 out of 1 test: 1 test passes.
+FAILED (failures=1)
+INFO: Build completed, 1 test FAILED, 8 total actions
+//tests:errors_test_tpu                                                  FAILED in 1 out of 4 in 11.5s
+Executed 1 out of 1 test: 1 fails locally.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.4s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 22:43:16
+
+244058 bash /home/joinal/vm_branch_tests.sh huber_loss huber /home/joinal/checks

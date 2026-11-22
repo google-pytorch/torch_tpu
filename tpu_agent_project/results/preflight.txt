@@ -1,0 +1,9 @@
+Backend:   gce_tpu_vm
+Target:    Cloud TPU VM 'xai-v6e4' (zone us-east5-b, project gen-lang-client-0320701242)
+Reachable: yes
+
+[ok  ] tool:gcloud     /Users/joinal/google-cloud-sdk/bin/gcloud
+[ok  ] gcloud:account  joinalahmed@gmail.com
+[ok  ] tpu_vm          READY (v6e-4)
+
+Status: ok

@@ -1,0 +1,38 @@
+##### device: TPU v6e x4, test variant: tpu-v6e 11:30:16
+##### fix-scalar-buffer-cache-bound: checkout 11:30:16
+ba5986128 Merge remote-tracking branch 'origin/main' into fix-scalar-buffer-cache-bound
+##### fix-scalar-buffer-cache-bound: build 11:30:16
+##### fix-scalar-buffer-cache-bound: tests 11:30:29
+3 passed, 15 warnings in 6.62s
+same scalar x5000     : +2 live allocations
+new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+captum IG same n_steps x20   : +0 live allocations
+captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+##### max-unpool2d: checkout 11:32:20
+73321c439 Implement aten::max_unpool2d and aten::max_unpool3d for TPU
+##### max-unpool2d: build 11:32:20
+##### max-unpool2d: tests 11:32:29
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 4.40s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.
+##### cpu-view-args-split-compile: checkout 11:36:52
+c32405eea Compile TPU partitions against the layout CPU arguments are copied with
+##### cpu-view-args-split-compile: build 11:36:52
+##### cpu-view-args-split-compile: tests 11:37:04
+4 passed, 13 deselected, 14 warnings in 4.67s
+##### missing-ops-batch: checkout 11:37:12
+647e61761 Implement smooth_l1_loss, huber_loss, logaddexp, logaddexp2, nansum, std_mean, trace and addbmm
+##### missing-ops-batch: build 11:37:13
+##### missing-ops-batch: tests 11:37:21
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 4.41s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.
+##### loader-import-error-context: checkout 11:41:43
+a8fa4181e Name the glue and the installed PyTorch when an extension fails to load
+##### loader-import-error-context: build 11:41:43
+##### loader-import-error-context: tests 11:41:52
+//tests:_versioned_so_loader_test                                        PASSED in 11.9s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 11:42:08

@@ -1,0 +1,20 @@
+[clear] torch 2.11.0+cpu torch_tpu ?
+  with execution_mode.set_eager_mode(mode):
+[clear] hit: same scalar                   DEFER_NEVER        53.7 us/op  dispatch p50     9.4  p99    17.0  max    143.7 us  live +0  compiles +0
+[clear] miss: distinct scalar stream       DEFER_NEVER        61.1 us/op  dispatch p50    30.4  p99    53.3  max   1814.7 us  live +928  compiles +0
+[clear] cycle of 1500 distinct scalars     DEFER_NEVER        60.1 us/op  dispatch p50    31.0  p99    52.3  max   1562.0 us  live +880  compiles +0
+[clear] cycle of 512 distinct scalars      DEFER_NEVER        55.1 us/op  dispatch p50    12.4  p99    38.2  max   4494.8 us  live -465  compiles +0
+[clear] hit: same scalar                   DEFER_AND_FUSE     27.0 us/op  dispatch p50     8.7  p99    17.9  max    126.7 us  live +0  compiles +0
+[clear] miss: distinct scalar stream       DEFER_AND_FUSE     44.8 us/op  dispatch p50    27.4  p99    50.6  max   2840.8 us  live +416  compiles +0
+[clear] cycle of 1500 distinct scalars     DEFER_AND_FUSE     48.6 us/op  dispatch p50    32.3  p99    56.7  max   3388.7 us  live +880  compiles +0
+[clear] cycle of 512 distinct scalars      DEFER_AND_FUSE     27.3 us/op  dispatch p50    11.7  p99    39.2  max   4353.3 us  live -465  compiles +0
+[clear] fused region, hot 0.9 + new scalar DEFER_AND_FUSE    417.0 us/op  dispatch p50   402.1  p99   445.1  max  33114.0 us  live -68  compiles +1
+[clear] adamw+cosine 1500 steps            DEFER_NEVER        1.55 ms/step  live +401  compiles +0
+[clear] adamw+cosine 1500 steps            DEFER_AND_FUSE     1.01 ms/step  live +404  compiles +3
+[clear] done
+
+--- pytest accelerator_api_test -k scalar
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 38 deselected, 15 warnings in 5.73s
+

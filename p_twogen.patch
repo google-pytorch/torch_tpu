@@ -1,0 +1,183 @@
+From e1f11fea5b4c74b4ce435297ce8878c0e772ddba Mon Sep 17 00:00:00 2001
+From: joinalahmed <joinalahmed@gmail.com>
+Date: Thu, 5 Nov 2026 20:41:43 +0300
+Subject: [PATCH] Keep the scalar buffer cache in two generations instead of
+ clearing it
+
+Misses go into a young generation; after kMaxCachedScalarBuffers misses it
+becomes the old generation and the previous old one is dropped. A hit in the
+old generation moves the entry back. Scalars used within the last 1024 misses
+always survive, a working set of up to 2048 distinct values keeps hitting after
+one warm-up pass, and stale values are freed after two generations. The hit
+path stays O(1) and the bound is 2048 buffers per thread.
+
+Tests: the 4000-distinct-scalars bound becomes two generations; the queued-op
+test turns over both generations before checking the evicted scalar; a new test
+cycles 1500 scalars in both eager modes and checks that the third pass creates
+no scalar buffers.
+
+Assisted-by: Claude Fable 5.1
+---
+ csrc/eager/op_dispatcher.cc   | 40 ++++++++++++++++++++++-------
+ csrc/eager/op_dispatcher.h    |  4 +--
+ tests/accelerator_api_test.py | 48 +++++++++++++++++++++++++++++------
+ 3 files changed, 73 insertions(+), 19 deletions(-)
+
+diff --git a/csrc/eager/op_dispatcher.cc b/csrc/eager/op_dispatcher.cc
+index 85c8a0e22..b8930629f 100644
+--- a/csrc/eager/op_dispatcher.cc
++++ b/csrc/eager/op_dispatcher.cc
+@@ -65,7 +65,8 @@ namespace torch_tpu {
+ 
+ namespace {
+ 
+-// The maximum number of scalar device buffers MakeBuffer caches per thread.
++// Number of scalar device buffer misses after which MakeBuffer's per-thread
++// cache turns over a generation; see the cache in MakeBuffer.
+ constexpr size_t kMaxCachedScalarBuffers = 1024;
+ 
+ // Internal helper for MakeTensor that returns the
+@@ -104,12 +105,33 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
+     // that we may miss some opportunities to reuse scalars across threads,
+     // but it might be a net win overall given that scalar buffers are cheap
+     // to create.
++    //
++    // The cache has two generations. Misses go into `young`; once it has
++    // received kMaxCachedScalarBuffers misses it becomes `old` and the previous
++    // `old` is dropped. A hit in `old` moves the entry back to `young`, so a
++    // scalar used within the last kMaxCachedScalarBuffers misses always
++    // survives, a working set of up to 2 * kMaxCachedScalarBuffers distinct
++    // values keeps hitting after one warm-up pass, and stale values (a
++    // learning-rate schedule) are freed after two generations. The two maps
++    // together never hold more than 2 * kMaxCachedScalarBuffers entries.
++    // Pending ops hold their own references to the buffers they use, so
++    // dropping a generation cannot free a buffer in flight.
++    static thread_local  // CPP_THREAD_LOCAL_OK=unrelated to Python threads.
++        absl::flat_hash_map<HashableScalar, DeviceBufferRef>
++            young_scalars;
+     static thread_local  // CPP_THREAD_LOCAL_OK=unrelated to Python threads.
+         absl::flat_hash_map<HashableScalar, DeviceBufferRef>
+-            scalar_map;
+-    if (auto it = scalar_map.find(hashable_scalar); it != scalar_map.end()) {
++            old_scalars;
++    if (auto it = young_scalars.find(hashable_scalar);
++        it != young_scalars.end()) {
+       return it->second;
+     }
++    if (auto it = old_scalars.find(hashable_scalar); it != old_scalars.end()) {
++      DeviceBufferRef buf_ref = std::move(it->second);
++      old_scalars.erase(it);
++      young_scalars.insert({hashable_scalar, buf_ref});
++      return buf_ref;
++    }
+ 
+     // New scalar, create a DeviceBufferRef for it.
+     // Create a TraceMe so that the host-to-device copy is visible in xprof.
+@@ -138,13 +160,13 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
+     TT_ASSIGN_OR_RETURN(DeviceBufferRef buf_ref,
+                         ScheduleHostToDeviceTransfer(std::move(transfer)));
+     // Every cached scalar keeps its device buffer alive, so a stream of
+-    // distinct values (e.g. a learning rate schedule) would grow device memory
+-    // without bound. Start over when the cache is full; pending ops hold their
+-    // own references to the buffers they use.
+-    if (scalar_map.size() >= kMaxCachedScalarBuffers) {
+-      scalar_map.clear();
++    // distinct values would grow device memory without bound. When the young
++    // generation is full, it becomes the old one and the old one is dropped.
++    if (young_scalars.size() >= kMaxCachedScalarBuffers) {
++      old_scalars = std::move(young_scalars);
++      young_scalars.clear();
+     }
+-    scalar_map.insert({hashable_scalar, buf_ref});
++    young_scalars.insert({hashable_scalar, buf_ref});
+     return buf_ref;
+   }
+ 
+diff --git a/csrc/eager/op_dispatcher.h b/csrc/eager/op_dispatcher.h
+index 74676c779..d1bfca7b3 100644
+--- a/csrc/eager/op_dispatcher.h
++++ b/csrc/eager/op_dispatcher.h
+@@ -531,8 +531,8 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
+ //    buffer. This prevents compiler specialization on the value, meaning that
+ //    the executable can be reused in the future even if the scalar value
+ //    changes. To prevent redundant host-to-device transfers, created
+-//    DeviceBufferRefs are cached and reused, up to 1024 per thread
+-//    (kMaxCachedScalarBuffers in op_dispatcher.cc).
++//    DeviceBufferRefs are cached and reused, in two generations holding up to
++//    2048 per thread (2 * kMaxCachedScalarBuffers in op_dispatcher.cc).
+ [[deprecated("Use PromoteScalar() instead.")]]
+ absl::StatusOr<at::Tensor> MakeTensor(
+     const at::Scalar& scalar,
+diff --git a/tests/accelerator_api_test.py b/tests/accelerator_api_test.py
+index 7c911aa28..c24f4efa1 100644
+--- a/tests/accelerator_api_test.py
++++ b/tests/accelerator_api_test.py
+@@ -701,18 +701,18 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
+       time.sleep(0.001)
+     actual, expected, growth = future.result()
+     utils.assert_close(actual, expected)
+-    # The cache keeps at most kMaxCachedScalarBuffers (1024, op_dispatcher.cc)
+-    # buffers. Without a bound, it would keep all 4000.
+-    self.assertLess(growth, 2048)
++    # The cache keeps two generations of at most kMaxCachedScalarBuffers (1024,
++    # op_dispatcher.cc) buffers each. Without a bound, it would keep all 4000.
++    self.assertLessEqual(growth, 2 * 1024 + 8)
+ 
+-  def test_queued_op_keeps_scalar_buffer_after_cache_clear(self):
++  def test_queued_op_keeps_scalar_buffer_after_cache_eviction(self):
+     with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+       x = torch.ones(8, device="tpu")
+       y = x + 0.25
+-      # Pass 2048 distinct scalars, twice kMaxCachedScalarBuffers (1024, in
+-      # op_dispatcher.cc), so the cache is cleared at least once. Then only the
+-      # queued add for y holds its 0.25 buffer.
+-      for i in range(2048):
++      # Pass 3072 distinct scalars, three times kMaxCachedScalarBuffers (1024,
++      # in op_dispatcher.cc), so both generations turn over and 0.25 is
++      # evicted. Then only the queued add for y holds its 0.25 buffer.
++      for i in range(3072):
+         _ = x + (2.0 + i / 4096)
+       self.assertFalse(sync.is_materializing(y))
+       # 0.25 now misses the cache, so the graph gets a second 0.25 buffer.
+@@ -721,6 +721,38 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
+     utils.assert_close(y.cpu(), torch.full((8,), 1.25))
+     utils.assert_close(z.cpu(), torch.full((8,), 1.5))
+ 
++  @parameterized.named_parameters(
++      ("defer_and_fuse", EagerMode.DEFER_AND_FUSE),
++      ("defer_never", EagerMode.DEFER_NEVER),
++  )
++  def test_scalar_cycle_longer_than_one_generation_stays_cached(self, mode):
++    # 1500 distinct scalars do not fit in one generation of the cache
++    # (kMaxCachedScalarBuffers = 1024, op_dispatcher.cc) but fit in two. A
++    # single map that is cleared when full would miss on at least 476 of them
++    # on every pass. Two warm-up passes promote every value into the young
++    # generation whatever the cache held before; the third pass then creates no
++    # scalar buffers.
++    scalars = [7.0 + i / 8192 for i in range(1500)]
++    with execution_mode.set_eager_mode(mode):
++      t = torch.zeros(8, device="tpu")
++      t_cpu = torch.zeros(8)
++      for _ in range(2):
++        for scalar in scalars:
++          t = t + scalar
++          t_cpu = t_cpu + scalar
++      torch.accelerator.synchronize()
++      gc.collect()
++      before = torch.accelerator.memory_stats()["allocation.all.current"]
++      for scalar in scalars:
++        t = t + scalar
++        t_cpu = t_cpu + scalar
++      torch.accelerator.synchronize()
++      gc.collect()
++      growth = torch.accelerator.memory_stats()["allocation.all.current"] - before
++    utils.assert_close(t.cpu(), t_cpu)
++    # Only the result tensor is new; every scalar buffer was a cache hit.
++    self.assertLessEqual(growth, 8)
++
+   @parameterized.named_parameters(
+       ("top_level", torch.accelerator.get_memory_info),
+       ("memory_submodule", torch.accelerator.memory.get_memory_info),
+-- 
+2.54.0 (Apple Git-157)
+

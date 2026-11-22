@@ -1,0 +1,52 @@
+##### device: TPU v6e x4, test variant: tpu-v6e 13:50:05
+##### max-unpool2d: checkout 13:50:17
+73321c439 Implement aten::max_unpool2d and aten::max_unpool3d for TPU
+##### max-unpool2d: build 13:50:17
+##### max-unpool2d: tests 14:00:55
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 6.47s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.9s
+Executed 1 out of 1 test: 1 test passes.
+##### cpu-view-args-split-compile: checkout 14:07:37
+c32405eea Compile TPU partitions against the layout CPU arguments are copied with
+##### cpu-view-args-split-compile: build 14:07:37
+##### cpu-view-args-split-compile: tests 14:16:35
+4 passed, 13 deselected, 18 warnings in 4.43s
+//tests/compile:split_compile_test                                       PASSED in 13.2s
+Executed 1 out of 1 test: 1 test passes.
+##### missing-ops-batch: checkout 14:19:13
+647e61761 Implement smooth_l1_loss, huber_loss, logaddexp, logaddexp2, nansum, std_mean, trace and addbmm
+##### missing-ops-batch: build 14:19:13
+##### missing-ops-batch: tests 14:27:52
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 4.50s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.
+##### fix-scalar-buffer-cache-bound: checkout 14:34:21
+ba5986128 Merge remote-tracking branch 'origin/main' into fix-scalar-buffer-cache-bound
+##### fix-scalar-buffer-cache-bound: build 14:34:21
+##### fix-scalar-buffer-cache-bound: tests 14:43:00
+3 passed, 15 warnings in 6.65s
+same scalar x5000     : +2 live allocations
+new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+captum IG same n_steps x20   : +0 live allocations
+captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 0] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 0] captum IG same n_steps x20   : +0 live allocations
+[rank 0] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+[rank 0] same scalar x5000     : +2 live allocations
+[rank 1] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 1] captum IG same n_steps x20   : +0 live allocations
+[rank 1] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+[rank 1] same scalar x5000     : +2 live allocations
+[rank 2] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 2] captum IG same n_steps x20   : +0 live allocations
+[rank 2] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+[rank 2] same scalar x5000     : +2 live allocations
+[rank 3] captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+[rank 3] captum IG same n_steps x20   : +0 live allocations
+[rank 3] new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+##### ALL DONE 14:44:17
+BUILD_EXIT=0
+
+[exited with code 0]

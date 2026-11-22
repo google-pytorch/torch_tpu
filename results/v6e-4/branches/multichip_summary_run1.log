@@ -1,0 +1,25 @@
+##### device: TPU v6e x4, test variant: tpu-v6e 10:01:06
+##### fix-scalar-buffer-cache-bound: checkout 10:01:06
+ba5986128 Merge remote-tracking branch 'origin/main' into fix-scalar-buffer-cache-bound
+##### fix-scalar-buffer-cache-bound: build 10:01:06
+##### fix-scalar-buffer-cache-bound: tests 10:10:57
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 3.84s
+##### max-unpool2d: checkout 10:11:09
+73321c439 Implement aten::max_unpool2d and aten::max_unpool3d for TPU
+##### max-unpool2d: build 10:11:10
+##### max-unpool2d: tests 10:19:43
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 4.83s
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.1s
+Executed 1 out of 1 test: 1 test passes.
+##### cpu-view-args-split-compile: checkout 10:28:06
+c32405eea Compile TPU partitions against the layout CPU arguments are copied with
+##### cpu-view-args-split-compile: build 10:28:07
+##### cpu-view-args-split-compile: tests 10:36:59
+!!!!!!!!!!!!!!!!!! Interrupted: 139 errors during collection !!!!!!!!!!!!!!!!!!!
+327 deselected, 14 warnings, 139 errors in 16.14s
+##### missing-ops-batch: checkout 10:37:18
+647e61761 Implement smooth_l1_loss, huber_loss, logaddexp, logaddexp2, nansum, std_mean, trace and addbmm
+##### missing-ops-batch: build 10:37:18
+##### missing-ops-batch: tests 10:45:36

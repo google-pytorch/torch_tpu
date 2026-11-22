@@ -1,33 +1,11 @@
-# Bzlmod lockfile.
-MODULE.bazel.lock
-# Bazel symlinks, e.g. bazel-out.
-bazel-*
-user.bazelrc
-# clangd compilation database, index cache, and the
-# symlink to external repositories under output base.
-/compile_commands.json
-/.cache/
-/external
-# Build files
-build/
-# Generated Python artifacts.
-*.pyc
-# Built wheels, consumed by the nox smoke-test sessions.
-dist/
-*/**/__pycache__
-src/torch_tpu.egg-info/
-# Virtual environments
+upstream/
 .venv/
-# Vim swap files (used for recovery).
-.*.swp
-.*.swo
-.*.swn
-# Vim backups.
-*~
-.*~
-# Vim undo files.
-*.un~
-.*.un~
-
-# Documentation
-site/
+.pytest_cache/
+__pycache__/
+*.pyc
+.DS_Store
+blog_*.md
+linkedin_*
+images/linkedin_card.png
+scripts/make_linkedin_image.py
+sprint_entry_email.md

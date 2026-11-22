@@ -1,0 +1,35 @@
+##### checkout contiguous_format-revision (c32405eea) 06:35:01
+c32405eea Compile TPU partitions against the layout CPU arguments are copied with
+##### build 06:35:01
+BUILD_EXIT=0
+##### check_cpu_view_args.py on contiguous_format-revision 06:35:20
+  based on TorchTPU binary version 6 and PjRt version:
+x * cum[1]: OK
+x * cumf[1]: OK
+x + cum[1]: OK
+x * cum[1::2]: OK
+f1 transpose scaled by its own sum: FAIL expected=[[0.0, 108.0, 216.0], [36.0, 144.0, 252.0], [72.0, 180.0, 288.0]] got=[[0.0, 36.0, 72.0], [108.0, 144.0, 180.0], [216.0, 252.0, 288.0]]
+f2 as_strided of transpose: FAIL expected=[0.0, 1.0, 2.0] got=[0.0, 3.0, 6.0]
+f3 transpose.t().reshape: FAIL raised BackendCompilerFailed: backend='tpu' raised:
+RuntimeError: view(): cannot create a view of shape [9] from the input tensor of shape [3, 3] and strides [1, 3]; consider creating a new 
+f4 channels_last permute reshape: FAIL raised BackendCompilerFailed: backend='tpu' raised:
+RuntimeError: view(): cannot create a view of shape [1, 3, 8] from the input tensor of shape [1, 3, 4, 2] and strides [24, 4, 1, 12]; cons
+SUMMARY: 4/8 OK
+
+##### checkout base-main (f7172418b) 06:35:27
+f7172418b Update XLA dependency to use revision http://github.com/openxla/xla/commit/dbe0225676f32caebe200452d817b3c5a32049a3
+##### build 06:35:27
+BUILD_EXIT=0
+##### check_cpu_view_args.py on base-main 06:35:42
+  based on TorchTPU binary version 6 and PjRt version:
+x * cum[1]: FAIL expected=[0.0, 2.0, 4.0, 6.0, 8.0, 10.0] got=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+x * cumf[1]: FAIL expected=[0.0, 2.0, 4.0, 6.0, 8.0, 10.0] got=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+x + cum[1]: FAIL expected=[2.0, 3.0, 4.0, 5.0, 6.0, 7.0] got=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+x * cum[1::2]: OK
+f1 transpose scaled by its own sum: OK
+f2 as_strided of transpose: OK
+f3 transpose.t().reshape: OK
+f4 channels_last permute reshape: OK
+SUMMARY: 5/8 OK
+
+##### ALL DONE 06:35:49

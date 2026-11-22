@@ -1,234 +1,76 @@
-<img src="docs/images/torchtpu_logo.avif" alt="TorchTPU Logo" style="width: 60%;">
+# Captum on TorchTPU
 
-## Description
+TorchTPU support for [Captum](https://github.com/meta-pytorch/captum), PyTorch's explainability library.
+Everything here runs on `torch.device("tpu")` via [TorchTPU](https://github.com/google-pytorch/torch_tpu):
+the model (`device_map="tpu"`), the attribution, and the tests. Built for the #TorchTPUSprint.
 
-This project provides a PyTorch backend for Google's Tensor Processing Units
-(TPUs), enabling users to run PyTorch models and operations on TPU devices. It
-includes custom ATen kernels for various PyTorch operations, a compilation cache
-for optimizing execution, and examples for distributed training and model
-inference.
+## What this adds
 
-## Features
+1. **A verified compatibility matrix** of every `captum.attr` method on TorchTPU, CPU vs TPU numerics
+   included (`scripts/captum_tpu_matrix.py`).
+2. **A device-generic test suite for Captum** (`upstream/captum/tests/attr/test_accelerator.py`, branch
+   `tpu-accelerator-tests`): Captum's existing 78 attribution configs, run on CPU and on any accelerator
+   (`CAPTUM_TEST_DEVICE=tpu`, or `torch.accelerator`, or CUDA) and compared. Upstream PR: meta-pytorch/captum#1951.
+3. **Fixes** for whatever the matrix and suite turn up, upstreamed where possible.
+4. **A "Captum on TPUs" tutorial** (notebook + blog) with the one setting every TPU user needs:
+   `torch.set_float32_matmul_precision("highest")` — see FINDINGS.md.
 
-*   PyTorch ATen kernel implementation for TPU.
-*   Compilation cache for optimized execution of XLA computations.
-*   Support for distributed training (Data Parallelism, Tensor Parallelism).
-*   Examples for various models (Llama, Qwen, ResNet, DLRM, minGPT, UNet).
-*   Integration with `torch.compile()` for graph mode execution.
-*   Utilities for debugging and benchmarking.
+See [FINDINGS.md](FINDINGS.md) for measured results and [reports/](reports/) for the prior-art research. The
+write-up is published separately.
 
-## User Guide and Interactive Notebooks
+## Upstream work in torch_tpu
 
-A user guide is available at
-[https://torchtpu.readthedocs.io/](https://torchtpu.readthedocs.io/). This is a
-static version of the interactive notebooks. They are available in the docs
-folder.
+Focus shifted to contributing to TorchTPU itself (sprint priority topic: execution modes, XProf, precision).
+- **Fix for google-pytorch/torch_tpu#6036** (eager device buffers for distinct Python scalars never evicted):
+  bounded scalar-buffer cache in `csrc/eager/op_dispatcher.cc` plus `tests/scalar_buffer_cache_test.py`.
+  PR google-pytorch/torch_tpu#6102; built and verified on the v6e VM (+4999 -> +903 live allocations, regression test passes).
+- **Issue google-pytorch/torch_tpu#6103 + PR google-pytorch/torch_tpu#6105**: `aten::max_unpool2d/3d` were missing (found by the
+  Captum suite; broke DeepLift on CNNs); implemented as a StableHLO batched scatter with tests, verified on the v6e VM.
+- **PR google-pytorch/torch_tpu#6106**: compiled TPU partitions read CPU view arguments past their buffer
+  (`x * cpu_tensor[1].to(tpu)` under `torch.compile` returned 0). Root cause via StableHLO dump; fix in
+  `split_compiler.py` compiles against the contiguous layout the argument is copied with. Test added, verified on v6e.
+- **PR meta-pytorch/captum#1952**: LayerIntegratedGradients captured a CPU `cumsum` tensor as a compiled-graph
+  input (the "expected tensor to be on tpu, got cpu" failure); replaced with Python ints. 12 LIG tests pass on TPU.
+- Branch `docs-memory-apis`: `torch.accelerator` memory API reference section (#4413); measured on v6e.
+- Branch `loader-import-error-context`: the versioned extension loader names the glue and the installed PyTorch
+  when the `.so` fails to import (was a bare `undefined symbol`). Test added.
+- Branch `missing-ops-batch`: `smooth_l1_loss`, `huber_loss` (+backward), `logaddexp`, `logaddexp2`, `nansum`,
+  `std_mean`, `trace`, `addbmm` lowerings with unit tests; build and TPU test in progress.
+- Branch `explainability-example`: `examples/explainability/captum_attribution.py` plus docs case study
+  "Explainability as a performance lens" (precision, strict/DeferAndFuse/compile comparison, XProf, memory,
+  convergence). Verified on v6e: Qwen3-0.6B LIG 64 steps warm 0.80 s strict / 0.36 s DeferAndFuse / 0.16 s compile.
+- Branch `dynamism-denylist-triage`: 11 stale entries removed from the bounded-dynamism deny list (verified in eager and
+  compiled mode on v6e), `clamp` moved to a diagnosed reason.
+- Triage comment on google-pytorch/torch_tpu#4408 (compiled SDPA backward NaN does not reproduce on 0.2.0).
+- The docs, loader, ops, example and dynamism branches await PR creation: the repository allows users without write
+  access at most 3 open PRs, and #6102, #6105, #6106 fill that quota.
+  Each is claimed by an issue in the meantime: google-pytorch/torch_tpu#6111 (ops), #6112 (dynamism), #6113 (loader),
+  #6114 (example), and a comment on #4413 (memory docs).
 
-The notebooks are Marimo (similar to Jupyter). They can be run with `marimo edit
-file.py` and then you can access them in your browser. You will need to be
-running this from a TPU VM, a v6e GCE instance is easiest.
+## Layout
 
-## Installation
+| Path | Purpose |
+|---|---|
+| `scripts/tpu_vm.sh`, `scripts/env.sh` | create / set up / sync / run / delete the Cloud TPU v6e-1 VM |
+| `scripts/tpu_smoke.py` | 12 checks: hooks, autograd.grad, double backward, custom Function, torch.func, compile+backward, Captum IG |
+| `scripts/tpu_correctness.py` | CPU vs TPU agreement for 6 Captum methods, default vs "highest" matmul precision |
+| `scripts/captum_tpu_matrix.py` | the full method matrix |
+| `scripts/hf_captum_bench.py`, `scripts/hf_ig_diag_bench.py` | Captum on Qwen3-0.6B: agreement, IG scaling, eager vs compile vs DeferAndFuse |
+| `scripts/demo_captum_qwen_tpu.py` | end-to-end demo: `device_map="tpu"`, LayerIntegratedGradients, LLMAttribution, HTML heatmap |
+| `torchtpu_xai/` | small helpers (HTML heatmap renderer, a reference IG with convergence check). Not the product. |
+| `upstream/captum/` | shallow clone of Captum; PR work lives on branch `tpu-accelerator-tests` |
+| `hf_tpu_bench.py`, `build_notebook.py`, `hf_on_torchtpu.ipynb` | earlier "HF on TorchTPU" scaffold; superseded |
 
-The same instructions are available in the user guide linked above.
-
-<!-- LINT.IfChange(python_version_support) -->
-
-TorchTPU's Python version support policy matches
-[PyTorch's Release Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix).
-Currently, **Python 3.11–3.15** is supported (including free-threaded 3.14t and
-3.15t builds, with Python 3.15 requiring PyTorch >= 2.15). See the
-[Python Version Support Policy](docs/developers/python_support_policy.md) for
-more details.
-
-<!-- LINT.ThenChange(
-    pyproject.toml:requires_python,
-    bazel/supported_python_versions.bzl:supported_python_versions,
-    ../docs/developers/python_support_policy.md:python_version_support,
-) -->
-
-First create a Python virtual environment:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-or, with `uv`
-
-```bash
-uv venv .venv
-source .venv/bin/activate
-```
-
-### Install via pip
-
-Install the latest public release
-([0.2.0 on PyPI](https://pypi.org/project/torch-tpu/0.2.0/)) (for `uv` prepend
-`uv` to all `pip` commands):
+## Running on a TPU VM
 
 ```bash
-pip install torch_tpu==0.2.0 --extra-index-url https://download.pytorch.org/whl/cpu
+source scripts/env.sh                      # gcloud on PATH; set TPU_PROJECT / TPU_ZONE
+scripts/tpu_vm.sh create && scripts/tpu_vm.sh setup && scripts/tpu_vm.sh sync
+scripts/tpu_vm.sh run '~/env/bin/python tpu_smoke.py'
+scripts/tpu_vm.sh run '~/env/bin/python captum_tpu_matrix.py'
+scripts/tpu_vm.sh run 'CAPTUM_TEST_DEVICE=tpu ~/env/bin/python -m pytest -q test_accelerator.py'
+scripts/tpu_vm.sh delete                   # the VM bills while it exists
 ```
 
-### Build from source
-
-Wheels can be built via:
-
-```bash
-bazel build --config=wheel_common //ci/wheel:torch_tpu_wheel
-```
-
-All OSS Bazel builds default to optimized mode (`-c opt`) automatically via
-`.bazelrc`. Unoptimized builds (`-c fastbuild`, `-c dbg`) can degrade
-performance and are not used for wheel builds. If you are developing or
-debugging C++ code and explicitly want an unoptimized wheel, pass
-`--//:allow_unoptimized_wheel=True`:
-
-```bash
-bazel build -c dbg --config=wheel_common //ci/wheel:torch_tpu_wheel \
-    --//:allow_unoptimized_wheel=True
-```
-
-`--config=wheel_common` is required, and the build fails at build time without
-it. The config sets `--//:wheel_build=True`, which routes the shared XLA/MLIR
-backend through the `torch_version`-reset transition so that pywrap factors it
-into a single `libxla_base.so`; built without the flag, every per-version common
-ships its own copy of the backend and the resulting wheel aborts on `import
-torch` with duplicate static registrations.
-
-`wheel_common` also turns on the Remote Build Execution (RBE) remote cache and
-remote executor. If you do not have RBE credentials, append `--config=no_rbe` to
-strip those flags back out:
-
-```bash
-bazel build --config=wheel_common //ci/wheel:torch_tpu_wheel --config=no_rbe
-```
-
-The order matters here: `--config=no_rbe` has to come after
-`--config=wheel_common`, because the later config is the one that wins for the
-remote-cache and remote-executor flags they both set.
-
-Install wheel via:
-
-```bash
-cd <path_to_repo>
-python -m venv .venv; source .venv/bin/activate
-# The extra-index-url provides the CPU version of torch rather than the default CUDA build.
-pip install ../bazel-bin/ci/wheel/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
-```
-
-Note that installing without `--extra-index-url
-https://download.pytorch.org/whl/cpu` will install the CUDA version of `torch`;
-pass `--extra-index-url` as shown above or install the CPU build separately.
-
-## Getting Started
-
-Some pointers to get you started:
-
-*   [PyTorch: Official PyTorch documentation](https://github.com/pytorch/pytorch)
-*   [Tutorials and examples: easy to understand PyTorch code using TorchTPU](https://torchtpu.readthedocs.io/)
-*   [Public APIs: the TorchTPU APIs that you can use](./docs/public_apis.md)
-
-## Dependencies
-
-The project uses Bazel for dependency management. Key Python dependencies are:
-
-TBD
-
-## Bazel setup
-
-This project uses Bazel for building and dependency management.
-
-To install Bazel, we actually install Bazelisk, which is a transparent wrapper
-that handles downloading and installing Bazel itself.
-
-There are several ways to install Bazelisk. Here are some common ways:
-
-*   If you have Go installed:
-
-    ```
-    go install github.com/bazelbuild/bazelisk@latest
-    ```
-
-*   Download the binary directly:
-
-    ```
-    wget -O ~/bin/bazel https://github.com/bazelbuild/bazelisk/releases/download/v1.27.0/bazelisk-linux-amd64
-    ```
-
-See the
-[Bazelisk README](https://github.com/bazelbuild/bazelisk/blob/master/README.md)
-for more install instructions
-
-However you install it, add it's location to `PATH`.
-
-To verify the install, run `bazel info` in the repo's root directory:
-
-```
-bazel info
-```
-
-It should print information about the repo without errors.
-
-## VSCode `clangd` Setup
-
-For C++ code navigation, it is recommended to use VSCode with
-[`clangd` extension](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd).
-Relying on a
-[compilation database](https://clang.llvm.org/docs/JSONCompilationDatabase.html)
-generated from Bazel action graph, [clangd](https://clangd.llvm.org/) is able to
-enrich the editor with various smart features, including code completions, go-to
-definitions, *etc.*
-
-1.  Generate the initial `compile_commands.json`:
-
-    ```sh
-    tools/setup_clangd.py
-    ```
-
-    If the VSCode `code` CLI is on `PATH`, the script also installs the `clangd`
-    extension automatically. Otherwise, install the extension via the editor UI.
-
-1.  Uninstall the Microsoft C++ extension, which interferes with `clangd`:
-
-    ```sh
-    code --uninstall-extension ms-vscode.cpptools
-    ```
-
-It may take a while (> 30 minutes) for the first run to make a full build, but
-reruns will be incremental and cheap. If you have run `bazel build` recently,
-generated files already exist so you can pass `--no-build` to skip waiting for
-heavy builds (note that on a fresh workspace, skipping the build may prevent
-`clangd` from resolving generated files). See more options in the
-[script](tools/setup_clangd.py) file-level comments.
-
-Alternatively, you can invoke the script via `nox` (arguments after `--` are
-forwarded):
-
-```sh
-nox -s refresh_compile_commands -- --no-build
-nox -s refresh_compile_commands -- //src/torch_tpu/ops/...
-```
-
-## Contributing
-
-We welcome contributions to the PyTorch on TPU project! Please see our
-[CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute,
-including signing our Contributor License Agreement (CLA) and code review
-processes.
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=google-pytorch%2Ftorch_tpu&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=google-pytorch/torch_tpu&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=google-pytorch/torch_tpu&type=date&legend=top-left" />
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=google-pytorch/torch_tpu&type=date&legend=top-left" />
-  </picture>
-</a>
-
-## License
-
-This project is licensed under the Apache 2.0 License. See the
-[LICENSE](LICENSE) file for details.
+Environment used so far: Cloud TPU v6e-1 (us-east5-b), Python 3.12, torch 2.15.0, torch_tpu 0.2.0,
+Captum 0.9.0, transformers 5.22.1.

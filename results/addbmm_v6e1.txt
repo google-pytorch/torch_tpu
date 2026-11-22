@@ -1,0 +1,33 @@
+##### checkout addbmm 21:17:19
+787fbd438 Implement aten::addbmm for TPU
+##### build 21:17:20
+BUILD_EXIT=0
+##### tests 21:44:04
+--- semantics vs CPU (/home/joinal/checks/check_addbmm.py)
+default beta/alpha: allclose: True
+beta=0 with NaN input: allclose: True
+alpha=2 beta=0.5: allclose: True
+input broadcast from [5]: allclose: True
+input broadcast from [1]: allclose: True
+input broadcast from []: allclose: True
+batch size 1: allclose: True
+batch size 0 (beta * input): allclose: True
+bfloat16: allclose: True
+out=: allclose: True
+in-place: allclose: True
+mismatched batch dimensions: RuntimeError: addbmm(): expected the batch dimension of the first argument (of shape [1, 3, 4]) to match the batch dimension of the second argument (of shape [2, 4, 5]), got 1 vs 2
+
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+10 passed, 4339 deselected, 14 warnings in 6.80s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 12.6s
+Executed 1 out of 1 test: 1 test passes.
+//tests:errors_test_tpu                                                  PASSED in 12.9s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 45.2s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 22:00:20
+
+387054 bash /home/joinal/vm_branch_tests.sh smooth_l1_loss smooth_l1 /home/joina

@@ -1,0 +1,5 @@
+device TPU v6e x4
+FAILED tests/_versioned_so_loader_test.py::PathEntryFinderAndHookTest::test_version_suffixed_glue_names_are_hidden_from_import1
+FAILED tests/_versioned_so_loader_test.py::PathEntryFinderAndHookTest::test_walk_packages_discovers_all_subpackages_and_unversioned_modules
+16 failed, 23 passed, 14 warnings in 4.31s
+

@@ -1,0 +1,18 @@
+##### device: TPU v6e x4, test variant: tpu-v6e 14:48:06
+##### max-unpool2d: checkout 14:48:06
+73321c439 Implement aten::max_unpool2d and aten::max_unpool3d for TPU
+##### max-unpool2d: build 14:48:06
+##### max-unpool2d: tests 14:48:18
+25 passed, 4343 deselected, 14 warnings in 9.22s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.
+##### missing-ops-batch: checkout 14:52:51
+647e61761 Implement smooth_l1_loss, huber_loss, logaddexp, logaddexp2, nansum, std_mean, trace and addbmm
+##### missing-ops-batch: build 14:52:51
+##### missing-ops-batch: tests 14:53:11
+53 passed, 4335 deselected, 17 warnings in 8.48s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 14:57:42
+
+[exited with code 0]

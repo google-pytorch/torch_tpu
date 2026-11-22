@@ -1,0 +1,68 @@
+##### device: TPU v6e x4, test variant: tpu-v6e 10:48:39
+##### fix-scalar-buffer-cache-bound: checkout 10:48:39
+ba5986128 Merge remote-tracking branch 'origin/main' into fix-scalar-buffer-cache-bound
+##### fix-scalar-buffer-cache-bound: build 10:48:40
+##### fix-scalar-buffer-cache-bound: tests 10:52:19
+3 passed, 15 warnings in 6.86s
+same scalar x5000     : +2 live allocations
+new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+captum IG same n_steps x20   : +0 live allocations
+captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+##### max-unpool2d: checkout 10:53:22
+73321c439 Implement aten::max_unpool2d and aten::max_unpool3d for TPU
+##### max-unpool2d: build 10:53:22
+##### max-unpool2d: tests 10:53:27
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 4.26s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.
+##### cpu-view-args-split-compile: checkout 10:57:51
+c32405eea Compile TPU partitions against the layout CPU arguments are copied with
+##### cpu-view-args-split-compile: build 10:57:51
+##### cpu-view-args-split-compile: tests 10:58:00
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 2.45s
+##### missing-ops-batch: checkout 10:58:04
+647e61761 Implement smooth_l1_loss, huber_loss, logaddexp, logaddexp2, nansum, std_mean, trace and addbmm
+##### missing-ops-batch: build 10:58:04
+##### missing-ops-batch: tests 10:58:09
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 4.27s
+//tests:ops_test_tpu-v6e                                                 PASSED in 11.8s
+Executed 1 out of 1 test: 1 test passes.
+##### dynamism-denylist-triage: checkout 11:02:32
+8bd69a1a5 Triage 12 ops on the bounded-dynamism deny list
+##### dynamism-denylist-triage: build 11:02:33
+##### dynamism-denylist-triage: tests 11:02:52
+//tests:ops_test_dynamic_tpu-v6e                                         PASSED in 45.8s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_dynamic_compiled_tpu-v6e                                PASSED in 28.9s
+Executed 1 out of 1 test: 1 test passes.
+##### loader-import-error-context: checkout 11:25:30
+a8fa4181e Name the glue and the installed PyTorch when an extension fails to load
+##### loader-import-error-context: build 11:25:31
+##### loader-import-error-context: tests 11:25:47
+FAILED tests/_versioned_so_loader_test.py::PathEntryFinderAndHookTest::test_version_suffixed_glue_names_are_hidden_from_import1
+FAILED tests/_versioned_so_loader_test.py::PathEntryFinderAndHookTest::test_walk_packages_discovers_all_subpackages_and_unversioned_modules
+16 failed, 23 passed, 14 warnings in 4.31s
+##### docs-memory-apis: checkout 11:25:53
+303d008eb Document the memory APIs in the API reference
+##### docs-memory-apis: build 11:25:53
+##### docs-memory-apis: tests 11:25:55
+memory_allocated 4296704
+max_memory_allocated 4296704
+memory_reserved 0
+get_memory_info (33541746176, 33546042880)
+hbm_bytes_per_device 34359738368
+##### explainability-example: checkout 11:26:02
+9523faca4 Add an explainability example and case study
+##### explainability-example: build 11:26:02
+##### explainability-example: tests 11:26:03
+warm median of 3 runs:    0.031 s
+max relative error vs CPU:         2.00e-07
+warm median of 3 runs:    0.022 s
+max relative error vs CPU:         2.00e-07
+warm median of 3 runs:    0.029 s
+max relative error vs CPU:         2.00e-07
+##### ALL DONE 11:26:25

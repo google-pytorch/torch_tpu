@@ -1,0 +1,97 @@
+Using ssh batch size of 1. Attempting to SSH into 1 nodes with a total of 1 workers.
+SSH: Attempting to connect to worker 0...
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1793545362.173714  236297 pjrt_api.cc:119] GetPjrtApi was found for TPU at /home/joinal/env/lib/python3.12/site-packages/libtpu/libtpu.so
+I0000 00:00:1793545363.172278  236297 device_rt.cc:166] PjRt runtime initialization deferred for tpu
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+I0000 00:00:1793545363.174868  236297 libtpu_version.cc:63] Setting libtpu version to: 0.0.51
+I0000 00:00:1793545363.457283  236297 pjrt_api.cc:168] The PJRT plugin has PJRT API version 0.116. The framework PJRT API version is 0.116.
+I0000 00:00:1793545368.445424  236297 pjrt_c_api_client.cc:187] PjRtCApiClient created.
+W0000 00:00:1793545368.445462  236297 pjrt_state.cc:313] Only using 1 device out of all the 4 addressable devices.
+Traceback (most recent call last):
+  File "/tmp/tpu_agent_suite_run_job-20261101150225-98143c/script.py", line 226, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/tmp/tpu_agent_suite_run_job-20261101150225-98143c/script.py", line 200, in main
+    agreement = compare_all(device, "default") + compare_all(device, "highest")
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/tpu_agent_suite_run_job-20261101150225-98143c/script.py", line 92, in compare_all
+    torch.set_float32_matmul_precision(precision)
+  File "/home/joinal/env/lib/python3.12/site-packages/torch_tpu/_loader.py", line 335, in _tpu_set_precision
+    raise ValueError(
+ValueError: expected to be one of 'highest', 'high', or 'medium', got 'default'
+I0000 00:00:1793545368.469370  236881 compilation_cache_utils.cc:218] Tier-3 compilation cache root directory: 
+I0000 00:00:1793545368.469406  236881 tier2_compilation_cache.cc:80] Tier-2 compilation cache is disabled for world size 1.
+I0000 00:00:1793545368.469409  236881 tier3_compilation_cache.cc:50] Backup compilation for tier-3 cache read is disabled as tier-3 cache is disabled.
+I0000 00:00:1793545369.653844  236297 compilation_cache.cc:356] Compilation cache evicted.
+I0000 00:00:1793545369.653882  236297 compilation_cache.cc:203] CompilationCache final stats: num_cache_reqs=1
+num_cache_hits=0 {0.0%}
+num_compilations=1
+peak_compilation_memory_bytes=unknown
+
+declared output 'results.json' was not produced on the target: Using scp batch size of 1.Attempting to SCP into 1 nodes with a total of 1 workers.
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/results.json: No such file or directory
+ERROR: (gcloud.compute.tpus.tpu-vm.scp) [/usr/bin/scp] exited with return code [1].
+declared output 'xprof.xplane.pb' was not produced on the target: Using scp batch size of 1.Attempting to SCP into 1 nodes with a total of 1 workers.
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+Retrying: SCP command error: [/usr/bin/scp] exited with return code [1].
+SCP: Attempting to connect to worker 0...
+/usr/bin/scp: /tmp/tpu_agent_suite_run_job-20261101150225-98143c/xprof.xplane.pb: No such file or directory
+ERROR: (gcloud.compute.tpus.tpu-vm.scp) [/usr/bin/scp] exited with return code [1].
+[CAPTUM-TPU] device=tpu (native-tpu) torch=2.15.0+cu132 torch_tpu=None captum=0.9.0 accelerator=unknown

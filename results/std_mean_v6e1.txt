@@ -1,0 +1,37 @@
+##### checkout std_mean 19:12:07
+043c512a2 Implement aten::std_mean.correction for TPU
+##### build 19:12:08
+BUILD_EXIT=0
+##### tests 19:38:38
+--- semantics vs CPU (/home/joinal/checks/check_std_mean.py)
+dim=None: allclose: True
+dim=1: allclose: True
+dim=(0, 2): allclose: True
+dim=1 keepdim: allclose: True
+dim=(0, 2) keepdim: allclose: True
+correction=0: allclose: True
+correction=1: allclose: True
+correction=2: allclose: True
+correction == N: allclose: True
+correction > N: allclose: True
+bfloat16 dim=None: allclose: True
+bfloat16 dim=2: allclose: True
+matches torch.std and torch.mean: allclose: True
+correction >= N warning: ['<TorchTpu/Correctness/> std_mean(): degrees of freedom (i.e., reduction size - correction) should be positive, got reduction size = 1, correction = 1, and degrees of freedom = 0 (Triggered internally at csrc/ops/reductions/std_aten_kernels.cc:134.)']
+correction >= N std is nan: True
+integer input: RuntimeError std_mean(): expected a floating point or complex dtype, got int64
+
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+38 passed, 4343 deselected, 14 warnings in 7.11s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 12.6s
+Executed 1 out of 1 test: 1 test passes.
+//tests:errors_test_tpu                                                  PASSED in 12.7s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.4s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 19:55:01
+
+241413 bash /home/joinal/vm_branch_tests.sh nansum nansum /home/joinal/checks/ch

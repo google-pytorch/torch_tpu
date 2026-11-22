@@ -1,0 +1,9 @@
+device TPU v6e x4
+=========================== short test summary info ============================
+ERROR tests/compile/split_compile_test.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 2.45s
+ERROR: Skipping '//tests/compile:split_compile_test_tpu-v6e': no such target '//tests/compile:split_compile_test_tpu-v6e': target 'split_compile_test_tpu-v6e' not declared in package 'tests/compile' defined by /home/joinal/torch_tpu/tests/compile/BUILD
+ERROR: no such target '//tests/compile:split_compile_test_tpu-v6e': target 'split_compile_test_tpu-v6e' not declared in package 'tests/compile' defined by /home/joinal/torch_tpu/tests/compile/BUILD
+ERROR: Build did NOT complete successfully
+ERROR: Couldn't start the build. Unable to run tests

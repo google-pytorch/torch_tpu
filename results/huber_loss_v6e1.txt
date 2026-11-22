@@ -1,0 +1,32 @@
+##### checkout huber_loss 22:43:21
+9ffd2719d Implement aten::huber_loss for TPU
+##### build 22:43:22
+BUILD_EXIT=0
+##### tests 23:09:54
+--- semantics vs CPU (/home/joinal/checks/check_huber_loss.py)
+[W1102 23:09:59.975821810 Resize.cpp:31] Warning: An output with one or more elements was resized since it had shape [3], which does not match the required output shape [2, 3]. This behavior is deprecated, and in a future PyTorch release outputs will not be resized unless they have zero elements. You can explicitly reuse an out tensor t by resizing it, inplace, to zero elements with t.resize_(0). (function _resize_output_check)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+f32 none delta=1: allclose: True
+f32 mean delta=1: allclose: True
+f32 sum delta=1: allclose: True
+bf16 mean delta=0.5: allclose: True
+f32 none |d| == delta boundary: allclose: True
+f32 mean broadcast target: allclose: True
+delta=0.0: RuntimeError: huber_loss(): huber_loss does not support non-positive values for delta.
+delta=-1.0: RuntimeError: huber_loss(): huber_loss does not support non-positive values for delta.
+int64 inputs: NotImplementedError: huber_loss(): "huber" not implemented for 'int64'
+
+--- pytest
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+21 passed, 4343 deselected, 14 warnings in 7.27s
+
+--- bazel, as CI runs it
+//tests:ops_unit_test_tpu-v6e                                            PASSED in 12.8s
+Executed 1 out of 1 test: 1 test passes.
+//tests:errors_test_tpu                                                  PASSED in 12.6s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_tpu-v6e                                                 PASSED in 12.4s
+Executed 1 out of 1 test: 1 test passes.
+##### ALL DONE 23:25:30
+
+388657 bash /home/joinal/vm_final_steps.sh

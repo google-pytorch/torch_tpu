@@ -1,0 +1,5 @@
+device TPU v6e x4
+//tests:ops_test_dynamic_tpu-v6e                                         PASSED in 45.8s
+Executed 1 out of 1 test: 1 test passes.
+//tests:ops_test_dynamic_compiled_tpu-v6e                                PASSED in 28.9s
+Executed 1 out of 1 test: 1 test passes.

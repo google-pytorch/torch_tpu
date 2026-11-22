@@ -1,0 +1,9 @@
+device TPU v6e x4
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+4 passed, 13 deselected, 14 warnings in 4.67s
+
+ERROR: Skipping '//tests/compile:split_compile_test_tpu-v5lite': no such target '//tests/compile:split_compile_test_tpu-v5lite': target 'split_compile_test_tpu-v5lite' not declared in package 'tests/compile' defined by /home/joinal/torch_tpu/tests/compile/BUILD
+ERROR: no such target '//tests/compile:split_compile_test_tpu-v5lite': target 'split_compile_test_tpu-v5lite' not declared in package 'tests/compile' defined by /home/joinal/torch_tpu/tests/compile/BUILD
+ERROR: Build did NOT complete successfully
+ERROR: Couldn't start the build. Unable to run tests

@@ -1,0 +1,165 @@
+From 4e55a35b3e3854cabd0f5af228f5eaaf4412f251 Mon Sep 17 00:00:00 2001
+From: Andrew <pullin@berkeley.edu>
+Date: Thu, 5 Nov 2026 04:30:33 -0800
+Subject: [PATCH] Bound the per-thread cache of scalar device buffers
+
+## Description
+
+Fixes #6036
+
+`MakeBuffer` cached a device buffer for every distinct scalar in a thread-local map that never shrank, so every new value, such as a scheduled learning rate, leaked a device buffer. Now a miss with 1024 cached entries (about 1 MiB) clears the map before inserting. Buffers that pending ops or tensors still use stay alive through their own references, and the hit path is unchanged.
+
+Cycling through more than 1024 distinct scalars now misses on every lookup (1.19x per-op time with DEFER_NEVER and 1.45x with DEFER_AND_FUSE for a 1500-value cycle), and a clear takes up to 4 ms. In DEFER_AND_FUSE, a fused region that uses a scalar before and after a clear gets an extra graph input, which can add compiles.
+
+## Test Plan
+
+Wheels built from main at a8a3ccc84 with and without this change, on a v5e-1 (torch 2.14.1, libtpu 0.0.51), in DEFER_NEVER and DEFER_AND_FUSE:
+- `accelerator_api_test`: the new `test_distinct_scalars_do_not_accumulate_device_buffers` fails without the change (4001 and 4002 allocations, limit 2048) and passes with it. The new `test_queued_op_keeps_scalar_buffer_after_cache_clear` passes on both.
+- The repro in #6036: +19999 -> +543 live allocations. 3000 steps of AdamW + CosineAnnealingLR: +9032 -> +872, with the same XLA compile count and step time within noise.
+- `nox -s lint`: clean.
+
+Closes #6037
+
+Generated from cl/1014592898
+
+COPYBARA_INTEGRATE_REVIEW=https://github.com/google-pytorch/torch_tpu/pull/6037 from apullin:fix-scalar-buffer-cache 3274e76c3bd97fa04870f73058eeaa7fe45fa7a1
+PiperOrigin-RevId: 1014592898
+
+(cherry picked from commit 1e71c2b5195d294b3736230483784ef2940a9c92)
+---
+ csrc/eager/op_dispatcher.cc   | 10 ++++++
+ csrc/eager/op_dispatcher.h    |  3 +-
+ tests/accelerator_api_test.py | 61 +++++++++++++++++++++++++++++++++++
+ 3 files changed, 73 insertions(+), 1 deletion(-)
+
+diff --git a/csrc/eager/op_dispatcher.cc b/csrc/eager/op_dispatcher.cc
+index ca718a526..85c8a0e22 100644
+--- a/csrc/eager/op_dispatcher.cc
++++ b/csrc/eager/op_dispatcher.cc
+@@ -65,6 +65,9 @@ namespace torch_tpu {
+ 
+ namespace {
+ 
++// The maximum number of scalar device buffers MakeBuffer caches per thread.
++constexpr size_t kMaxCachedScalarBuffers = 1024;
++
+ // Internal helper for MakeTensor that returns the
+ // DeviceBufferRef that will get wrapped into the at::Tensor.
+ absl::StatusOr<DeviceBufferRef> MakeBuffer(
+@@ -134,6 +137,13 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
+         /*dimensions=*/{});
+     TT_ASSIGN_OR_RETURN(DeviceBufferRef buf_ref,
+                         ScheduleHostToDeviceTransfer(std::move(transfer)));
++    // Every cached scalar keeps its device buffer alive, so a stream of
++    // distinct values (e.g. a learning rate schedule) would grow device memory
++    // without bound. Start over when the cache is full; pending ops hold their
++    // own references to the buffers they use.
++    if (scalar_map.size() >= kMaxCachedScalarBuffers) {
++      scalar_map.clear();
++    }
+     scalar_map.insert({hashable_scalar, buf_ref});
+     return buf_ref;
+   }
+diff --git a/csrc/eager/op_dispatcher.h b/csrc/eager/op_dispatcher.h
+index dc1ad6ec5..74676c779 100644
+--- a/csrc/eager/op_dispatcher.h
++++ b/csrc/eager/op_dispatcher.h
+@@ -531,7 +531,8 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
+ //    buffer. This prevents compiler specialization on the value, meaning that
+ //    the executable can be reused in the future even if the scalar value
+ //    changes. To prevent redundant host-to-device transfers, created
+-//    DeviceBufferRefs are cached and reused.
++//    DeviceBufferRefs are cached and reused, up to 1024 per thread
++//    (kMaxCachedScalarBuffers in op_dispatcher.cc).
+ [[deprecated("Use PromoteScalar() instead.")]]
+ absl::StatusOr<at::Tensor> MakeTensor(
+     const at::Scalar& scalar,
+diff --git a/tests/accelerator_api_test.py b/tests/accelerator_api_test.py
+index 78bfe05f9..7c911aa28 100644
+--- a/tests/accelerator_api_test.py
++++ b/tests/accelerator_api_test.py
+@@ -17,6 +17,8 @@
+ from collections import OrderedDict
+ import concurrent.futures
+ import gc
++import os
++import threading
+ import time
+ from typing import TypeAlias
+ 
+@@ -32,6 +34,7 @@ from torch_tpu._internal.utils import utils as tt_utils
+ from tests import seed_test_utils
+ 
+ EagerMode: TypeAlias = execution_mode.EagerMode
++_EagerMode: TypeAlias = execution_mode._EagerMode
+ 
+ 
+ def setUpModule():
+@@ -660,6 +663,64 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
+     self.assertIsNone(torch.accelerator.empty_cache())
+     self.assertIsNone(torch.accelerator.memory.empty_cache())
+ 
++  @parameterized.named_parameters(
++      ("defer_and_fuse", EagerMode.DEFER_AND_FUSE),
++      ("defer_never", EagerMode.DEFER_NEVER),
++  )
++  def test_distinct_scalars_do_not_accumulate_device_buffers(self, mode):
++    def add_distinct_scalars():
++      with execution_mode.set_eager_mode(mode):
++        t = torch.ones(8, device="tpu")
++        t_cpu = torch.ones(8)
++        gc.collect()
++        torch.accelerator.synchronize()
++        before = torch.accelerator.memory_stats()["allocation.all.current"]
++
++        # Each distinct Python scalar is materialized once as a device buffer.
++        # The scalars and all partial sums are exact in float32, so reading a
++        # wrong scalar buffer changes the result.
++        for i in range(4000):
++          scalar = (-1) ** i * (1.0 + i / 4096)
++          t = t + scalar
++          t_cpu = t_cpu + scalar
++        torch.accelerator.synchronize()
++        gc.collect()
++
++        after = torch.accelerator.memory_stats()["allocation.all.current"]
++        return t.cpu(), t_cpu, after - before
++
++    # Run in a new thread, which starts with an empty scalar buffer cache. The
++    # thread frees its cache on exit, so it takes both snapshots itself.
++    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
++      native_id = executor.submit(threading.get_native_id).result()
++      future = executor.submit(add_distinct_scalars)
++    # Before Python 3.13, the executor shutdown can return before the thread
++    # runs its C++ thread_local destructors, which free its cache. Wait until
++    # the thread is gone, so that the cache is freed before the next test.
++    while os.path.exists(f"/proc/self/task/{native_id}"):
++      time.sleep(0.001)
++    actual, expected, growth = future.result()
++    utils.assert_close(actual, expected)
++    # The cache keeps at most kMaxCachedScalarBuffers (1024, op_dispatcher.cc)
++    # buffers. Without a bound, it would keep all 4000.
++    self.assertLess(growth, 2048)
++
++  def test_queued_op_keeps_scalar_buffer_after_cache_clear(self):
++    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
++      x = torch.ones(8, device="tpu")
++      y = x + 0.25
++      # Pass 2048 distinct scalars, twice kMaxCachedScalarBuffers (1024, in
++      # op_dispatcher.cc), so the cache is cleared at least once. Then only the
++      # queued add for y holds its 0.25 buffer.
++      for i in range(2048):
++        _ = x + (2.0 + i / 4096)
++      self.assertFalse(sync.is_materializing(y))
++      # 0.25 now misses the cache, so the graph gets a second 0.25 buffer.
++      z = y + 0.25
++      torch.accelerator.synchronize()
++    utils.assert_close(y.cpu(), torch.full((8,), 1.25))
++    utils.assert_close(z.cpu(), torch.full((8,), 1.5))
++
+   @parameterized.named_parameters(
+       ("top_level", torch.accelerator.get_memory_info),
+       ("memory_submodule", torch.accelerator.memory.get_memory_info),
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,147 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+Traceback (most recent call last):
+  File "/home/joinal/scalar_leak_check.py", line 11, in <module>
+    dist.init_process_group(backend="tpu_dist")
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 97, in wrapper
+    func_return = func(*args, **kwargs)
+Traceback (most recent call last):
+  File "/home/joinal/scalar_leak_check.py", line 11, in <module>
+                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 2721, in init_process_group
+    dist.init_process_group(backend="tpu_dist")
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 97, in wrapper
+    func_return = func(*args, **kwargs)
+                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 2721, in init_process_group
+Traceback (most recent call last):
+  File "/home/joinal/scalar_leak_check.py", line 11, in <module>
+    default_pg, _ = _new_process_group_helper(
+      dist.init_process_group(backend="tpu_dist") 
+                  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+ ^^^^^^^^^^^^^^^^^^^^^^^^^    ^return func(*args, **kwargs)
+
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 3106, in _new_process_group_helper
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 97, in wrapper
+    func_return = func(*args, **kwargs)
+                   default_pg, _ = _new_process_group_helper( 
+  ^^^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ 
+ ^^^^^  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 2721, in init_process_group
+^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 3106, in _new_process_group_helper
+    backend_result = creator_fn(
+                     ^^^^^^^^^^^
+RuntimeError: failed to retrieve the PjRt client: TPU initialization failed: GRPC_ERROR error message: START_SESSION failed. Contact GCE with UUID: 33084856224630526061057322688446466 if this is recurring. Max # of tries(=3) exhausted.
+    default_pg, _ = _new_process_group_helper(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^    
+backend_result = creator_fn(
+   File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 3106, in _new_process_group_helper
+                    ^^^^^^^^^^^
+RuntimeError: failed to retrieve the PjRt client: TPU initialization failed: GRPC_ERROR error message: START_SESSION failed. Contact GCE with UUID: 33084856224704386824328455733116930 if this is recurring. Max # of tries(=3) exhausted.
+    backend_result = creator_fn(
+                     ^^^^^^^^^^^
+RuntimeError: failed to retrieve the PjRt client: TPU initialization failed: GRPC_ERROR error message: START_SESSION failed. Contact GCE with UUID: 33084856224629345469436605277143042 if this is recurring. Max # of tries(=3) exhausted.
+Traceback (most recent call last):
+  File "/home/joinal/scalar_leak_check.py", line 11, in <module>
+    dist.init_process_group(backend="tpu_dist")
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 97, in wrapper
+    func_return = func(*args, **kwargs)
+                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 2721, in init_process_group
+    default_pg, _ = _new_process_group_helper(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 3106, in _new_process_group_helper
+    backend_result = creator_fn(
+                     ^^^^^^^^^^^
+RuntimeError: failed to retrieve the PjRt client: TPU initialization failed: GRPC_ERROR error message: START_SESSION failed. Contact GCE with UUID: 33084856224622132792503784842461186 if this is recurring. Max # of tries(=3) exhausted.
+E1101 11:47:33.440000 449076 env/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1002] failed (exitcode: 1) local_rank: 0 (pid: 449144) of binary: /home/joinal/env/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/run.py", line 1142, in <module>
+    main()
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 384, in wrapper
+    result = f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/run.py", line 1138, in main
+    run(args)
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/run.py", line 1129, in run
+    elastic_launch(
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 197, in __call__
+    return launch_agent(
+           ^^^^^^^^^^^^^
+  File "/home/joinal/env/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 386, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/joinal/scalar_leak_check.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-11-01_11:47:33
+  host      : t1v-n-c0c14307-w-0.us-east5-b.c.gen-lang-client-0320701242.internal
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 449145) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[2]:
+  time      : 2026-11-01_11:47:33
+  host      : t1v-n-c0c14307-w-0.us-east5-b.c.gen-lang-client-0320701242.internal
+  rank      : 2 (local_rank: 2)
+  exitcode  : 1 (pid: 449146) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[3]:
+  time      : 2026-11-01_11:47:33
+  host      : t1v-n-c0c14307-w-0.us-east5-b.c.gen-lang-client-0320701242.internal
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 449147) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-11-01_11:47:33
+  host      : t1v-n-c0c14307-w-0.us-east5-b.c.gen-lang-client-0320701242.internal
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 449144) 
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

@@ -1,0 +1,131 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1793525354.749434   11858 pjrt_api.cc:119] GetPjrtApi was found for TPU at /home/joinal/env/lib/python3.12/site-packages/libtpu/libtpu.so
+I0000 00:00:1793525356.197420   11858 device_rt.cc:166] PjRt runtime initialization deferred for tpu
+Successfully renamed PrivateUse1 backend to 'tpu'. Device: device(type='tpu')
+Registered Python module for 'tpu'.
+Device type: tpu, Device index: default
+Initializing TPU distributed runtime
+I0000 00:00:1793525356.202336   11858 libtpu_version.cc:63] Setting libtpu version to: 0.0.51
+I0000 00:00:1793525357.616478   11858 pjrt_api.cc:168] The PJRT plugin has PJRT API version 0.116. The framework PJRT API version is 0.116.
+I0000 00:00:1793525363.234268   11858 pjrt_c_api_client.cc:187] PjRtCApiClient created.
+W0000 00:00:1793525363.234333   11858 pjrt_state.cc:313] Only using 1 device out of all the 4 addressable devices.
+/home/joinal/env/lib/python3.12/site-packages/torch/nn/modules/linear.py:134: UserWarning: <TorchTpu/Performance/> TPU is using HIGHEST precision as requested, but performance may be significantly lower. Consider using torch.set_float32_matmul_precision('medium') for better performance. (Triggered internally at csrc/ops/precision_context.cc:70.)
+  return F.linear(input, self.weight, self.bias)
+I0000 00:00:1793525363.595880   17149 compilation_cache_utils.cc:218] Tier-3 compilation cache root directory: 
+I0000 00:00:1793525363.595948   17149 tier2_compilation_cache.cc:80] Tier-2 compilation cache is disabled for world size 1.
+I0000 00:00:1793525363.595956   17149 tier3_compilation_cache.cc:50] Backup compilation for tier-3 cache read is disabled as tier-3 cache is disabled.
+/home/joinal/captum_tpu_matrix.py:74: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  out = attr.attribute(xi, **kw); torch.as_tensor(out).cpu()      # warm (compile)
+/home/joinal/env/lib/python3.12/site-packages/captum/log/dummy_log.py:54: UserWarning: Setting forward, backward hooks and attributes on non-linear
+               activations. The hooks and attributes will be removed
+            after the attribution is finished
+  return func(*args, **kwargs)
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/deep_lift.py:413: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  module.input = inputs[0].clone().detach()  # type: ignore
+/home/joinal/env/lib/python3.12/site-packages/captum/_utils/common.py:903: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  return inp[0].clone()
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/deep_lift.py:426: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  module.output = outputs[0].clone().detach()  # type: ignore
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/deep_lift.py:811: UserWarning: Setting forward, backward hooks and attributes on non-linear
+               activations. The hooks and attributes will be removed
+            after the attribution is finished
+  attributions = super().attribute.__wrapped__(  # type: ignore
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/guided_backprop_deconvnet.py:66: UserWarning: Setting backward hooks on ReLU activations.The hooks will be removed after the attribution is finished
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/_utils/gradient.py:314: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  eval_tsrs_to_return = eval_tsrs[0].clone()
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/feature_ablation.py:740: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  ablated_input = input_tensor.clone()
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/feature_permutation.py:333: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  permuted_input = input_tensor.clone()
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/occlusion.py:406: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  ablated_input = input_tensor.clone().reshape(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/lime.py:1169: UserWarning: You are providing multiple inputs for Lime / Kernel SHAP attributions. This trains a separate interpretable model for each example, which can be time consuming. It is recommended to compute attributions for one example at a time.
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_utils/lrp_rules.py:45: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  return outputs.clone()
+/home/joinal/env/lib/python3.12/site-packages/captum/_utils/common.py:903: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  return inp[0].clone()
+/home/joinal/captum_tpu_matrix.py:74: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  out = attr.attribute(xi, **kw); torch.as_tensor(out).cpu()      # warm (compile)
+/home/joinal/env/lib/python3.12/site-packages/captum/_utils/gradient.py:314: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  eval_tsrs_to_return = eval_tsrs[0].clone()
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/deep_lift.py:413: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  module.input = inputs[0].clone().detach()  # type: ignore
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/deep_lift.py:426: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  module.output = outputs[0].clone().detach()  # type: ignore
+/home/joinal/env/lib/python3.12/site-packages/captum/_utils/gradient.py:326: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  eval_tsr.clone() for eval_tsr in eval_tsrs
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/neuron/neuron_deep_lift.py:247: UserWarning: Setting forward, backward hooks and attributes on non-linear
+               activations. The hooks and attributes will be removed
+            after the attribution is finished
+  return dl.attribute.__wrapped__(  # type: ignore
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/deep_lift.py:811: UserWarning: Setting forward, backward hooks and attributes on non-linear
+               activations. The hooks and attributes will be removed
+            after the attribution is finished
+  attributions = super().attribute.__wrapped__(  # type: ignore
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/guided_backprop_deconvnet.py:66: UserWarning: Setting backward hooks on ReLU activations.The hooks will be removed after the attribution is finished
+  warnings.warn(
+/home/joinal/env/lib/python3.12/site-packages/captum/attr/_core/feature_ablation.py:740: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more information. (Triggered internally at external/rules_python++pip+torch_tpu_pypi_2_15_0_314_torch/site-packages/torch/include/ATen/core/TensorBody.h:494.)
+  ablated_input = input_tensor.clone()
+method                      status max_rel_err   cpu_s   tpu_s  note
+IntegratedGradients         OK        1.32e-07   0.095   0.023
+Saliency                    OK        7.65e-08   0.066   0.004
+InputXGradient              OK        1.26e-07   0.057   0.003
+DeepLift                    OK        1.32e-07   0.047   0.008
+DeepLiftShap                RUNS      1.54e-07   0.066   0.012
+GradientShap                RUNS      8.94e-01   0.058   0.014
+GuidedBackprop              OK        5.36e-08   0.053   0.004
+Deconvolution               OK        5.90e-08   0.051   0.003
+GuidedGradCam               OK        2.34e-07   0.332   0.009
+FeatureAblation             OK        2.66e-07   0.167   0.093
+FeaturePermutation          RUNS      1.39e-07   0.328   0.121
+Occlusion                   OK        2.58e-07   0.254   0.045
+ShapleyValueSampling        RUNS      1.42e+00   0.382   0.167
+ShapleyValues               OK        1.32e-07   0.034   0.768
+Lime                        RUNS      2.35e-01   0.033   0.256
+KernelShap                  RUNS      1.10e+00   0.057   0.187
+LRP                         OK        1.89e-07   0.077   0.007
+NoiseTunnel                 RUNS      2.69e-01   0.064   0.009
+LayerConductance            OK        1.25e-07   0.042   0.011
+LayerActivation             OK        7.23e-08   0.022   0.004
+LayerGradientXActivation    OK        1.18e-07   0.037   0.003
+LayerGradCam                OK        2.17e-07   0.092   0.004
+InternalInfluence           OK        8.66e-08   0.057   0.011
+LayerDeepLift               OK        1.82e-07   0.049   0.008
+LayerDeepLiftShap           RUNS      2.03e-07   0.057   0.012
+LayerGradientShap           RUNS      1.76e-01   0.080   0.010
+LayerIntegratedGradients    OK        9.45e-08   0.073   0.013
+LayerFeatureAblation        OK        2.95e-07   0.673   0.142
+LayerLRP                    OK        8.84e-08   0.077   0.010
+NeuronConductance           OK        1.56e-08   0.047   0.015
+NeuronGradient              OK        0.00e+00   0.046   0.003
+NeuronIntegratedGradients   OK        2.04e-08   0.039   0.007
+NeuronDeepLift              OK        0.00e+00   0.051   0.004
+NeuronDeepLiftShap          RUNS      5.36e-08   0.032   0.009
+NeuronGradientShap          RUNS      8.16e-08   0.031   0.009
+NeuronGuidedBackprop        OK        0.00e+00   0.042   0.003
+NeuronDeconvolution         OK        0.00e+00   0.049   0.002
+NeuronFeatureAblation       OK        1.63e-07   0.315   0.096
+
+SUMMARY {'OK': 27, 'RUNS': 11, 'DIFF': 0, 'FAIL': 0}
+I0000 00:00:1793525388.935563   11858 compilation_cache.cc:356] Compilation cache evicted.
+I0000 00:00:1793525388.935619   11858 compilation_cache.cc:203] CompilationCache final stats: num_cache_reqs=14496
+num_cache_hits=14111 {97.3%}
+num_compilations=385
+peak_compilation_memory_bytes=unknown
+

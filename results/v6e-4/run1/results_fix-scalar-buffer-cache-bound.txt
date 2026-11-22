@@ -1,0 +1,20 @@
+device TPU v6e x4
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 15 warnings in 6.86s
+
+same scalar x5000     : +2 live allocations
+new scalar each x5000 : +903 live allocations   (issue #6036 expects ~+5000)
+after empty_cache     : +903 vs before loop
+captum IG same n_steps x20   : +0 live allocations
+captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+
+--- multi-device: one process per chip
+  Process 0: export TPU_VISIBLE_DEVICES=0
+  Process 1: export TPU_VISIBLE_DEVICES=1
+  Process 0: export TPU_VISIBLE_DEVICES=0
+  Process 1: export TPU_VISIBLE_DEVICES=1
+  Process 0: export TPU_VISIBLE_DEVICES=0
+  Process 1: export TPU_VISIBLE_DEVICES=1
+captum IG n_steps 10..109    : +280 live allocations (distinct step sizes -> distinct scalars?)
+
