@@ -12492,6 +12492,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ],
   )
   def test_linalg_cross(self, shape_and_dim, dtype):
+    if shape_and_dim == ((4, 3), -1) and dtype == torch.complex128:
+      # TODO(b/587719985): Re-enable once XLA:TPU layout assignment handles
+      # complex128 single-row concatenate without corrupting results.
+      self.skipTest(
+          "b/587719985: XLA:TPU single-row concatenate layout assignment"
+          " corrupts complex128 results for (4, 3) dim=-1."
+      )
     shape, dim = shape_and_dim
     if dtype.is_floating_point or dtype.is_complex:
       a = torch.randn(shape, dtype=dtype)
