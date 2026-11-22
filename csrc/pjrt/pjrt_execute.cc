@@ -47,13 +47,9 @@
 #include "csrc/pjrt/pjrt_utils.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
-#include "xla/hlo/ir/hlo_computation.h"
-#include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/service/collective_ops_utils.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
@@ -191,17 +187,6 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
   return result;
 }
 
-bool HloModuleContainsCollective(const xla::HloModule* hlo_module) {
-  for (const xla::HloComputation* computation : hlo_module->computations()) {
-    for (const xla::HloInstruction* instruction : computation->instructions()) {
-      if (xla::IsCollective(instruction)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 // Returns an error if an argument's on-device layout isn't the one the
 // executable was compiled for. For static parameters and arguments, PJRT only
 // checks an argument's size, so it would silently misread a same-size argument
@@ -288,25 +273,20 @@ absl::StatusOr<PjRtBufferPointers> Execute(
                                                known_argument_shapes));
   }
 
-  if (ABSL_VLOG_IS_ON(8)) {
+  if (ABSL_VLOG_IS_ON(8) && executable->has_collectives()) {
     TT_ASSIGN_OR_RETURN(const auto hlo_modules,
                         executable->GetLoadedExecutable()->GetHloModules());
     ABSL_CHECK_EQ(hlo_modules.size(), 1);  // CRASH_OK
-    const auto& hlo_module = hlo_modules[0];
-
-    if (HloModuleContainsCollective(hlo_module.get())) {
-      TT_ASSIGN_OR_RETURN(
-          const std::string fingerprint,
-          executable->GetLoadedExecutable()->FingerprintExecutable());
-      const std::optional<int> rank = GetIntegerEnvOnce<kRankEnvVar>();
-      ABSL_VLOG(8) << "Executable with collectives on rank "
-                   << (rank.has_value() ? absl::StrCat(*rank)
-                                        : "<unknown_rank>")
-                   << " has PjRT executable fingerprint: "
-                   << absl::BytesToHexString(fingerprint)
-                   << " and HLO module fingerprint: "
-                   << hlo_module->GetFingerprint128();
-    }
+    TT_ASSIGN_OR_RETURN(
+        const std::string fingerprint,
+        executable->GetLoadedExecutable()->FingerprintExecutable());
+    const std::optional<int> rank = GetIntegerEnvOnce<kRankEnvVar>();
+    ABSL_VLOG(8) << "Executable with collectives on rank "
+                 << (rank.has_value() ? absl::StrCat(*rank) : "<unknown_rank>")
+                 << " has PjRT executable fingerprint: "
+                 << absl::BytesToHexString(fingerprint)
+                 << " and HLO module fingerprint: "
+                 << hlo_modules[0]->GetFingerprint128();
   }
 
   std::optional<std::vector<xla::Future<>>> returned_futures;

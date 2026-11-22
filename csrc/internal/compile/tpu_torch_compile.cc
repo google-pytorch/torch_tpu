@@ -2257,6 +2257,14 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
           "loaded at, or None if it was loaded for the full topology. Pass it "
           "to load_serialized_executable to load the executable again, e.g. "
           "after pickling.")
+      .def(
+          "has_collectives",
+          [](const LoadedExecutableWithMetadata& executable) -> bool {
+            return executable.has_collectives();
+          },
+          "Whether the compiled program may communicate with other devices "
+          "through a collective. Also True if its optimized HLO could not be "
+          "inspected.")
       .def("fingerprint_executable",
            [](const LoadedExecutableWithMetadata& executable) -> std::string {
              TT_ASSIGN_OR_THROW(

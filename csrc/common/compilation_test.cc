@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,6 +37,7 @@
 #include "csrc/common/mlir_test_modules.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/pjrt/fake_hlo_loaded_executable_test_helper.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -545,6 +547,204 @@ TEST_F(TupleArgumentsTest, KeepsArgumentLayoutsOfAlreadyTupledArguments) {
   ASSERT_EQ(parameter_shapes.size(), 1);
   ASSERT_TRUE(parameter_shapes[0].IsTuple());
   EXPECT_EQ(parameter_shapes[0].tuple_shapes().size(), kTupledArguments);
+}
+
+constexpr std::string_view kHloWithoutCollective = R"hlo(
+HloModule no_collective
+
+ENTRY main {
+  p = f32[4] parameter(0)
+  ROOT doubled = f32[4] add(p, p)
+}
+)hlo";
+
+constexpr std::string_view kHloWithAllReduce = R"hlo(
+HloModule all_reduce
+
+sum {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT add = f32[] add(a, b)
+}
+
+ENTRY main {
+  p = f32[4] parameter(0)
+  ROOT reduced = f32[4] all-reduce(p), replica_groups={}, to_apply=sum
+}
+)hlo";
+
+constexpr std::string_view kHloWithAllReduceInFusion = R"hlo(
+HloModule all_reduce_in_fusion
+
+sum {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT add = f32[] add(a, b)
+}
+
+fused {
+  p = f32[4] parameter(0)
+  ROOT reduced = f32[4] all-reduce(p), replica_groups={}, to_apply=sum
+}
+
+ENTRY main {
+  p = f32[4] parameter(0)
+  ROOT fusion = f32[4] fusion(p), kind=kCustom, calls=fused
+}
+)hlo";
+
+constexpr std::string_view kHloWithAsyncAllReduce = R"hlo(
+HloModule async_all_reduce
+
+sum {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT add = f32[] add(a, b)
+}
+
+wrapped {
+  p = f32[4] parameter(0)
+  ROOT reduced = f32[4] all-reduce(p), replica_groups={}, to_apply=sum
+}
+
+ENTRY main {
+  p = f32[4] parameter(0)
+  start = ((f32[4]), f32[4], u32[]) async-start(p), calls=wrapped
+  ROOT done = f32[4] async-done(start)
+}
+)hlo";
+
+// The form of a collective offloaded to SparseCore: the async computation only
+// holds a custom call, whose called computation holds the collective.
+constexpr std::string_view kHloWithAsyncCalledAllGather = R"hlo(
+HloModule async_called_all_gather
+
+offloaded {
+  p = f32[4] parameter(0)
+  ROOT gathered = f32[8] all-gather(p), replica_groups={{0,1}}, dimensions={0}
+}
+
+wrapped {
+  p = f32[4] parameter(0)
+  ROOT offload = f32[8] custom-call(p), custom_call_target="offload", called_computations={offloaded}
+}
+
+ENTRY main {
+  p = f32[4] parameter(0)
+  start = ((f32[4]), f32[8], u32[]) async-start(p), async_execution_thread="sparsecore", calls=wrapped
+  ROOT done = f32[8] async-done(start)
+}
+)hlo";
+
+constexpr std::string_view kHloWithSendToDevice = R"hlo(
+HloModule send_to_device
+
+ENTRY main {
+  p = f32[4] parameter(0)
+  token0 = token[] after-all()
+  send = (f32[4], u32[], token[]) send(p, token0), channel_id=1
+  ROOT done = token[] send-done(send), channel_id=1
+}
+)hlo";
+
+constexpr std::string_view kHloWithSendToHost = R"hlo(
+HloModule send_to_host
+
+ENTRY main {
+  p = f32[4] parameter(0)
+  token0 = token[] after-all()
+  send = (f32[4], u32[], token[]) send(p, token0), channel_id=1, is_host_transfer=true
+  ROOT done = token[] send-done(send), channel_id=1, is_host_transfer=true
+}
+)hlo";
+
+// Returns the metadata of an executable whose optimized HLO has one module per
+// element of `hlo_texts`.
+absl::StatusOr<SharedLoadedExecutableWithMetadata> MakeSharedFromHlo(
+    const absl::Span<const std::string_view> hlo_texts) {
+  TT_ASSIGN_OR_RETURN(std::unique_ptr<FakeHloLoadedExecutable> executable,
+                      FakeHloLoadedExecutable::FromHloTexts(hlo_texts));
+  return LoadedExecutableWithMetadata::MakeShared(std::move(executable));
+}
+
+TEST(HasCollectivesTest, FalseWithoutCollective) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          MakeSharedFromHlo({kHloWithoutCollective}));
+  EXPECT_FALSE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, TrueForCollectiveInEntryComputation) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          MakeSharedFromHlo({kHloWithAllReduce}));
+  EXPECT_TRUE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, TrueForCollectiveInsideFusion) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          MakeSharedFromHlo({kHloWithAllReduceInFusion}));
+  EXPECT_TRUE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, TrueForAsyncWrappedCollective) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          MakeSharedFromHlo({kHloWithAsyncAllReduce}));
+  EXPECT_TRUE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, TrueForCollectiveCalledFromAsyncComputation) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          MakeSharedFromHlo({kHloWithAsyncCalledAllGather}));
+  EXPECT_TRUE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, TrueForSendToAnotherDevice) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          MakeSharedFromHlo({kHloWithSendToDevice}));
+  EXPECT_TRUE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, FalseForSendToHost) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          MakeSharedFromHlo({kHloWithSendToHost}));
+  EXPECT_FALSE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, TrueWhenHloIsUnavailable) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata executable,
+      LoadedExecutableWithMetadata::MakeShared(
+          std::make_unique<FakeHloLoadedExecutable>(
+              TT_ERROR(error::kPythonNotImplementedError) << "no HLO")));
+  EXPECT_TRUE(executable->has_collectives());
+}
+
+TEST(HasCollectivesTest, TrueWhenThereIsNotExactlyOneModule) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata no_module,
+                          MakeSharedFromHlo({}));
+  EXPECT_TRUE(no_module->has_collectives());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata two_modules,
+      MakeSharedFromHlo({kHloWithoutCollective, kHloWithoutCollective}));
+  EXPECT_TRUE(two_modules->has_collectives());
+}
+
+TEST(HasCollectivesTest, CopiesKeepTheValue) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata with,
+                          MakeSharedFromHlo({kHloWithAllReduce}));
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata without,
+                          MakeSharedFromHlo({kHloWithoutCollective}));
+
+  EXPECT_TRUE(LoadedExecutableWithMetadata::WithArgumentIndices(with, {0})
+                  ->has_collectives());
+  EXPECT_FALSE(LoadedExecutableWithMetadata::WithArgumentIndices(without, {0})
+                   ->has_collectives());
+  EXPECT_TRUE(LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
+                  with, UnboundedDynamicExecutionMetadata())
+                  ->has_collectives());
+  EXPECT_FALSE(LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
+                   without, UnboundedDynamicExecutionMetadata())
+                   ->has_collectives());
 }
 
 }  // namespace

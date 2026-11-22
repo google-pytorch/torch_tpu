@@ -18,12 +18,14 @@ A sparse-dense-matmul lookup carries the device assignment of the whole slice,
 since its table is sharded across the SparseCores of all devices; a per-device
 SparseCore op such as `sparse_gather` carries none. Either runs in one program
 with a collective over the world, whose devices follow the world rank order.
+The compiler also offloads the collectives of large tensors to SparseCore.
 """
 
 from collections.abc import Sequence
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
+from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
@@ -56,6 +58,11 @@ _TABLE_WIDTH = 16
 _CSR_ROWS = 16
 _CSR_ROW_NON_ZEROES = 8
 _CSR_MAX_ROW_NON_ZEROES = 64
+
+# The input of the collectives that the compiler offloads to SparseCore: large
+# enough for it to offload an all-reduce.
+_COLLECTIVE_ROWS = 512
+_COLLECTIVE_COLUMNS = 128
 
 
 def _lookup_ids(rank: int) -> torch.Tensor:
@@ -236,6 +243,64 @@ def run_sparse_gather_with_world_all_reduce() -> None:
   utils.assert_close(out, expected)
 
 
+def run_executables_report_collectives_offloaded_to_sparse_core() -> None:
+  """Executables report collectives the compiler offloaded to SparseCore."""
+  rank = dist.get_rank()
+  assert dist.get_world_size() == _WORLD
+  shape = (_COLLECTIVE_ROWS, _COLLECTIVE_COLUMNS)
+  x = torch.full(shape, float(rank + 1), device="tpu")
+  # Every rank doubles its input, so the ranks sum up 2 * (1 + ... + _WORLD).
+  reduced = 2.0 * sum(range(1, _WORLD + 1)) + 1.0
+
+  def all_reduce(t: torch.Tensor) -> torch.Tensor:
+    doubled = t * 2.0
+    dist.all_reduce(doubled)
+    return doubled + 1.0
+
+  def reduce_scatter(t: torch.Tensor) -> torch.Tensor:
+    return torch.tpu.ops.reduce_scatter_dim(t * 2.0, 0) + 1.0
+
+  def all_gather(t: torch.Tensor) -> torch.Tensor:
+    return torch.tpu.ops.all_gather_dim(t * 2.0, 0) + 1.0
+
+  expected = {
+      all_reduce: torch.full(shape, reduced),
+      reduce_scatter: torch.full(
+          (_COLLECTIVE_ROWS // _WORLD, _COLLECTIVE_COLUMNS), reduced
+      ),
+      # The rows of rank r hold 2 * (r + 1) + 1.
+      all_gather: (
+          torch.arange(3.0, 2 * _WORLD + 2, 2.0)
+          .repeat_interleave(_COLLECTIVE_ROWS)
+          .unsqueeze(1)
+          .expand(-1, _COLLECTIVE_COLUMNS)
+      ),
+  }
+  unexpected = []
+  for f, expected_out in expected.items():
+    debugs: list[TpuCompileDebug] = []
+    # `serializable=False` compiles the programs in every run, which the debug
+    # callback needs.
+    compiled = torch.compile(
+        f,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    out = compiled(x).cpu()
+    # Without `spmd_safe`, the collective is a program of its own, between the
+    # programs of the ops before and after it.
+    (artifact,) = debugs[0].compiled_executables
+    has_collectives = [
+        program._executable.has_collectives()
+        for program in artifact.compiled_executables
+    ]
+    values_match = torch.equal(out, expected_out)
+    if has_collectives != [False, True, False] or not values_match:
+      unexpected.append((f.__name__, has_collectives, values_match))
+  # Asserted last, so that every rank runs every collective.
+  assert not unexpected, unexpected
+
+
 class SparseCoreCollectivesTest(
     continuous_test_utils.TpuMultiProcContinuousTest
 ):
@@ -254,6 +319,9 @@ class SparseCoreCollectivesTest(
 
   def test_sparse_dense_matmul_with_world_all_reduce(self):
     run_sparse_dense_matmul_with_world_all_reduce()
+
+  def test_executables_report_collectives_offloaded_to_sparse_core(self):
+    run_executables_report_collectives_offloaded_to_sparse_core()
 
 
 if __name__ == "__main__":

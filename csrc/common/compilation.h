@@ -151,7 +151,7 @@ class LoadedExecutableWithMetadata {
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->parameter_device_shapes_,
             existing->output_shapes_, existing->output_shapes_kind_,
-            std::move(argument_indices),
+            existing->has_collectives_, std::move(argument_indices),
             existing->unbounded_dynamic_execution_metadata_,
             existing->subslice_origin_));
   }
@@ -163,7 +163,7 @@ class LoadedExecutableWithMetadata {
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->parameter_device_shapes_,
             existing->output_shapes_, existing->output_shapes_kind_,
-            existing->argument_indices_,
+            existing->has_collectives_, existing->argument_indices_,
             std::move(unbounded_dynamic_execution_metadata),
             existing->subslice_origin_));
   }
@@ -213,6 +213,10 @@ class LoadedExecutableWithMetadata {
     return subslice_origin_;
   }
 
+  // Whether the compiled program may communicate with other devices through a
+  // collective. Also true if its optimized HLO could not be inspected.
+  [[nodiscard]] bool has_collectives() const { return has_collectives_; }
+
  private:
   enum class OutputShapesKind {
     // `output_shapes_` holds the post-execution on-device shapes (with layouts
@@ -228,7 +232,8 @@ class LoadedExecutableWithMetadata {
       absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable,
       std::vector<xla::Shape> parameter_device_shapes,
       absl_nonnull std::shared_ptr<const std::vector<xla::Shape>> output_shapes,
-      const OutputShapesKind output_shapes_kind, Indices argument_indices = {},
+      const OutputShapesKind output_shapes_kind, const bool has_collectives,
+      Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
       std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt)
@@ -241,6 +246,7 @@ class LoadedExecutableWithMetadata {
                         nullptr
                 ? OutputShapesKind::kLogicalOnly
                 : output_shapes_kind),
+        has_collectives_(has_collectives),
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
             std::move(unbounded_dynamic_execution_metadata)),
@@ -254,6 +260,8 @@ class LoadedExecutableWithMetadata {
   // can still free `executable_`.
   absl_nonnull std::shared_ptr<const std::vector<xla::Shape>> output_shapes_;
   OutputShapesKind output_shapes_kind_;
+  // See has_collectives().
+  bool has_collectives_;
   Indices argument_indices_;
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;

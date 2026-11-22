@@ -11,13 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 import contextlib
 import dataclasses
 import pickle
 from typing import Any
 from unittest import mock
 
+from absl import logging
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
@@ -115,6 +116,12 @@ _OUT_COLLECTIVES = (
     ),
 )
 _ALL_TO_ALL_COLLECTIVES = (torch.ops._c10d_functional.all_to_all_single,)
+# Collectives that TorchTPU cannot run compiled: the TPU process group has no
+# allreduce_coalesced, and off the source rank `broadcast` loses its collective.
+_NOT_RUNNABLE_WHEN_COMPILED = (
+    torch.ops._c10d_functional.all_reduce_coalesced,
+    torch.ops._c10d_functional.broadcast,
+)
 # pylint: enable=protected-access
 
 
@@ -273,16 +280,16 @@ def run_compile_partial_spmd_safe_test():
 
 
 def _compile_and_get_split_children(
-    f: Callable[[torch.Tensor], torch.Tensor], x: torch.Tensor
+    f: Callable[..., torch.Tensor], *args: torch.Tensor
 ) -> tuple[torch.Tensor, list[torch.nn.Module]]:
-  """Compiles and runs `f(x)`, returning its result and split submodules."""
+  """Compiles and runs `f(*args)`, returning its result and split submodules."""
   debugs: list[TpuCompileDebug] = []
   compiled_f = torch.compile(
       f,
       backend="tpu",
       options={"serializable": False, "debug_callback": debugs.append},
   )
-  result = compiled_f(x)
+  result = compiled_f(*args)
   assert len(debugs[0].compiled_executables) == 1
   wrapper = debugs[0].compiled_executables[0]
   assert isinstance(wrapper, _SplitCompiledExecutable)
@@ -785,6 +792,140 @@ def run_rank_variable_dead_collective_test():
   )
 
 
+def _collective_programs() -> (
+    Iterator[tuple[str, Callable[..., torch.Tensor], tuple[torch.Tensor, ...]]]
+):
+  """Yields a name, a function and its arguments for each collective op."""
+  world_size = dist.get_world_size()
+  group_name = dist._get_process_group_name(dist.group.WORLD)
+  wait_tensor = torch.ops._c10d_functional.wait_tensor
+
+  def ones(*shape: int) -> torch.Tensor:
+    return torch.ones(shape, device="tpu")
+
+  def is_compilable(op: torch._ops.OpOverloadPacket) -> bool:
+    # torch.compile cannot trace an op whose output aliases an input.
+    returns = op.default._schema.returns
+    return op not in _NOT_RUNNABLE_WHEN_COMPILED and not any(
+        ret.alias_info is not None for ret in returns
+    )
+
+  for spec in _SINGLE_TENSOR_COLLECTIVES:
+    if not is_compilable(spec.op):
+      continue
+
+    def single(
+        x: torch.Tensor,
+        op: torch._ops.OpOverloadPacket = spec.op,
+        extra_args: tuple[Any, ...] = spec.extra_args_fn(world_size),
+    ) -> torch.Tensor:
+      return wait_tensor(op(x * 2.0, *extra_args, group_name)) + 1.0
+
+    yield str(spec.op), single, (ones(world_size * 2, 2),)
+  for spec in _COALESCED_COLLECTIVES:
+    if not is_compilable(spec.op):
+      continue
+
+    def coalesced(
+        x: torch.Tensor,
+        y: torch.Tensor,
+        op: torch._ops.OpOverloadPacket = spec.op,
+        extra_args: tuple[Any, ...] = spec.extra_args_fn(world_size),
+    ) -> torch.Tensor:
+      works = op([x * 2.0, y * 3.0], *extra_args, group_name)
+      return wait_tensor(works[0]) + wait_tensor(works[1]) + 1.0
+
+    yield (
+        str(spec.op),
+        coalesced,
+        (ones(world_size * 2, 2), ones(world_size * 2, 2)),
+    )
+  for all_to_all_op in _ALL_TO_ALL_COLLECTIVES:
+
+    def all_to_all(
+        x: torch.Tensor, op: torch._ops.OpOverloadPacket = all_to_all_op
+    ) -> torch.Tensor:
+      splits = [1] * world_size
+      return wait_tensor(op(x * 2.0, splits, splits, group_name)) + 1.0
+
+    yield str(all_to_all_op), all_to_all, (ones(world_size, 2),)
+  yield (
+      "tpu.all_gather_dim",
+      lambda x: torch.tpu.ops.all_gather_dim(x * 2.0, 1) + 1.0,
+      (ones(2, 3),),
+  )
+  yield (
+      "tpu.reduce_scatter_dim",
+      lambda x: torch.tpu.ops.reduce_scatter_dim(x * 2.0, -1) + 1.0,
+      (ones(2, 3 * world_size),),
+  )
+
+
+def _have_collectives(children: Sequence[torch.nn.Module]) -> list[bool]:
+  """Returns whether the executable of each split submodule has collectives."""
+  return [child.submod._executable.has_collectives() for child in children]
+
+
+def run_executables_report_their_collectives_test() -> None:
+  x = torch.ones((2, 2), device="tpu")
+  _, children = _compile_and_get_split_children(lambda t: t * 2.0 + 1.0, x)
+  assert _have_collectives(children) == [False]
+
+  unexpected = []
+  for name, f, args in _collective_programs():
+    _, children = _compile_and_get_split_children(f, *args)
+    split = _have_collectives(children)
+    _, children = _compile_and_get_split_children(
+        torch.tpu.distributed.spmd_safe(f), *args
+    )
+    fused = _have_collectives(children)
+    logging.info(
+        "has_collectives of %s: split %s, fused %s", name, split, fused
+    )
+    if split != [False, True, False] or fused != [True]:
+      unexpected.append((name, split, fused))
+  # Checked last, so that every rank runs the collectives of every program.
+  assert not unexpected, unexpected
+
+
+def run_reloaded_executables_report_their_collectives_test() -> None:
+  """Checks executables unpickled or loaded from the tier-2 cache."""
+  world_size = dist.get_world_size()
+  cache_stats = torch.tpu._get_cache_stats
+  debugs: list[TpuCompileDebug] = []
+
+  def f(x: torch.Tensor) -> torch.Tensor:
+    y = x * 2
+    dist.all_reduce(y)
+    return y + 3
+
+  compiled_f = torch.compile(
+      f,
+      backend="tpu",
+      options={"serializable": False, "debug_callback": debugs.append},
+  )
+  # No other test uses this shape, so no cache holds these programs yet.
+  x = torch.ones((3, 7), device="tpu")
+  x.cpu()  # Compiles the input's own program before the count starts.
+  compilations_before = cache_stats().num_compilations
+  compiled_f(x)
+  wrapper = debugs[0].compiled_executables[0]
+  compiled = _have_collectives(list(wrapper._split_gm.children()))
+  reloaded = pickle.loads(pickle.dumps(wrapper))  # pylint: disable=g-unsafe-pickle-load
+  unpickled = _have_collectives(list(reloaded._split_gm.children()))
+  compilations = cache_stats().num_compilations - compilations_before
+
+  report = torch.tensor(
+      [compilations, *compiled, *unpickled], dtype=torch.int32, device="tpu"
+  )
+  reports = torch.empty((world_size, 7), dtype=torch.int32, device="tpu")
+  dist.all_gather_into_tensor(reports, report)
+  reports = reports.cpu()
+  assert reports[:, 1:].tolist() == [[0, 1, 0, 0, 1, 0]] * world_size, reports
+  # One rank compiles each program, so more ranks than programs leave one idle.
+  assert world_size <= len(compiled) or (reports[:, 0] == 0).any(), reports
+
+
 class _DummyCompiledExecutable(CompiledArtifact):
 
   def __init__(self, gm):
@@ -868,6 +1009,12 @@ class SplitCollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   def test_rank_variable_dead_collective(self):
     run_rank_variable_dead_collective_test()
+
+  def test_executables_report_their_collectives(self):
+    run_executables_report_their_collectives_test()
+
+  def test_reloaded_executables_report_their_collectives(self):
+    run_reloaded_executables_report_their_collectives_test()
 
 
 if __name__ == "__main__":

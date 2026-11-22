@@ -196,10 +196,8 @@ torch_tpu_cc_library(
         "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/hlo/ir:hlo",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/service:collective_ops_utils",
     ],
 )
 
@@ -262,6 +260,25 @@ torch_tpu_cc_library(
         "@xla//xla:literal",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt:pjrt_layout",
+        "@xla//xla/service:device_assignment",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "fake_hlo_loaded_executable_test_helper",
+    testonly = True,
+    hdrs = ["fake_hlo_loaded_executable_test_helper.h"],
+    deps = [
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:future",
+        "@xla//xla:shape_util",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/parser:hlo_parser",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/pjrt:pjrt_layout",

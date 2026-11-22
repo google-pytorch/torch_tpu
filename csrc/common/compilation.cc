@@ -55,7 +55,10 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "xla/client/executable_build_options.h"
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/translate/register.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
@@ -65,6 +68,7 @@
 #include "xla/pjrt/pjrt_device_dimensions.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_layout.h"
+#include "xla/service/collective_ops_utils.h"
 #include "xla/service/computation_layout.h"
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
@@ -122,26 +126,47 @@ std::optional<std::vector<xla::Shape>> MakeDeviceShapesWithLayouts(
   return shapes;
 }
 
-struct CompiledDeviceShapes {
+// Returns whether any computation of `module`, including fused, called and
+// async-wrapped ones, has an instruction that communicates with other devices.
+bool HasCollectives(const xla::HloModule& module) {
+  for (const xla::HloComputation* const computation : module.computations()) {
+    for (const xla::HloInstruction* const instruction :
+         computation->instructions()) {
+      if (xla::IsCollective(instruction)) {
+        ABSL_VLOG(1) << "Program has collective "
+                     << xla::HloOpcodeString(instruction->opcode())
+                     << " in computation " << computation->name();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// What MakeShared() derives from the optimized HLO of an executable.
+struct CompiledProgramInfo {
   std::vector<xla::Shape> parameters;
   std::optional<std::vector<xla::Shape>> outputs;
+  // Stays true if the HLO is unavailable: assuming a collective is safe, it
+  // only makes callers order the program more strictly.
+  bool has_collectives = true;
 };
 
 // Extracts the on-device parameter and output shapes of `executable` from its
-// HLO entry computation and PJRT layouts.
+// HLO entry computation and PJRT layouts, and whether it has collectives.
 //
 // Both parameter and output shapes come from HLO rather than
 // `GetOutputShapes()`, because `PjRtCApiExecutable::GetOutputShapes()` rebuilds
 // shapes from dimension bounds and loses bounded-dynamic dimension flags.
-CompiledDeviceShapes GetCompiledDeviceShapes(
+CompiledProgramInfo GetCompiledProgramInfo(
     const xla::PjRtLoadedExecutable& executable) {
   const absl::StatusOr<std::vector<std::shared_ptr<xla::HloModule>>> modules =
       executable.GetHloModules();
   if (!modules.ok() || modules->size() != 1) {
     return {};
   }
-  const xla::ComputationLayout& entry =
-      (*modules)[0]->entry_computation_layout();
+  const xla::HloModule& module = *(*modules)[0];
+  const xla::ComputationLayout& entry = module.entry_computation_layout();
 
   // Make one shape per leaf buffer to match PJRT's flat per-buffer layouts.
   // For example, a program compiled with `parameter_is_tupled_arguments` has a
@@ -155,7 +180,8 @@ CompiledDeviceShapes GetCompiledDeviceShapes(
   std::vector<const xla::Shape*> flat_output_shapes;
   xla::ShapeUtil::FlattenTupleShape(entry.result_shape(), flat_output_shapes);
 
-  CompiledDeviceShapes result;
+  CompiledProgramInfo result;
+  result.has_collectives = HasCollectives(module);
   if (const absl::StatusOr<std::vector<std::shared_ptr<const xla::PjRtLayout>>>
           parameter_layouts = executable.GetParameterLayouts();
       parameter_layouts.ok()) {
@@ -208,11 +234,11 @@ LoadedExecutableWithMetadata::MakeShared(
       << "cannot create SharedLoadedExecutableWithMetadata from null "
          "executable.";
 
-  CompiledDeviceShapes device_shapes = GetCompiledDeviceShapes(*executable);
+  CompiledProgramInfo program_info = GetCompiledProgramInfo(*executable);
   OutputShapesKind output_shapes_kind = OutputShapesKind::kOnDevice;
   std::vector<xla::Shape> output_shapes;
-  if (device_shapes.outputs.has_value()) {
-    output_shapes = std::move(*device_shapes.outputs);
+  if (program_info.outputs.has_value()) {
+    output_shapes = std::move(*program_info.outputs);
   } else {
     output_shapes_kind = OutputShapesKind::kLogicalOnly;
     TT_ASSIGN_OR_RETURN(const std::vector<xla::Shape> output_shapes_vec,
@@ -229,11 +255,12 @@ LoadedExecutableWithMetadata::MakeShared(
 
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
       new LoadedExecutableWithMetadata(
-          std::move(executable), std::move(device_shapes.parameters),
+          std::move(executable), std::move(program_info.parameters),
           std::make_shared<const std::vector<xla::Shape>>(
               std::move(output_shapes)),
-          output_shapes_kind, std::move(argument_indices),
-          std::move(dynamic_execution_metadata), std::move(subslice_origin)));
+          output_shapes_kind, program_info.has_collectives,
+          std::move(argument_indices), std::move(dynamic_execution_metadata),
+          std::move(subslice_origin)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
