@@ -34,6 +34,36 @@ class AmpTest(seed_test_utils.RepeatableTest):
   def test_bfloat16_is_preferred(self):
     self.assertEqual(torch.tpu._get_autocast_dtype(), torch.bfloat16)
 
+  def test_autocast_dtype_defaults_to_bfloat16(self):
+    self.assertEqual(torch.get_autocast_dtype("tpu"), torch.bfloat16)
+
+  def test_autocast_without_dtype_uses_bfloat16(self):
+    # 4 * 300 * 300 = 360000 overflows float16 (max 65504), but not bfloat16.
+    x = torch.full((4, 4), 300.0, device="tpu")
+    with torch.autocast("tpu"):
+      y = x @ x
+    self.assertEqual(y.dtype, torch.bfloat16)
+    self.assertTrue(torch.isfinite(y).all().item())
+
+  def test_autocast_dtype_in_backward_is_bfloat16(self):
+    # Autograd can run backward on its own device threads.
+    backward_dtypes = []
+
+    class RecordAutocastDtype(torch.autograd.Function):
+
+      @staticmethod
+      def forward(ctx, x):
+        return x.clone()
+
+      @staticmethod
+      def backward(ctx, grad):
+        backward_dtypes.append(torch.get_autocast_dtype("tpu"))
+        return grad
+
+    x = torch.ones(4, device="tpu", requires_grad=True)
+    RecordAutocastDtype.apply(x).sum().backward()
+    self.assertEqual(backward_dtypes, [torch.bfloat16])
+
   def test_autocast_works(self):
     # Define a simple model with autocast enabled.
     # The model uses float32 for its parameters, as normal for training.

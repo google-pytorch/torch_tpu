@@ -52,9 +52,9 @@ class DeviceModuleBase(
     # Acquire a lock to be released on cleanup, since we are modifying a global
     self.enter_context(_DEVICE_LOCK)
 
-    # Reset class variables before each test
+    # Reset class variables to their defaults before each test
     self.device_module._autocast_enabled = False
-    self.device_module._autocast_dtype = torch.float16
+    self.device_module._autocast_dtype = torch.bfloat16
 
   def _bound_device_index(self) -> int:
     """Returns the real device index of this process, checking it is valid."""
@@ -76,9 +76,9 @@ class DeviceModuleBase(
     self.assertTrue(self.device_module._is_autocast_enabled())
 
   def test_get_autocast_dtype(self):
-    self.assertEqual(self.device_module._get_autocast_dtype(), torch.float16)
-    self.device_module._set_autocast_dtype(torch.bfloat16)
     self.assertEqual(self.device_module._get_autocast_dtype(), torch.bfloat16)
+    self.device_module._set_autocast_dtype(torch.float16)
+    self.assertEqual(self.device_module._get_autocast_dtype(), torch.float16)
 
   def test_set_autocast_enabled(self):
     self.device_module._set_autocast_enabled(True)
