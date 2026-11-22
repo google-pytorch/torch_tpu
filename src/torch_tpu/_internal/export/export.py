@@ -413,10 +413,9 @@ class _TensorDedupeKey:
 
 def _storage_key(tensor: torch.Tensor) -> tuple[int, torch.dtype]:
   """Returns a key that is equal for tensors that view the same storage."""
-  storage_data_ptr = (
-      tensor.data_ptr() - tensor.storage_offset() * tensor.element_size()
-  )
-  return storage_data_ptr, tensor.dtype
+  # Not `tensor.data_ptr()`: it is 0 for every tensor with no elements, which
+  # would group an empty slice with unrelated tensors.
+  return tensor.untyped_storage().data_ptr(), tensor.dtype
 
 
 def _covers_storage(tensor: torch.Tensor) -> bool:
@@ -449,7 +448,9 @@ def _find_output_views(
   """
   indices_by_storage: dict[tuple[int, torch.dtype], list[int]] = {}
   for idx, item in enumerate(flat_outputs):
-    if isinstance(item, torch.Tensor):
+    # Storages with no bytes can share a data pointer and hold no data to
+    # alias.
+    if isinstance(item, torch.Tensor) and item.untyped_storage().nbytes():
       indices_by_storage.setdefault(_storage_key(item), []).append(idx)
 
   bases: list[tuple[int, torch.Tensor]] = []

@@ -56,6 +56,11 @@ def _independent(x: torch.Tensor) -> tuple[torch.Tensor, ...]:
   return x * 2, x + 1
 
 
+def _empty_slice(x: torch.Tensor) -> tuple[torch.Tensor, ...]:
+  y = x * 2
+  return y, x.new_zeros(0), y[1:], y[:0]
+
+
 def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
   return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
 
@@ -97,6 +102,7 @@ class OutputAliasTest(seed_test_utils.RepeatableTest):
           _split,
           _duplicate,
           _independent,
+          _empty_slice,
       ],
       requires_grad=[False, True],
   )
