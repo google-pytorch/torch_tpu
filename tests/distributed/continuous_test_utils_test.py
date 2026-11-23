@@ -158,6 +158,77 @@ class TpuMultiProcContinuousTestTimeoutTest(
     self.assertEqual(self._harness_wait_timeout(), upstream_timeout)
 
 
+class _FailsOnOneGlooRank(continuous_test_utils.GlooMultiProcContinuousTest):
+  """Fails on rank 1 after a gloo collective.
+
+  Its method has no `test` prefix, so the test runner doesn't collect it.
+  `GlooMultiProcContinuousTestTest` runs it explicitly.
+  """
+
+  world_size = 2
+
+  def fail_on_rank_1(self) -> None:
+    dist.all_reduce(torch.ones(1))
+    if self.rank == 1:
+      raise AssertionError(_FAILURE_MESSAGE)
+
+
+class _SkipsInGlooWorkers(continuous_test_utils.GlooMultiProcContinuousTest):
+  """Skips one test in the gloo workers; the next test must still run.
+
+  Its methods have no `test` prefix, so the test runner doesn't collect them.
+  `GlooMultiProcContinuousTestTest` runs them explicitly.
+  """
+
+  world_size = 2
+
+  def skip_in_workers(self) -> None:
+    self.skipTest(_SKIP_MESSAGE)
+
+  def run_after_skip(self) -> None:
+    tensor = torch.ones(1)
+    dist.all_reduce(tensor)
+    self.assertEqual(tensor.item(), 2.0)
+
+
+class GlooMultiProcContinuousTestTest(
+    seed_test_utils.MultiProcessRepeatableTest
+):
+
+  def test_worker_skip_is_reported_as_skip(self) -> None:
+    """A skip raised in the workers is a skip, and later tests still run."""
+    result = unittest.TestResult()
+    unittest.TestSuite([
+        _SkipsInGlooWorkers("skip_in_workers"),
+        _SkipsInGlooWorkers("run_after_skip"),
+    ]).run(result)
+
+    self.assertEmpty(result.errors + result.failures)
+    self.assertEqual(result.testsRun, 2)
+    self.assertLen(result.skipped, 1)
+    _, reason = result.skipped[0]
+    self.assertIn(_SKIP_MESSAGE, reason)
+
+  def test_single_rank_failure_is_reported_without_hanging(self) -> None:
+    """A failure on one rank is reported, and the workers shut down."""
+    result = unittest.TestResult()
+    unittest.TestSuite([_FailsOnOneGlooRank("fail_on_rank_1")]).run(result)
+
+    problems = result.errors + result.failures
+    self.assertLen(problems, 1)
+    _, traceback_str = problems[0]
+    self.assertIn(_FAILURE_MESSAGE, traceback_str)
+
+  def test_contract_invariants(self) -> None:
+    """Guards MultiProcessRepeatableTest invariants on gloo harnesses."""
+    test_instance = _FailsOnOneGlooRank("fail_on_rank_1")
+    self.assertFalse(test_instance.seed_in_setup)
+    self.assertFalse(test_instance.synchronize_tensors_in_tear_down)
+    self.assertIsInstance(
+        test_instance, seed_test_utils.MultiProcessRepeatableTest
+    )
+
+
 if __name__ == "__main__":
   mp.set_start_method("spawn")
   multiprocessing.handle_test_main(absltest.main)
