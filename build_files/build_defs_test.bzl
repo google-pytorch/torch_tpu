@@ -17,14 +17,25 @@
 load("@rules_testing//lib:analysis_test.bzl", "analysis_test")
 load("@rules_testing//lib:test_suite.bzl", "test_suite")
 load(
+    "//build_files:accelerator_specification.bzl",
+    # go/keep-sorted start
+    "SPARSECORE_TPUS",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+    # go/keep-sorted end
+)
+load(
     "//build_files:build_defs.bzl",
     # go/keep-sorted start
     "check_and_adjust_test_tags_for_testing",
+    "check_compatible_accelerators_tags_for_testing",
     "clamp_shard_count_for_testing",
     "get_tpu_chip_count_for_testing",
     "get_tpu_version_for_testing",
     "is_backend_dep_for_testing",
     "is_oss",
+    "runs_in_oss_for_testing",
     "torch_tpu_cc_test",
     "torch_tpu_py_test",
     "tpu_gen",
@@ -1157,6 +1168,266 @@ def _test_rbe_macro_exec_properties(name):
         attrs = attrs,
     )
 
+# --- compatible_accelerators / run_on tag-mapping tests ---
+
+def _test_check_compatible_accelerators_tags_rejects_tpu_and_scheduling_tags(env):
+    """Verifies hand-written TPU hardware and scheduling tags are rejected alongside compatible_accelerators."""
+    for bad_tag in [
+        "requires-tpu-v5lite",
+        "requires-tpu-v5lite:8",
+        "fails-on-tpu-v7",
+        "presubmit-v7",
+        "ok-to-wait-for-v7x-in-presubmit",
+    ]:
+        env.expect.where(tag = bad_tag).that_bool(
+            check_compatible_accelerators_tags_for_testing([bad_tag]) != None,
+        ).equals(True)
+
+    env.expect.that_bool(
+        check_compatible_accelerators_tags_for_testing([
+            "exclusive",
+            "nofastbuild",
+            "requires-mem:16g",
+            "requires-net:external",
+        ]) == None,
+    ).equals(True)
+
+def _test_runs_in_oss_helper(env):
+    """Verifies runs_in_oss_for_testing reflects nobuild, notap, notest_oss, and nobuild_oss."""
+    env.expect.that_bool(runs_in_oss_for_testing(None, None, False, False)).equals(True)
+    env.expect.that_bool(runs_in_oss_for_testing("reason", None, False, False)).equals(False)
+    env.expect.that_bool(runs_in_oss_for_testing(None, "reason", False, False)).equals(False)
+    env.expect.that_bool(runs_in_oss_for_testing(None, None, True, False)).equals(False)
+    env.expect.that_bool(runs_in_oss_for_testing(None, None, False, True)).equals(False)
+
+def _test_compatible_accelerators_single_target_mapping_impl(env, targets):
+    """Verifies compatible_accelerators maps onto single <name> py_test and cc_test targets."""
+    py_default = targets.py_default[_TagsInfo]
+    py_sparse = targets.py_sparse[_TagsInfo]
+    py_explicit_v7 = targets.py_explicit_v7[_TagsInfo]
+    py_multichip = targets.py_multichip[_TagsInfo]
+    cc_default = targets.cc_default[_TagsInfo]
+    cc_v5p_notest_oss = targets.cc_v5p_notest_oss[_TagsInfo]
+
+    env.expect.that_collection(py_default.tags).contains_at_least(["custom_tag", "requires-tpu-v5lite"])
+    env.expect.that_collection(cc_default.tags).contains("requires-tpu-v5lite")
+    env.expect.that_collection(cc_v5p_notest_oss.tags).contains("requires-tpu-v5p")
+
+    if is_oss():
+        env.expect.that_collection(py_default.tags).contains_at_least([
+            "fails-on-tpu-v7",
+            "presubmit-v5",
+            "requires-tpu",
+        ])
+        env.expect.that_dict(py_default.exec_properties).contains_exactly(_V5_RBE_EXEC_PROPERTIES)
+
+        env.expect.that_collection(py_sparse.tags).contains_at_least([
+            "fails-on-tpu-v5",
+            "presubmit-v7",
+            "requires-tpu-v7x",
+            "requires-tpu",
+        ])
+
+        env.expect.that_collection(py_explicit_v7.tags).contains_at_least([
+            "presubmit-v7",
+            "requires-tpu-v7x",
+            "requires-tpu",
+        ])
+
+        env.expect.that_collection(py_multichip.tags).contains_at_least([
+            "exclusive",
+            "presubmit-v5",
+            "requires-tpu",
+            "requires-tpu-v5lite:4",
+        ])
+        env.expect.that_int(py_multichip.shard_count).equals(1)
+
+        env.expect.that_str(cc_default.rule_kind).equals("sh_test")
+        env.expect.that_collection(cc_default.tags).contains_at_least([
+            "fails-on-tpu-v7",
+            "presubmit-v5",
+            "requires-tpu",
+        ])
+        env.expect.that_dict(cc_default.exec_properties).contains_exactly(_V5_RBE_EXEC_PROPERTIES)
+
+        env.expect.that_collection(cc_v5p_notest_oss.tags).contains("notest")
+    else:
+        env.expect.that_collection(py_default.tags).not_contains("fails-on-tpu-v7")
+        env.expect.that_collection(py_sparse.tags).contains("requires-tpu-v5p")
+        env.expect.that_collection(py_explicit_v7.tags).contains_at_least([
+            "ok-to-wait-for-v7x-in-presubmit",
+            "requires-tpu-v7x",
+        ])
+        env.expect.that_collection(py_multichip.tags).contains("requires-tpu-v5lite:8")
+        env.expect.that_collection(py_multichip.tags).not_contains("exclusive")
+        env.expect.that_int(py_multichip.shard_count).equals(8)
+        env.expect.that_str(cc_default.rule_kind).equals("cc_test")
+
+def _test_compatible_accelerators_single_target_mapping(name):
+    common_py = {
+        "srcs": ["build_defs_test.py"],
+        "main": "build_defs_test.py",
+        "is_wheel_test": True,
+        "nobuild": "Analysis test subject",
+        "nolocal": "Analysis test subject",
+    }
+    torch_tpu_py_test(
+        name = name + "_py_default",
+        compatible_accelerators = tpus(exclude = ["v7"]),
+        tags = ["custom_tag", "nofastbuild", "noopt"],
+        **common_py
+    )
+    torch_tpu_py_test(
+        name = name + "_py_sparse",
+        compatible_accelerators = SPARSECORE_TPUS,
+        tags = ["nofastbuild", "noopt"],
+        **common_py
+    )
+    torch_tpu_py_test(
+        name = name + "_py_explicit_v7",
+        compatible_accelerators = tpus(),
+        run_on = run_on_config(
+            reason = "Explicitly test v7 in presubmit",
+            presubmit = [tpu_config("v7")],
+        ),
+        tags = ["nofastbuild", "noopt"],
+        **common_py
+    )
+    torch_tpu_py_test(
+        name = name + "_py_multichip",
+        compatible_accelerators = tpus(min_chips = 4),
+        shard_count = 8,
+        tags = ["nofastbuild", "noopt"],
+        **common_py
+    )
+    torch_tpu_cc_test(
+        name = name + "_cc_default",
+        srcs = [],
+        compatible_accelerators = tpus(exclude = ["v7"]),
+        tags = ["nofastbuild", "noopt"],
+        nobuild = "Analysis test subject",
+        nolocal = "Analysis test subject",
+    )
+    torch_tpu_cc_test(
+        name = name + "_cc_v5p_notest_oss",
+        srcs = [],
+        compatible_accelerators = tpus(only = ["v5p"]),
+        notest_oss = True,  # NOTEST_OSS_OK=Analysis test subject for v5p-only compatibility
+        tags = ["nofastbuild", "noopt"],
+        nobuild = "Analysis test subject",
+        nolocal = "Analysis test subject",
+    )
+
+    subject_keys = [
+        "py_default",
+        "py_sparse",
+        "py_explicit_v7",
+        "py_multichip",
+        "cc_default",
+        "cc_v5p_notest_oss",
+    ]
+    base_attr = {"aspects": [tags_aspect]}
+    if is_oss():
+        base_attr["@config_settings"] = {
+            str(Label("//:_rbe_test_execution")): False,
+            _rbe_region_flag(): _DEFAULT_RBE_REGION,
+        }
+    analysis_test(
+        name = name,
+        impl = _test_compatible_accelerators_single_target_mapping_impl,
+        targets = {k: name + "_" + k for k in subject_keys},
+        attrs = {k: dict(base_attr) for k in subject_keys},
+    )
+
+def _test_compatible_accelerators_multi_model_and_empty_workflows_impl(env, targets):
+    """Verifies multi-model delegation to run_on_accelerators and empty-workflow / break-glass overrides."""
+    roa_v5_tags = env.expect.that_target(targets.roa_v5).tags()
+    roa_v6_tags = env.expect.that_target(targets.roa_v6).tags()
+    skip_pre_tags = env.expect.that_target(targets.skip_pre).tags()
+    notap_tags = env.expect.that_target(targets.with_notap).tags()
+
+    roa_v5_tags.contains_at_least([
+        "fails-on-tpu-v6",
+        "fails-on-tpu-v7",
+        "requires-tpu-v5lite",
+    ])
+    roa_v5_tags.not_contains("nopresubmit")
+
+    roa_v6_tags.contains_at_least([
+        "fails-on-tpu-v5",
+        "fails-on-tpu-v7",
+        "nopresubmit",
+        "requires-tpu-v6e",
+    ])
+
+    skip_pre_tags.contains("nopresubmit")
+    if is_oss():
+        # presubmit = [] with default postsubmit = ALL_TPUS maps to nopresubmit_oss (no manual tag),
+        # so OSS postsubmit still runs the target; nightly = [] adds nonightly.
+        skip_pre_tags.contains("nonightly")
+        skip_pre_tags.not_contains("manual")
+    else:
+        skip_pre_tags.contains("manual")
+
+    notap_tags.contains("notap")  # NOTAP_OK=Testing notap coexistence
+    notap_tags.not_contains("nopresubmit")
+
+def _test_compatible_accelerators_multi_model_and_empty_workflows(name):
+    roa_base = name + "_roa"
+    torch_tpu_py_test(
+        name = roa_base,
+        srcs = ["build_defs_test.py"],
+        main = "build_defs_test.py",
+        is_wheel_test = True,
+        compatible_accelerators = tpus(only = ["v5e", "v6e"]),
+        run_on = run_on_config(
+            reason = "Cover v5e and v6e",
+            postsubmit = [tpu_config("v5e"), tpu_config("v6e")],
+        ),
+        tags = ["nofastbuild", "noopt"],
+        nobuild = "Analysis test subject",
+        nolocal = "Analysis test subject",
+    )
+    torch_tpu_py_test(
+        name = name + "_skip_pre",
+        srcs = ["build_defs_test.py"],
+        main = "build_defs_test.py",
+        is_wheel_test = True,
+        compatible_accelerators = tpus(),
+        run_on = run_on_config(
+            reason = "Skip presubmit and nightly",
+            presubmit = [],
+            nightly = [],
+        ),
+        tags = ["nofastbuild", "noopt"],
+        nobuild = "Analysis test subject",
+    )
+    torch_tpu_py_test(
+        name = name + "_with_notap",
+        srcs = ["build_defs_test.py"],
+        main = "build_defs_test.py",
+        is_wheel_test = True,
+        compatible_accelerators = tpus(since = "v7"),
+        run_on = run_on_config(
+            reason = "Postsubmit only",
+            presubmit = [],
+            postsubmit = [],
+            nightly = [tpu_config("v7")],
+        ),
+        nobuild = "Analysis test subject",
+        notap = "Analysis test subject",
+    )
+    analysis_test(
+        name = name,
+        impl = _test_compatible_accelerators_multi_model_and_empty_workflows_impl,
+        targets = {
+            "roa_v5": roa_base + "_" + get_tpu_version_for_testing("requires-tpu-v5lite"),
+            "roa_v6": roa_base + "_" + get_tpu_version_for_testing("requires-tpu-v6e"),
+            "skip_pre": name + "_skip_pre",
+            "with_notap": name + "_with_notap",
+        },
+    )
+
 def build_defs_test_suite(name):
     """Creates a test suite for build_defs.bzl, which will run all tests in this file.
 
@@ -1167,6 +1438,8 @@ def build_defs_test_suite(name):
         name = name + "_rules_testing",
         tests = [
             # go/keep-sorted start
+            _test_compatible_accelerators_multi_model_and_empty_workflows,
+            _test_compatible_accelerators_single_target_mapping,
             _test_macro_tags,
             _test_py_test_multi_tpu_targets,
             _test_py_test_multi_tpu_targets_existing_fails_on,
@@ -1183,6 +1456,7 @@ def build_defs_test_suite(name):
             # go/keep-sorted start
             _test_build_test_excludes_cpu_tags,
             _test_build_test_excludes_tpu_tags,
+            _test_check_compatible_accelerators_tags_rejects_tpu_and_scheduling_tags,
             _test_cuda_build_test,
             _test_cuda_nopresubmit,
             _test_get_tpu_version,
@@ -1219,6 +1493,7 @@ def build_defs_test_suite(name):
             _test_rbe_oss_v5_test_gets_pool,
             _test_rbe_test_without_pool_gets_nothing,
             _test_rbe_unknown_region_gets_nothing,
+            _test_runs_in_oss_helper,
             _test_shard_count_clamping,
             # go/keep-sorted end
         ],
