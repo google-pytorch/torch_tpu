@@ -70,6 +70,23 @@ absl::Status ValidateAMinMaxInputs(const at::Tensor& self, at::Tensor& out) {
   return absl::OkStatus();
 }
 
+absl::Status ValidateAMinMaxReductionDims(const at::Tensor& self,
+                                          bool has_reduction_dims,
+                                          at::IntArrayRef wrapped_dims) {
+  if (!has_reduction_dims) {
+    TT_RET_CHECK(self.numel() > 0, error::kInvalidArgument)
+        << "the dim argument must be specified when the input tensor has 0 "
+           "elements";
+  }
+  if (self.dim() > 0) {
+    for (int64_t d : wrapped_dims) {
+      TT_RET_CHECK(self.size(d) > 0, error::kPythonIndexError)
+          << "expected reduction dim " << d << " to have non-zero size, got 0";
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status AMinMax(const at::Tensor& self, const at::IntArrayRef dims,
                      const bool keep_dim, const AMinMaxOp a_min_max_op,
                      at::Tensor& out) {
@@ -80,6 +97,8 @@ absl::Status AMinMax(const at::Tensor& self, const at::IntArrayRef dims,
   c10::DimVector dim_vec = at::native::make_dim_vector(
       dims.empty() ? std::nullopt : std::make_optional(dims), self.dim());
   at::maybe_wrap_dims(dim_vec, self.dim());
+  TT_RETURN_IF_ERROR(
+      ValidateAMinMaxReductionDims(self, !dims.empty(), dim_vec));
   auto out_shape = at::meta::get_reduction_shape(self, dim_vec, keep_dim,
                                                  /*allow_empty_dims=*/false);
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(self));
@@ -142,6 +161,8 @@ std::tuple<at::Tensor&, at::Tensor&> AtenAminmaxOut(
         dim.has_value() ? at::OptionalIntArrayRef({*dim}) : std::nullopt,
         self.dim());
     at::maybe_wrap_dims(dim_vec, self.dim());
+    TT_THROW_IF_ERROR(
+        ValidateAMinMaxReductionDims(self, dim.has_value(), dim_vec));
     auto out_shape = at::meta::get_reduction_shape(self, dim_vec, keep_dim,
                                                    /*allow_empty_dims=*/false);
     TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self));
