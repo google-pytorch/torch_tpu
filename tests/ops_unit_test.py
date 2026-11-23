@@ -27597,6 +27597,129 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     self.assertEqual(lu_tpu_resize.shape, (3, 1))
     utils.assert_close(actual=lu_tpu_resize.cpu(), expected=expected_col)
 
+  def test_mse_loss_backward_grad_input(self):
+    for reduction in (0, 1, 2):
+      for dtype in (torch.float32, torch.bfloat16):
+        with self.subTest(reduction=reduction, dtype=dtype):
+          x_cpu = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=dtype)
+          t_cpu = torch.tensor([[0.5, 1.0], [1.5, 2.0]], dtype=dtype)
+          go_cpu = (
+              torch.tensor([[1.0, 0.5], [0.25, 2.0]], dtype=dtype)
+              if reduction == 0
+              else torch.tensor(1.5, dtype=dtype)
+          )
+          gi_cpu = torch.empty(0, dtype=dtype)
+          torch.ops.aten.mse_loss_backward.grad_input(
+              go_cpu, x_cpu, t_cpu, reduction, grad_input=gi_cpu
+          )
+
+          gi_tpu = torch.empty(0, dtype=dtype, device="tpu")
+          res = torch.ops.aten.mse_loss_backward.grad_input(
+              go_cpu.to("tpu"),
+              x_cpu.to("tpu"),
+              t_cpu.to("tpu"),
+              reduction,
+              grad_input=gi_tpu,
+          )
+          self.assertIs(res, gi_tpu)
+          self.assertEqual(gi_tpu.shape, (2, 2))
+          tol = 1e-2 if dtype == torch.bfloat16 else 1e-5
+          utils.assert_close(gi_tpu.cpu(), gi_cpu, rtol=tol, atol=tol)
+
+    # Output dtype casting (float32 inputs -> bfloat16 grad_input) and
+    # broadcasting between self (2, 1), target (1, 3), and grad_output (2, 3).
+    x_bcast = torch.tensor([[1.0], [2.0]], dtype=torch.float32)
+    t_bcast = torch.tensor([[0.5, 1.5, 2.5]], dtype=torch.float32)
+    go_bcast = torch.tensor(
+        [[1.0, 2.0, 3.0], [0.5, 1.5, 2.5]], dtype=torch.float32
+    )
+    # Compute the CPU reference via functional mse_loss_backward cast to
+    # bfloat16; older PyTorch releases (e.g. 2.11) raise "Found dtype BFloat16
+    # but expected Float" on CPU mse_loss_backward.grad_input when grad_input
+    # dtype differs from the input dtype.
+    gi_cast_cpu = torch.ops.aten.mse_loss_backward(
+        go_bcast, x_bcast, t_bcast, 0
+    ).to(torch.bfloat16)
+    gi_cast_tpu = torch.empty(0, dtype=torch.bfloat16, device="tpu")
+    res_cast = torch.ops.aten.mse_loss_backward.grad_input(
+        go_bcast.to("tpu"),
+        x_bcast.to("tpu"),
+        t_bcast.to("tpu"),
+        0,
+        grad_input=gi_cast_tpu,
+    )
+    self.assertIs(res_cast, gi_cast_tpu)
+    self.assertEqual(gi_cast_tpu.shape, (2, 3))
+    self.assertEqual(gi_cast_tpu.dtype, torch.bfloat16)
+    utils.assert_close(gi_cast_tpu.cpu(), gi_cast_cpu, rtol=1e-2, atol=1e-2)
+
+    # Allowed input alias of matching shape (grad_input aliases self), which
+    # exercises the matching-shape branch in ValidateInPlaceBroadcast and
+    # DispatchOpOut buffer donation, in both default eager and DEFER_AND_FUSE.
+    x_ref = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+    t_ref = torch.tensor([[0.5, 1.0], [1.5, 2.0]], dtype=torch.float32)
+    go_ref = torch.tensor([[1.0, 0.5], [0.25, 2.0]], dtype=torch.float32)
+    expected_none = torch.empty(0, dtype=torch.float32)
+    torch.ops.aten.mse_loss_backward.grad_input(
+        go_ref, x_ref, t_ref, 0, grad_input=expected_none
+    )
+
+    x_alias = x_ref.to("tpu")
+    res_alias = torch.ops.aten.mse_loss_backward.grad_input(
+        go_ref.to("tpu"),
+        x_alias,
+        t_ref.to("tpu"),
+        0,
+        grad_input=x_alias,
+    )
+    self.assertIs(res_alias, x_alias)
+    utils.assert_close(x_alias.cpu(), expected_none, rtol=1e-5, atol=1e-5)
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      gi_deferred = torch.empty(0, dtype=torch.float32, device="tpu")
+      res_deferred = torch.ops.aten.mse_loss_backward.grad_input(
+          go_ref.to("tpu"),
+          x_ref.to("tpu"),
+          t_ref.to("tpu"),
+          0,
+          grad_input=gi_deferred,
+      )
+      self.assertIs(res_deferred, gi_deferred)
+      x_deferred_alias = x_ref.to("tpu")
+      res_deferred_alias = torch.ops.aten.mse_loss_backward.grad_input(
+          go_ref.to("tpu"),
+          x_deferred_alias,
+          t_ref.to("tpu"),
+          0,
+          grad_input=x_deferred_alias,
+      )
+      self.assertIs(res_deferred_alias, x_deferred_alias)
+      utils.assert_close(gi_deferred.cpu(), expected_none, rtol=1e-5, atol=1e-5)
+      utils.assert_close(
+          x_deferred_alias.cpu(), expected_none, rtol=1e-5, atol=1e-5
+      )
+
+    # Compiled execution via torch.compile(backend="tpu") with grad_input
+    # allocated inside the compiled function.
+    def fn(go, x, t, reduction):
+      gi = torch.empty(x.shape, dtype=x.dtype, device=x.device)
+      torch.ops.aten.mse_loss_backward.grad_input(
+          go, x, t, reduction, grad_input=gi
+      )
+      return gi
+
+    compiled_fn = torch.compile(fn, backend="tpu", fullgraph=True)
+    for reduction in (0, 1, 2):
+      with self.subTest(compiled_reduction=reduction):
+        go_in = go_ref if reduction == 0 else torch.tensor(1.5)
+        expected = torch.ops.aten.mse_loss_backward(
+            go_in, x_ref, t_ref, reduction
+        )
+        actual = compiled_fn(
+            go_in.to("tpu"), x_ref.to("tpu"), t_ref.to("tpu"), reduction
+        )
+        utils.assert_close(actual.cpu(), expected, rtol=1e-5, atol=1e-5)
+
 
 if __name__ == "__main__":
   absltest.main()
