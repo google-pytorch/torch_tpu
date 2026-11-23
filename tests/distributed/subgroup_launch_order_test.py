@@ -27,6 +27,7 @@ import pathlib
 import pickle
 import shutil
 import signal
+import sys
 from unittest import mock
 import uuid
 
@@ -118,6 +119,12 @@ def _skip_reason(test_name: str) -> str | None:
     return (
         "The SparseCores halt in all-to-alls of subslice programs before"
         " libtpu 0.0.51."
+    )
+  if test_name == "test_uneven_pair_scans" and sys.version_info >= (3, 15):
+    # TODO(b/589658374): Re-enable once the Pallas fake kernel no longer fails
+    # to initialize the JAX TPU backend on Python 3.15.
+    return (
+        "b/589658374: Fails to initialize the JAX TPU backend on Python 3.15."
     )
   return None
 
