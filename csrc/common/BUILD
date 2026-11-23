@@ -27,6 +27,10 @@ load(
 )
 load("//bazel:pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
 load(
+    "//build_files:accelerator_specification.bzl",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
     "if_oss",
     "oss_target",
@@ -187,8 +191,8 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "layout_utils_test",
     srcs = ["layout_utils_test.cc"],
+    compatible_accelerators = tpus(),
     requires_libtpu = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":dimension_types",
         ":dtype",
@@ -516,10 +520,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "tier2_compilation_cache_test",
     srcs = ["tier2_compilation_cache_test.cc"],
+    compatible_accelerators = tpus(),
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":cache_key",
         ":compilation",
@@ -1666,12 +1670,10 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "compilation_test",
     srcs = ["compilation_test.cc"],
+    compatible_accelerators = tpus(),
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
     requires_libtpu = True,
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":compilation",
         ":compilation_spec",
@@ -1731,10 +1733,10 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "compilation_cache_test",
     srcs = ["compilation_cache_test.cc"],
+    compatible_accelerators = tpus(),
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
     requires_libtpu = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":cache_key",
         ":compilation",
@@ -1785,10 +1787,10 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "compilation_cache_tiered_test",
     srcs = ["compilation_cache_tiered_test.cc"],
+    compatible_accelerators = tpus(),
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
     requires_libtpu = True,
-    tags = ["requires-tpu-v5lite"],
     deps = [
         ":cache_key",
         ":compilation",
@@ -1846,11 +1848,9 @@ exports_files([
 torch_tpu_cc_test(
     name = "compilation_parse_xla_options_test",
     srcs = ["compilation_parse_xla_options_test.cc"],
+    compatible_accelerators = tpus(),
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":compilation",
         ":compilation_spec",
@@ -1869,11 +1869,9 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "compile_options_key_test",
     srcs = ["compile_options_key_test.cc"],
+    compatible_accelerators = tpus(),
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":compilation",
         ":compilation_spec",
@@ -1891,15 +1889,13 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "tier3_compilation_cache_test",
     srcs = ["tier3_compilation_cache_test.cc"],
+    compatible_accelerators = tpus(),
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
     },
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = [
         ":cache_key",
         ":compilation",
@@ -1922,6 +1918,7 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "remote_tier3_compilation_cache_test",
     srcs = ["tier3_compilation_cache_test.cc"],
+    compatible_accelerators = tpus(),
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "gs://torchtpu-shared/remote_tier3_compilation_cache_test",
     },
@@ -1930,7 +1927,6 @@ torch_tpu_cc_test(
     },
     tags = [
         "requires-net:external",  # Requires remote file access.
-        "requires-tpu-v5lite",
     ] + if_oss(
         # TODO: b/567928058 - RBE workers lack write access to the
         # gs://torchtpu-shared cache root used by this test.
@@ -1957,6 +1953,7 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "compilation_cache_remote_filesystem_test",
     srcs = ["compilation_cache_remote_filesystem_test.cc"],
+    compatible_accelerators = tpus(),
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "gs://torchtpu-shared/compilation_cache_remote_filesystem_test",
     },
@@ -1965,7 +1962,6 @@ torch_tpu_cc_test(
     },
     tags = [
         "requires-net:external",  # Requires remote file access.
-        "requires-tpu-v5lite",
     ] + if_oss(
         # TODO: b/567928058 - RBE workers lack write access to the
         # gs://torchtpu-shared cache root used by this test.

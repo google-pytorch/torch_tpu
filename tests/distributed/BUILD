@@ -22,14 +22,18 @@
 # lukeboyer
 
 load(
+    "//build_files:accelerator_specification.bzl",
+    "run_on_config",
+    "tpu_config",
+    "tpus",
+)
+load(
     "//build_files:build_defs.bzl",
-    "REQUIRES_V5_MULTI_DEVICE",
     "TEST_COV_ENV",
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
-    "tpu_gen",
 )
 
 package(
@@ -54,14 +58,11 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "continuous_test_utils_test",
     srcs = ["continuous_test_utils_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":continuous_test_utils",
@@ -150,14 +151,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "distributed_utils_tpu_test",
     srcs = ["distributed_utils_tpu_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -173,19 +171,15 @@ torch_tpu_py_test(
     name = "scan_collectives_test",
     timeout = "long",
     srcs = ["scan_collectives_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(min_chips = 4),
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -201,22 +195,20 @@ torch_tpu_py_test(
     name = "sparse_core_collectives_test",
     timeout = "long",
     srcs = ["sparse_core_collectives_test.py"],
+    # Every test runs SparseCore programs; TPU v5e has no SparseCore.
+    compatible_accelerators = tpus(
+        exclude = ["v5"],
+        min_chips = 4,
+    ),
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        # Every test runs SparseCore programs; TPU v5e has no SparseCore.
-        "fails-on-tpu-v5",
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -234,14 +226,13 @@ torch_tpu_py_test(
     name = "compile_cache_world_size_test",
     timeout = "long",
     srcs = ["compile_cache_world_size_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
-        # The world-size-1 phase calls topology(1), which does not exist on
-        # 2-TensorCore-per-chip TPU v7x ('No TPU topology found for count: 1').
-        "fails-on-tpu-v7",
+    # The world-size-1 phase calls topology(1), which does not exist on
+    # 2-TensorCore-per-chip TPU v7x ('No TPU topology found for count: 1').
+    compatible_accelerators = tpus(
+        exclude = ["v7"],
+        min_chips = 4,
+    ),
+    tags = [
         "noasan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
         "nomsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
         "notsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
@@ -262,20 +253,16 @@ torch_tpu_py_test(
     name = "compile_cache_process_groups_test",
     timeout = "long",
     srcs = ["compile_cache_process_groups_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -291,13 +278,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "single_tpu_pg_test",
     srcs = ["single_tpu_pg_test.py"],
+    # Skip this test on tpu v7 runners: 'RuntimeError: expected exactly one TPU device
+    # per PyTorch process.' occurs because each TPU7x chip contains two addressable TensorCores,
+    # but manual process group init expects exactly 1 TPU device per process.
+    compatible_accelerators = tpus(exclude = ["v7"]),
     tags = [
-        # Skip this test on tpu v7 runners: 'RuntimeError: expected exactly one TPU device
-        # per PyTorch process.' occurs because each TPU7x chip contains two addressable TensorCores,
-        # but manual process group init expects exactly 1 TPU device per process.
-        "fails-on-tpu-v7",
         "noasan",  # TODO(b/555770497): fix the test in asan mode.
-        "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/logging",
@@ -333,12 +319,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "torchcomm_multi_tpu_test",
     srcs = ["torchcomm_multi_tpu_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     nobuild_oss = True,  # NOBUILD_OSS_OK=torchcomms is not yet available in OSS
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -360,15 +343,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "collective_ops_test",
     srcs = ["collective_ops_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/collective_ops_test",
     },
     shard_count = if_oss(16, 4),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the timeout in test_broadcast_objects.
@@ -394,6 +374,7 @@ torch_tpu_py_test(
     name = "collective_ops_remote_cache_test",
     timeout = "long",
     srcs = ["collective_ops_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "gs://torchtpu-shared/collective_ops_remote_cache_test",
     },
@@ -401,14 +382,12 @@ torch_tpu_py_test(
     shard_count = 6,
     tags = if_oss(
         [
-            "exclusive",
             # TODO: b/567928058 - RBE workers lack write access to the
             # gs://torchtpu-shared cache root used by this test.
             "no-remote-exec",
         ],
         [],
     ) + [
-        REQUIRES_V5_MULTI_DEVICE,
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/495533335): fix out-of-order in msan mode.
         "notsan",  # TODO(b/495533335): fix out-of-order in tsan mode.
@@ -436,20 +415,16 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "collective_ops_device_order_test",
     srcs = ["collective_ops_device_order_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -473,31 +448,28 @@ torch_tpu_py_test(
     name = "pallas_mesh_collective_device_order_test",
     timeout = "long",
     srcs = ["pallas_mesh_collective_device_order_test.py"],
+    # On single-core-per-chip parts rank order equals device order, so the
+    # Mesh installs the default DeviceAssignment and nothing here can
+    # detect a device-order fault. `_require_non_identity_device_order`
+    # fails the run there rather than let it go green.
+    compatible_accelerators = tpus(
+        min_chips = 4,
+        only = ["v7x"],
+    ),
     env = {
         # The kernel issues a remote DMA; matches
         # //tests/pallas:pallas_communication_test.
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Pallas mesh collective device order test for TPU v7",
     ),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        "fails-on-tpu-v5",
-        "fails-on-tpu-v6",
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        # On single-core-per-chip parts rank order equals device order, so the
-        # Mesh installs the default DeviceAssignment and nothing here can
-        # detect a device-order fault. `_require_non_identity_device_order`
-        # fails the run there rather than let it go green.
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -523,12 +495,9 @@ torch_tpu_py_test(
     args = [
         "--test_mode=tpu",
     ],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "nosan",  # *san has low value for error tests.
     ],
     deps = [
@@ -554,15 +523,12 @@ torch_tpu_py_test(
     args = [
         "--test_mode=cov",
     ],
+    compatible_accelerators = tpus(min_chips = 4),
     env = TEST_COV_ENV,
     main = "collective_errors_test.py",
     notap = "Run as a data dep by //tests:error_coverage_test.",
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":continuous_test_utils",
@@ -583,12 +549,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "alltoall_collective_test",
     srcs = ["alltoall_collective_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     shard_count = 2,
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -609,15 +572,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fp8_collectives_test",
     srcs = ["fp8_collectives_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     shard_count = 8,
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":continuous_test_utils",
@@ -634,20 +594,18 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fp8_collectives_v7x_test",
     srcs = ["fp8_collectives_test.py"],
+    compatible_accelerators = tpus(
+        min_chips = 4,
+        only = ["v7x"],
+    ),
     main = "fp8_collectives_test.py",
     nopresubmit = "Same tests as :fp8_collectives_test, which runs in presubmit; TPU v7x has long Forge queues.",
     notest_oss = True,  # NOTEST_OSS_OK=Disabled in OSS due to multi-process v7x runner hang.
     shard_count = 4,
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        "fails-on-tpu-v5",
-        "fails-on-tpu-v6",
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -663,19 +621,15 @@ torch_tpu_py_test(
     name = "subgroup_collectives_test",
     timeout = "long",
     srcs = ["subgroup_collectives_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    compatible_accelerators = tpus(min_chips = 4),
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -693,21 +647,17 @@ torch_tpu_py_test(
     name = "mixed_group_programs_test",
     timeout = "long",
     srcs = ["mixed_group_programs_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
     shard_count = 2,
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -723,21 +673,17 @@ torch_tpu_py_test(
     name = "subgroup_launch_order_test",
     timeout = "long",
     srcs = ["subgroup_launch_order_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
+    run_on = run_on_config(
+        presubmit = [tpu_config("v7x")],
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
     shard_count = 4,
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x:4",
     ],
     deps = [
         ":continuous_test_utils",
@@ -758,11 +704,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dtensor_test",
     srcs = ["dtensor_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -791,6 +734,7 @@ torch_tpu_py_test(
             "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
         ],
     ),
+    compatible_accelerators = tpus(min_chips = 4),
     env = if_oss(
         {
             "LIBTPU_INIT_ARGS": " ".join([
@@ -808,11 +752,7 @@ torch_tpu_py_test(
         },
     ),
     shard_count = 4,
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "nosan",  # *san has low value for error tests.
     ],
     deps = [
@@ -830,17 +770,14 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "uneven_sharding_test",
     srcs = ["uneven_sharding_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "0",
     },
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    tags = [
         "noasan",  # Disabled due to b/497035517.
         "nomsan",  # Disabled due to b/516945438.
         "notsan",  # Disabled due to b/497035517.
-        REQUIRES_V5_MULTI_DEVICE,
     ],
     deps = [
         ":continuous_test_utils",
@@ -857,15 +794,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "uneven_sharding_debug_checks_test",
     srcs = ["uneven_sharding_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     env = {
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "uneven_sharding_test.py",
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # Disabled due to b/497035517.
         "nomsan",  # Disabled due to b/516945438.
         "notsan",  # Disabled due to b/497035517.
@@ -895,16 +829,13 @@ torch_tpu_py_test(
         # Use highest precision for matmuls for tests only.
         # copybara:uncomment "--xla_jf_conv_full_precision",
     ],
+    compatible_accelerators = tpus(min_chips = 4),
     env = if_oss(
         {"LIBTPU_INIT_ARGS": "--xla_jf_conv_full_precision=true"},
         {},
     ),
     main = "fairscale_tp_test.py",
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -924,11 +855,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dcp_test",
     srcs = ["dcp_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -948,11 +876,8 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ragged_dot_test",
     srcs = ["ragged_dot_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -972,14 +897,11 @@ torch_tpu_py_test(
     name = "ragged_all_to_all_test",
     timeout = "long",
     srcs = ["ragged_all_to_all_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":continuous_test_utils",
@@ -994,9 +916,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "spmd_util_test",
     srcs = ["spmd_util_test.py"],
-    tags = [
-        "requires-tpu-v5lite",
-    ],
+    compatible_accelerators = tpus(),
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -1010,24 +930,18 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "spmd_util_collective_test",
     srcs = ["spmd_util_collective_test.py"],
+    # The test hardcodes world_size = 8 to match the topology of a full host (8 TPU
+    # devices) and avoid uninitialized chips in OSS CI.
+    compatible_accelerators = tpus(min_chips = 4),
     env = {
         # We explicitly disable the compilation cache because we rely on every rank compiling for itself so that we can definitively confirm that every rank produces the same MLIR.
         "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled",
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "",
     },
-    # In OSS, we have to run the test exclusively to avoid the
-    # "TPU initialization failed ... Device or resource busy" error.
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # TODO(b/555774204): fix the test in asan mode.
         "nomsan",  # TODO(b/555774204): OOM
         "notsan",  # TODO(b/555774204): OOM
-        # Exactly 8 chips are required because the test hardcodes world_size = 8 to match the
-        # topology and avoid uninitialized chips in OSS CI.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":continuous_test_utils",
@@ -1042,14 +956,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "split_collective_ops_test",
     srcs = ["split_collective_ops_test.py"],
+    compatible_accelerators = tpus(min_chips = 4),
     exec_properties = {
         "test.mem": "28g",
     },
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # TODO(b/555734615): fix the test in asan mode.
         "notsan",  # TODO(b/555734615): fix the time-out in tsan mode.
     ],
@@ -1112,6 +1023,8 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "handshake_e2e_test",
     srcs = ["handshake_e2e_test.py"],
+    # We need multi-chip TPU because we are running an actual e2e workflow to test handshake integration.
+    compatible_accelerators = tpus(min_chips = 4),
     # TODO(b/567669731): Remove once _ZMQClient falls back from an unusable ::1.
     # In OSS Docker runners, `localhost` resolves to ::1 first but IPv6 loopback
     # is unusable, and libzmq never falls back to 127.0.0.1.
@@ -1119,11 +1032,7 @@ torch_tpu_py_test(
         {"MASTER_ADDR": "127.0.0.1"},
         {},
     ),
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,  # We need multi-chip TPU because we are running an actual e2e workflow to test handshake integration.
+    tags = [
         "noasan",  # TODO(b/497035517)
         "nomsan",  # TODO(b/497035517)
         "notsan",  # TODO(b/497035517)
@@ -1189,12 +1098,9 @@ torch_tpu_py_test(
     name = "window_tpu_test",
     srcs = ["window_tpu_test.py"],
     autoload = True,
+    compatible_accelerators = tpus(min_chips = 4),
     notest_oss = True,  # NOTEST_OSS_OK=Requires PJRT RawBuffer extension not yet exported in OSS libtpu.
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
-        REQUIRES_V5_MULTI_DEVICE,
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -1225,14 +1131,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "simple_fsdp_test",
     srcs = ["simple_fsdp_test.py"],
-    tags = if_oss(
-        ["exclusive"],
-        [],
-    ) + [
+    compatible_accelerators = tpus(min_chips = 4),
+    tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":continuous_test_utils",
