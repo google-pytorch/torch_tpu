@@ -90,6 +90,15 @@ torch_tpu_py_test(
     # Worker startup dominates; several minutes under sanitizers.
     timeout = "long",
     srcs = ["worker_supervisor_test.py"],
+    # Spawned workers each import torch; exceeds the default Forge memory under
+    # sanitizers.
+    exec_properties = if_oss(
+        None,
+        select({
+            "//tools/cpp:sanitizer_build": {"test.mem": "24g"},
+            "//conditions:default": None,
+        }),
+    ),
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         ":worker_supervisor",
