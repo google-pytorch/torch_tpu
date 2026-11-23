@@ -1005,7 +1005,9 @@ TEST(ProcessGroupTpuTest,
   const std::vector<DeviceGroup> expected_job0_groups = {{0, 1}, {2, 3}};
   const std::vector<DeviceGroup> expected_job1_groups = {{0, 1, 2, 3}};
   for (int64_t r = 0; r < kJobWorldSize; ++r) {
-    EXPECT_EQ(job0_members[r], (r < 2) ? DeviceGroup{0, 1} : DeviceGroup{2, 3});
+    const DeviceGroup expected_members =
+        (r < 2) ? DeviceGroup{0, 1} : DeviceGroup{2, 3};
+    EXPECT_EQ(job0_members[r], expected_members);
     EXPECT_EQ(job0_subgroups[r].groups(), expected_job0_groups);
     EXPECT_EQ(job1_members[r], (DeviceGroup{0, 1, 2, 3}));
     EXPECT_EQ(job1_subgroups[r].groups(), expected_job1_groups);

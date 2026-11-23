@@ -301,10 +301,7 @@ def _init_device_impl(device: str) -> torch.device:
     from torch_tpu._internal.distributed import torchcomm_tpu  # pylint: disable=g-import-not-at-top
 
     def _create_c10d_process_group(dist_backend_opts, _pg_options):
-      is_default_world = (
-          not torch.distributed.is_initialized()
-          and dist_backend_opts.group_desc == "default_pg"
-      )
+      is_default_world = not torch.distributed.is_initialized()
       group_id = dist_backend_opts.group_id
       is_world_subgroup = (
           not is_default_world
