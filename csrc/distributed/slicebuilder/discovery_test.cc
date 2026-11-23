@@ -182,5 +182,116 @@ TEST(DiscoveryDeathTest, GetDistributedWorkerConfigurationMultislice) {
       ExitedWithCode(0), "");
 }
 
+TEST(DiscoveryDeathTest, GetDistributedWorkerConfigurationSliceRankOverride) {
+  EXPECT_EXIT(
+      {
+        SafeSetEnv<kRankEnvVar>("0");
+        SafeSetEnv<kLocalRankEnvVar>("0");
+        SafeSetEnv<kWorldSizeEnvVar>("4");
+        SafeSetEnv<kMasterAddrEnvVar>("localhost");
+        SafeSetEnv<kMasterPortEnvVar>("12345");
+        SafeSetEnv<kTorchTpuSlicebuilderAddressesEnvVar>(
+            "host0:54321,host1:54322");
+        SafeSetEnv<kTorchTpuTopologyEnvVar>("1x1x1");
+        SafeSetEnv<kTorchTpuSliceRankEnvVar>("1");
+
+        const absl::StatusOr<DistributedWorkerConfiguration> config =
+            GetDistributedWorkerConfiguration();
+
+        if (!config.ok()) {
+          ABSL_LOG(ERROR) << "Expected success, but got failure: "
+                          << config.status();
+          _exit(1);
+        }
+        if (config->rank != 0 || config->sb_port != "54322" ||
+            config->slice_rank != 1) {
+          ABSL_LOG(ERROR) << "Unexpected config values.";
+          _exit(2);
+        }
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(DiscoveryDeathTest,
+     GetDistributedWorkerConfigurationNegativeSliceRankFails) {
+  EXPECT_EXIT(
+      {
+        SafeSetEnv<kRankEnvVar>("0");
+        SafeSetEnv<kLocalRankEnvVar>("0");
+        SafeSetEnv<kWorldSizeEnvVar>("2");
+        SafeSetEnv<kMasterAddrEnvVar>("localhost");
+        SafeSetEnv<kMasterPortEnvVar>("12345");
+        SafeSetEnv<kTorchTpuSlicebuilderAddressesEnvVar>(
+            "host0:54321,host1:54322");
+        SafeSetEnv<kTorchTpuTopologyEnvVar>("1x1x1");
+        SafeSetEnv<kTorchTpuSliceRankEnvVar>("-1");
+
+        EXPECT_THAT(GetDistributedWorkerConfiguration().status(),
+                    StatusIs(error::kFailedPrecondition,
+                             HasSubstr("expected TORCH_TPU_SLICE_RANK to be in "
+                                       "[0, 2), got -1")));
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(DiscoveryDeathTest,
+     GetDistributedWorkerConfigurationOutOfBoundsSliceRankFails) {
+  EXPECT_EXIT(
+      {
+        SafeSetEnv<kRankEnvVar>("0");
+        SafeSetEnv<kLocalRankEnvVar>("0");
+        SafeSetEnv<kWorldSizeEnvVar>("2");
+        SafeSetEnv<kMasterAddrEnvVar>("localhost");
+        SafeSetEnv<kMasterPortEnvVar>("12345");
+        SafeSetEnv<kTorchTpuSlicebuilderAddressesEnvVar>(
+            "host0:54321,host1:54322");
+        SafeSetEnv<kTorchTpuTopologyEnvVar>("1x1x1");
+        SafeSetEnv<kTorchTpuSliceRankEnvVar>("2");
+
+        EXPECT_THAT(GetDistributedWorkerConfiguration().status(),
+                    StatusIs(error::kFailedPrecondition,
+                             HasSubstr("expected TORCH_TPU_SLICE_RANK to be in "
+                                       "[0, 2), got 2")));
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(DiscoveryDeathTest,
+     GetDistributedWorkerConfigurationSliceRankWithoutTorchrunVars) {
+  EXPECT_EXIT(
+      {
+        SafeUnsetEnv<kRankEnvVar>();
+        SafeUnsetEnv<kLocalRankEnvVar>();
+        SafeUnsetEnv<kWorldSizeEnvVar>();
+        SafeUnsetEnv<kMasterAddrEnvVar>();
+        SafeUnsetEnv<kMasterPortEnvVar>();
+        SafeSetEnv<kTorchTpuSliceRankEnvVar>("1");
+        SafeSetEnv<kTorchTpuSlicebuilderAddressesEnvVar>(
+            "host0:54321,host1:54322");
+        SafeSetEnv<kTorchTpuTopologyEnvVar>("1x1x1");
+
+        const absl::StatusOr<DistributedWorkerConfiguration> config =
+            GetDistributedWorkerConfiguration();
+
+        if (!config.ok()) {
+          ABSL_LOG(ERROR) << "Expected success, but got failure: "
+                          << config.status();
+          _exit(1);
+        }
+        if (config->rank != 1 || config->local_rank != 1 ||
+            config->world_size != 2 || config->sb_port != "54322" ||
+            config->sb_addrs != "host0:54321,host1:54322" ||
+            config->topology != "1x1x1" || config->slice_rank != 1) {
+          ABSL_LOG(ERROR) << "Unexpected config values.";
+          _exit(2);
+        }
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
 }  // namespace
 }  // namespace torch_tpu

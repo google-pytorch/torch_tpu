@@ -313,6 +313,7 @@ TORCH_TPU_INTERNAL_XLA_OPTIONS: {category: Environment Variable, defined_in: csr
 TORCH_TPU_LAUNCH_BLOCKING: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_PROFILER_OUTPUT_DIR: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_SLICEBUILDER_ADDRESSES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_SLICE_RANK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_SPMD_HANDSHAKE_STAGE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_TIER2_COMPILATION_CACHE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}

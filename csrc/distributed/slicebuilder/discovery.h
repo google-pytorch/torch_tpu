@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_CSRC_DISTRIBUTED_SLICEBUILDER_DISCOVERY_H_
 #define TORCH_TPU_CSRC_DISTRIBUTED_SLICEBUILDER_DISCOVERY_H_
 
+#include <optional>
 #include <string>
 
 #include "absl/status/statusor.h"
@@ -32,6 +33,7 @@ struct DistributedWorkerConfiguration {
   // here for convenience.
   std::string sb_port;
   std::string topology;
+  std::optional<int> slice_rank = std::nullopt;
 };
 
 absl::StatusOr<DistributedWorkerConfiguration>

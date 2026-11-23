@@ -266,15 +266,18 @@ absl::Status PjrtBackend::InitializeInternal() {
   PjRtDeviceType device_type = PjRtDeviceType::kUnknown;
   std::string plugin_name;
   int64_t visible_device_count = 0;
+  const std::optional<int> slice_rank =
+      GetIntegerEnvOnce<kTorchTpuSliceRankEnvVar>();
   if (options_.device_type == "tpu") {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
     ApplyTpuVisibleDevices();
-    // When WORLD_SIZE is not set (or is 1), TorchTPU defaults to single-device
-    // mode.
+    // When WORLD_SIZE is not set (or is 1) and TORCH_TPU_SLICE_RANK is unset,
+    // TorchTPU defaults to single-device mode.
     const auto& world_size_or = GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>();
-    const bool single_device = !world_size_or.ok() || *world_size_or == 1;
+    const bool single_device =
+        (!world_size_or.ok() || *world_size_or == 1) && !slice_rank.has_value();
     if (single_device) {
       // Count before the runtime is restricted to one device (in OSS, by
       // rewriting `TPU_VISIBLE_DEVICES`), so `device_count()` doesn't change.
@@ -330,22 +333,32 @@ absl::Status PjrtBackend::InitializeInternal() {
   // Do this before anything else in this process can create a PJRT client.
   MaybeSkipMegascaleForLaterClients(addressable_devices[0]->Attributes());
 
-  int world_size = 1;
-  if (const auto& world_size_or = GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>();
-      world_size_or.ok()) {
-    world_size = *world_size_or;
-  }
+  const auto& world_size_or = GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>();
+  const int world_size = world_size_or.ok() ? *world_size_or : 1;
 
   const int device_count = client_->device_count();
 
   // Initialize the global device count. This is used by the CompilationCache
   // to determine the number of replicas of the XLA computation.
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=We can hit this error check, but we
-                 // currently do not propagate its status.
-      world_size == 1 || world_size == device_count, error::kInvalidArgument)
-      << "invalid world_size configuration: expected 1 or " << device_count
-      << ", but got " << world_size
-      << ". Please check your environment variables";
+  if (slice_rank.has_value()) {
+    if (world_size_or.ok()) {
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=We can hit this error check, but we
+                     // currently do not propagate its status.
+          world_size >= 1 && world_size <= device_count,
+          error::kInvalidArgument)
+          << "expected WORLD_SIZE to be in [1, " << device_count << "] when "
+          << kTorchTpuSliceRankEnvVar << " is set, got " << world_size;
+    }
+    global_device_count_ = device_count;
+  } else {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=We can hit this error check, but we
+                   // currently do not propagate its status.
+        world_size == 1 || world_size == device_count, error::kInvalidArgument)
+        << "invalid world_size configuration: expected 1 or " << device_count
+        << ", but got " << world_size
+        << ". Please check your environment variables";
+    global_device_count_ = world_size;
+  }
 
   if (addressable_devices.size() > 1 && world_size == 1) {
     ABSL_LOG(WARNING) << "Only using 1 device out of all the "
@@ -354,7 +367,6 @@ absl::Status PjrtBackend::InitializeInternal() {
 
   device_ = addressable_devices[0];
   device_type_ = device_type;
-  global_device_count_ = world_size;
   visible_device_count_ = static_cast<int>(std::max<int64_t>(
       visible_device_count, static_cast<int64_t>(addressable_devices.size())));
   global_device_id_ = device_->global_device_id().value();

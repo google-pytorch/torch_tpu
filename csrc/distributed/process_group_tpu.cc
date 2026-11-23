@@ -1176,6 +1176,7 @@ struct WorldTopologyState {
   // order (see `ComputeRankToTopologyOrder`).
   std::vector<int64_t> rank_to_topo_order;  // INT_VEC_OK
   int64_t world_rank = -1;
+  c10d::Store* root_store = nullptr;
 };
 
 WorldTopologyState& WorldTopology() {
@@ -1194,15 +1195,18 @@ const std::vector<int64_t>& GetGlobalRankToDeviceId() {  // INT_VEC_OK
 }
 
 absl::StatusOr<std::vector<int64_t>> GetWorldDeviceAssignment() {  // INT_VEC_OK
+  const std::vector<int64_t>& world_rank_to_device_id =            // INT_VEC_OK
+      GetGlobalRankToDeviceId();
+  if (!world_rank_to_device_id.empty()) {
+    if (world_rank_to_device_id.size() <= 1) {
+      return std::vector<int64_t>();  // INT_VEC_OK
+    }
+    return world_rank_to_device_id;
+  }
   TT_ASSIGN_OR_RETURN(const int num_devices,
                       PjrtBackend::GetInstance().GetGlobalDeviceCount());
   if (num_devices <= 1) {
     return std::vector<int64_t>();  // INT_VEC_OK
-  }
-  const std::vector<int64_t>& world_rank_to_device_id =  // INT_VEC_OK
-      GetGlobalRankToDeviceId();
-  if (!world_rank_to_device_id.empty()) {
-    return world_rank_to_device_id;
   }
   std::vector<int64_t> device_assignment(num_devices);  // INT_VEC_OK
   std::iota(device_assignment.begin(), device_assignment.end(), 0);
@@ -1749,6 +1753,11 @@ struct NodeLocalStoreConfig {
 // node layout (LOCAL_RANK and TORCH_TPU_DEVICES_PER_HOST) is unknown or the
 // store is unavailable.
 absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
+  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
+                      PjrtBackend::GetInstance().GetClient());
+  if (world_size != static_cast<int64_t>(pjrt_client->devices().size())) {
+    return NodeLocalStoreConfig{};
+  }
   const std::optional<int64_t> local_rank =
       GetIntegerEnvOnce<kLocalRankEnvVar>();
   const std::optional<int64_t> local_world_size =
@@ -1806,7 +1815,8 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
     int64_t world_rank, absl::Span<const int64_t> global_rank_to_device_id,
     absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
     DeviceGroup& out_member_world_ranks,
-    DeviceGroupList& out_subgroup_member_world_ranks) {
+    DeviceGroupList& out_subgroup_member_world_ranks,
+    std::string_view key_scope) {
   const UnwrappedStoreChain unwrapped = UnwrapPrefixStoreChain(store);
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal store chain invariant
       unwrapped.root_store != nullptr, error::kInternal)
@@ -1814,12 +1824,12 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
   const int64_t world_size =
       static_cast<int64_t>(global_rank_to_device_id.size());
   const std::string my_key =
-      absl::StrFormat("pg_sub:%d:%d", gather_id, world_rank);
+      absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, world_rank);
   const std::string my_val =
       absl::StrFormat("%d,%d:%s", pg_rank, world_rank, unwrapped.full_prefix);
   std::vector<std::string> peer_keys(world_size);
   for (int64_t r = 0; r < world_size; ++r) {
-    peer_keys[r] = absl::StrFormat("pg_sub:%d:%d", gather_id, r);
+    peer_keys[r] = absl::StrFormat("pg_sub:%s%d:%d", key_scope, gather_id, r);
   }
 
   TT_ASSIGN_OR_RETURN(
@@ -1955,6 +1965,7 @@ absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
   topo.device_attrs = std::move(device_attrs);
   topo.rank_to_device_id = std::move(rank_to_device_id);
   topo.rank_to_topo_order = std::move(rank_to_topo_order);
+  topo.root_store = UnwrapPrefixStoreChain(store_.get()).root_store;
   return absl::OkStatus();
 }
 
@@ -2035,7 +2046,8 @@ absl::StatusOr<DeviceGroup> ProcessGroupTpu::GatherMemberWorldRanks() {
 }
 
 absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
-    const DeviceGroup& member_world_ranks, int64_t world_size) {
+    const DeviceGroup& member_world_ranks, int64_t world_size,
+    std::string_view key_scope) {
   c10::intrusive_ptr<c10d::Store> root_store = store_;
   while (auto* prefix_store =
              dynamic_cast<c10d::PrefixStore*>(root_store.get())) {
@@ -2052,14 +2064,14 @@ absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
   subgroup_csvs.reserve(num_subgroups);
   if (rank_ == 0) {
     const std::string count_key =
-        absl::StrFormat("subgroup_count:%d", gather_id);
+        absl::StrFormat("subgroup_count:%s%d", key_scope, gather_id);
     TT_ASSIGN_OR_RETURN(const int64_t count,
                         CallStore(absl::StrCat("root_store add ", count_key),
                                   [&] {  // REF_CAPTURE_OK=called synchronously
                                     return root_store->add(count_key, 1);
                                   }));
     const std::string my_subgroup_key =
-        absl::StrFormat("subgroup:%d:%d", gather_id, count - 1);
+        absl::StrFormat("subgroup:%s%d:%d", key_scope, gather_id, count - 1);
     TT_RETURN_IF_ERROR(
         CallStore(absl::StrCat("root_store set ", my_subgroup_key),
                   [&] {  // REF_CAPTURE_OK=called synchronously
@@ -2068,7 +2080,8 @@ absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
                   }));
     std::vector<std::string> peer_keys(num_subgroups);
     for (int64_t s = 0; s < num_subgroups; ++s) {
-      peer_keys[s] = absl::StrFormat("subgroup:%d:%d", gather_id, s);
+      peer_keys[s] =
+          absl::StrFormat("subgroup:%s%d:%d", key_scope, gather_id, s);
     }
     TT_ASSIGN_OR_RETURN(const std::vector<std::vector<uint8_t>> peer_values,
                         CallStore("root_store multiGet subgroup:*",
@@ -2149,7 +2162,7 @@ absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
 }
 
 ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
-                                 int rank, int group_size)
+                                 int rank, int group_size, GroupKind kind)
     : c10d::Backend(rank, group_size),
       store_(std::move(store)),
       p2p_send_queue_(store_) {
@@ -2162,8 +2175,6 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   TT_ASSIGN_OR_THROW(const xla::PjRtClient* const pjrt_client,
                      PjrtBackend::GetInstance().GetClient());
 
-  const int64_t world_size = pjrt_client->devices().size();
-
   // Addressable device "assigned" to this process/rank:
   TT_CHECK_THROW(pjrt_client->addressable_devices().size() == 1,
                  error::kInternal)
@@ -2171,20 +2182,113 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   addressable_device_id_ =
       pjrt_client->addressable_devices()[0]->global_device_id().value();
 
-  // We support creating "flat" process groups, as well as "2D+ mesh" process
-  // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
-  // the total number of devices.
-  TT_CHECK_THROW(world_size % group_size == 0, error::kInternal)
-      << "TPU slice size (" << world_size << ") must be divisible by "
-      << "process group size (" << group_size << ")";
+  const int64_t slice_size = pjrt_client->devices().size();
+  TT_CHECK_THROW(size_ >= 1 && size_ <= slice_size, error::kInvalidArgument)
+      << "expected process group size to be in [1, " << slice_size << "], got "
+      << size_;
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=validated by c10d callers
+      rank_ >= 0 && rank_ < size_, error::kInvalidArgument)
+      << "expected rank to be in [0, " << size_ << "), got " << rank_;
 
-  const bool is_initial_world_pg = WorldTopology().rank_to_device_id.empty();
-  if (is_initial_world_pg) {
-    TT_THROW_IF_ERROR(InitializeRankToDeviceMappings(world_size));
+  c10d::Store* const my_root_store =
+      UnwrapPrefixStoreChain(store_.get()).root_store;
+  if (kind == GroupKind::kAuto) {
+    if (WorldTopology().rank_to_device_id.empty() &&
+        (size_ == slice_size ||
+         GetIntegerEnvOnce<kTorchTpuSliceRankEnvVar>().has_value())) {
+      kind = GroupKind::kDefaultWorld;
+    } else if (!WorldTopology().rank_to_device_id.empty() &&
+               my_root_store != nullptr &&
+               my_root_store == WorldTopology().root_store &&
+               static_cast<int64_t>(WorldTopology().rank_to_device_id.size()) %
+                       size_ ==
+                   0) {
+      kind = GroupKind::kWorldSubgroup;
+    } else {
+      kind = GroupKind::kIndependent;
+    }
+  } else if (kind == GroupKind::kWorldSubgroup &&
+             (WorldTopology().rank_to_device_id.empty() ||
+              my_root_store == nullptr ||
+              my_root_store != WorldTopology().root_store)) {
+    kind = GroupKind::kIndependent;
   }
+
+  if (kind == GroupKind::kIndependent) {
+    const std::string my_key = absl::StrFormat("pg_device:%d", rank_);
+    TT_THROW_IF_ERROR(
+        CallStore(absl::StrCat("store set ", my_key),
+                  [&] {  // REF_CAPTURE_OK=called synchronously
+                    store_->set(my_key, absl::StrCat(addressable_device_id_));
+                  }));
+    std::vector<std::string> peer_keys;
+    peer_keys.reserve(size_);
+    for (int i = 0; i < size_; ++i) {
+      peer_keys.push_back(absl::StrFormat("pg_device:%d", i));
+    }
+    TT_ASSIGN_OR_THROW(const std::vector<std::vector<uint8_t>> peer_values,
+                       CallStore("store multiGet pg_device:*",
+                                 [&] {  // REF_CAPTURE_OK=called synchronously
+                                   return store_->multiGet(peer_keys);
+                                 }));
+    member_device_ids_.resize(size_);
+    absl::flat_hash_set<int64_t> seen_devices;
+    seen_devices.reserve(size_);
+    for (int i = 0; i < size_; ++i) {
+      const std::string_view value(
+          reinterpret_cast<const char*>(peer_values[i].data()),
+          peer_values[i].size());
+      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=peers write integer device ids
+          absl::SimpleAtoi(value, &member_device_ids_[i]), error::kInternal)
+          << "unparsable device id '" << value << "' for rank " << i;
+      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=requires multiple ranks binding
+                       // the same PJRT device
+          seen_devices.insert(member_device_ids_[i]).second,
+          error::kInvalidArgument)
+          << "duplicate device id " << member_device_ids_[i]
+          << " in independent process group at rank " << i;
+    }
+    device_assignment_.local.assign(member_device_ids_.begin(),
+                                    member_device_ids_.end());
+    device_assignment_.global = device_assignment_.local;
+    DeviceGroup local_partitions(size_);
+    std::iota(local_partitions.begin(), local_partitions.end(), 0);
+    replica_groups_ = DeviceGroupList({std::move(local_partitions)});
+    ABSL_VLOG(1) << "[ProcessGroupTpu] independent ctor done: pg_id=" << pg_id
+                 << ", elapsed=" << NowMs() - ctor_t0
+                 << " ms, member_device_ids=" << ToString(member_device_ids_);
+    return;
+  }
+
+  const bool is_default_world = (kind == GroupKind::kDefaultWorld);
+  int64_t world_size = 0;
+  if (is_default_world) {
+    const bool has_slice_rank =
+        GetIntegerEnvOnce<kTorchTpuSliceRankEnvVar>().has_value();
+    world_size = has_slice_rank ? static_cast<int64_t>(size_) : slice_size;
+    // We support creating "flat" process groups, as well as "2D+ mesh" process
+    // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
+    // the total number of devices.
+    TT_CHECK_THROW(world_size % group_size == 0, error::kInternal)
+        << "TPU slice size (" << world_size << ") must be divisible by "
+        << "process group size (" << group_size << ")";
+    if (WorldTopology().rank_to_device_id.empty()) {
+      TT_THROW_IF_ERROR(InitializeRankToDeviceMappings(world_size));
+    }
+  } else {
+    world_size = static_cast<int64_t>(WorldTopology().rank_to_device_id.size());
+    TT_CHECK_THROW(world_size % group_size == 0, error::kInternal)
+        << "TPU slice size (" << world_size << ") must be divisible by "
+        << "process group size (" << group_size << ")";
+  }
+
   const auto& topo = WorldTopology();
+  const std::string key_scope =
+      (world_size == slice_size)
+          ? ""
+          : absl::StrCat("job", topo.rank_to_device_id[0], ":");
   DeviceGroupList subgroup_member_world_ranks;
-  if (is_initial_world_pg) {
+  if (is_default_world) {
     member_world_ranks_.resize(size_);
     std::iota(member_world_ranks_.begin(), member_world_ranks_.end(), 0);
     subgroup_member_world_ranks = DeviceGroupList({member_world_ranks_});
@@ -2219,11 +2323,12 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
         store_.get(), local.store, local.local_rank, local.local_world_size,
         rank_, size_, topo.world_rank, topo.rank_to_device_id,
         topo.rank_to_topo_order, gather_id, member_world_ranks_,
-        subgroup_member_world_ranks));
+        subgroup_member_world_ranks, key_scope));
   } else {
     TT_ASSIGN_OR_THROW(member_world_ranks_, GatherMemberWorldRanks());
-    TT_ASSIGN_OR_THROW(subgroup_member_world_ranks,
-                       GatherAllSubgroups(member_world_ranks_, world_size));
+    TT_ASSIGN_OR_THROW(
+        subgroup_member_world_ranks,
+        GatherAllSubgroups(member_world_ranks_, world_size, key_scope));
   }
   member_device_ids_.resize(size_);
   for (int64_t i = 0; i < size_; ++i) {
@@ -2267,6 +2372,10 @@ ProcessGroupTpu::~ProcessGroupTpu() { shutdown(); }
 #define TT_SET_SUBGROUPS_FINGERPRINT(param_keys) \
   TT_THROW_IF_ERROR(                             \
       param_keys.SetParam("subgroups_fingerprint", replica_groups_))
+
+const DeviceAssignment& ProcessGroupTpu::device_assignment() const {
+  return device_assignment_;
+}
 
 const DeviceGroupList& ProcessGroupTpu::GetReplicaGroups() const {
   return replica_groups_;

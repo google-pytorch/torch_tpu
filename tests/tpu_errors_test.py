@@ -39,6 +39,7 @@ Tests that don't belong in this file:
 import collections
 from collections.abc import Mapping, Sequence
 import contextlib
+import datetime
 import os
 import re
 import tempfile
@@ -67,6 +68,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.distributed import spmd_util
+from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.sync import sync
@@ -5365,6 +5367,19 @@ module {
         ),
     ):
       fn(t, repeats)
+
+  @et.why_tpu_only(
+      "ProcessGroupTpu slice device count validation is TPU-specific."
+  )
+  def test_process_group_size_exceeds_slice_devices(self):
+    slice_size = len(tpu_distributed.all_global_device_ids())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""create_process_group(): expected process group size to be in [1, {slice_size}], got {slice_size + 1}""",
+    ):
+      tpu_distributed.create_process_group(
+          dist.HashStore(), 0, slice_size + 1, datetime.timedelta(seconds=30)
+      )
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):

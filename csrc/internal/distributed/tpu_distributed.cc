@@ -47,9 +47,16 @@ namespace {
 // function (see `torch.distributed.Backend.register_backend`) and called by
 // pytorch when the user calls `torch.distributed.init_process_group()`.
 c10::intrusive_ptr<c10d::Backend> MakeProcessGroup(
-    c10::intrusive_ptr<c10d::Store> store, int rank, int size,
-    std::chrono::duration<float>& timeout) {
-  return c10::make_intrusive<ProcessGroupTpu>(store, rank, size);
+    const c10::intrusive_ptr<c10d::Store>& store, int rank, int size,
+    std::chrono::duration<float>& /*timeout*/, bool is_default_world,
+    bool is_world_subgroup) {
+  ProcessGroupTpu::GroupKind kind = ProcessGroupTpu::GroupKind::kIndependent;
+  if (is_default_world) {
+    kind = ProcessGroupTpu::GroupKind::kDefaultWorld;
+  } else if (is_world_subgroup) {
+    kind = ProcessGroupTpu::GroupKind::kWorldSubgroup;
+  }
+  return c10::make_intrusive<ProcessGroupTpu>(store, rank, size, kind);
 }
 
 std::vector<int64_t> GetRankToDeviceId(  // INT_VEC_OK
@@ -111,7 +118,10 @@ std::vector<int64_t> GetLocalDeviceCoords() {  // INT_VEC_OK
 TT_PYBIND11_MODULE(tpu_distributed, m) {
   // Custom distributed backend initialization happens from the Python side,
   // so we need to expose this init function.
-  m.def("create_process_group", &MakeProcessGroup);
+  m.def("create_process_group", &MakeProcessGroup, pybind11::arg("store"),
+        pybind11::arg("rank"), pybind11::arg("size"), pybind11::arg("timeout"),
+        pybind11::kw_only(), pybind11::arg("is_default_world") = false,
+        pybind11::arg("is_world_subgroup") = false);
   m.def("rank_to_device_id", &GetRankToDeviceId);
 
   // We expose these as helper functions on the Python side
