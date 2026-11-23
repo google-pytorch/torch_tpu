@@ -53,6 +53,18 @@ py_test(
     ],
 )
 
+py_test(
+    name = "bazelrc_test",
+    size = "small",
+    srcs = ["bazelrc_test.py"],
+    data = [
+        "//:.bazelrc",
+    ],
+    deps = [
+        "@pypi//pytest",
+    ],
+)
+
 py_binary(
     name = "check_dependency_caveats",
     srcs = ["check_dependency_caveats.py"],

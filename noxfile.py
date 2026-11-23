@@ -169,7 +169,13 @@ def test_ci_tools(session: nox.Session) -> None:
       "tools/assign_quality_champion_test.py",
       "tools/enforce_pr_assignee_test.py",
   )
-  session.run("python", "-m", "pytest", "ci/tools/custom_linter/tests")
+  session.run(
+      "python",
+      "-m",
+      "pytest",
+      "ci/tools/bazelrc_test.py",
+      "ci/tools/custom_linter/tests",
+  )
 
 
 # Use venv_backend="none" to allow running the script directly in the host.
