@@ -133,10 +133,18 @@ rare case that you use an older PyTorch version, use
 `torch.tpu.current_stream()`, `torch.tpu.set_stream()`, or
 `torch.tpu.synchronize()` instead.
 
-> **Note:** Streams are a CUDA concept with no direct analogy in TPU. In
-> TorchTPU's deferred execution model, the XLA compiler and PjRt runtime
-> schedule and overlap operations automatically based on data dependencies, so
-> manual multi-stream management is not needed.
+> **Note:** Streams are a CUDA concept with no direct analogy in TPU. TorchTPU
+> provides an emulation layer for compatibility. This enables existing workloads
+> which use Streams to run on TPU with the expected scheduling behavior, but may
+> see reduced marginal benefit from multi-stream workloads.
+>
+> Additionally, distributed collectives must be executed in a **consistent,**
+> **deterministic order** across process ranks to prevent deadlocks. Because
+> streams have no deterministic ordering, issuing collectives on multiple
+> streams is discouraged. In eager mode, TorchTPU will defensively insert stream
+> waits to ensure deterministic execution of eager collectives, but partially-
+> or fully-compiled workloads must ensure a universal, deterministic ordering
+> through the `Stream.record_event()` / `Stream.wait_event()` APIs.
 
 ## TPU-Specific APIs
 
@@ -365,8 +373,8 @@ output for TorchTPU.
 
 Setting `TORCH_SHOW_CPP_STACKTRACES=1` before importing `torch` makes it much
 easier to diagnose errors that occur deep within the C++ backend or XLA. Instead
-of a simple Python `RuntimeError`, you receive a detailed `C++
-CapturedTraceback` showing exact execution frames.
+of a simple Python `RuntimeError`, you receive a detailed
+`C++ CapturedTraceback` showing exact execution frames.
 
 ```python
 import os
@@ -386,8 +394,8 @@ By default, the TPU skips bounds checks for speed. Enabling
 `TORCH_TPU_ENABLE_DEBUG_CHECKS=1` catches subtle bugs related to out-of-bounds
 indices (such as in `torch.take`), though it slows down execution due to extra
 CPU/TPU synchronization. Operations that would otherwise fail silently or cause
-data corruption raise an explicit exception like `take(): expected indices to be
-in range`:
+data corruption raise an explicit exception like
+`take(): expected indices to be in range`:
 
 ```python
 import os

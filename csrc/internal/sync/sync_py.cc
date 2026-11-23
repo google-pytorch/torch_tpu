@@ -259,10 +259,6 @@ bool TrySyncTensorArrayFast(PyObject* const* items, Py_ssize_t size,
     buffer_refs.push_back(std::move(buffer_ref));
   }
   if (has_deferred_or_placeholder) {
-    py::gil_scoped_release release;
-    // Even though this is "no wait", we still wait until the execution has
-    // started, so that is_materializing() is true for all buffers. We just
-    // don't wait until they reach the full is_materialized() state.
     TT_THROW_IF_ERROR(
         Materialize(buffer_refs, MaterializationReason::kExplicitSync));
   }
@@ -283,18 +279,8 @@ void PySynchronizeDevice(bool wait) {
   if (wait) {
     impl->synchronizeDevice(device_index);
   } else {
-    // Wait until all streams on the device start executing but don't wait for
-    // them to finish.
-    // This is equivalent to using torch.tpu.Event().record() on all streams,
-    // and then throwing away the events.
-    // This ensures that all live nodes reach the is_materializing() state but
-    // does not wait for them to complete (is_materialized()).
-    TT_ASSIGN_OR_THROW(
-        std::vector<EventSnapshot> device_snapshots,
+    TT_THROW_IF_ERROR(
         MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
-    for (const auto& event_snapshot : device_snapshots) {
-      TT_THROW_IF_ERROR(event_snapshot.BlockUntilStarted());
-    }
   }
 }
 

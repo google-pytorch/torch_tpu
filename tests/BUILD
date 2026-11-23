@@ -487,6 +487,7 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "accelerator_test_utils_test",
     srcs = ["accelerator_test_utils_test.py"],
+    env = {"TORCH_TPU_INTERNAL_BLOCK_ON_STREAM_EXIT": "0"},
     deps = [
         ":accelerator_test_utils",
         ":oss_utils",
@@ -1940,6 +1941,7 @@ torch_tpu_py_test(
     env = {
         "TORCH_SHOW_CPP_STACKTRACES": "0",
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+        "TORCH_TPU_INTERNAL_BLOCK_ON_STREAM_EXIT": "0",
     },
     main = "tpu_errors_test.py",
     tags = [

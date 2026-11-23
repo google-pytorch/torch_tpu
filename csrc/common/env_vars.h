@@ -163,6 +163,17 @@ inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
+// If set to "1" or "true", then whenever the active stream changes, the thread
+// will block until the previous stream has flushed all work to the execution
+// queue. This forces streams to execute in a sequential order, which can
+// prevent deadlocks from reordering collectives on different streams when one
+// or more is in a compiled mode executable.
+// This is not necessary if collectives already have a unique order, or if
+// collectives are only issued in eager mode.
+// Default is "1"/"true" until compiled executions are supported on multiple
+// streams.
+inline constexpr char kTorchTpuInternalBlockOnStreamExitEnvVar[] =
+    "TORCH_TPU_INTERNAL_BLOCK_ON_STREAM_EXIT";
 // If set to "1" or "true", TorchTPU crashes when an error is raised with an
 // error message that doesn't conform to the TorchTPU error message guidelines.
 // This is always enabled in internal builds; in other builds it's meant to be
@@ -410,6 +421,8 @@ inline constexpr auto kEnvVarInfo = MakeConstexprMap<std::string_view,
      {SymbolStage::Experimental(), EnvVarType::kBoolean}},
     {kTorchTpuHandshakePortEnvVar,
      {SymbolStage::InternalApi(), EnvVarType::kInt}},
+    {kTorchTpuInternalBlockOnStreamExitEnvVar,
+     {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
     {kTorchTpuInternalCheckErrorFormatEnvVar,
      {SymbolStage::InternalApi(), EnvVarType::kBoolean}},
     {kTorchTpuInternalDetectRepeatedOpsEnvVar,
