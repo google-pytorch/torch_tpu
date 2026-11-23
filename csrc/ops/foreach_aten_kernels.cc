@@ -3063,6 +3063,13 @@ void AtenForeachCopy_(at::TensorList self, at::TensorList src,
                  .out_dims = out_dims,
                  .op_param_cache_keys = std::move(param_keys)}));
           }
+          // The write bumped range's version counter, which as a view of
+          // self[0] is self[0]'s. Bump the rest as per-tensor copy_ would:
+          // destinations sharing the storage can still have their own
+          // counters (e.g. .data views), and autograd checks them.
+          for (size_t i = 1; i < self.size(); ++i) {
+            self[i].unsafeGetTensorImpl()->bump_version();
+          }
           return;
         }
         for (size_t i = 0; i < self.size(); ++i) {

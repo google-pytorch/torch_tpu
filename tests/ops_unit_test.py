@@ -6832,6 +6832,33 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
 
+  @parameterized.named_parameters(
+      # Split views of one base share its version counter (FSDP2's case).
+      ("shared_counter", False),
+      # .data views share the storage but each has its own version counter.
+      ("separate_counters", True),
+  )
+  def test_foreach_copy_tiled_destinations_bump_versions(
+      self, separate_counters
+  ):
+    """Each destination's version is bumped as a per-tensor copy_ would.
+
+    Autograd relies on this to detect in-place writes to saved tensors.
+    """
+    numels = [512, 128, 1, 0, 130]
+    srcs = [torch.randn(n) for n in numels]
+
+    def fn(device):
+      base = torch.zeros(sum(numels), device=device)
+      dsts = list(torch.split(base, numels))
+      if separate_counters:
+        dsts = [d.data for d in dsts]
+      before = [d._version for d in dsts]
+      torch._foreach_copy_(dsts, [s.to(device) for s in srcs])
+      return torch.tensor([d._version - b for d, b in zip(dsts, before)])
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
   def test_arange_start_step_float32(self):
     golden_result = torch.arange(
         0, 10, 2, dtype=torch.float32, device=self.golden_device
