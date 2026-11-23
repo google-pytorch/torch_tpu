@@ -610,11 +610,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # torch._scaled_mm_v2 aborts the test process.
         "torch._scaled_mm.rowwise": {EAGER, COMPILE},
         "torch._scaled_mm_v2": {EAGER, COMPILE},
-        # stablehlo.reshape allows at most one bounded dimension. This fails
-        # when dims 0 and 2 are both dynamic, which happens in compile mode
-        # because dims marked in earlier subtests stay dynamic.
-        # TODO: b/566327707 - Remove once marked dims no longer carry over.
-        "torch.ops.aten._safe_softmax.default": {COMPILE, COMPILE_GRAD},
         # View decomposition reshape reassociation fails on bounded dimensions.
         "unfold": ALL_MODES,
     },

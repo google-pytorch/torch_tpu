@@ -40,19 +40,37 @@
 namespace torch_tpu {
 namespace {
 
-absl::StatusOr<mlir::MlirOp> BuildBroadcastedMaxShlo(mlir::MlirOp input_op,
-                                                     int64_t dim) {
+Dimensions GetNonReducedDims(int64_t rank, int64_t reduced_dim) {
+  Dimensions dims;
+  dims.reserve(rank > 0 ? rank - 1 : 0);
+  for (int64_t d = 0; d < rank; ++d) {
+    if (d != reduced_dim) {
+      dims.push_back(d);
+    }
+  }
+  return dims;
+}
+
+absl::StatusOr<mlir::MlirOp> BuildReducedMaxShlo(mlir::MlirOp input_op,
+                                                 int64_t dim,
+                                                 SoftmaxMode softmax_mode) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  auto scalar_type =
-      mlir::RankedTensorType::get({}, input_type.getElementType());
-  TT_ASSIGN_OR_RETURN(mlir::DenseElementsAttr min_finite_value,
-                      GetVerifiedMinFiniteValue(builder, scalar_type));
-  mlir::MlirOp min_finite_const =
-      mlir::stablehlo::Constant(builder, min_finite_value);
+  mlir::MlirOp init_const;
+  if (softmax_mode == SoftmaxMode::kSafeSoftmax) {
+    init_const =
+        MakeScalarConstant(builder, -std::numeric_limits<double>::infinity(),
+                           input_type.getElementType());
+  } else {
+    const mlir::RankedTensorType scalar_type =
+        mlir::RankedTensorType::get({}, input_type.getElementType());
+    TT_ASSIGN_OR_RETURN(mlir::DenseElementsAttr min_finite_value,
+                        GetVerifiedMinFiniteValue(builder, scalar_type));
+    init_const = mlir::stablehlo::Constant(builder, min_finite_value);
+  }
 
   mlir::SmallVector<mlir::MlirOp> max_val_reduced = mlir::stablehlo::Reduce(
-      builder, {input_op}, {min_finite_const},
+      builder, {input_op}, {init_const},
       [&input_type](mlir::RegionBuilder& rb) {
         // Scalar Max Region
         mlir::stablehlo::buildReduceBody<mlir::stablehlo::MaxOp>(
@@ -63,67 +81,141 @@ absl::StatusOr<mlir::MlirOp> BuildBroadcastedMaxShlo(mlir::MlirOp input_op,
       max_val_reduced.size() == 1, error::kInternal)
       << "Expected 1 result from reduce op, got " << max_val_reduced.size();
 
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_op,
-                      Unsqueeze(max_val_reduced[0], dim));
-  return BroadcastIfNeeded(unsqueezed_op, input_op);
+  return max_val_reduced[0];
+}
+
+absl::StatusOr<mlir::MlirOp> BuildBroadcastedMaxShlo(
+    mlir::MlirOp input_op, int64_t dim, SoftmaxMode softmax_mode,
+    const Dimensions& bcast_dims) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp max_val,
+                      BuildReducedMaxShlo(input_op, dim, softmax_mode));
+  if (softmax_mode == SoftmaxMode::kSafeSoftmax) {
+    mlir::MlirBuilder& builder = input_op.getBuilder();
+    const mlir::ElementType computation_dtype = GetElementTypeOrDie(input_op);
+    mlir::MlirOp neg_inf_scalar = MakeScalarConstant(
+        builder, -std::numeric_limits<double>::infinity(), computation_dtype);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp neg_inf,
+                        BroadcastIfNeeded(neg_inf_scalar, max_val));
+    mlir::MlirOp is_row_all_neg_inf = mlir::stablehlo::Compare(
+        max_val, neg_inf, mlir::stablehlo::ComparisonDirection::EQ);
+    mlir::MlirOp zero_scalar =
+        MakeScalarConstant(builder, 0.0, computation_dtype);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp zero_const,
+                        BroadcastIfNeeded(zero_scalar, max_val));
+    max_val = mlir::stablehlo::Select(is_row_all_neg_inf, zero_const, max_val);
+    return BroadcastIfNeeded(max_val, input_op, bcast_dims);
+  }
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_max, Unsqueeze(max_val, dim));
+  return BroadcastIfNeeded(unsqueezed_max, input_op);
+}
+
+absl::StatusOr<mlir::MlirOp> NormalizeSafeSoftmaxShlo(
+    mlir::MlirOp input_op, mlir::MlirOp exp_op, mlir::MlirOp sum_op,
+    int64_t dim, const Dimensions& bcast_dims) {
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  const mlir::RankedTensorType working_type = GetTensorTypeOrDie(input_op);
+  const mlir::ElementType computation_dtype = GetElementTypeOrDie(input_op);
+  mlir::MlirOp zero_scalar =
+      MakeScalarConstant(builder, 0.0, computation_dtype);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp zero_const,
+                      BroadcastIfNeeded(zero_scalar, sum_op));
+  mlir::MlirOp is_sum_zero = mlir::stablehlo::Compare(
+      sum_op, zero_const, mlir::stablehlo::ComparisonDirection::EQ);
+  mlir::MlirOp one_scalar = MakeScalarConstant(builder, 1.0, computation_dtype);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp one_const,
+                      BroadcastIfNeeded(one_scalar, sum_op));
+  if (working_type.isDynamicDim(dim)) {
+    sum_op = mlir::stablehlo::Select(is_sum_zero, one_const, sum_op);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
+                        BroadcastIfNeeded(sum_op, input_op, bcast_dims));
+    return mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
+  }
+  mlir::MlirOp inv_sum_op = mlir::stablehlo::Div(one_const, sum_op);
+  inv_sum_op = mlir::stablehlo::Select(is_sum_zero, zero_const, inv_sum_op);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_broadcasted,
+                      BroadcastIfNeeded(inv_sum_op, input_op, bcast_dims));
+  return mlir::stablehlo::Mul(exp_op, inv_sum_broadcasted);
+}
+
+absl::StatusOr<mlir::MlirOp> NormalizeStandardSoftmaxShlo(
+    mlir::MlirOp input_op, mlir::MlirOp shifted_op, mlir::MlirOp exp_op,
+    mlir::MlirOp sum_op, int64_t dim, SoftmaxMode softmax_mode) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_sum_op, Unsqueeze(sum_op, dim));
+  if (GetTensorTypeOrDie(input_op).isDynamicDim(dim)) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
+                        BroadcastIfNeeded(unsqueezed_sum_op, input_op));
+    if (softmax_mode == SoftmaxMode::kLogSoftmax) {
+      mlir::MlirOp log_op = mlir::stablehlo::Log(sum_exp_broadcasted_op);
+      return mlir::stablehlo::Subtract(shifted_op, log_op);
+    }
+    return mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
+  }
+  if (softmax_mode == SoftmaxMode::kLogSoftmax) {
+    mlir::MlirOp log_op = mlir::stablehlo::Log(unsqueezed_sum_op);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp log_broadcasted,
+                        BroadcastIfNeeded(log_op, input_op));
+    return mlir::stablehlo::Subtract(shifted_op, log_broadcasted);
+  }
+  mlir::MlirOp one_op = MakeConstantLike(unsqueezed_sum_op, 1.0);
+  mlir::MlirOp inv_sum_op = mlir::stablehlo::Div(one_op, unsqueezed_sum_op);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_broadcasted,
+                      BroadcastIfNeeded(inv_sum_op, input_op));
+  return mlir::stablehlo::Mul(exp_op, inv_sum_broadcasted);
 }
 }  // namespace
 
-absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
-                                              int64_t dim,
-                                              SoftmaxMode softmax_mode) {
+absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(
+    mlir::MlirOp input_op, int64_t dim, SoftmaxMode softmax_mode,
+    std::optional<mlir::ElementType> out_dtype) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, input_type.getRank()));
   mlir::MlirBuilder& builder = input_op.getBuilder();
-  if (input_type.getRank() == 0) {
-    return MakeScalarConstant(builder,
-                              softmax_mode == SoftmaxMode::kSoftmax ? 1.0 : 0.0,
-                              input_type.getElementType());
-  }
-
-  if (std::any_of(input_type.getShape().begin(), input_type.getShape().end(),
-                  [](int64_t d) { return d == 0; })) {
-    return input_op;
-  }
-
   const mlir::ElementType orig_element_type = GetElementTypeOrDie(input_op);
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
-                      InferComputationDtype(orig_element_type));
-  TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, computation_dtype));
+  const mlir::ElementType target_out_type =
+      out_dtype.value_or(orig_element_type);
 
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp max_val_broadcasted,
-                      BuildBroadcastedMaxShlo(input_op, dim));
+  const bool is_scalar = input_type.getRank() == 0;
+  if (is_scalar) {
+    if (softmax_mode != SoftmaxMode::kSafeSoftmax) {
+      return MakeScalarConstant(
+          builder, softmax_mode == SoftmaxMode::kSoftmax ? 1.0 : 0.0,
+          target_out_type);
+    }
+    TT_ASSIGN_OR_RETURN(input_op, Unsqueeze(input_op, 0));
+    dim = 0;
+  } else if (std::any_of(input_type.getShape().begin(),
+                         input_type.getShape().end(),
+                         [](int64_t d) { return d == 0; })) {
+    return CastIfNeeded(input_op, target_out_type);
+  }
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(target_out_type));
+  TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, computation_dtype));
+  const mlir::RankedTensorType working_type = GetTensorTypeOrDie(input_op);
+  const Dimensions bcast_dims = GetNonReducedDims(working_type.getRank(), dim);
+
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp max_val_broadcasted,
+      BuildBroadcastedMaxShlo(input_op, dim, softmax_mode, bcast_dims));
   mlir::MlirOp shifted_op =
       mlir::stablehlo::Subtract(input_op, max_val_broadcasted);
   mlir::MlirOp exp_op = mlir::stablehlo::Exp(shifted_op);
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_op, BuildSumShlo(exp_op, {dim}));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_sum_op, Unsqueeze(sum_op, dim));
 
-  mlir::MlirOp result;
-  if (input_type.isDynamicDim(dim)) {
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
-                        BroadcastIfNeeded(unsqueezed_sum_op, input_op));
-    if (softmax_mode == SoftmaxMode::kLogSoftmax) {
-      mlir::MlirOp log_op = mlir::stablehlo::Log(sum_exp_broadcasted_op);
-      result = mlir::stablehlo::Subtract(shifted_op, log_op);
-    } else {
-      result = mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
-    }
-  } else if (softmax_mode == SoftmaxMode::kLogSoftmax) {
-    mlir::MlirOp log_op = mlir::stablehlo::Log(unsqueezed_sum_op);
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp log_broadcasted,
-                        BroadcastIfNeeded(log_op, input_op));
-    result = mlir::stablehlo::Subtract(shifted_op, log_broadcasted);
-  } else {
-    mlir::MlirOp one_op = MakeConstantLike(unsqueezed_sum_op, 1.0);
-    mlir::MlirOp inv_sum_op = mlir::stablehlo::Div(one_op, unsqueezed_sum_op);
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_broadcasted,
-                        BroadcastIfNeeded(inv_sum_op, input_op));
-    result = mlir::stablehlo::Mul(exp_op, inv_sum_broadcasted);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp result,
+      softmax_mode == SoftmaxMode::kSafeSoftmax
+          ? NormalizeSafeSoftmaxShlo(input_op, exp_op, sum_op, dim, bcast_dims)
+          : NormalizeStandardSoftmaxShlo(input_op, shifted_op, exp_op, sum_op,
+                                         dim, softmax_mode));
+
+  TT_ASSIGN_OR_RETURN(result, CastIfNeeded(result, target_out_type));
+  if (is_scalar) {
+    return Squeeze(result, {0});
   }
-
-  return CastIfNeeded(result, orig_element_type);
+  return result;
 }
 
 absl::StatusOr<mlir::MlirOp> BuildSoftmaxBackwardDataShlo(
@@ -160,14 +252,15 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxBackwardDataShlo(
   grad_output_op = grad_output_bcast;
   output_op = output_bcast;
 
+  const Dimensions bcast_dims =
+      GetNonReducedDims(GetTensorTypeOrDie(grad_output_op).getRank(), dim);
   const mlir::MlirOp sum_input_op =
       softmax_mode == SoftmaxMode::kSoftmax
           ? mlir::stablehlo::Mul(grad_output_op, output_op)
           : grad_output_op;
   TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_op, BuildSumShlo(sum_input_op, {dim}));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_sum_op, Unsqueeze(sum_op, dim));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_broadcasted,
-                      BroadcastIfNeeded(unsqueezed_sum_op, grad_output_op));
+                      BroadcastIfNeeded(sum_op, grad_output_op, bcast_dims));
 
   mlir::MlirOp result;
   if (softmax_mode == SoftmaxMode::kSoftmax) {

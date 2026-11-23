@@ -15575,6 +15575,86 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         self.assertEqual(actual.shape, expected.shape)
         utils.assert_close(actual.cpu(), expected)
 
+  def test_safe_softmax_native_lowering(self):
+    self.assertTrue(
+        torch._C._dispatch_has_kernel_for_dispatch_key(
+            "aten::_safe_softmax", "PrivateUse1"
+        )
+    )
+    x_static = torch.randn(2, 8, dtype=torch.float32).to("tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      safe_sm_out = torch.ops.aten._safe_softmax(x_static, dim=-1)
+    safe_sm_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([safe_sm_out], [x_static])
+    )
+    self.assertIn("stablehlo.select", safe_sm_mlir)
+    self.assertNotIn("aten.all", safe_sm_mlir)
+
+    cpu_x = torch.tensor(
+        [
+            [float("-inf"), float("-inf"), float("-inf")],
+            [float("-inf"), 1.0, 2.0],
+            [1.0, 2.0, 3.0],
+        ],
+        dtype=torch.float32,
+    )
+    tpu_x = cpu_x.to("tpu")
+    tpu_safe_sm = torch.ops.aten._safe_softmax(tpu_x, dim=-1)
+    cpu_safe_sm = torch.ops.aten._safe_softmax(cpu_x, dim=-1)
+    utils.assert_close(actual=tpu_safe_sm.cpu(), expected=cpu_safe_sm)
+    self.assertTrue(torch.all(tpu_safe_sm[0].cpu() == 0.0))
+    self.assertFalse(torch.any(torch.isnan(tpu_safe_sm.cpu())))
+
+    @torch.compile(backend="tpu", dynamic=False)
+    def compile_safe_softmax(x, dim):
+      return torch.ops.aten._safe_softmax(x, dim)
+
+    cpu_x_grad = cpu_x.clone().requires_grad_()
+    tpu_x_grad = tpu_x.clone().requires_grad_()
+    compiled_cpu_out = torch.ops.aten._safe_softmax(cpu_x_grad, dim=-1)
+    compiled_tpu_out = compile_safe_softmax(tpu_x_grad, dim=-1)
+    utils.assert_close(actual=compiled_tpu_out.cpu(), expected=compiled_cpu_out)
+    compiled_cpu_out.sum().backward()
+    compiled_tpu_out.sum().backward()
+    utils.assert_close(actual=tpu_x_grad.grad.cpu(), expected=cpu_x_grad.grad)
+    self.assertTrue(torch.all(tpu_x_grad.grad[0].cpu() == 0.0))
+    self.assertFalse(torch.any(torch.isnan(tpu_x_grad.grad.cpu())))
+
+    for val in (float("-inf"), 2.5, float("inf"), float("nan")):
+      cpu_scalar = torch.tensor(val, dtype=torch.float32)
+      tpu_scalar = cpu_scalar.to("tpu")
+      res_cpu = torch.ops.aten._safe_softmax(cpu_scalar, dim=0)
+      res_tpu = torch.ops.aten._safe_softmax(tpu_scalar, dim=0)
+      utils.assert_close(actual=res_tpu.cpu(), expected=res_cpu)
+
+    for shape in ((0,), (0, 4), (2, 0, 3)):
+      cpu_empty = torch.empty(shape, dtype=torch.float32)
+      tpu_empty = cpu_empty.to("tpu")
+      res_cpu = torch.ops.aten._safe_softmax(cpu_empty, dim=-1)
+      res_tpu = torch.ops.aten._safe_softmax(tpu_empty, dim=-1)
+      utils.assert_close(actual=res_tpu.cpu(), expected=res_cpu)
+
+    for src_dtype in (torch.bfloat16, torch.int64):
+      cpu_src = (
+          torch.randn(2, 4, dtype=src_dtype)
+          if src_dtype.is_floating_point
+          else torch.randint(-10, 10, (2, 4), dtype=src_dtype)
+      )
+      tpu_src = cpu_src.to("tpu")
+      res_cpu = torch.ops.aten._safe_softmax(
+          cpu_src, dim=-1, dtype=torch.float32
+      )
+      res_tpu = torch.ops.aten._safe_softmax(
+          tpu_src, dim=-1, dtype=torch.float32
+      )
+      self.assertEqual(res_tpu.dtype, torch.float32)
+      utils.assert_close(actual=res_tpu.cpu(), expected=res_cpu)
+
+    tpu_dyn = cpu_x.to("tpu")
+    dynamism.mark_dynamic(tpu_dyn, dimension=1, lower_bound=2, upper_bound=8)
+    res_dyn = torch.ops.aten._safe_softmax(tpu_dyn, dim=-1)
+    utils.assert_close(actual=res_dyn.cpu(), expected=cpu_safe_sm)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

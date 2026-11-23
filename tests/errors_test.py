@@ -20865,5 +20865,62 @@ class UnaryOpsErrorTest(et.ErrorTestBase):
           op(t, out=out)
 
 
+class SafeSoftmaxErrorTest(et.ErrorTestBase):
+
+  def test_safe_softmax_unsupported_dtype(self):
+    t = torch.tensor([1, 2], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        gpu=""""host_softmax" not implemented for 'Int'""",
+        tpu="""safe_softmax(): not implemented for input type int32""",
+    ):
+      torch.ops.aten._safe_softmax(t, 0)
+
+  def test_safe_softmax_unsupported_target_dtype(self):
+    t = torch.randn(2, 2, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        gpu=""""host_softmax" not implemented for 'Int'""",
+        tpu="""safe_softmax(): not implemented for input type int32""",
+    ):
+      torch.ops.aten._safe_softmax(t, 0, dtype=torch.int32)
+
+  def test_safe_softmax_empty_tensor_float8_unsupported(self):
+    t = torch.empty(0, 4, dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        gpu=""""isneginf_cuda" not implemented for 'Float8_e4m3fn'""",
+        tpu="""safe_softmax(): not implemented for float8_e4m3fn""",
+    ):
+      torch.ops.aten._safe_softmax(t, -1)
+
+  def test_safe_softmax_dim_out_of_bounds(self):
+    t = torch.randn(2, 3, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 5)""",
+        tpu="""safe_softmax(): expected dimension to be in range [-2, 1], got 5""",
+    ):
+      torch.ops.aten._safe_softmax(t, 5)
+
+  def test_safe_softmax_scalar_dim_out_of_bounds(self):
+    t = torch.tensor(1.0, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        tpu="""safe_softmax(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
+    ):
+      torch.ops.aten._safe_softmax(t, 1)
+
+  def test_safe_softmax_empty_tensor_dim_out_of_bounds(self):
+    t = torch.empty(0, 5, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 3)""",
+        tpu="""safe_softmax(): expected dimension to be in range [-2, 1], got 3""",
+    ):
+      torch.ops.aten._safe_softmax(t, 3)
+
+
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
