@@ -7204,6 +7204,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assertEqual(cpu_info.item(), tpu_info.cpu().item())
 
+    b_empty = torch.zeros(2, 0)
+    _, cpu_empty_info = torch.linalg.solve_ex(a, b_empty, check_errors=False)
+    _, tpu_empty_info = torch.linalg.solve_ex(
+        a.to(tpu_device), b_empty.to(tpu_device), check_errors=False
+    )
+    self.assertEqual(cpu_empty_info.item(), tpu_empty_info.cpu().item())
+
   def test_solve_ex_singular_check_errors_true(self):
     """Tests that singular inputs raise an error when check_errors=True."""
     torch.manual_seed(1234)
@@ -7222,6 +7229,56 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       torch.linalg.solve_ex(
           a.to(tpu_device), b.to(tpu_device), check_errors=True
       )
+
+  def test_solve_ex_batch_broadcast(self):
+    # Use non-identity invertible matrices (batch 0 has a zero [0, 0] entry to
+    # exercise pivoting, and both batches are distinct).
+    a_single = torch.tensor(
+        [[0.0, 2.0, 1.0], [3.0, -1.0, 2.0], [1.0, 4.0, -1.0]],
+        dtype=torch.float32,
+    )
+    a_other = torch.tensor(
+        [[2.0, 1.0, 1.0], [4.0, -6.0, 0.0], [-2.0, 7.0, 2.0]],
+        dtype=torch.float32,
+    )
+    a_3d = torch.stack([a_single, a_other])
+
+    def run_solve_ex(device, a_t, b_t, *, left, use_out):
+      if use_out:
+        res = torch.empty(0, dtype=torch.float32, device=device)
+        info = torch.empty(0, dtype=torch.int32, device=device)
+        return torch.linalg.solve_ex(
+            a_t.to(device), b_t.to(device), left=left, out=(res, info)
+        )
+      return torch.linalg.solve_ex(a_t.to(device), b_t.to(device), left=left)
+
+    b_left = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4)
+    # Use 4 rows (not 2) so b_right is not treated as a batched vector RHS of
+    # shape a_3d.shape[:-1] == (2, 3).
+    b_right = torch.arange(1, 13, dtype=torch.float32).reshape(4, 3)
+    b_vec = torch.tensor([1.0, -2.0, 3.0], dtype=torch.float32)
+    b_batched_left = torch.arange(1, 25, dtype=torch.float32).reshape(2, 3, 4)
+    b_batched_right = torch.arange(1, 25, dtype=torch.float32).reshape(2, 4, 3)
+
+    cases = [
+        ("b_2d_left", a_3d, b_left, True),
+        ("b_2d_right", a_3d, b_right, False),
+        ("b_1d_vec", a_3d, b_vec, True),
+        ("a_2d_left", a_single, b_batched_left, True),
+        ("a_2d_right", a_single, b_batched_right, False),
+        ("a_singleton_left", a_single.unsqueeze(0), b_batched_left, True),
+        ("a_singleton_right", a_single.unsqueeze(0), b_batched_right, False),
+    ]
+    for name, a_in, b_in, left in cases:
+      for use_out in (False, True):
+        with self.subTest(case=name, use_out=use_out):
+          self.assert_close_tpu_vs_cpu(
+              lambda device, a=a_in, b=b_in, l=left, o=use_out: run_solve_ex(
+                  device, a, b, left=l, use_out=o
+              ),
+              rtol=1e-4,
+              atol=1e-4,
+          )
 
   def test_fill_tensor(self):
     self.assert_close_tpu_vs_cpu(
@@ -12493,6 +12550,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
   )
   def test_linalg_cross(self, shape_and_dim, dtype):
     shape, dim = shape_and_dim
+    if shape == (4, 3) and dim == -1 and dtype == torch.complex128:
+      # TODO(b/589559770): Re-enable once XLA:TPU complex128 concatenate
+      # layout assignment regression is fixed.
+      self.skipTest(
+          "Temporarily skipped due to XLA:TPU complex128 concatenate layout "
+          "regression (b/589559770)."
+      )
     if dtype.is_floating_point or dtype.is_complex:
       a = torch.randn(shape, dtype=dtype)
       b = torch.randn(shape, dtype=dtype)
