@@ -493,8 +493,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering emits an op without bounded shape support": {
-        # XLA ragged-dot does not support propagating bounded dimensions.
-        "_grouped_mm": {EAGER, COMPILE},
         # XLA Scatter updates bound mismatches static scatter_indices bound.
         "_jagged_to_padded_dense_forward": {EAGER},
         # Fails to inline MLIR functions on bounded inputs.
@@ -970,6 +968,7 @@ class DynamicOpInfo:
         GluDynamicOpInfo,
         WeightNormBackwardDynamicOpInfo,
         FusedMovingAvgObsFqHelperDynamicOpInfo,
+        GroupedMmDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -1732,6 +1731,44 @@ class FusedMovingAvgObsFqHelperDynamicOpInfo(DynamicOpInfo):
     proposed[ch_candidate] = tuple(
         sorted(set(proposed[ch_candidate]) | set(stat_dims))
     )
+    return proposed
+
+
+class GroupedMmDynamicOpInfo(DynamicOpInfo):
+  """Couples the ragged contracting dimension of 2D x 2D `_grouped_mm`."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "_grouped_mm"
+
+  def _discover_coupled_dims(
+      self,
+      candidates: Sequence[TensorDim],
+      tensors: Sequence[torch.Tensor],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> dict[TensorDim, tuple[TensorDim, ...]]:
+    """Couples `self` dim 1 with `mat2` dim 0 for 2D x 2D `_grouped_mm`."""
+    proposed = super()._discover_coupled_dims(
+        candidates, tensors, op_args, op_func, mode
+    )
+    # Upstream's CPU meta omits the contraction-dimension equality check in the
+    # 2D x 2D (ragged K) case, whereas TorchTPU's meta enforces it.
+    k_candidate = TensorDim(tensor_index=0, dim=1)
+    if (
+        len(tensors) >= 2
+        and tensors[0].ndim == 2
+        and tensors[1].ndim == 2
+        and tensors[0].shape[1] == tensors[1].shape[0]
+        and k_candidate in proposed
+    ):
+      proposed[k_candidate] = tuple(
+          sorted(
+              set(proposed[k_candidate]) | {TensorDim(tensor_index=1, dim=0)}
+          )
+      )
     return proposed
 
 

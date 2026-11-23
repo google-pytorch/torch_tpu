@@ -16,6 +16,7 @@
 
 #include "csrc/ops/op_builder_utils.h"
 
+#include <algorithm>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -67,11 +68,17 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/Types.h"
+#include "mlir/IR/Value.h"
+#include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Support/TypeID.h"
 #include "mlir/Support/WalkResult.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/Version.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -104,7 +111,7 @@ std::complex<T> ToStdComplex(const c10::complex<T>& complex_value) {
 // will skip: i.e. `file.py -> file` and /path/file -> file`.
 std::string GetBasename(std::string_view filename) {
   // Parse fullpath
-  filename = tsl::io::Basename({filename.data(), filename.size()});
+  filename = tsl::io::Basename(filename);
 
   // Parse extension - TSL tools don't support optional extension parsing.
   const auto ext_dot = filename.rfind('.');
@@ -376,6 +383,305 @@ absl::Status ValidateConvolutionBounds(
         << kSupportedBounds;
   }
   return absl::OkStatus();
+}
+
+// Returns the lhs dimensions that form the leading dimensions of a
+// multi-dimensional `group_sizes` operand (`[b..., x..., g]`), matching
+// `checkRaggedDotConstraints` in ChloOps.cpp.
+llvm::SmallVector<int64_t> GetRaggedDotGroupSizesPrefixDims(
+    const int64_t lhs_rank,
+    const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers) {
+  const mlir::ArrayRef<int64_t> lhs_batch_dims =
+      dimension_numbers.getLhsBatchingDimensions();
+  const mlir::ArrayRef<int64_t> lhs_contracting_dims =
+      dimension_numbers.getLhsContractingDimensions();
+  const int64_t lhs_ragged_dim =
+      dimension_numbers.getLhsRaggedDimensions().front();
+
+  llvm::SmallVector<int64_t> prefix_dims(lhs_batch_dims.begin(),
+                                         lhs_batch_dims.end());
+  if (const auto* it = llvm::find(lhs_batch_dims, lhs_ragged_dim);
+      it != lhs_batch_dims.end()) {
+    prefix_dims.resize(std::distance(lhs_batch_dims.begin(), it));
+  } else if (const auto* it = llvm::find(lhs_contracting_dims, lhs_ragged_dim);
+             it != lhs_contracting_dims.end()) {
+    prefix_dims.insert(prefix_dims.end(), lhs_contracting_dims.begin(), it);
+  } else {
+    for (int64_t i = 0; i < lhs_ragged_dim && i < lhs_rank; ++i) {
+      if (!llvm::is_contained(lhs_batch_dims, i) &&
+          !llvm::is_contained(lhs_contracting_dims, i)) {
+        prefix_dims.push_back(i);
+      }
+    }
+  }
+  return prefix_dims;
+}
+
+bool IsBoundedDim(const stablehlo::Dimensions& dims, const int64_t dim) {
+  return dims[dim].boundOp.has_value();
+}
+
+bool IsDimInRange(const int64_t dim, const int64_t rank) {
+  return dim >= 0 && dim < rank;
+}
+
+// Checks that each paired (lhs, rhs) dimension (e.g. "batching" or
+// "contracting") is either static on both operands or bounded dynamic with
+// equal upper bounds on both operands.
+absl::Status ValidateRaggedDotPairedDims(
+    const std::string_view dim_kind, const mlir::RankedTensorType lhs_type,
+    const stablehlo::Dimensions& lhs_dims,
+    const mlir::ArrayRef<int64_t> lhs_paired_dims,
+    const mlir::RankedTensorType rhs_type,
+    const stablehlo::Dimensions& rhs_dims,
+    const mlir::ArrayRef<int64_t> rhs_paired_dims) {
+  const int64_t lhs_rank = lhs_type.getRank();
+  const int64_t rhs_rank = rhs_type.getRank();
+  const size_t num_dims =
+      std::min(lhs_paired_dims.size(), rhs_paired_dims.size());
+  for (size_t i = 0; i < num_dims; ++i) {
+    const int64_t lhs_dim = lhs_paired_dims[i];
+    const int64_t rhs_dim = rhs_paired_dims[i];
+    if (!IsDimInRange(lhs_dim, lhs_rank) || !IsDimInRange(rhs_dim, rhs_rank)) {
+      continue;
+    }
+    const bool lhs_bounded = IsBoundedDim(lhs_dims, lhs_dim);
+    TT_RET_CHECK(lhs_bounded == IsBoundedDim(rhs_dims, rhs_dim),
+                 error::kPythonNotImplementedError)
+        << "expected the " << dim_kind
+        << " dimensions of a ragged dot to be both static or both bounded "
+           "dynamic, got dimension "
+        << lhs_dim << " of the lhs operand of type "
+        << mlir::debugString(lhs_type) << " and dimension " << rhs_dim
+        << " of the rhs operand of type " << mlir::debugString(rhs_type);
+    TT_RET_CHECK(
+        !lhs_bounded || lhs_dims[lhs_dim].size == rhs_dims[rhs_dim].size,
+        error::kPythonNotImplementedError)
+        << "expected the bounded dynamic " << dim_kind
+        << " dimensions of a ragged dot to have equal upper bounds, got upper "
+           "bound "
+        << lhs_dims[lhs_dim].size << " in dimension " << lhs_dim
+        << " of the lhs operand of type " << mlir::debugString(lhs_type)
+        << " and upper bound " << rhs_dims[rhs_dim].size << " in dimension "
+        << rhs_dim << " of the rhs operand of type "
+        << mlir::debugString(rhs_type);
+  }
+  return absl::OkStatus();
+}
+
+// Checks that in non-contracting ragged-dot mode, the trailing group dimension
+// of `group_sizes` and the rhs group dimension are either both static or both
+// bounded dynamic with equal upper bounds.
+absl::Status ValidateRaggedDotGroupDimBounds(
+    const mlir::RankedTensorType rhs_type,
+    const stablehlo::Dimensions& rhs_dims,
+    const mlir::RankedTensorType group_sizes_type,
+    const stablehlo::Dimensions& group_sizes_dims,
+    const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers) {
+  const int64_t lhs_ragged_dim =
+      dimension_numbers.getLhsRaggedDimensions().front();
+  const bool is_non_contracting_mode =
+      !llvm::is_contained(dimension_numbers.getLhsBatchingDimensions(),
+                          lhs_ragged_dim) &&
+      !llvm::is_contained(dimension_numbers.getLhsContractingDimensions(),
+                          lhs_ragged_dim);
+  const mlir::ArrayRef<int64_t> rhs_group_dims =
+      dimension_numbers.getRhsGroupDimensions();
+  if (!is_non_contracting_mode || rhs_group_dims.size() != 1 ||
+      !IsDimInRange(rhs_group_dims[0], rhs_type.getRank())) {
+    return absl::OkStatus();
+  }
+  const int64_t group_dim = group_sizes_type.getRank() - 1;
+  const int64_t rhs_dim = rhs_group_dims[0];
+  const bool group_bounded = IsBoundedDim(group_sizes_dims, group_dim);
+  TT_RET_CHECK(group_bounded == IsBoundedDim(rhs_dims, rhs_dim),
+               error::kPythonNotImplementedError)
+      << "expected the group dimension of group_sizes and the rhs group "
+         "dimension of a ragged dot to be both static or both bounded "
+         "dynamic, got dimension "
+      << group_dim << " of group_sizes of type "
+      << mlir::debugString(group_sizes_type) << " and dimension " << rhs_dim
+      << " of the rhs operand of type " << mlir::debugString(rhs_type);
+  TT_RET_CHECK(!group_bounded ||
+                   group_sizes_dims[group_dim].size == rhs_dims[rhs_dim].size,
+               error::kPythonNotImplementedError)
+      << "expected the bounded dynamic group dimension of group_sizes and "
+         "the rhs group dimension of a ragged dot to have equal upper "
+         "bounds, got upper bound "
+      << group_sizes_dims[group_dim].size << " in dimension " << group_dim
+      << " of group_sizes of type " << mlir::debugString(group_sizes_type)
+      << " and upper bound " << rhs_dims[rhs_dim].size << " in dimension "
+      << rhs_dim << " of the rhs operand of type "
+      << mlir::debugString(rhs_type);
+  return absl::OkStatus();
+}
+
+// Checks that the leading prefix dimensions of a multi-dimensional
+// `group_sizes` operand match the corresponding lhs dimensions in boundedness
+// and upper bounds.
+absl::Status ValidateRaggedDotGroupSizesPrefixBounds(
+    const mlir::RankedTensorType lhs_type,
+    const stablehlo::Dimensions& lhs_dims,
+    const mlir::RankedTensorType group_sizes_type,
+    const stablehlo::Dimensions& group_sizes_dims,
+    const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers) {
+  const int64_t group_sizes_rank = group_sizes_type.getRank();
+  if (group_sizes_rank <= 1) {
+    return absl::OkStatus();
+  }
+  const int64_t lhs_rank = lhs_type.getRank();
+  const llvm::SmallVector<int64_t> prefix_dims =
+      GetRaggedDotGroupSizesPrefixDims(lhs_rank, dimension_numbers);
+  if (group_sizes_rank != static_cast<int64_t>(prefix_dims.size()) + 1) {
+    return absl::OkStatus();
+  }
+  for (size_t i = 0; i < prefix_dims.size(); ++i) {
+    const int64_t lhs_dim = prefix_dims[i];
+    if (!IsDimInRange(lhs_dim, lhs_rank)) continue;
+    const bool group_bounded = IsBoundedDim(group_sizes_dims, i);
+    const bool lhs_bounded = IsBoundedDim(lhs_dims, lhs_dim);
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=covered in op_builder_utils_test.
+        group_bounded == lhs_bounded, error::kPythonNotImplementedError)
+        << "expected prefix dimension " << i << " of group_sizes of type "
+        << mlir::debugString(group_sizes_type) << " and dimension " << lhs_dim
+        << " of the lhs operand of type " << mlir::debugString(lhs_type)
+        << " in a ragged dot to be both static or both bounded dynamic, got "
+        << (group_bounded ? "bounded dynamic" : "static") << " and "
+        << (lhs_bounded ? "bounded dynamic" : "static");
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=covered in op_builder_utils_test.
+        !group_bounded || group_sizes_dims[i].size == lhs_dims[lhs_dim].size,
+        error::kPythonNotImplementedError)
+        << "expected bounded dynamic prefix dimension " << i
+        << " of group_sizes of type " << mlir::debugString(group_sizes_type)
+        << " and dimension " << lhs_dim << " of the lhs operand of type "
+        << mlir::debugString(lhs_type)
+        << " in a ragged dot to have equal upper bounds, got upper bound "
+        << group_sizes_dims[i].size << " and upper bound "
+        << lhs_dims[lhs_dim].size;
+  }
+  return absl::OkStatus();
+}
+
+// Returns a kPythonNotImplementedError if the bounded dynamic dimensions of
+// the ragged dot operands are not supported by RaggedDotLike, see its
+// documentation. The operand types are only used in the error messages.
+absl::Status ValidateRaggedDotBounds(
+    const mlir::RankedTensorType lhs_type,
+    const stablehlo::Dimensions& lhs_dims,
+    const mlir::RankedTensorType rhs_type,
+    const stablehlo::Dimensions& rhs_dims,
+    const mlir::RankedTensorType group_sizes_type,
+    const stablehlo::Dimensions& group_sizes_dims,
+    const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers) {
+  TT_RETURN_IF_ERROR(ValidateRaggedDotPairedDims(
+      "batching", lhs_type, lhs_dims,
+      dimension_numbers.getLhsBatchingDimensions(), rhs_type, rhs_dims,
+      dimension_numbers.getRhsBatchingDimensions()));
+  TT_RETURN_IF_ERROR(ValidateRaggedDotPairedDims(
+      "contracting", lhs_type, lhs_dims,
+      dimension_numbers.getLhsContractingDimensions(), rhs_type, rhs_dims,
+      dimension_numbers.getRhsContractingDimensions()));
+
+  const mlir::ArrayRef<int64_t> lhs_ragged_dims =
+      dimension_numbers.getLhsRaggedDimensions();
+  if (lhs_ragged_dims.size() != 1 ||
+      !IsDimInRange(lhs_ragged_dims[0], lhs_type.getRank()) ||
+      group_sizes_type.getRank() < 1) {
+    return absl::OkStatus();
+  }
+  TT_RETURN_IF_ERROR(
+      ValidateRaggedDotGroupDimBounds(rhs_type, rhs_dims, group_sizes_type,
+                                      group_sizes_dims, dimension_numbers));
+  return ValidateRaggedDotGroupSizesPrefixBounds(
+      lhs_type, lhs_dims, group_sizes_type, group_sizes_dims,
+      dimension_numbers);
+}
+
+// Infers the static result type of a ragged dot from static operands via CHLO's
+// shape inference.
+absl::StatusOr<mlir::RankedTensorType> InferStaticRaggedDotResultType(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp group_sizes,
+    const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers,
+    const mlir::ArrayAttr precision_config,
+    const mlir::Type result_element_type) {
+  mlir::MLIRContext& ctx = lhs.getContext();
+  mlir::chlo::RaggedDotOp::Properties props;
+  props.ragged_dot_dimension_numbers = dimension_numbers;
+  props.precision_config = precision_config;
+  mlir::Value operands[3] = {lhs.getValue(), rhs.getValue(),
+                             group_sizes.getValue()};
+  llvm::SmallVector<mlir::ShapedTypeComponents, 1> inferred_shapes;
+  mlir::BaseScopedDiagnosticHandler diag_handler(&ctx);
+  const mlir::LogicalResult status =
+      mlir::chlo::RaggedDotOp::inferReturnTypeComponents(
+          &ctx, lhs.getValue().getLoc(), mlir::ValueRange(operands),
+          mlir::DictionaryAttr(),
+          mlir::PropertyRef(
+              mlir::TypeID::get<mlir::chlo::RaggedDotOp::Properties>(), &props),
+          /*regions=*/{}, inferred_shapes);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=covered in op_builder_utils_test.
+      mlir::succeeded(status) && inferred_shapes.size() == 1,
+      error::kInvalidArgument)
+      << "failed to infer ragged_dot shape: "
+      << ConsumeMlirDiagnostics(diag_handler);
+  return mlir::RankedTensorType::get(inferred_shapes[0].getDims(),
+                                     result_element_type);
+}
+
+// Bounds the dimensions of the static ragged_dot `result` from the runtime
+// sizes of `lhs`, `rhs` and `group_sizes`, matching the output dimension order
+// of `inferRaggedDotOutputDimensions` in ChloOps.cpp.
+mlir::MlirOp BoundRaggedDotResult(
+    mlir::MlirOp result,
+    const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers,
+    const std::vector<std::optional<mlir::MlirOp>>& lhs_runtime_sizes,
+    const std::vector<std::optional<mlir::MlirOp>>& rhs_runtime_sizes,
+    const std::vector<std::optional<mlir::MlirOp>>& group_sizes_runtime_sizes) {
+  const mlir::ArrayRef<int64_t> lhs_batch_dims =
+      dimension_numbers.getLhsBatchingDimensions();
+  const mlir::ArrayRef<int64_t> rhs_batch_dims =
+      dimension_numbers.getRhsBatchingDimensions();
+  const mlir::ArrayRef<int64_t> lhs_contracting_dims =
+      dimension_numbers.getLhsContractingDimensions();
+  const mlir::ArrayRef<int64_t> rhs_contracting_dims =
+      dimension_numbers.getRhsContractingDimensions();
+  const mlir::ArrayRef<int64_t> rhs_group_dims =
+      dimension_numbers.getRhsGroupDimensions();
+  const int64_t lhs_ragged_dim =
+      dimension_numbers.getLhsRaggedDimensions().front();
+
+  std::vector<std::optional<mlir::MlirOp>> result_runtime_sizes;
+  if (llvm::is_contained(lhs_contracting_dims, lhs_ragged_dim)) {
+    result_runtime_sizes.push_back(group_sizes_runtime_sizes.back());
+  }
+  for (const int64_t dim : lhs_batch_dims) {
+    result_runtime_sizes.push_back(lhs_runtime_sizes[dim]);
+  }
+  for (int64_t i = 0; i < static_cast<int64_t>(lhs_runtime_sizes.size()); ++i) {
+    if (!llvm::is_contained(lhs_batch_dims, i) &&
+        !llvm::is_contained(lhs_contracting_dims, i)) {
+      result_runtime_sizes.push_back(lhs_runtime_sizes[i]);
+    }
+  }
+  for (int64_t i = 0; i < static_cast<int64_t>(rhs_runtime_sizes.size()); ++i) {
+    if (!llvm::is_contained(rhs_batch_dims, i) &&
+        !llvm::is_contained(rhs_contracting_dims, i) &&
+        !llvm::is_contained(rhs_group_dims, i)) {
+      result_runtime_sizes.push_back(rhs_runtime_sizes[i]);
+    }
+  }
+  return RestoreDynamicDimSizes(result, result_runtime_sizes);
+}
+
+// Returns the entries of `runtime_sizes` at `dims`, with nullopt elsewhere.
+std::vector<std::optional<mlir::MlirOp>> KeepRuntimeSizes(
+    const absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes,
+    const llvm::ArrayRef<int64_t> dims) {
+  std::vector<std::optional<mlir::MlirOp>> kept(runtime_sizes.size());
+  for (const int64_t dim : dims) {
+    kept[dim] = runtime_sizes[dim];
+  }
+  return kept;
 }
 
 }  // namespace
@@ -968,6 +1274,72 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
   }
   return BoundConvolutionResult(result, dimension_numbers, windows,
                                 static_lhs.runtime_sizes);
+}
+
+absl::StatusOr<mlir::MlirOp> RaggedDotLike(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp group_sizes,
+    const mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers,
+    const mlir::ArrayAttr precision_config,
+    const std::optional<mlir::ElementType> preferred_element_type) {
+  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
+  const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
+  const mlir::RankedTensorType group_sizes_type =
+      GetTensorTypeOrDie(group_sizes);
+  const mlir::Type result_element_type =
+      preferred_element_type.has_value()
+          ? mlir::getElementType(lhs.getContext(), *preferred_element_type)
+          : lhs_type.getElementType();
+
+  if (lhs_type.hasStaticShape() && rhs_type.hasStaticShape() &&
+      group_sizes_type.hasStaticShape()) {
+    TT_ASSIGN_OR_RETURN(
+        const mlir::RankedTensorType result_type,
+        InferStaticRaggedDotResultType(lhs, rhs, group_sizes, dimension_numbers,
+                                       precision_config, result_element_type));
+    return mlir::chlo::RaggedDot(result_type, lhs, rhs, group_sizes,
+                                 dimension_numbers, precision_config);
+  }
+
+  const stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  const stablehlo::Dimensions group_sizes_dims = GetDimensions(group_sizes);
+  TT_RETURN_IF_ERROR(ValidateRaggedDotBounds(
+      lhs_type, lhs_dims, rhs_type, rhs_dims, group_sizes_type,
+      group_sizes_dims, dimension_numbers));
+
+  const StaticAtBounds static_lhs = MakeStaticAtBounds(lhs);
+  const StaticAtBounds static_rhs = MakeStaticAtBounds(rhs);
+  const StaticAtBounds static_group_sizes = MakeStaticAtBounds(group_sizes);
+  TT_ASSIGN_OR_RETURN(
+      const mlir::RankedTensorType static_result_type,
+      InferStaticRaggedDotResultType(static_lhs.op, static_rhs.op,
+                                     static_group_sizes.op, dimension_numbers,
+                                     precision_config, result_element_type));
+
+  // The elements past the runtime sizes are undefined. Only the contracting
+  // dimensions are reduced over, and the rhs group dimensions are zeroed so
+  // that unused groups can't leak NaN or Inf into the result. The undefined
+  // elements of the other dimensions only reach result elements past the
+  // runtime sizes, so they need no zeroing.
+  llvm::SmallVector<int64_t> rhs_zeroed_dims(
+      dimension_numbers.getRhsContractingDimensions());
+  llvm::append_range(rhs_zeroed_dims,
+                     dimension_numbers.getRhsGroupDimensions());
+  mlir::MlirOp zeroed_lhs = ZeroPastRuntimeSizes(
+      static_lhs.op,
+      KeepRuntimeSizes(static_lhs.runtime_sizes,
+                       dimension_numbers.getLhsContractingDimensions()));
+  mlir::MlirOp zeroed_rhs = ZeroPastRuntimeSizes(
+      static_rhs.op,
+      KeepRuntimeSizes(static_rhs.runtime_sizes, rhs_zeroed_dims));
+  mlir::MlirOp zeroed_group_sizes = ZeroPastRuntimeSizes(
+      static_group_sizes.op, static_group_sizes.runtime_sizes);
+  mlir::MlirOp result = mlir::chlo::RaggedDot(
+      static_result_type, zeroed_lhs, zeroed_rhs, zeroed_group_sizes,
+      dimension_numbers, precision_config);
+  return BoundRaggedDotResult(
+      result, dimension_numbers, static_lhs.runtime_sizes,
+      static_rhs.runtime_sizes, static_group_sizes.runtime_sizes);
 }
 
 std::string ConsumeMlirDiagnostics(

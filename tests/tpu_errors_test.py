@@ -1542,6 +1542,80 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.glu(x, dim=dim).cpu()
 
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_grouped_mm_dynamic_contracting_mismatch(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(8, 4, device=et.device())
+      b = torch.ones(2, 4, 6, device=et.device())
+      offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+      dynamism.mark_dynamic(a, 1, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""grouped_mm(): expected the contracting dimensions of a ragged dot to be both static or both bounded dynamic, got dimension 1 of the lhs operand of type tensor<8x?xf32, #stablehlo.bounds<?, 6>> and dimension 1 of the rhs operand of type tensor<2x4x6xf32>""",
+      ):
+        torch._grouped_mm(a, b, offs=offs).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_grouped_mm_dynamic_contracting_different_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(8, 4, device=et.device())
+      b = torch.ones(2, 4, 6, device=et.device())
+      offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+      dynamism.mark_dynamic(a, 1, 2, 6)
+      dynamism.mark_dynamic(b, 1, 2, 8)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""grouped_mm(): expected the bounded dynamic contracting dimensions of a ragged dot to have equal upper bounds, got upper bound 6 in dimension 1 of the lhs operand of type tensor<8x?xf32, #stablehlo.bounds<?, 6>> and upper bound 8 in dimension 1 of the rhs operand of type tensor<2x?x6xf32, #stablehlo.bounds<?, 8, ?>>""",
+      ):
+        torch._grouped_mm(a, b, offs=offs).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_grouped_mm_dynamic_group_mismatch(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(8, 4, device=et.device())
+      b = torch.ones(2, 4, 6, device=et.device())
+      offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+      dynamism.mark_dynamic(b, 0, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""grouped_mm(): expected the group dimension of group_sizes and the rhs group dimension of a ragged dot to be both static or both bounded dynamic, got dimension 0 of group_sizes of type tensor<2xi32> and dimension 0 of the rhs operand of type tensor<?x4x6xf32, #stablehlo.bounds<6, ?, ?>>""",
+      ):
+        torch._grouped_mm(a, b, offs=offs).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_grouped_mm_dynamic_group_different_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(8, 4, device=et.device())
+      b = torch.ones(2, 4, 6, device=et.device())
+      offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+      dynamism.mark_dynamic(offs, 0, 2, 4)
+      dynamism.mark_dynamic(b, 0, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""grouped_mm(): expected the bounded dynamic group dimension of group_sizes and the rhs group dimension of a ragged dot to have equal upper bounds, got upper bound 4 in dimension 0 of group_sizes of type tensor<?xi32, #stablehlo.bounds<4>> and upper bound 6 in dimension 0 of the rhs operand of type tensor<?x4x6xf32, #stablehlo.bounds<6, ?, ?>>""",
+      ):
+        torch._grouped_mm(a, b, offs=offs).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_scaled_grouped_mm_dynamic_rowwise_scales(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(8, 4, device=et.device())
+      b = torch.ones(2, 4, 6, device=et.device())
+      scale_a = torch.ones(8, device=et.device())
+      scale_b = torch.ones(2, 6, device=et.device())
+      offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+      dynamism.mark_dynamic(a, 0, 2, 16)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""scaled_grouped_mm(): expected static shapes with rowwise scales, got bounded dynamic self of type tensor<?x4xf32, #stablehlo.bounds<16, ?>>""",
+      ):
+        torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs).cpu()
+
   @et.why_tpu_only(
       "aten.linear_backward is only registered for TPU (PrivateUse1), not"
       " CPU/CUDA."

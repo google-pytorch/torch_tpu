@@ -33,6 +33,7 @@
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/util/Exception.h"
+#include "c10/util/StringUtil.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -58,6 +59,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -102,14 +104,16 @@ mlir::ElementType GetDefaultMlirDType() {
   return *default_dtype;
 }
 
-// Returns an f32 function argument of `shape` with `bound_dims` made bounded
-// dynamic by set_dimension_size with runtime size arguments.
-mlir::MlirOp MakeBoundedArg(mlir::func::FunctionBuilder& fb,
-                            const Dimensions& shape,
-                            absl::Span<const int64_t> bound_dims) {
+// Returns an `element_type` function argument of `shape` with `bound_dims` made
+// bounded dynamic by set_dimension_size with runtime size arguments.
+mlir::MlirOp MakeBoundedArg(
+    mlir::func::FunctionBuilder& fb, const Dimensions& shape,
+    absl::Span<const int64_t> bound_dims,
+    const mlir::ElementType element_type = mlir::ElementType::F32) {
   mlir::OpBuilder& op_builder = fb.getOpBuilder();
   mlir::MlirOp op = mlir::func::Argument(
-      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
+      fb, mlir::RankedTensorType::get(
+              shape, mlir::getElementType(fb.getContext(), element_type)));
   for (int64_t dim : bound_dims) {
     mlir::MlirOp size = mlir::func::Argument(
         fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
@@ -2848,6 +2852,439 @@ TEST(BuildFillUninitialized, StandardFloatTypesUseNaN) {
   ASSERT_TRUE(dense_attr.isSplat());
   EXPECT_TRUE(dense_attr.getSplatValue<llvm::APFloat>().isNaN());
 }
+
+struct RaggedDotLikeParams {
+  std::string test_name;
+  Dimensions lhs_shape;
+  Dimensions lhs_bounded_dims;
+  Dimensions rhs_shape;
+  Dimensions rhs_bounded_dims;
+  Dimensions group_sizes_shape;
+  Dimensions group_sizes_bounded_dims;
+  Dimensions lhs_batch_dims;
+  Dimensions rhs_batch_dims;
+  Dimensions lhs_contracting_dims;
+  Dimensions rhs_contracting_dims;
+  Dimensions lhs_ragged_dims;
+  Dimensions rhs_group_dims;
+  std::optional<mlir::ElementType> preferred_element_type = std::nullopt;
+  Dimensions expected_result_shape;
+  std::vector<bool> expected_result_bounded;
+  std::string expected_error;
+};
+
+absl::StatusOr<mlir::MlirOp> CallRaggedDotLike(
+    const RaggedDotLikeParams& params, mlir::MlirOp lhs, mlir::MlirOp rhs,
+    mlir::MlirOp group_sizes) {
+  const auto dimension_numbers = mlir::chlo::RaggedDotDimensionNumbersAttr::get(
+      &lhs.getContext(), params.lhs_batch_dims, params.rhs_batch_dims,
+      params.lhs_contracting_dims, params.rhs_contracting_dims,
+      params.lhs_ragged_dims, params.rhs_group_dims);
+  return RaggedDotLike(lhs, rhs, group_sizes, dimension_numbers,
+                       /*precision_config=*/mlir::ArrayAttr(),
+                       params.preferred_element_type);
+}
+
+TEST(RaggedDotLike, StaticOperandsEmitRaggedDotDirectly) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const RaggedDotLikeParams params = {
+      .lhs_shape = {8, 4},
+      .rhs_shape = {2, 4, 6},
+      .group_sizes_shape = {2},
+      .lhs_contracting_dims = {1},
+      .rhs_contracting_dims = {1},
+      .lhs_ragged_dims = {0},
+      .rhs_group_dims = {0},
+      .preferred_element_type = mlir::ElementType::BF16,
+  };
+  const mlir::MlirOp lhs = MakeBoundedArg(fb, params.lhs_shape, {});
+  const mlir::MlirOp rhs = MakeBoundedArg(fb, params.rhs_shape, {});
+  const mlir::MlirOp group_sizes =
+      MakeBoundedArg(fb, params.group_sizes_shape, {}, mlir::ElementType::I32);
+
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp result,
+                          CallRaggedDotLike(params, lhs, rhs, group_sizes));
+
+  EXPECT_TRUE(
+      mlir::isa<mlir::chlo::RaggedDotOp>(result.getValue().getDefiningOp()));
+  EXPECT_EQ(result.getType(), mlir::RankedTensorType::get(
+                                  {8, 6}, fb.getOpBuilder().getBF16Type()));
+}
+
+class RaggedDotLikeInvalidDimensionNumbersTest
+    : public testing::TestWithParam<RaggedDotLikeParams> {};
+
+TEST_P(RaggedDotLikeInvalidDimensionNumbersTest, ReturnsInvalidArgument) {
+  const RaggedDotLikeParams& params = GetParam();
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const mlir::MlirOp lhs =
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs =
+      MakeBoundedArg(fb, params.rhs_shape, params.rhs_bounded_dims);
+  const mlir::MlirOp group_sizes =
+      MakeBoundedArg(fb, params.group_sizes_shape,
+                     params.group_sizes_bounded_dims, mlir::ElementType::I32);
+
+  const absl::StatusOr<mlir::MlirOp> result =
+      CallRaggedDotLike(params, lhs, rhs, group_sizes);
+
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
+  EXPECT_THAT(result.status().message(),
+              HasSubstr("There must be exactly one ragged dimension"));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RaggedDotLikeInvalidDimensionNumbersTests,
+    RaggedDotLikeInvalidDimensionNumbersTest,
+    testing::ValuesIn<RaggedDotLikeParams>({
+        {
+            .test_name = "StaticOperands",
+            .lhs_shape = {8, 4},
+            .rhs_shape = {2, 4, 6},
+            .group_sizes_shape = {2},
+            .lhs_contracting_dims = {1},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {},
+            .rhs_group_dims = {0},
+        },
+        {
+            .test_name = "BoundedOperands",
+            .lhs_shape = {8, 4},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {2, 4, 6},
+            .rhs_bounded_dims = {0},
+            .group_sizes_shape = {2},
+            .group_sizes_bounded_dims = {0},
+            .lhs_contracting_dims = {1},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {},
+            .rhs_group_dims = {0},
+        },
+    }),
+    [](const testing::TestParamInfo<
+        RaggedDotLikeInvalidDimensionNumbersTest::ParamType>& info) {
+      return info.param.test_name;
+    });
+
+class RaggedDotLikeBoundedTest
+    : public testing::TestWithParam<RaggedDotLikeParams> {};
+
+TEST_P(RaggedDotLikeBoundedTest, BoundsResultOfStaticRaggedDot) {
+  const RaggedDotLikeParams& params = GetParam();
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const mlir::MlirOp lhs =
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs =
+      MakeBoundedArg(fb, params.rhs_shape, params.rhs_bounded_dims);
+  const mlir::MlirOp group_sizes =
+      MakeBoundedArg(fb, params.group_sizes_shape,
+                     params.group_sizes_bounded_dims, mlir::ElementType::I32);
+
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp result,
+                          CallRaggedDotLike(params, lhs, rhs, group_sizes));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  // XLA only sees a static chlo.ragged_dot.
+  int num_ragged_dots = 0;
+  module->walk([&](mlir::chlo::RaggedDotOp ragged_dot) {
+    ++num_ragged_dots;
+    EXPECT_TRUE(ragged_dot.getLhs().getType().hasStaticShape())
+        << DebugString(ragged_dot);
+    EXPECT_TRUE(ragged_dot.getRhs().getType().hasStaticShape())
+        << DebugString(ragged_dot);
+    EXPECT_TRUE(ragged_dot.getGroupSizes().getType().hasStaticShape())
+        << DebugString(ragged_dot);
+    EXPECT_TRUE(ragged_dot.getType().hasStaticShape())
+        << DebugString(ragged_dot);
+  });
+  EXPECT_EQ(num_ragged_dots, 1);
+
+  const mlir::Type expected_elem_type =
+      params.preferred_element_type.has_value()
+          ? mlir::getElementType(fb.getContext(),
+                                 *params.preferred_element_type)
+          : fb.getOpBuilder().getF32Type();
+  EXPECT_EQ(GetElementTypeOrSelf(result), expected_elem_type);
+  const mlir::stablehlo::Dimensions result_dims = GetDimensions(result);
+  ASSERT_EQ(result_dims.size(), params.expected_result_shape.size());
+  for (int i = 0; i < result_dims.size(); ++i) {
+    EXPECT_EQ(result_dims[i].size, params.expected_result_shape[i])
+        << "dimension " << i;
+    EXPECT_EQ(result_dims[i].boundOp.has_value(),
+              params.expected_result_bounded[i])
+        << "dimension " << i;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RaggedDotLikeBoundedTests, RaggedDotLikeBoundedTest,
+    testing::ValuesIn<RaggedDotLikeParams>({
+        {
+            .test_name = "Mode1NonContractingBoundedRaggedAndContracting",
+            .lhs_shape = {16, 8},
+            .lhs_bounded_dims = {0, 1},
+            .rhs_shape = {3, 8, 6},
+            .rhs_bounded_dims = {0, 1, 2},
+            .group_sizes_shape = {3},
+            .group_sizes_bounded_dims = {0},
+            .lhs_contracting_dims = {1},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {0},
+            .rhs_group_dims = {0},
+            .expected_result_shape = {16, 6},
+            .expected_result_bounded = {true, true},
+        },
+        {
+            .test_name = "Mode1BatchedWith2DGroupSizes",
+            .lhs_shape = {4, 16, 8},
+            .lhs_bounded_dims = {0, 1},
+            .rhs_shape = {3, 4, 8, 6},
+            .rhs_bounded_dims = {1},
+            .group_sizes_shape = {4, 3},
+            .group_sizes_bounded_dims = {0},
+            .lhs_batch_dims = {0},
+            .rhs_batch_dims = {1},
+            .lhs_contracting_dims = {2},
+            .rhs_contracting_dims = {2},
+            .lhs_ragged_dims = {1},
+            .rhs_group_dims = {0},
+            .expected_result_shape = {4, 16, 6},
+            .expected_result_bounded = {true, true, false},
+        },
+        {
+            .test_name = "Mode2ContractingBoundedGroupsTokensAndOutputs",
+            .lhs_shape = {32, 8},
+            .lhs_bounded_dims = {0, 1},
+            .rhs_shape = {32, 6},
+            .rhs_bounded_dims = {0, 1},
+            .group_sizes_shape = {4},
+            .group_sizes_bounded_dims = {0},
+            .lhs_contracting_dims = {0},
+            .rhs_contracting_dims = {0},
+            .lhs_ragged_dims = {0},
+            .preferred_element_type = mlir::ElementType::BF16,
+            .expected_result_shape = {4, 8, 6},
+            .expected_result_bounded = {true, true, true},
+        },
+        {
+            .test_name = "Mode2BatchedWith2DGroupSizes",
+            .lhs_shape = {4, 16, 8},
+            .lhs_bounded_dims = {0, 2},
+            .rhs_shape = {4, 8, 6},
+            .rhs_bounded_dims = {0, 1},
+            .group_sizes_shape = {4, 3},
+            .group_sizes_bounded_dims = {0, 1},
+            .lhs_batch_dims = {0},
+            .rhs_batch_dims = {0},
+            .lhs_contracting_dims = {2},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {2},
+            .expected_result_shape = {3, 4, 16, 6},
+            .expected_result_bounded = {true, true, false, false},
+        },
+        {
+            .test_name = "Mode3BatchBoundedRaggedBatchAndGroups",
+            .lhs_shape = {8, 5, 4},
+            .lhs_bounded_dims = {0, 1},
+            .rhs_shape = {8, 4, 6},
+            .rhs_bounded_dims = {0},
+            .group_sizes_shape = {3},
+            .group_sizes_bounded_dims = {0},
+            .lhs_batch_dims = {0},
+            .rhs_batch_dims = {0},
+            .lhs_contracting_dims = {2},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {0},
+            .expected_result_shape = {8, 5, 6},
+            .expected_result_bounded = {true, true, false},
+        },
+        {
+            .test_name = "Mode3BatchedWith2DGroupSizes",
+            .lhs_shape = {2, 8, 5, 4},
+            .lhs_bounded_dims = {0, 1},
+            .rhs_shape = {2, 8, 4, 6},
+            .rhs_bounded_dims = {0, 1},
+            .group_sizes_shape = {2, 3},
+            .group_sizes_bounded_dims = {0, 1},
+            .lhs_batch_dims = {0, 1},
+            .rhs_batch_dims = {0, 1},
+            .lhs_contracting_dims = {3},
+            .rhs_contracting_dims = {2},
+            .lhs_ragged_dims = {1},
+            .expected_result_shape = {2, 8, 5, 6},
+            .expected_result_bounded = {true, true, false, false},
+        },
+    }),
+    [](const testing::TestParamInfo<RaggedDotLikeBoundedTest::ParamType>&
+           info) { return info.param.test_name; });
+
+class RaggedDotLikeUnsupportedTest
+    : public testing::TestWithParam<RaggedDotLikeParams> {};
+
+TEST_P(RaggedDotLikeUnsupportedTest, ReturnsNotImplementedError) {
+  const RaggedDotLikeParams& params = GetParam();
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const mlir::MlirOp lhs =
+      MakeBoundedArg(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs =
+      MakeBoundedArg(fb, params.rhs_shape, params.rhs_bounded_dims);
+  const mlir::MlirOp group_sizes =
+      MakeBoundedArg(fb, params.group_sizes_shape,
+                     params.group_sizes_bounded_dims, mlir::ElementType::I32);
+
+  const absl::StatusOr<mlir::MlirOp> result =
+      CallRaggedDotLike(params, lhs, rhs, group_sizes);
+
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kPythonNotImplementedError);
+  EXPECT_THAT(result.status().message(), HasSubstr(params.expected_error));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RaggedDotLikeUnsupportedTests, RaggedDotLikeUnsupportedTest,
+    testing::ValuesIn<RaggedDotLikeParams>({
+        {
+            .test_name = "BoundedLhsBatchOnly",
+            .lhs_shape = {4, 8, 6},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {2, 4, 6, 5},
+            .group_sizes_shape = {2},
+            .lhs_batch_dims = {0},
+            .rhs_batch_dims = {1},
+            .lhs_contracting_dims = {2},
+            .rhs_contracting_dims = {2},
+            .lhs_ragged_dims = {1},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected the batching dimensions of a ragged dot to be both "
+                "static or both bounded dynamic",
+        },
+        {
+            .test_name = "BoundedBatchDifferentUpperBounds",
+            .lhs_shape = {4, 8, 6},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {2, 8, 6, 5},
+            .rhs_bounded_dims = {1},
+            .group_sizes_shape = {2},
+            .lhs_batch_dims = {0},
+            .rhs_batch_dims = {1},
+            .lhs_contracting_dims = {2},
+            .rhs_contracting_dims = {2},
+            .lhs_ragged_dims = {1},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected the bounded dynamic batching dimensions of a ragged "
+                "dot to have equal upper bounds",
+        },
+        {
+            .test_name = "BoundedLhsContractingOnly",
+            .lhs_shape = {8, 6},
+            .lhs_bounded_dims = {1},
+            .rhs_shape = {2, 6, 5},
+            .group_sizes_shape = {2},
+            .lhs_contracting_dims = {1},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {0},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected the contracting dimensions of a ragged dot to be "
+                "both static or both bounded dynamic",
+        },
+        {
+            .test_name = "BoundedContractingDifferentUpperBounds",
+            .lhs_shape = {8, 6},
+            .lhs_bounded_dims = {1},
+            .rhs_shape = {2, 10, 5},
+            .rhs_bounded_dims = {1},
+            .group_sizes_shape = {2},
+            .lhs_contracting_dims = {1},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {0},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected the bounded dynamic contracting dimensions of a "
+                "ragged dot to have equal upper bounds",
+        },
+        {
+            .test_name = "BoundedRhsGroupOnly",
+            .lhs_shape = {8, 6},
+            .rhs_shape = {2, 6, 5},
+            .rhs_bounded_dims = {0},
+            .group_sizes_shape = {2},
+            .lhs_contracting_dims = {1},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {0},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected the group dimension of group_sizes and the rhs group "
+                "dimension of a ragged dot to be both static or both bounded "
+                "dynamic",
+        },
+        {
+            .test_name = "BoundedGroupDifferentUpperBounds",
+            .lhs_shape = {8, 6},
+            .rhs_shape = {4, 6, 5},
+            .rhs_bounded_dims = {0},
+            .group_sizes_shape = {6},
+            .group_sizes_bounded_dims = {0},
+            .lhs_contracting_dims = {1},
+            .rhs_contracting_dims = {1},
+            .lhs_ragged_dims = {0},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected the bounded dynamic group dimension of group_sizes "
+                "and the rhs group dimension of a ragged dot to have equal "
+                "upper bounds",
+        },
+        {
+            .test_name = "BoundedGroupSizesPrefixMismatch",
+            .lhs_shape = {4, 16, 8},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {3, 4, 8, 6},
+            .rhs_bounded_dims = {1},
+            .group_sizes_shape = {4, 3},
+            .lhs_batch_dims = {0},
+            .rhs_batch_dims = {1},
+            .lhs_contracting_dims = {2},
+            .rhs_contracting_dims = {2},
+            .lhs_ragged_dims = {1},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected prefix dimension 0 of group_sizes of type "
+                "tensor<4x3xi32> and dimension 0 of the lhs operand",
+        },
+        {
+            .test_name = "BoundedGroupSizesPrefixDifferentUpperBounds",
+            .lhs_shape = {4, 16, 8},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {3, 4, 8, 6},
+            .rhs_bounded_dims = {1},
+            .group_sizes_shape = {8, 3},
+            .group_sizes_bounded_dims = {0},
+            .lhs_batch_dims = {0},
+            .rhs_batch_dims = {1},
+            .lhs_contracting_dims = {2},
+            .rhs_contracting_dims = {2},
+            .lhs_ragged_dims = {1},
+            .rhs_group_dims = {0},
+            .expected_error =
+                "expected bounded dynamic prefix dimension 0 of group_sizes",
+        },
+    }),
+    [](const testing::TestParamInfo<RaggedDotLikeUnsupportedTest::ParamType>&
+           info) { return info.param.test_name; });
 
 }  // namespace
 }  // namespace torch_tpu
