@@ -20,6 +20,12 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_python//python:py_binary.bzl", "py_binary")
 
 bzl_library(
+    name = "pytorch_test_repo_bzl",
+    srcs = ["pytorch_test_repo.bzl"],
+    visibility = ["//visibility:private"],
+)
+
+bzl_library(
     name = "torch_local_repo_bzl",
     srcs = [
         "torch_local_defs.bzl",

@@ -12,23 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# PyTorch Out-of-Tree (OOT) / CRCR Nightly Integration
+# PyTorch Out-of-Tree (OOT) / Cross-Repo CI Relay (CRCR) Integration (L2 & L3)
 #
-# Runs daily (or via workflow_dispatch / the `ci:crcr-nightly` PR label), building and running
-# the upstream PyTorch device-generic test suite (`//tests/torch:all`) against the latest PyTorch
-# nightly CPU wheel (`--config=local_torch`) and its matching `pytorch/pytorch` commit SHA, and
-# reporting build and test status to the PyTorch CRCR HUD (`event-type: nightly`).
+# Runs on:
+#   1. Daily schedule (`10:30 UTC`, `effective_scope=all`): builds and runs all
+#      enabled upstream PyTorch device-generic tests (`//tests/torch:all`)
+#      against the latest PyTorch nightly CPU wheel (`--config=local_torch` +
+#      `@pytorch_test`), warming the RBE build (`tensorflow-testing`) and test
+#      (`ml-oss-rbe-testing`) caches and reporting `event-type: nightly` to the
+#      PyTorch CRCR HUD.
+#   2. Upstream `pytorch/pytorch` CRCR `repository_dispatch` (`push` to
+#      `refs/heads/main` and opt-in `ciflow/crcr*` `pull_request` events,
+#      `effective_scope=diff`): runs `ci/tools/calculate_oot_impacted_tests.py
+#      --single-diff` (`bazel-diff` over `@pytorch_test`) on a cheap CPU runner
+#      first. When 0 TPU targets are impacted, TPU VMs are never claimed and
+#      `completed` (`success`) callbacks are posted directly to CRCR; otherwise
+#      only the impacted `//tests/torch:*` targets execute on TPU.
+#   3. Manual `workflow_dispatch` (`auto`, `diff`, or `all`) or `torch_tpu` PRs
+#      labeled `ci:crcr-nightly` (`all`) or `ci:crcr-diff` (`diff`).
 
 name: PyTorch Out-of-Tree Dispatch
 
 on:
+  repository_dispatch:
+    types: [push, pull_request]
   workflow_dispatch:
     inputs:
       torch_pip_spec:
-        description: "Optional pip requirement of the PyTorch nightly CPU wheel (defaults to latest unpinned nightly 'torch'; pytorch_sha is derived from git_version in torch/version.py)"
+        description: "Optional pip requirement of the PyTorch nightly CPU wheel (defaults to latest unpinned nightly 'torch')"
         required: false
         default: "torch"
         type: string
+      base_pytorch_sha:
+        description: "Optional base pytorch/pytorch commit SHA for bazel-diff (defaults to previous nightly wheel SHA or event base SHA)"
+        required: false
+        default: ""
+        type: string
+      pytorch_sha:
+        description: "Optional target pytorch/pytorch commit SHA to test (defaults to wheel git_version)"
+        required: false
+        default: ""
+        type: string
+      test_scope:
+        description: "Test suite scope: 'auto' ('all' on schedule, 'diff' via bazel-diff on dispatch), 'diff', or 'all'"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - diff
+          - all
   pull_request:
     branches:
       - main
@@ -37,8 +70,17 @@ on:
     - cron: "30 10 * * *"  # Run once daily at 10:30 UTC.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: ${{ github.ref_name != 'main' }}
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'repository_dispatch' &&
+        format('dispatch-{0}-{1}', github.event.action,
+               github.event.client_payload.payload.pull_request.number || github.run_id) ||
+      github.head_ref ||
+      format('{0}-{1}', github.event_name, github.ref)
+    }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request' ||
+        (github.event_name == 'repository_dispatch' && github.event.action == 'pull_request') }}
 
 permissions:
   contents: read
@@ -46,26 +88,77 @@ permissions:
 jobs:
   resolve_sha:
     if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:crcr-nightly')
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'repository_dispatch' && (
+        (github.event.action == 'push' && github.event.client_payload.payload.ref == 'refs/heads/main') ||
+        (github.event.action == 'pull_request' && (
+          contains(github.event.client_payload.payload.pull_request.labels.*.name, 'ciflow/crcr') ||
+          contains(github.event.client_payload.payload.pull_request.labels.*.name, 'ciflow/crcr-torch_tpu') ||
+          startsWith(github.event.client_payload.payload.label.name, 'ciflow/crcr')
+        ))
+      ))
     name: "Resolve upstream PyTorch nightly wheel and SHA"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     outputs:
-      pytorch_sha: ${{ steps.resolve_sha.outputs.pytorch_sha }}
-      torch_pip_spec: ${{ steps.resolve_sha.outputs.torch_pip_spec }}
       python_version: ${{ steps.resolve_sha.outputs.python_version }}
+      torch_pip_spec: ${{ steps.resolve_sha.outputs.torch_pip_spec }}
+      wheel_sha: ${{ steps.resolve_sha.outputs.wheel_sha }}
+      diff_base_sha: ${{ steps.resolve_sha.outputs.diff_base_sha }}
+      pytorch_sha: ${{ steps.resolve_sha.outputs.pytorch_sha }}
+      effective_scope: ${{ steps.resolve_sha.outputs.effective_scope }}
+      crcr_event_type: ${{ steps.resolve_sha.outputs.crcr_event_type }}
+      delivery_id: ${{ steps.resolve_sha.outputs.delivery_id }}
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          sparse-checkout: bazel/supported_python_versions.bzl
+          sparse-checkout: |
+            bazel/supported_python_versions.bzl
+            ci/tools/oot_canary_target.json
           sparse-checkout-cone-mode: false
 
       - name: Resolve PyTorch nightly wheel and SHA
         id: resolve_sha
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
           INPUT_PIP_SPEC: ${{ inputs.torch_pip_spec || 'torch' }}
+          INPUT_BASE_PYTORCH_SHA: ${{ inputs.base_pytorch_sha }}
+          INPUT_PYTORCH_SHA: ${{ inputs.pytorch_sha }}
+          INPUT_TEST_SCOPE: ${{ inputs.test_scope || 'auto' }}
+          PR_HAS_DIFF_LABEL: >-
+            ${{ github.event_name == 'pull_request' &&
+                !contains(github.event.pull_request.labels.*.name, 'ci:crcr-nightly') &&
+                (contains(github.event.pull_request.labels.*.name, 'ci:crcr-diff') ||
+                 contains(github.event.pull_request.labels.*.name, 'ci:crcr-smoke')) }}
+          DISPATCH_PUSH_BEFORE_SHA: ${{ github.event.client_payload.payload.before }}
+          DISPATCH_PUSH_SHA: ${{ github.event.client_payload.payload.after }}
+          DISPATCH_PR_BASE_SHA: ${{ github.event.client_payload.payload.pull_request.base.sha }}
+          DISPATCH_PR_SHA: ${{ github.event.client_payload.payload.pull_request.head.sha }}
+          DISPATCH_DELIVERY_ID: ${{ github.event.client_payload.delivery_id }}
         run: |
+          if [ "${EVENT_NAME}" = "pull_request" ] && [ -f ci/tools/oot_canary_target.json ]; then
+            eval "$(python3 - << 'PYEOF'
+          import json
+          import shlex
+          with open("ci/tools/oot_canary_target.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+          print(f"CANARY_BASE_SHA={shlex.quote(str(cfg.get('base_sha', '')))}")
+          print(f"CANARY_HEAD_SHA={shlex.quote(str(cfg.get('head_sha', '')))}")
+          print(f"CANARY_SCOPE={shlex.quote(str(cfg.get('scope', 'diff')))}")
+          PYEOF
+            )"
+            INPUT_BASE_PYTORCH_SHA="${INPUT_BASE_PYTORCH_SHA:-${CANARY_BASE_SHA}}"
+            INPUT_PYTORCH_SHA="${INPUT_PYTORCH_SHA:-${CANARY_HEAD_SHA}}"
+            if [ "${INPUT_TEST_SCOPE}" = "auto" ] && [ -n "${CANARY_SCOPE}" ]; then
+              INPUT_TEST_SCOPE="${CANARY_SCOPE}"
+            fi
+          fi
           PYTHON_VERSION=$(awk -F'"' '/^DEFAULT_PYTHON_VERSION =/ {print $2}' bazel/supported_python_versions.bzl)
           pip download --no-deps --pre "${INPUT_PIP_SPEC}" \
             --index-url https://download.pytorch.org/whl/nightly/cpu \
@@ -73,21 +166,311 @@ jobs:
 
           VERSION_PY=$(unzip -p /tmp/torch_whl/torch-*.whl torch/version.py)
           WHEEL_VERSION=$(printf '%s\n' "${VERSION_PY}" | awk -F"'" '/^__version__/ {print $2}')
-          PYTORCH_SHA=$(printf '%s\n' "${VERSION_PY}" | awk -F"'" '/^git_version/ {print $2}')
+          WHEEL_SHA=$(printf '%s\n' "${VERSION_PY}" | awk -F"'" '/^git_version/ {print $2}')
 
-          if [ -z "${WHEEL_VERSION}" ] || [ -z "${PYTORCH_SHA}" ]; then
-            echo "::error::Failed to resolve wheel version (${WHEEL_VERSION}) or PyTorch SHA (${PYTORCH_SHA})."
+          if [ -z "${WHEEL_VERSION}" ] || [ -z "${WHEEL_SHA}" ]; then
+            echo "::error::Failed to resolve wheel version (${WHEEL_VERSION}) or wheel SHA (${WHEEL_SHA})."
             exit 1
           fi
-          echo "[INFO] Resolved wheel torch==${WHEEL_VERSION} (git_version=${PYTORCH_SHA})"
+
+          if [ -n "${INPUT_PYTORCH_SHA}" ]; then
+            PYTORCH_SHA="${INPUT_PYTORCH_SHA}"
+          elif [ "${EVENT_NAME}" = "repository_dispatch" ]; then
+            PYTORCH_SHA="${DISPATCH_PR_SHA:-${DISPATCH_PUSH_SHA}}"
+          else
+            PYTORCH_SHA="${WHEEL_SHA}"
+          fi
+
+          if [ -z "${PYTORCH_SHA}" ]; then
+            echo "::error::Failed to resolve target PyTorch checkout SHA."
+            exit 1
+          fi
+
+          if [ "${INPUT_TEST_SCOPE}" = "all" ] || [ "${INPUT_TEST_SCOPE}" = "diff" ]; then
+            EFFECTIVE_SCOPE="${INPUT_TEST_SCOPE}"
+          elif [ "${EVENT_NAME}" = "repository_dispatch" ] || [ "${PR_HAS_DIFF_LABEL}" = "true" ] || [ -n "${INPUT_PYTORCH_SHA}" ] || [ -n "${INPUT_BASE_PYTORCH_SHA}" ]; then
+            EFFECTIVE_SCOPE="diff"
+          else
+            EFFECTIVE_SCOPE="all"
+          fi
+
+          ZERO_SHA="0000000000000000000000000000000000000000"
+          DIFF_BASE_SHA=""
+          if [ -n "${INPUT_BASE_PYTORCH_SHA}" ]; then
+            DIFF_BASE_SHA="${INPUT_BASE_PYTORCH_SHA}"
+          elif [ "${EVENT_NAME}" = "repository_dispatch" ]; then
+            if [ "${EVENT_ACTION}" = "pull_request" ] && [ -n "${DISPATCH_PR_BASE_SHA}" ]; then
+              DIFF_BASE_SHA="${DISPATCH_PR_BASE_SHA}"
+            elif [ "${EVENT_ACTION}" = "push" ] && [ -n "${DISPATCH_PUSH_BEFORE_SHA}" ] && [ "${DISPATCH_PUSH_BEFORE_SHA}" != "${ZERO_SHA}" ]; then
+              DIFF_BASE_SHA="${DISPATCH_PUSH_BEFORE_SHA}"
+            else
+              DIFF_BASE_SHA="${WHEEL_SHA}"
+            fi
+          elif [ "${PYTORCH_SHA}" != "${WHEEL_SHA}" ]; then
+            DIFF_BASE_SHA="${WHEEL_SHA}"
+          fi
+
+          if [ "${EVENT_NAME}" = "repository_dispatch" ]; then
+            if [ -z "${DISPATCH_DELIVERY_ID}" ]; then
+              echo "::error::Missing client_payload.delivery_id on repository_dispatch."
+              exit 1
+            fi
+            CRCR_EVENT_TYPE="${EVENT_ACTION}"
+            DELIVERY_ID="${DISPATCH_DELIVERY_ID}"
+          else
+            CRCR_EVENT_TYPE="nightly"
+            DELIVERY_ID="${PYTORCH_SHA}"
+          fi
+
+          echo "[INFO] Resolved wheel torch==${WHEEL_VERSION} (wheel_sha=${WHEEL_SHA}, diff_base_sha=${DIFF_BASE_SHA:-<prev_wheel>}, target_sha=${PYTORCH_SHA}, scope=${EFFECTIVE_SCOPE}, event_type=${CRCR_EVENT_TYPE})"
           {
             echo "python_version=${PYTHON_VERSION}"
             echo "torch_pip_spec=torch==${WHEEL_VERSION}"
+            echo "wheel_sha=${WHEEL_SHA}"
+            echo "diff_base_sha=${DIFF_BASE_SHA}"
             echo "pytorch_sha=${PYTORCH_SHA}"
+            echo "effective_scope=${EFFECTIVE_SCOPE}"
+            echo "crcr_event_type=${CRCR_EVENT_TYPE}"
+            echo "delivery_id=${DELIVERY_ID}"
           } >> "$GITHUB_OUTPUT"
 
-  run_tests:
+      - name: Report resolve failure to CRCR
+        if: failure() && github.event_name == 'repository_dispatch' && github.event.client_payload.delivery_id != ''
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: failure
+          job-name: "Resolve upstream PyTorch nightly wheel and SHA"
+          delivery-id: ${{ github.event.client_payload.delivery_id }}
+          event-type: ${{ github.event.action }}
+
+  compute_impacted:
     needs: resolve_sha
+    name: "Compute impacted PyTorch TPU tests on CPU"
+    runs-on: linux-x86-n4-16
+    permissions:
+      contents: read
+      id-token: write
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
+      options: --ipc=host
+    outputs:
+      is_full_run: ${{ steps.plan.outputs.is_full_run }}
+      has_impacted_targets: ${{ steps.plan.outputs.has_impacted_targets }}
+      has_impacted_v5: ${{ steps.plan.outputs.has_impacted_v5 }}
+      has_impacted_v7: ${{ steps.plan.outputs.has_impacted_v7 }}
+      active_jobs: ${{ steps.plan.outputs.active_jobs }}
+    steps:
+      - name: Fast-path full suite schedule run
+        id: fast_all
+        if: needs.resolve_sha.outputs.effective_scope == 'all'
+        run: |
+          ACTIVE_JOBS='[{"name":"TPU v5","runner":"linux-x86-ct5lp-224-8tpu","config":"ci_tpu_v5"},{"name":"TPU v7x","runner":"linux-x86-tpu7x-224-4tpu","config":"ci_tpu_v7"}]'
+          {
+            echo "is_full_run=true"
+            echo "has_impacted_targets=true"
+            echo "has_impacted_v5=true"
+            echo "has_impacted_v7=true"
+            echo "active_jobs=${ACTIVE_JOBS}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout TorchTPU
+        if: needs.resolve_sha.outputs.effective_scope != 'all'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Initialize blobless PyTorch repository
+        if: needs.resolve_sha.outputs.effective_scope != 'all'
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git init -q "$GITHUB_WORKSPACE/pytorch"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/pytorch"
+          git -C "$GITHUB_WORKSPACE/pytorch" remote add origin https://github.com/pytorch/pytorch.git
+
+      - name: Download PyTorch Nightly Wheel for bazel-diff
+        if: needs.resolve_sha.outputs.effective_scope != 'all'
+        env:
+          PYTHON_VERSION: ${{ needs.resolve_sha.outputs.python_version }}
+          TORCH_PIP_SPEC: ${{ needs.resolve_sha.outputs.torch_pip_spec }}
+          EXPECTED_WHEEL_SHA: ${{ needs.resolve_sha.outputs.wheel_sha }}
+        run: |
+          mkdir -p dist/local
+          pip download --no-deps --pre "${TORCH_PIP_SPEC}" \
+            --index-url https://download.pytorch.org/whl/nightly/cpu \
+            -d dist/local --python-version "${PYTHON_VERSION}" --only-binary=:all:
+          set -- "$PWD/dist/local/torch-"*.whl
+          [ -f "$1" ] || { echo "::error::Wheel not found for ${TORCH_PIP_SPEC}"; exit 1; }
+          unzip -p "$1" torch/version.py | grep -F "${EXPECTED_WHEEL_SHA}"
+          echo "TORCH_SOURCE=$1" >> "$GITHUB_ENV"
+
+      - name: Calculate impacted TPU tests via bazel-diff
+        id: diff
+        if: needs.resolve_sha.outputs.effective_scope != 'all'
+        env:
+          DIFF_BASE_SHA: ${{ needs.resolve_sha.outputs.diff_base_sha }}
+          PYTORCH_SHA: ${{ needs.resolve_sha.outputs.pytorch_sha }}
+        run: |
+          SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/oot_step_summary.md}"
+          python3 ci/tools/calculate_oot_impacted_tests.py \
+            --single-diff \
+            --workspace-dir "$GITHUB_WORKSPACE" \
+            --pytorch-dir "$GITHUB_WORKSPACE/pytorch" \
+            --latest-wheel "${TORCH_SOURCE}" \
+            --base-sha "${DIFF_BASE_SHA}" \
+            --head-sha "${PYTORCH_SHA}" \
+            --bazel-config ci_tpu_v5 \
+            --filter-configs ci_tpu_v5,ci_tpu_v7 \
+            --jobs 1 \
+            --impacted-targets-dir "$GITHUB_WORKSPACE" \
+            --markdown-output "${SUMMARY_FILE}" \
+            --json-output "$GITHUB_WORKSPACE/oot_impact.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Consolidate execution plan
+        id: plan
+        env:
+          EFFECTIVE_SCOPE: ${{ needs.resolve_sha.outputs.effective_scope }}
+          FAST_IS_FULL: ${{ steps.fast_all.outputs.is_full_run }}
+          FAST_ACTIVE_JOBS: ${{ steps.fast_all.outputs.active_jobs }}
+          DIFF_HAS_V5: ${{ steps.diff.outputs.has_impacted_ci_tpu_v5 }}
+          DIFF_HAS_V7: ${{ steps.diff.outputs.has_impacted_ci_tpu_v7 }}
+        run: |
+          if [ "${EFFECTIVE_SCOPE}" = "all" ]; then
+            {
+              echo "is_full_run=${FAST_IS_FULL}"
+              echo "has_impacted_targets=true"
+              echo "has_impacted_v5=true"
+              echo "has_impacted_v7=true"
+              echo "active_jobs=${FAST_ACTIVE_JOBS}"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python3 - << 'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          all_jobs = [
+              {
+                  "name": "TPU v5",
+                  "runner": "linux-x86-ct5lp-224-8tpu",
+                  "config": "ci_tpu_v5",
+                  "flag": os.environ.get("DIFF_HAS_V5") == "true",
+              },
+              {
+                  "name": "TPU v7x",
+                  "runner": "linux-x86-tpu7x-224-4tpu",
+                  "config": "ci_tpu_v7",
+                  "flag": os.environ.get("DIFF_HAS_V7") == "true",
+              },
+          ]
+          active = [
+              {"name": j["name"], "runner": j["runner"], "config": j["config"]}
+              for j in all_jobs
+              if j["flag"]
+          ]
+          has_v5 = str(all_jobs[0]["flag"]).lower()
+          has_v7 = str(all_jobs[1]["flag"]).lower()
+          has_any = str(bool(active)).lower()
+          print("is_full_run=false")
+          print(f"has_impacted_targets={has_any}")
+          print(f"has_impacted_v5={has_v5}")
+          print(f"has_impacted_v7={has_v7}")
+          print(f"active_jobs={json.dumps(active, separators=(',', ':'))}")
+          EOF
+
+      - name: Upload impacted targets for TPU v5
+        if: steps.plan.outputs.is_full_run != 'true' && steps.plan.outputs.has_impacted_v5 == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: impacted-targets-ci_tpu_v5
+          path: impacted_targets_ci_tpu_v5.txt
+          retention-days: 7
+          overwrite: true
+
+      - name: Upload impacted targets for TPU v7x
+        if: steps.plan.outputs.is_full_run != 'true' && steps.plan.outputs.has_impacted_v7 == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: impacted-targets-ci_tpu_v7
+          path: impacted_targets_ci_tpu_v7.txt
+          retention-days: 7
+          overwrite: true
+
+      - name: Report skipped TPU v5 build to CRCR (0 impacted tests)
+        if: >-
+          steps.plan.outputs.has_impacted_v5 == 'false' &&
+          (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: success
+          job-name: "Build PyTorch tests on TPU v5"
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
+
+      - name: Report skipped TPU v5 tests to CRCR (0 impacted tests)
+        if: >-
+          steps.plan.outputs.has_impacted_v5 == 'false' &&
+          (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: success
+          job-name: "PyTorch tests on TPU v5"
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
+
+      - name: Report skipped TPU v7x build to CRCR (0 impacted tests)
+        if: >-
+          steps.plan.outputs.has_impacted_v7 == 'false' &&
+          (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: success
+          job-name: "Build PyTorch tests on TPU v7x"
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
+
+      - name: Report skipped TPU v7x tests to CRCR (0 impacted tests)
+        if: >-
+          steps.plan.outputs.has_impacted_v7 == 'false' &&
+          (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: success
+          job-name: "PyTorch tests on TPU v7x"
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
+
+      - name: Report compute failure to CRCR
+        if: >-
+          failure() &&
+          (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: failure
+          job-name: "Compute impacted PyTorch TPU tests on CPU"
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
+
+  run_tests:
+    needs: [resolve_sha, compute_impacted]
+    if: needs.compute_impacted.result == 'success' && needs.compute_impacted.outputs.has_impacted_targets == 'true'
     name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     permissions:
       contents: read
@@ -95,18 +478,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job_info: [
-          {
-            name: "TPU v5",
-            runner: "linux-x86-ct5lp-224-8tpu",
-            config: "ci_tpu_v5",
-          },
-          {
-            name: "TPU v7x",
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7",
-          },
-        ]
+        job_info: ${{ fromJSON(needs.compute_impacted.outputs.active_jobs) }}
     runs-on: ${{ matrix.job_info.runner }}
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
@@ -122,15 +494,27 @@ jobs:
           mkdir -p /home/runner
           ln -sfn /__w /home/runner/_work
 
+      - name: Report in_progress to CRCR
+        if: github.event_name == 'repository_dispatch'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: in_progress
+          job-name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
+
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Checkout PyTorch at resolved SHA
+      - name: Checkout PyTorch test/ at resolved SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: pytorch/pytorch
           ref: ${{ needs.resolve_sha.outputs.pytorch_sha }}
           path: pytorch
+          sparse-checkout: test
 
       - name: Fix Git Workspace Ownership
         run: |
@@ -141,7 +525,7 @@ jobs:
         env:
           PYTHON_VERSION: ${{ needs.resolve_sha.outputs.python_version }}
           TORCH_PIP_SPEC: ${{ needs.resolve_sha.outputs.torch_pip_spec }}
-          EXPECTED_PYTORCH_SHA: ${{ needs.resolve_sha.outputs.pytorch_sha }}
+          EXPECTED_WHEEL_SHA: ${{ needs.resolve_sha.outputs.wheel_sha }}
         run: |
           mkdir -p dist/local
           pip download --no-deps --pre "${TORCH_PIP_SPEC}" \
@@ -149,14 +533,31 @@ jobs:
             -d dist/local --python-version "${PYTHON_VERSION}" --only-binary=:all:
           set -- "$PWD/dist/local/torch-"*.whl
           [ -f "$1" ] || { echo "::error::Wheel not found for ${TORCH_PIP_SPEC}"; exit 1; }
-          unzip -p "$1" torch/version.py | grep -F "${EXPECTED_PYTORCH_SHA}"
+          unzip -p "$1" torch/version.py | grep -F "${EXPECTED_WHEEL_SHA}"
           echo "TORCH_SOURCE=$1" >> "$GITHUB_ENV"
+
+      - name: Download impacted targets artifact
+        if: needs.compute_impacted.outputs.is_full_run != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: impacted-targets-${{ matrix.job_info.config }}
+          path: .
 
       - name: Build PyTorch Device-Generic Tests
         id: build
+        env:
+          IS_FULL_RUN: ${{ needs.compute_impacted.outputs.is_full_run }}
+          BAZEL_CONFIG: ${{ matrix.job_info.config }}
         run: |
-          TORCH_TEST_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
-          BAZEL_CRCR_ARGS="--config=${{ matrix.job_info.config }} --config=local_torch --repo_env=TORCH_SOURCE=${TORCH_SOURCE} --run_under=${PWD}/ci/tools/parallel_accelerator_execute.sh --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=${GITHUB_WORKSPACE}/pytorch/test --keep_going ${TORCH_TEST_TARGETS}"
+          if [ "${IS_FULL_RUN}" = "true" ]; then
+            TARGET_ARGS=$(bazel query --repo_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="${GITHUB_WORKSPACE}/pytorch/test" 'kind("py_test", //tests/torch:all) - attr(tags, "\bnotest\b", //tests/torch:all)' | tr '\n' ' ')
+          else
+            IMPACTED_FILE="impacted_targets_${BAZEL_CONFIG}.txt"
+            echo "[INFO] Impacted targets for ${BAZEL_CONFIG}:"
+            cat "${IMPACTED_FILE}"
+            TARGET_ARGS="--skip_incompatible_explicit_targets --target_pattern_file=${IMPACTED_FILE}"
+          fi
+          BAZEL_CRCR_ARGS="--config=${BAZEL_CONFIG} --config=local_torch --repo_env=TORCH_SOURCE=${TORCH_SOURCE} --repo_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=${GITHUB_WORKSPACE}/pytorch/test --run_under=${PWD}/ci/tools/parallel_accelerator_execute.sh --keep_going ${TARGET_ARGS}"
           echo "BAZEL_CRCR_ARGS=${BAZEL_CRCR_ARGS}" >> "$GITHUB_ENV"
           # shellcheck disable=SC2086
           bazel build ${BAZEL_CRCR_ARGS}
@@ -164,7 +565,7 @@ jobs:
       - name: Report build to CRCR
         if: >-
           always() && !cancelled() && steps.build.outcome != 'skipped' &&
-          (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+          (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
         continue-on-error: true
         timeout-minutes: 5
         uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
@@ -172,18 +573,29 @@ jobs:
           status: completed
           conclusion: ${{ steps.build.outcome }}
           job-name: "Build PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
-          delivery-id: ${{ needs.resolve_sha.outputs.pytorch_sha }}
-          event-type: nightly
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
 
       - name: Run PyTorch Device-Generic Tests
+        env:
+          ALLOW_CACHE_UPLOAD: >-
+            ${{ (github.event_name == 'pull_request' && github.actor == 'copybara-service[bot]') ||
+                (github.ref_name == 'main' &&
+                (github.event_name == 'schedule' ||
+                 (github.event_name == 'repository_dispatch' && github.event.action == 'push') ||
+                 (github.event_name == 'workflow_dispatch' && inputs.pytorch_sha == ''))) }}
         run: |
+          CACHE_UPLOAD_FLAG=""
+          if [ "${ALLOW_CACHE_UPLOAD}" != "true" ]; then
+            CACHE_UPLOAD_FLAG="--remote_upload_local_results=false"
+          fi
           # shellcheck disable=SC2086
-          bazel test ${BAZEL_CRCR_ARGS}
+          bazel test ${BAZEL_CRCR_ARGS} ${CACHE_UPLOAD_FLAG}
 
       - name: Report completion to CRCR
         if: >-
-          always() && !cancelled() &&
-          (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+          always() &&
+          (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
         continue-on-error: true
         timeout-minutes: 5
         uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
@@ -191,5 +603,5 @@ jobs:
           status: completed
           conclusion: ${{ job.status }}
           job-name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
-          delivery-id: ${{ needs.resolve_sha.outputs.pytorch_sha }}
-          event-type: nightly
+          delivery-id: ${{ needs.resolve_sha.outputs.delivery_id }}
+          event-type: ${{ needs.resolve_sha.outputs.crcr_event_type }}
