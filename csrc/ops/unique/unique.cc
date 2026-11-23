@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/index_select/index_select.h"
@@ -515,21 +516,20 @@ absl::StatusOr<BuildUniqueShloOutputs> BuildAllUniqueFinalizeShlo(
 
 }  // namespace
 
-absl::StatusOr<mlir::MlirOp> BuildUniqueGetOutputSizeShlo(
-    mlir::ElementType element_type, mlir::MlirOp input, bool sorted) {
+absl::StatusOr<BuildUniqueSortAndCountShloOutputs> BuildUniqueSortAndCountShlo(
+    mlir::MlirOp input, const ReturnInverse return_inverse) {
   auto& builder = input.getBuilder();
+  const auto i64_type = builder.getOpBuilder().getI64Type();
   mlir::MlirOp flattened_input = FlattenIfNeeded(input);
-  mlir::MlirOp sorted_input =
-      BuildSortShlo(flattened_input, /*stable=*/false, 0, /*descending=*/false)
-          .values;
+
+  SortShloOutputs sorted_res =
+      BuildSortShlo(flattened_input, /*stable=*/false, 0, /*descending=*/false);
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mask,
-                      BuildUniqueMask(builder, sorted_input));
-  mlir::MlirOp mask_i64 = mlir::stablehlo::ConvertElementType(
-      mask, builder.getOpBuilder().getI64Type());
-  auto init_value =
-      MakeScalarConstant(builder, 0, builder.getOpBuilder().getI64Type());
-  return mlir::stablehlo::Reduce(
+                      BuildUniqueMask(builder, sorted_res.values));
+  mlir::MlirOp mask_i64 = mlir::stablehlo::ConvertElementType(mask, i64_type);
+  mlir::MlirOp init_value = MakeScalarConstant(builder, 0, i64_type);
+  mlir::MlirOp count = mlir::stablehlo::Reduce(
       builder, {mask_i64}, {init_value},
       [](mlir::RegionBuilder& rb) {
         auto& body_builder = rb.getOpBuilder();
@@ -537,56 +537,22 @@ absl::StatusOr<mlir::MlirOp> BuildUniqueGetOutputSizeShlo(
             body_builder.getI64Type(), rb.getRegion(), body_builder);
       },
       {0})[0];
+
+  mlir::MlirOp permutation;
+  if (return_inverse == ReturnInverse::kTrue) {
+    permutation = sorted_res.indices;
+  } else {
+    TT_ASSIGN_OR_RETURN(permutation, MakeZeroSizedTensor(builder, i64_type));
+  }
+  return BuildUniqueSortAndCountShloOutputs{count, sorted_res.values,
+                                            permutation};
 }
 
-absl::StatusOr<BuildUniqueShloOutputs> BuildUnique2Shlo(int64_t output_size,
-                                                        mlir::MlirOp input,
-                                                        bool sorted,
-                                                        bool return_inverse,
-                                                        bool return_counts) {
-  BuildUniqueShloOutputs outputs;
-  auto& builder = input.getBuilder();
-  auto& op_builder = builder.getOpBuilder();
-  mlir::MlirOp flattened_input = FlattenIfNeeded(input);
-  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(flattened_input);
-  const int64_t n = input_type.getDimSize(0);
-  const mlir::ElementType val_type = GetElementTypeOrDie(flattened_input);
-
-  auto i64_type = op_builder.getI64Type();
-
-  if (n == 0) {
-    TT_ASSIGN_OR_RETURN(outputs.unique_values,
-                        MakeZeroSizedTensor(builder, val_type));
-    TT_ASSIGN_OR_RETURN(outputs.counts,
-                        MakeZeroSizedTensor(builder, mlir::ElementType::I64));
-
-    if (return_inverse) {
-      // When return_inverse is true, PyTorch expects empty inverse_indices
-      // shape to match the original input tensor's shape even when the input
-      // size is zero (e.g. dynamic shape with a 0-sized dimension).
-      TT_ASSIGN_OR_RETURN(
-          outputs.inverse_indices,
-          MakeZeroSizedTensor(builder, mlir::ElementType::I64,
-                              GetTensorTypeOrDie(input).getShape()));
-    } else {
-      // When return_inverse is false, the inverse_indices shape is (0,).
-      TT_ASSIGN_OR_RETURN(outputs.inverse_indices,
-                          MakeZeroSizedTensor(builder, mlir::ElementType::I64));
-    }
-    return outputs;
-  }
-
-  // 1. Sort input and get permutation indices
-  SortShloOutputs sorted_res =
-      BuildSortShlo(flattened_input, /*stable=*/false, 0, /*descending=*/false);
-  mlir::MlirOp sorted_input = sorted_res.values;
-  mlir::MlirOp p_indices =
-      mlir::stablehlo::ConvertElementType(sorted_res.indices, i64_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp mask,
-                      BuildUniqueMask(builder, sorted_input));
-
-  // 2. Compute unique values
+absl::StatusOr<mlir::MlirOp> BuildUniqueValuesFromSortedShlo(
+    const int64_t output_size, mlir::MlirOp sorted) {
+  auto& builder = sorted.getBuilder();
+  const int64_t n = GetTensorTypeOrDie(sorted).getDimSize(0);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mask, BuildUniqueMask(builder, sorted));
   mlir::MlirOp s_unique_indices =
       ExtractSortedUniqueIndices(builder, mask, n, output_size);
 
@@ -600,33 +566,31 @@ absl::StatusOr<BuildUniqueShloOutputs> BuildUnique2Shlo(int64_t output_size,
       /*index_vector_dim=*/1);
   mlir::MlirOp s_unique_indices_reshaped =
       mlir::stablehlo::Reshape(s_unique_indices, {output_size, 1});
-  outputs.unique_values = mlir::stablehlo::Gather(
-      sorted_input, s_unique_indices_reshaped, gather_dims_attr, {1});
+  return mlir::stablehlo::Gather(sorted, s_unique_indices_reshaped,
+                                 gather_dims_attr, {1});
+}
 
-  // 3. Inverse indices
-  if (return_inverse) {
-    TT_ASSIGN_OR_RETURN(outputs.inverse_indices,
-                        BuildUniqueDimInverseIndices(builder, mask, p_indices));
-    const mlir::RankedTensorType original_input_type =
-        GetTensorTypeOrDie(input);
-    if (original_input_type.getRank() != 1) {
-      outputs.inverse_indices = mlir::stablehlo::Reshape(
-          outputs.inverse_indices, original_input_type.getShape());
-    }
-  } else {
-    TT_ASSIGN_OR_RETURN(outputs.inverse_indices,
-                        MakeZeroSizedTensor(builder, i64_type));
+absl::StatusOr<mlir::MlirOp> BuildUniqueCountsFromSortedShlo(
+    const int64_t output_size, mlir::MlirOp sorted) {
+  auto& builder = sorted.getBuilder();
+  const int64_t n = GetTensorTypeOrDie(sorted).getDimSize(0);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mask, BuildUniqueMask(builder, sorted));
+  mlir::MlirOp s_unique_indices =
+      ExtractSortedUniqueIndices(builder, mask, n, output_size);
+  return BuildUniqueDimCounts(builder, s_unique_indices, n, output_size);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildUniqueInverseFromSortedShlo(
+    mlir::MlirOp sorted, mlir::MlirOp permutation,
+    const absl::Span<const int64_t> input_dims) {
+  auto& builder = sorted.getBuilder();
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mask, BuildUniqueMask(builder, sorted));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp inverse,
+                      BuildUniqueDimInverseIndices(builder, mask, permutation));
+  if (input_dims.size() != 1) {
+    inverse = mlir::stablehlo::Reshape(inverse, input_dims);
   }
-
-  // 4. Counts
-  if (return_counts) {
-    outputs.counts =
-        BuildUniqueDimCounts(builder, s_unique_indices, n, output_size);
-  } else {
-    TT_ASSIGN_OR_RETURN(outputs.counts, MakeZeroSizedTensor(builder, i64_type));
-  }
-
-  return outputs;
+  return inverse;
 }
 
 absl::StatusOr<BuildUniqueDimPrepareOutputs> BuildUniqueDimPrepareShlo(

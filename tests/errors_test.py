@@ -19598,6 +19598,29 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
           dim=0,
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="complex64",
+          dtype=torch.complex64,
+          tpu_dtype="complex64",
+          gpu_dtype="ComplexFloat",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_dtype="Float8_e4m3fn",
+      ),
+  )
+  def test_unique2_unsupported_dtypes(self, dtype, tpu_dtype, gpu_dtype):
+    x = torch.empty(0, dtype=dtype, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""unique2(): not implemented for {tpu_dtype}""",
+        gpu=f""""unique" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.unique(x)
+
   def test_pow_unsupported_dtypes(self):
     """Tests that pow with unsupported bool tensor inputs fails with expected error."""
     base = torch.tensor([True, False], dtype=torch.bool, device=et.device())

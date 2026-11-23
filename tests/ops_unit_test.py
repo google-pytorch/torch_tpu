@@ -21732,6 +21732,20 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  def test_unique2_empty_input_compiles_nothing(self):
+    x = torch.empty(0, 3).to("tpu")
+
+    before = torch.tpu._get_cache_stats().num_compilations
+    for return_inverse in (False, True):
+      for return_counts in (False, True):
+        for result in torch._unique2(
+            x, return_inverse=return_inverse, return_counts=return_counts
+        ):
+          result.cpu()
+    compilations = torch.tpu._get_cache_stats().num_compilations - before
+
+    self.assertEqual(compilations, 0)
+
   def test_unique2_distributions(self):
     for dtype in [torch.float32, torch.int64]:
       for distribution in [
