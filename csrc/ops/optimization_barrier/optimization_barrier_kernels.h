@@ -46,8 +46,8 @@ namespace torch_tpu {
 //   tensors.
 std::vector<at::Tensor> TorchTpuOptimizationBarrier(at::TensorList self);
 
-// Autograd kernel of torch.ops.tpu._optimization_barrier. Gradients flow
-// through the barrier, and on the way back pass through a barrier of their own.
+// Autograd kernel of torch.ops.tpu._optimization_barrier. Gradients and
+// forward-mode tangents each pass through a barrier of their own.
 std::vector<at::Tensor> TorchTpuOptimizationBarrierAutograd(
     at::TensorList self);
 

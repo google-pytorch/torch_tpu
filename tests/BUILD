@@ -2680,6 +2680,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "optimization_barrier_meta_test",
+    srcs = ["optimization_barrier_meta_test.py"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "autoload_test_tpu",
     srcs = ["autoload_tpu_test.py"],
     main = "autoload_tpu_test.py",

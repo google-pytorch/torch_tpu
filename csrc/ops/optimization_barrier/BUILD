@@ -28,6 +28,7 @@ torch_tpu_cc_library(
     srcs = ["optimization_barrier_kernels.cc"],
     hdrs = ["optimization_barrier_kernels.h"],
     deps = [
+        "//csrc/common:autograd_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

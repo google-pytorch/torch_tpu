@@ -18,11 +18,9 @@
 
 #include <array>
 #include <cstdint>
-#include <memory>  // IWYU pragma: keep
 #include <numeric>
 #include <optional>
 #include <tuple>
-#include <type_traits>
 #include <utility>
 
 #include "ATen/ExpandUtils.h"
@@ -37,8 +35,8 @@
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/DimVector.h"
-#include "c10/util/intrusive_ptr.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/autograd_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
@@ -69,6 +67,7 @@
 #include "torch/csrc/autograd/functions/utils.h"
 #include "torch/csrc/autograd/generated/Functions.h"  // IWYU pragma: keep
 #include "torch/csrc/autograd/saved_variable.h"
+#include "torch/headeronly/core/DeviceType.h"
 
 namespace torch_tpu {
 namespace {
@@ -531,21 +530,6 @@ bool IsFunctionalTensor(const at::Tensor& tensor) {
          tensor.storage().device_type() != c10::DeviceType::Meta;
 }
 
-// Creates an autograd `Node` smart pointer (`c10::intrusive_ptr<T>` in PyTorch
-// 2.13+ where `Node` inherits from `c10::intrusive_ptr_target`, or
-// `std::shared_ptr<T>` with `torch::autograd::deleteNode` in earlier PyTorch
-// versions used by OSS builds).
-// TODO: b/585211199 - Simplify to `c10::make_intrusive<T>()` once minimum OSS
-// PyTorch is >= 2.13.0, where `Node` is a `c10::intrusive_ptr_target`.
-template <typename T>
-auto MakeAutogradNode() {
-  if constexpr (std::is_base_of_v<c10::intrusive_ptr_target, T>) {
-    return c10::make_intrusive<T>();
-  } else {
-    return std::shared_ptr<T>(new T(), [](T* ptr) { deleteNode(ptr); });
-  }
-}
-
 }  // namespace
 
 at::Tensor AtenLinearAutograd(const at::Tensor& input, const at::Tensor& weight,
@@ -590,7 +574,7 @@ at::Tensor AtenLinearAutograd(const at::Tensor& input, const at::Tensor& weight,
     return at::native::linear(input, weight, bias);
   }
   using LinearBackwardNode = torch::autograd::generated::LinearBackward0;
-  decltype(MakeAutogradNode<LinearBackwardNode>()) grad_fn;
+  AutogradNodePtr<LinearBackwardNode> grad_fn;
   if (any_requires_grad) {
     grad_fn = MakeAutogradNode<LinearBackwardNode>();
     grad_fn->set_next_edges(

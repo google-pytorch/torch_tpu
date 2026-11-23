@@ -1891,6 +1891,11 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
         return AtenSparseDenseMatmulActivationUnstackAutograd::apply(
             stacked_activations, per_feature_batch_sizes, per_feature_dims);
       });
+}
+
+// Registers custom autograd for torch.ops.tpu ops whose autograd kernel is
+// device-agnostic, so that meta tensors get it too.
+TORCH_LIBRARY_IMPL(tpu, Autograd, m) {
   ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
       m, TorchTpuOptimizationBarrierAutograd);
 }
