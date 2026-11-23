@@ -23,6 +23,7 @@ import pathlib
 import plistlib
 import re
 import tempfile
+import types
 from typing import Any
 import unittest
 from unittest import mock
@@ -31,6 +32,8 @@ from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
 import torch
+from torch._dynamo import utils as dynamo_utils
+from torch._inductor import codecache
 from torch.testing._internal import common_methods_invocations
 from torch.utils import _pytree
 from torch_tpu._internal.utils import test_utils
@@ -103,6 +106,87 @@ class _SlotsOnlyObject:
 
 class OpTestingTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""
+
+  def _seed_compiler_caches(self) -> tuple[types.ModuleType, str]:
+    """Seeds real Dynamo and Inductor caches and schedules restoration."""
+    sentinel_mod = types.ModuleType("_test_inductor_sentinel")
+    sentinel_warn = "_test_dynamo_sentinel_warning"
+    codecache.PyCodeCache.modules.append(sentinel_mod)
+    dynamo_utils.warn_once_cache.add(sentinel_warn)
+
+    def _cleanup() -> None:
+      if sentinel_mod in codecache.PyCodeCache.modules:
+        codecache.PyCodeCache.modules.remove(sentinel_mod)
+      dynamo_utils.warn_once_cache.discard(sentinel_warn)
+
+    self.addCleanup(_cleanup)
+    return sentinel_mod, sentinel_warn
+
+  def test_generate_golden_pairs_frees_compiled_code_only_when_compiled(self):
+    op = next(op for op in op_db if op.name == "add")
+    samples = [FakeSample("s0", torch.ones(2), (torch.ones(2),), {})]
+    expected_out = torch.full((2,), 2.0)
+    self.golden_device = torch.device("cpu")
+    sentinel_mod, sentinel_warn = self._seed_compiler_caches()
+
+    with (
+        mock.patch.object(
+            op_testing, "_sample_inputs", return_value=samples, autospec=True
+        ),
+        mock.patch.object(
+            self, "_run_op", return_value=expected_out, autospec=True
+        ),
+    ):
+      eager_pairs = self._generate_golden_pairs(
+          op,
+          torch.float32,
+          op_testing.OpVariant.BASE,
+          max_samples=-1,
+          use_compiled=False,
+      )
+      self.assertLen(eager_pairs, 1)
+      test_utils.assert_close(eager_pairs[0][1].output_value, expected_out)
+      self.assertIn(sentinel_mod, codecache.PyCodeCache.modules)
+      self.assertIn(sentinel_warn, dynamo_utils.warn_once_cache)
+
+      compiled_pairs = self._generate_golden_pairs(
+          op,
+          torch.float32,
+          op_testing.OpVariant.BASE,
+          max_samples=-1,
+          use_compiled=True,
+      )
+      self.assertLen(compiled_pairs, 1)
+      test_utils.assert_close(compiled_pairs[0][1].output_value, expected_out)
+      self.assertNotIn(sentinel_mod, codecache.PyCodeCache.modules)
+      self.assertNotIn(sentinel_warn, dynamo_utils.warn_once_cache)
+
+  def test_generate_golden_pairs_frees_compiled_code_on_error(self):
+    op = next(op for op in op_db if op.name == "add")
+    samples = [FakeSample("s0", torch.ones(2), (torch.ones(2),), {})]
+    self.golden_device = torch.device("cpu")
+    sentinel_mod, sentinel_warn = self._seed_compiler_caches()
+
+    with (
+        mock.patch.object(
+            op_testing, "_sample_inputs", return_value=samples, autospec=True
+        ),
+        mock.patch.object(
+            self, "_run_op", side_effect=RuntimeError("boom"), autospec=True
+        ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing finally cleanup.
+          RuntimeError, "boom"
+      ):
+        self._generate_golden_pairs(
+            op,
+            torch.float32,
+            op_testing.OpVariant.BASE,
+            max_samples=-1,
+            use_compiled=True,
+        )
+    self.assertNotIn(sentinel_mod, codecache.PyCodeCache.modules)
+    self.assertNotIn(sentinel_warn, dynamo_utils.warn_once_cache)
 
   def test_torch_tpu_vs_gpu_max_samples(self):
     op = next(op for op in op_db if op.name == "add")
