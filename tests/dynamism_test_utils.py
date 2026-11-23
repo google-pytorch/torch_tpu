@@ -484,9 +484,9 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "the lowering broadcasts a bounded input to a static shape": {
         # These abort the test process with a CHECK failure in
         # BroadcastIfNeeded (op_builder_utils.cc).
-        "linalg.qr": {EAGER},
-        "linalg.svd": {EAGER},
-        "linalg.svdvals": {EAGER, COMPILE_GRAD},
+        "linalg.qr": {EAGER, COMPILE},
+        "linalg.svd": {EAGER, COMPILE},
+        "linalg.svdvals": ALL_MODES,
         "masked_scatter": {EAGER},
         "multinomial": {EAGER},
         "nn.functional.nll_loss": {COMPILE_GRAD},
@@ -504,13 +504,13 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Fails to inline MLIR functions on bounded inputs.
         "bincount": {EAGER},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
-        "cdist": {COMPILE_GRAD},
+        "cdist": {COMPILE, COMPILE_GRAD},
         # cummax_helper and cummin_helper emit static stablehlo.iota and query
         # static dim sizes (-9223372036854775808). Aborts the test process.
         "cummax": ALL_MODES,
         "cummin": ALL_MODES,
         # chlo.ScanOp fails MLIR function inlining.
-        "cumprod": {EAGER, COMPILE_GRAD},
+        "cumprod": ALL_MODES,
         # cumsum.out segfaults (eager), and chlo.ScanOp fails MLIR function
         # inlining (compile).
         "cumsum": ALL_MODES,
@@ -520,8 +520,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # embedding_renorm_ uses static BroadcastInDim and Scatter shapes.
         # Aborts the test process.
         "embedding_renorm_": {EAGER, COMPILE},
+        # RFFT requires innermost dimension to be static.
+        "fft.rfft": {COMPILE},
         # Checks index.size(d) <= input.size(d) against INT64_MIN.
-        "gather": {EAGER, COMPILE_GRAD},
+        "gather": ALL_MODES,
         # Compiled backward loses grad_fn when hidden size is dynamic.
         "gru.input": {COMPILE_GRAD},
         # Fails to inline MLIR functions on bounded inputs. COMPILE is triaged
@@ -530,33 +532,38 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "index_copy": {COMPILE_GRAD},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "index_fill": ALL_MODES,
+        # XLA customCall "Cholesky" does not support bounded dynamic shapes.
+        "linalg.cholesky_ex": {COMPILE},
         # chlo.ScanOp fails MLIR function inlining.
         "logcumsumexp": ALL_MODES,
         # SliceOp::build fails return type inference on bounded hidden slices.
         # Aborts the test process.
         "lstm.input": ALL_MODES,
         # Slicing a dynamic dimension is not supported in ViewPrimitiveShlo
-        # (eager), and LU_pivots shape check fails (compile_grad).
-        "lu_unpack": {EAGER, COMPILE_GRAD},
+        # (eager), and LU_pivots shape check fails (compile / compile_grad).
+        "lu_unpack": ALL_MODES,
         # Backward pass calls local_scalar_dense on a placeholder tensor.
         "mean": {COMPILE_GRAD},
         # Allocates a zero-sized shape with no zero dimension. Aborts the test
         # process.
-        "nn.functional.adaptive_avg_pool3d": {EAGER, COMPILE_GRAD},
+        "nn.functional.adaptive_avg_pool3d": ALL_MODES,
         # Queries static dim size (slice size -9223372036854775808). Aborts the
         # test process.
         "nn.functional.adaptive_max_pool2d": {EAGER, COMPILE},
-        # Aborts the test process.
-        "nn.functional.avg_pool1d": {COMPILE_GRAD},
+        # Fails to inline MLIR functions (compile) / aborts (compile_grad).
+        "nn.functional.avg_pool1d": {COMPILE, COMPILE_GRAD},
         # SliceBackwardResult queries static input shape. Aborts the test
         # process.
         "nn.functional.avg_pool2d": {COMPILE_GRAD},
         # PropagateBoundedDynamism fails MarkDynamic when pooling reduces a
-        # bounded spatial dimension to size 1 (eager), and avg_pool3d_backward
-        # queries static input shape, aborting the test process (compile_grad).
-        "nn.functional.avg_pool3d": {EAGER, COMPILE_GRAD},
+        # bounded spatial dimension to size 1 (eager), dynamic pad shape
+        # exceeds TPU size limit (compile), and avg_pool3d_backward queries
+        # static input shape, aborting the test process (compile_grad).
+        "nn.functional.avg_pool3d": ALL_MODES,
         # Fails to inline MLIR functions on bounded inputs.
         "nn.functional.channel_shuffle": ALL_MODES,
+        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
+        "nn.functional.conv2d": {COMPILE},
         # cross_entropy_loss queries a dynamic dim size, failing an MLIR
         # assertion that aborts the test process in builds with MLIR assertions
         # enabled (eager), and its backward fails to inline MLIR functions
@@ -564,8 +571,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # values".
         "nn.functional.cross_entropy": {EAGER, COMPILE_GRAD},
         # var_mean reshape reassociation fails (eager) and local_scalar_dense
-        # cannot materialize a placeholder tensor (compile_grad).
-        "nn.functional.group_norm": {EAGER, COMPILE_GRAD},
+        # cannot materialize a placeholder tensor (compile / compile_grad).
+        "nn.functional.group_norm": ALL_MODES,
         # Queries static dim size (dimension size -9223372036854775808). Eager
         # aborts the test process, and compile fails to inline MLIR functions.
         "nn.functional.max_pool1d": ALL_MODES,
@@ -577,13 +584,13 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # test process in builds with MLIR assertions enabled. COMPILE and
         # COMPILE_GRAD are triaged under other reasons.
         "nn.functional.nll_loss": {EAGER},
+        # reflection_pad*d and replication_pad*d query static input shape.
+        # Aborts the test process.
+        "nn.functional.pad": ALL_MODES,
         # Calls getNumElements() on a dynamic shaped type, failing an MLIR
         # assertion that aborts the test process in builds with MLIR
         # assertions enabled.
         "norm": {EAGER, COMPILE},
-        # reflection_pad*d and replication_pad*d query static input shape.
-        # Aborts the test process.
-        "nn.functional.pad": {EAGER, COMPILE_GRAD},
         # Variable repeats fail MLIR function inlining in Cumsum/ScanOp.
         "repeat_interleave": {EAGER},
         # Queries static input shape (limit index -9223372036854775808). Aborts
@@ -614,10 +621,12 @@ DYNAMISM_DENY_LISTS: DenyList = {
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "linalg decompositions do not support bounded dimensions": {
         # Slicing a dynamic dimension is not supported.
-        "linalg.inv": {COMPILE_GRAD},
-        "linalg.lu": {EAGER},
+        "linalg.inv": {COMPILE, COMPILE_GRAD},
+        "linalg.lu": {EAGER, COMPILE},
+        "linalg.lu_factor_ex": {COMPILE},
+        "linalg.lu_solve": {COMPILE},
         # Slicing a dynamic dimension is not supported.
-        "linalg.solve_ex": {COMPILE_GRAD},
+        "linalg.solve_ex": {COMPILE, COMPILE_GRAD},
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the result has wrong values": {
@@ -632,7 +641,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "max": {COMPILE_GRAD},
         "min": {COMPILE_GRAD},
         "permute": {COMPILE, COMPILE_GRAD},
-        "stack": {COMPILE_GRAD},
+        "stack": {COMPILE, COMPILE_GRAD},
         "transpose": {COMPILE, COMPILE_GRAD},
         "unsqueeze": {COMPILE, COMPILE_GRAD},
         "unsqueeze_copy": {COMPILE, COMPILE_GRAD},
@@ -646,27 +655,39 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "_fused_moving_avg_obs_fq_helper": {COMPILE, COMPILE_GRAD},
         "abs": {COMPILE},
         "addcmul": {COMPILE},
+        "cat": {COMPILE},
         "ceil": {COMPILE},
         # Eager mode is triaged under "untriaged: invalid result".
         "clamp": {COMPILE, COMPILE_GRAD},
         "clone": {COMPILE},
+        "eq": {COMPILE},
+        "flip": {COMPILE},
         "floor": {COMPILE},
+        "full_like": {COMPILE},
         "index_copy": {COMPILE},
         # COMPILE is triaged under "untriaged: buffer dimension mismatch".
         "isinf": {COMPILE_GRAD},
         "isnan": {COMPILE, COMPILE_GRAD},
         "isneginf": {COMPILE, COMPILE_GRAD},
         "isposinf": {COMPILE, COMPILE_GRAD},
+        "lcm": {COMPILE},
+        "le": {COMPILE},
+        "logical_and": {COMPILE},
+        "lt": {COMPILE},
         "masked_fill": {COMPILE, COMPILE_GRAD},
         # COMPILE_GRAD is triaged under "compiled as_strided view lowering
         # fails to inline MLIR functions".
         "max": {COMPILE},
         "min": {COMPILE},
         "native_dropout_backward": {COMPILE, COMPILE_GRAD},
+        "ne": {COMPILE},
         "neg": {COMPILE},
+        "nn.functional.hardtanh": {COMPILE},
+        "ones_like": {COMPILE},
         # OpInfo runs `x.clone().resize_(shape)` and compiles the
         # pre-graph-break `clone`.
         "resize_": {COMPILE},
+        "roll": {COMPILE},
         "round": {COMPILE},
         "scatter_add": {COMPILE},
         "scatter_reduce": {COMPILE},
@@ -676,6 +697,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "sgn": {COMPILE},
         "sign": {COMPILE},
         "signbit": {COMPILE, COMPILE_GRAD},
+        "sort": {COMPILE},
         # Eager mode is triaged under "untriaged: unsupported view op or
         # reshape", and compile_grad under "untriaged: XLA compile or runtime
         # failure".
@@ -686,6 +708,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "trunc": {COMPILE},
         "where": {COMPILE, COMPILE_GRAD},
         "zero_": {COMPILE},
+        "zeros_like": {COMPILE},
     },
     # Avoid HBM OOM when compiling 3D spatial <=128 buckets.
     "XLA runs out of HBM compiling multi-dim <=128 bounded shapes": {
@@ -719,7 +742,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "erf": {COMPILE_GRAD},  # float16 compiled backward tolerance
         "erfinv": {COMPILE_GRAD},  # bfloat16 compiled backward tolerance
         "nn.functional.nll_loss": {COMPILE},
+        "std": {COMPILE},
         "tanh": {COMPILE_GRAD},  # float16/bfloat16 compiled backward tolerance
+        "var": {COMPILE},
+        "var_mean": {COMPILE},
     },
     "untriaged: buffer dimension mismatch": {
         # These abort the test process with a CHECK failure in
@@ -753,13 +779,15 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     "untriaged: XLA compile or runtime failure": {
         "bmm": {COMPILE_GRAD},  # RuntimeProgramInputMismatch
+        "fft.ifft": {COMPILE},
         "linalg.lu_factor_ex": {EAGER},  # incompatible shapes RET_CHECK
         "mm": {COMPILE_GRAD},  # TPU core halted unexpectedly
         "split": {COMPILE_GRAD},  # RuntimeProgramInputMismatch
     },
     # These abort the test process.
     "untriaged: crash": {
-        "_transformer_encoder_layer_fwd": {EAGER},
+        "_transformer_encoder_layer_fwd": {EAGER, COMPILE},
+        "erfinv": {COMPILE},
         "fft.irfft": {COMPILE_GRAD},  # buffer != nullptr CHECK in shape.h
         "index_select": ALL_MODES,
         # Allocates a zero-sized shape with no zero dimension.
@@ -769,7 +797,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "nn.functional.grid_sample": ALL_MODES,
         "searchsorted": ALL_MODES,  # buffer != nullptr CHECK in shape.h
         "slice_scatter": {EAGER, COMPILE},  # buffer != nullptr CHECK in shape.h
-        "unique": {EAGER},
+        "unique": {EAGER, COMPILE},
         "unique_consecutive": {EAGER},
         "view_as_complex": {COMPILE, COMPILE_GRAD},
     },
@@ -777,7 +805,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Slicing a dynamic dimension is not supported.
         "diagonal": ALL_MODES,
         # unflatten is ambiguous for a bounded dimension.
-        "put": {EAGER, COMPILE_GRAD},
+        "put": ALL_MODES,
         # Slicing a dynamic dimension is not supported.
         "select": {EAGER},
         "split": {EAGER},
@@ -788,6 +816,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "take": {EAGER, COMPILE_GRAD},
     },
     "untriaged: shape mismatch": {
+        # Query shape is padded to bounded dim while key/value stay static.
+        "_native_multi_head_attention": {COMPILE},
         # Compile marks self dim bounded but not source.
         "index_add": {COMPILE, COMPILE_GRAD},
         "index_put": {COMPILE, COMPILE_GRAD},
