@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -2847,6 +2848,173 @@ TEST(BuildFillUninitialized, StandardFloatTypesUseNaN) {
   ASSERT_TRUE(dense_attr != nullptr);
   ASSERT_TRUE(dense_attr.isSplat());
   EXPECT_TRUE(dense_attr.getSplatValue<llvm::APFloat>().isNaN());
+}
+
+TEST(NarrowIndexElementTypeTest, BoundaryValues) {
+  constexpr int64_t kI32Max = std::numeric_limits<int32_t>::max();
+  constexpr int64_t kI32Min = std::numeric_limits<int32_t>::min();
+  EXPECT_EQ(NarrowIndexElementType(0), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowIndexElementType(1), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowIndexElementType(kI32Max), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowIndexElementType(kI32Max + 1), mlir::ElementType::I64);
+  EXPECT_EQ(NarrowIndexElementType(-1), mlir::ElementType::I64);
+
+  EXPECT_EQ(NarrowSignedIndexElementType(kI32Min, kI32Max),
+            mlir::ElementType::I32);
+  EXPECT_EQ(NarrowSignedIndexElementType(kI32Min - 1, 0),
+            mlir::ElementType::I64);
+  EXPECT_EQ(NarrowSignedIndexElementType(0, kI32Max + 1),
+            mlir::ElementType::I64);
+  EXPECT_EQ(NarrowSignedIndexElementType(5, 3), mlir::ElementType::I64);
+}
+
+TEST(NarrowIndexElementTypeTest, StaticAndBoundedDynamicAxes) {
+  OpBuilderUtilsBuilder builder_holder;
+  mlir::func::FunctionBuilder fb(builder_holder.get(), "main");
+  mlir::OpBuilder& ob = fb.getOpBuilder();
+
+  mlir::MlirOp small = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({4, 1024}, ob.getF32Type()));
+  EXPECT_EQ(NarrowAxisIndexElementType(small, 0), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowAxisIndexElementType(small, 1), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowElementsCountElementType(small), mlir::ElementType::I32);
+
+  mlir::MlirOp huge_axis = mlir::func::Argument(
+      fb,
+      mlir::RankedTensorType::get(
+          {2, static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1},
+          ob.getF32Type()));
+  EXPECT_EQ(NarrowAxisIndexElementType(huge_axis, 0), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowAxisIndexElementType(huge_axis, 1), mlir::ElementType::I64);
+  EXPECT_EQ(NarrowElementsCountElementType(huge_axis), mlir::ElementType::I64);
+
+  mlir::MlirOp prod_overflow = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({65536, 65536}, ob.getF32Type()));
+  EXPECT_EQ(NarrowAxisIndexElementType(prod_overflow, 0),
+            mlir::ElementType::I32);
+  EXPECT_EQ(NarrowElementsCountElementType(prod_overflow, {0}),
+            mlir::ElementType::I32);
+  EXPECT_EQ(NarrowElementsCountElementType(prod_overflow),
+            mlir::ElementType::I64);
+
+  mlir::MlirOp bounded = MakeBoundedArg(fb, {16, 32}, {0});
+  EXPECT_EQ(NarrowAxisIndexElementType(bounded, 0), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowElementsCountElementType(bounded), mlir::ElementType::I32);
+
+  mlir::MlirOp unbounded = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({mlir::ShapedType::kDynamic, 8},
+                                      ob.getF32Type()));
+  EXPECT_EQ(NarrowAxisIndexElementType(unbounded, 0), mlir::ElementType::I64);
+  EXPECT_EQ(NarrowElementsCountElementType(unbounded), mlir::ElementType::I64);
+}
+
+TEST(NarrowIndexElementTypeTest, GetBoundedDimUpperBound) {
+  OpBuilderUtilsBuilder builder_holder;
+  mlir::func::FunctionBuilder fb(builder_holder.get(), "main");
+  mlir::OpBuilder& ob = fb.getOpBuilder();
+
+  // Static tensor: positive, negative, and out-of-range dims.
+  mlir::MlirOp static_2d = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({4, 1024}, ob.getF32Type()));
+  EXPECT_EQ(GetBoundedDimUpperBound(static_2d, 0), 4);
+  EXPECT_EQ(GetBoundedDimUpperBound(static_2d, 1), 1024);
+  EXPECT_EQ(GetBoundedDimUpperBound(static_2d, -1), 1024);
+  EXPECT_EQ(GetBoundedDimUpperBound(static_2d, -2), 4);
+  EXPECT_EQ(GetBoundedDimUpperBound(static_2d, 2), std::nullopt);
+  EXPECT_EQ(GetBoundedDimUpperBound(static_2d, -3), std::nullopt);
+  EXPECT_EQ(NarrowAxisIndexElementType(static_2d, -1), mlir::ElementType::I32);
+  EXPECT_EQ(NarrowAxisIndexElementType(static_2d, 2), mlir::ElementType::I64);
+  EXPECT_EQ(NarrowAxisIndexElementType(static_2d, -3), mlir::ElementType::I64);
+
+  // 0-D scalar tensor: any dim index is out of range for
+  // GetBoundedDimUpperBound.
+  mlir::MlirOp scalar = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({}, ob.getF32Type()));
+  EXPECT_EQ(GetBoundedDimUpperBound(scalar, 0), std::nullopt);
+  EXPECT_EQ(GetBoundedDimUpperBound(scalar, -1), std::nullopt);
+  EXPECT_EQ(NarrowAxisIndexElementType(scalar, 0), mlir::ElementType::I32);
+
+  // Large static dim exceeding INT32_MAX preserves the exact int64_t size.
+  const int64_t over_i32 =
+      static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1;
+  mlir::MlirOp huge_axis = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({2, over_i32}, ob.getF32Type()));
+  EXPECT_EQ(GetBoundedDimUpperBound(huge_axis, -1), over_i32);
+  EXPECT_EQ(NarrowAxisIndexElementType(huge_axis, -1), mlir::ElementType::I64);
+
+  // Bounded-dynamic tensor (`dim 0` bounded by 16, `dim 1` static 32).
+  mlir::MlirOp bounded = MakeBoundedArg(fb, {16, 32}, {0});
+  EXPECT_EQ(GetBoundedDimUpperBound(bounded, 0), 16);
+  EXPECT_EQ(GetBoundedDimUpperBound(bounded, -2), 16);
+  EXPECT_EQ(GetBoundedDimUpperBound(bounded, 1), 32);
+  EXPECT_EQ(GetBoundedDimUpperBound(bounded, -1), 32);
+  EXPECT_EQ(GetBoundedDimUpperBound(bounded, 2), std::nullopt);
+  EXPECT_EQ(GetBoundedDimUpperBound(bounded, -3), std::nullopt);
+
+  // Unbounded-dynamic tensor (`dim 0` unbounded, `dim 1` static 8).
+  mlir::MlirOp unbounded = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({mlir::ShapedType::kDynamic, 8},
+                                      ob.getF32Type()));
+  EXPECT_EQ(GetBoundedDimUpperBound(unbounded, 0), std::nullopt);
+  EXPECT_EQ(GetBoundedDimUpperBound(unbounded, -2), std::nullopt);
+  EXPECT_EQ(GetBoundedDimUpperBound(unbounded, 1), 8);
+  EXPECT_EQ(GetBoundedDimUpperBound(unbounded, -1), 8);
+  EXPECT_EQ(GetBoundedDimUpperBound(unbounded, 2), std::nullopt);
+  EXPECT_EQ(GetBoundedDimUpperBound(unbounded, -3), std::nullopt);
+}
+
+TEST(UnwrapTrailingMatrixTest, TransposeAndAdjointVariants) {
+  OpBuilderUtilsBuilder builder_holder;
+  mlir::func::FunctionBuilder fb(builder_holder.get(), "main");
+  mlir::OpBuilder& ob = fb.getOpBuilder();
+
+  mlir::MlirOp mat = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({2, 4, 8}, ob.getF32Type()));
+  mlir::MlirOp tr_last2 = mlir::stablehlo::Transpose(mat, {0, 2, 1});
+  mlir::MlirOp probe = tr_last2;
+  EXPECT_TRUE(UnwrapTrailingMatrixTranspose(probe));
+  EXPECT_EQ(probe.getValue(), mat.getValue());
+
+  mlir::MlirOp tr_non_trailing = mlir::stablehlo::Transpose(mat, {1, 0, 2});
+  probe = tr_non_trailing;
+  EXPECT_FALSE(UnwrapTrailingMatrixTranspose(probe));
+  EXPECT_EQ(probe.getValue(), tr_non_trailing.getValue());
+
+  mlir::MlirOp cmat = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({2, 4, 4},
+                                      mlir::ComplexType::get(ob.getF32Type())));
+  auto make_conj = [](mlir::MlirOp x) {
+    mlir::MlirOp re = mlir::stablehlo::Real(x);
+    mlir::MlirOp im = mlir::stablehlo::Imag(x);
+    mlir::MlirOp neg_im = mlir::stablehlo::Neg(im);
+    return mlir::stablehlo::Complex(re, neg_im);
+  };
+
+  // Pure conjugate without transpose should stay intact.
+  mlir::MlirOp conj_only = make_conj(cmat);
+  probe = conj_only;
+  EXPECT_EQ(UnwrapTrailingMatrixAdjoint(probe), MatrixTransposeKind::kNone);
+  EXPECT_EQ(probe.getValue(), conj_only.getValue());
+
+  // transpose(x) -> kTranspose
+  mlir::MlirOp ct = mlir::stablehlo::Transpose(cmat, {0, 2, 1});
+  probe = ct;
+  EXPECT_EQ(UnwrapTrailingMatrixAdjoint(probe),
+            MatrixTransposeKind::kTranspose);
+  EXPECT_EQ(probe.getValue(), cmat.getValue());
+
+  // conj(transpose(x)) -> kAdjoint
+  mlir::MlirOp cth = make_conj(ct);
+  probe = cth;
+  EXPECT_EQ(UnwrapTrailingMatrixAdjoint(probe), MatrixTransposeKind::kAdjoint);
+  EXPECT_EQ(probe.getValue(), cmat.getValue());
+
+  // transpose(conj(x)) -> kAdjoint
+  mlir::MlirOp conj_cmat = make_conj(cmat);
+  mlir::MlirOp cht = mlir::stablehlo::Transpose(conj_cmat, {0, 2, 1});
+  probe = cht;
+  EXPECT_EQ(UnwrapTrailingMatrixAdjoint(probe), MatrixTransposeKind::kAdjoint);
+  EXPECT_EQ(probe.getValue(), cmat.getValue());
 }
 
 }  // namespace

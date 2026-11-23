@@ -25,6 +25,7 @@
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
+#include "csrc/mlir/passes/narrow_index_width.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -62,6 +63,7 @@ void AddShloPasses(mlir::OpPassManager& pm) {
     pm.addNestedPass<mlir::func::FuncOp>(createReassociateNormWeightsPass());
   }
   pm.addNestedPass<mlir::func::FuncOp>(createLowerSeparableGatherToDotPass());
+  pm.addNestedPass<mlir::func::FuncOp>(createNarrowIndexWidthPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::stablehlo::createStablehloTargetIndependentOptimizationPass());
   pm.addNestedPass<mlir::func::FuncOp>(createFoldConcatSoftmaxPass());

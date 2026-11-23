@@ -41,14 +41,22 @@ namespace torch_tpu {
 
 namespace {
 
-// count_nonzero == sum(self != 0), with the count accumulated in int64.
+// count_nonzero == sum(self != 0), widening to int64 only after the reduction
+// when the maximum count fits in signed int32.
 absl::StatusOr<mlir::MlirOp> BuildCountNonzeroShlo(
     mlir::MlirOp input_op, absl::Span<const int64_t> reduce_dims) {
   mlir::MlirOp mask = GetNonzeroMask(input_op);
-  mlir::MlirOp mask_i64 =
-      mlir::stablehlo::ConvertElementType(mask, mlir::ElementType::I64);
-  return BuildSumShlo(mask_i64, reduce_dims, ReductionMode::kDropDims,
-                      mlir::ElementType::I64);
+  const mlir::ElementType accum_dtype =
+      NarrowElementsCountElementType(input_op, reduce_dims);
+  mlir::MlirOp mask_int =
+      mlir::stablehlo::ConvertElementType(mask, accum_dtype);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp count,
+                      BuildSumShlo(mask_int, reduce_dims,
+                                   ReductionMode::kDropDims, accum_dtype));
+  if (accum_dtype != mlir::ElementType::I64) {
+    return mlir::stablehlo::ConvertElementType(count, mlir::ElementType::I64);
+  }
+  return count;
 }
 
 }  // namespace

@@ -108,6 +108,11 @@ def _rel_pos(score, b, h, q_idx, kv_idx):
   return score + (q_idx - kv_idx).to(torch.float32) * 0.01
 
 
+def _tanh_softcap(score, b, h, q_idx, kv_idx):
+  del b, h, q_idx, kv_idx
+  return 50.0 * torch.tanh(score / 50.0)
+
+
 def _block_mask(mask_mod, batch, seq, kv_seq=None):
   return fa.create_block_mask(
       mask_mod, batch, 1, seq, kv_seq or seq, device="cpu", BLOCK_SIZE=_BLOCK
@@ -237,6 +242,11 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
   def test_score_mod(self, dtype):
     q, k, v = self._inputs(1, 2, 2, 1024, 128, dtype)
     self._check(q, k, v, _causal, score_mod=_alibi)
+
+  @parameterized.parameters(torch.float32, torch.bfloat16)
+  def test_score_mod_tanh_softcap(self, dtype):
+    q, k, v = self._inputs(1, 2, 2, 1024, 128, dtype)
+    self._check(q, k, v, _causal, score_mod=_tanh_softcap)
 
   def test_merges_mask_blocks_into_the_tile_with_a_mask_mod(self):
     block_mask = _block_mask(_causal, 1, 4 * _BLOCK)

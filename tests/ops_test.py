@@ -258,7 +258,13 @@ ACCURACY_OVERRIDES_VS_GPU = {
     },
     "_foreach_sigmoid": {
         torch.complex64: {"rtol": 1.4e-5},
+        torch.float16: {"atol": 5.9e-4},
         torch.float32: {"atol": 2.7e-5},
+        torch.int16: {"atol": 1.8e-5},
+        torch.int32: {"atol": 1.8e-5},
+        torch.int64: {"atol": 1.8e-5},
+        torch.int8: {"atol": 1.8e-5},
+        torch.uint8: {"atol": 1.8e-5},
     },
     "_foreach_tan": {
         torch.complex64: {"rtol": 3.7e-5},
@@ -288,6 +294,12 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "_softmax_backward_data": {
         torch.bfloat16: {"atol": 3.6e-3},
         torch.float16: {"atol": 5.9e-4},
+    },
+    "_thnn_fused_gru_cell": {
+        torch.float32: {"rtol": 8.4e-6, "atol": 3.8e-5},
+    },
+    "_thnn_fused_lstm_cell": {
+        torch.float32: {"atol": 3.5e-5},
     },
     "_transformer_encoder_layer_fwd": {
         torch.bfloat16: {"rtol": 4.5e-2, "atol": 1.1e-1},
@@ -601,6 +613,13 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"atol": 3.2e-2},
         torch.float16: {"atol": 4e-3},
     },
+    "nn.functional.gelu": {
+        torch.float16: {"atol": 7.4e-5},
+        torch.float32: {"rtol": 2.1e-5, "atol": 4.3e-5},
+    },
+    "nn.functional.glu": {
+        torch.float32: {"rtol": 1.4e-5, "atol": 1.5e-5},
+    },
     "nn.functional.group_norm": {
         torch.bfloat16: {"rtol": 3.3e-2, "atol": 8e-2},
     },
@@ -615,6 +634,11 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 5e-1, "atol": 5.4e-1},
         torch.float32: {"rtol": 5.6e-1, "atol": 5.6e-1},
     },
+    "nn.functional.silu": {
+        torch.bfloat16: {"atol": 7.4e-5},
+        torch.float16: {"atol": 1.5e-4},
+        torch.float32: {"rtol": 1.3e-5, "atol": 7.2e-5},
+    },
     "norm": {
         torch.complex64: {"rtol": 5.7e-6},
         torch.float32: {"rtol": 5.7e-6},
@@ -625,6 +649,15 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "pow": {
         torch.complex64: {"rtol": 7e-4, "atol": 3.8e-4},
         torch.float32: {"rtol": 5.6e-6},
+    },
+    "sigmoid": {
+        torch.float16: {"atol": 1.5e-5},
+        torch.float32: {"atol": 1.5e-5},
+        torch.int16: {"atol": 1.8e-5},
+        torch.int32: {"atol": 1.8e-5},
+        torch.int64: {"atol": 1.8e-5},
+        torch.int8: {"atol": 1.8e-5},
+        torch.uint8: {"atol": 1.8e-5},
     },
     "sin": {
         torch.complex64: {"rtol": 4.9e-6},
@@ -729,6 +762,9 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "_softmax_backward_data": {
         torch.bfloat16: {"atol": 3.6e-3},
         torch.float16: {"atol": 5.9e-4},
+    },
+    "_thnn_fused_gru_cell": {
+        torch.float32: {"rtol": 8.4e-6, "atol": 3.8e-5},
     },
     "_upsample_bicubic2d_aa": {
         torch.bfloat16: {"rtol": 3.5e-2, "atol": 3.3e-2},
@@ -1018,6 +1054,10 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
         "_foreach_sigmoid": {
             torch.float16: {"atol": 5.9e-4},
         },
+        "_foreach_tanh": {
+            torch.float16: {"atol": 1.2e-3},
+            torch.float32: {"atol": 7.3e-5},
+        },
         "_native_batch_norm_legit": {
             torch.bfloat16: {"atol": 1.1e-2},
             torch.float16: {"atol": 1.4e-3},
@@ -1149,6 +1189,10 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
         "nn.functional.ctc_loss": {
             torch.float32: {"rtol": 3.6e-3, "atol": 2.2e-4},
         },
+        "nn.functional.gelu": {
+            torch.float16: {"rtol": 1.1e-3, "atol": 1.5e-4},
+            torch.float32: {"rtol": 1.5e-4, "atol": 1.3e-4},
+        },
         "nn.functional.grid_sample": {
             torch.bfloat16: {"rtol": 1.9e-2, "atol": 1.9e-2},
             torch.float16: {"rtol": 3.6e-3, "atol": 2.4e-3},
@@ -1174,6 +1218,9 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
             torch.float32: {"rtol": 4.3e-1, "atol": 9.3e-1},
             torch.float64: {"rtol": 6e-6, "atol": 7.7e-6},
         },
+        "nn.functional.silu": {
+            torch.float32: {"rtol": 5.7e-5},
+        },
         "norm": {
             torch.complex64: {"rtol": 8.2e-6},
             torch.float16: {"atol": 1.2e-3},
@@ -1186,11 +1233,18 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
         "prod": {
             torch.float16: {"rtol": 1.6e-3, "atol": 9.8e-4},
         },
+        "sigmoid": {
+            torch.float16: {"atol": 1.5e-4},
+        },
         "std": {
             torch.float16: {"atol": 6e-4},
         },
         "tan": {
             torch.float32: {"rtol": 3.8e-6, "atol": 8.4e-3},
+        },
+        "tanh": {
+            torch.float16: {"atol": 1.2e-3},
+            torch.float32: {"atol": 7.3e-5},
         },
         # go/keep-sorted end
     },

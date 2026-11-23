@@ -76,8 +76,16 @@ absl::StatusOr<mlir::MlirOp> BuildBinCount(
   auto min = MakeConstantLike(input, 0);
   auto max = MakeConstantLike(input, num_of_bins - 1);
   auto clamped_inputs = mlir::stablehlo::Clamp(min, input, max);
+  const mlir::ElementType scatter_idx_elem_type =
+      NarrowIndexElementType(num_of_bins - 1);
+  if (scatter_idx_elem_type == mlir::ElementType::I32 &&
+      input_dtype.isInteger(64)) {
+    clamped_inputs = mlir::stablehlo::ConvertElementType(
+        clamped_inputs, mlir::ElementType::I32);
+    input_dtype = GetTensorTypeOrDie(clamped_inputs).getElementType();
+  }
 
-  // Then we use the clamped input as indices for scattering an summable value
+  // Then we use the clamped input as indices for scattering a summable value
   // (1 or weights[i], if weights is defined) to an initially 0 output tensor.
   Dimensions output_dims = {num_of_bins};
   auto empty_output = MakeConstant(builder, 0, computation_dtype, output_dims);
@@ -226,15 +234,25 @@ at::Tensor AtenBinCount(const at::Tensor& self,
           return MakeTensor(std::move(result_buf));
         }
 
-        // If no weights are provided, the computation/output dtype is always
-        // torch.int64.
-        mlir::ElementType computation_dtype = mlir::ElementType::I64;
-        mlir::ElementType output_dtype = computation_dtype;
-        TT_ASSIGN_OR_THROW(auto param_keys, TT_MAKE_OP_PARAM_CACHE_KEYS(nbins));
+        // If no weights are provided, PyTorch's output dtype is always
+        // torch.int64. Accumulate the scatter in I32 whenever every possible
+        // bin count (<= self.numel()) fits in signed 32-bit integers, widening
+        // only the final `[nbins]` tensor once back to I64.
+        const mlir::ElementType output_dtype = mlir::ElementType::I64;
+        const mlir::ElementType count_dtype =
+            NarrowIndexElementType(self.numel());
+        TT_ASSIGN_OR_THROW(auto param_keys,
+                           TT_MAKE_OP_PARAM_CACHE_KEYS(nbins, count_dtype));
         MlirUnaryOpBuilder op_builder =
-            [nbins, computation_dtype](
-                mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildBinCount(input, nbins, computation_dtype);
+            [nbins,
+             count_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          TT_ASSIGN_OR_RETURN(mlir::MlirOp counts,
+                              BuildBinCount(input, nbins, count_dtype));
+          if (count_dtype != mlir::ElementType::I64) {
+            return mlir::stablehlo::ConvertElementType(counts,
+                                                       mlir::ElementType::I64);
+          }
+          return counts;
         };
         TT_ASSIGN_OR_THROW(
             auto result_buf,

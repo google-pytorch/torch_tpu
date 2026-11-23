@@ -17,6 +17,8 @@
 #include "csrc/ops/triangular/triangular_aten_kernels.h"
 
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -69,12 +71,30 @@ namespace stablehlo = mlir::stablehlo;
 //      [2, 2]]        [0, 1]]          [0, 0]]
 mlir::MlirOp TriangularMask(mlir::MlirOp input_op, int64_t diagonal,
                             TriangleType triangle_type) {
-  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  const int64_t n_dims = input_type.getRank();
-  auto mlir_element_type = mlir::ElementType::I64;
+  const int64_t n_dims = GetTensorTypeOrDie(input_op).getRank();
+  // Narrow iotas to I32 only when both `col` indices `[0, cols - 1]` and
+  // shifted row indices `[diagonal, rows - 1 + diagonal]` fit in signed int32
+  // without overflow (accounting for bounded dynamism).
+  mlir::ElementType mlir_element_type = mlir::ElementType::I64;
+  const std::optional<int64_t> rows =
+      GetBoundedDimUpperBound(input_op, n_dims - 2);
+  const std::optional<int64_t> cols =
+      GetBoundedDimUpperBound(input_op, n_dims - 1);
+  if (rows.has_value() && cols.has_value() &&
+      *rows <= std::numeric_limits<int32_t>::max() &&
+      *cols <= std::numeric_limits<int32_t>::max()) {
+    const int64_t max_row = *rows > 0 ? *rows - 1 : 0;
+    if (diagonal <= std::numeric_limits<int32_t>::max() - max_row &&
+        diagonal >= std::numeric_limits<int32_t>::min()) {
+      mlir_element_type = mlir::ElementType::I32;
+    }
+  }
   mlir::MlirOp a = stablehlo::IotaLike(input_op, n_dims - 1, mlir_element_type);
   mlir::MlirOp b = stablehlo::IotaLike(input_op, n_dims - 2, mlir_element_type);
-  mlir::MlirOp diagonal_shlo_broadcast = MakeConstantLike(b, diagonal);
+  mlir::MlirOp diagonal_shlo_broadcast =
+      mlir_element_type == mlir::ElementType::I32
+          ? MakeConstantLike(b, static_cast<int32_t>(diagonal))
+          : MakeConstantLike(b, diagonal);
   mlir::MlirOp b_plus_diagonal = stablehlo::Add(b, diagonal_shlo_broadcast);
   auto comparison_direction = triangle_type == TriangleType::kUpper
                                   ? stablehlo::ComparisonDirection::LE

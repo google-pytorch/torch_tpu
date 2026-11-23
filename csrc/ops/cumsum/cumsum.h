@@ -21,10 +21,30 @@
 #include <optional>
 
 #include "absl/status/statusor.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
+
+// Lowering backend chosen for `aten::cumsum` based on input shape and scan
+// axis (b/588733851).
+enum class CumsumLoweringStrategy {
+  // Associative `chlo.ScanOp` (native TPU ScanEmitter). Preferred for dynamic
+  // shapes, long scan axes exceeding TPU lane width (`L > 128`), and small
+  // tensors (`numel < 262144`) that hit the row-parallel VMEM fast path.
+  kChloScan,
+  // `stablehlo.reduce_window` with window `[L]` and left pad `L - 1`. At
+  // `L <= 128` (`target.LaneCount()`), XLA's `TpuReduceWindowRewriter` lowers
+  // it as a single-pass parallel prefix sum without recursive chunking or a
+  // `call %scan` barrier.
+  kReduceWindow,
+};
+
+// Selects the StableHLO lowering strategy for a cumulative sum over
+// `normalized_dim` of a tensor with type `input_type`.
+[[nodiscard]] CumsumLoweringStrategy SelectCumsumLoweringStrategy(
+    mlir::RankedTensorType input_type, int64_t normalized_dim);
 
 absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
     int64_t normalized_dim, std::optional<mlir::ElementType> out_dtype,

@@ -75,6 +75,20 @@ NAryMlirOpBuilder<2, 1> LinalgSolveTriangularBuilder(
     ABSL_VLOG(1) << "triangular solve: " << "upper:" << options.upper
                  << " left:" << options.left
                  << " unitriangular:" << options.unitriangular;
+    bool lower = !options.upper;
+    auto transpose_a = options.adjoint
+                           ? mlir::stablehlo::Transpose::ADJOINT
+                           : mlir::stablehlo::Transpose::NO_TRANSPOSE;
+    if (!options.adjoint) {
+      const MatrixTransposeKind kind = UnwrapTrailingMatrixAdjoint(a_op);
+      if (kind == MatrixTransposeKind::kTranspose) {
+        lower = !lower;
+        transpose_a = mlir::stablehlo::Transpose::TRANSPOSE;
+      } else if (kind == MatrixTransposeKind::kAdjoint) {
+        lower = !lower;
+        transpose_a = mlir::stablehlo::Transpose::ADJOINT;
+      }
+    }
     auto a_type = GetTensorTypeOrDie(a_op);
     auto b_type = GetTensorTypeOrDie(b_op);
     auto a_batch_shape = a_type.getShape().slice(0, a_type.getRank() - 2);
@@ -92,10 +106,8 @@ NAryMlirOpBuilder<2, 1> LinalgSolveTriangularBuilder(
     TT_ASSIGN_OR_RETURN(b_op, BroadcastIfNeeded(b_op, b_broadcasted_shape));
     auto triangular_solve_op =
         builder.create<mlir::stablehlo::TriangularSolveOp>(
-            a_op.getValue(), b_op.getValue(), options.left, !options.upper,
-            options.unitriangular,
-            options.adjoint ? mlir::stablehlo::Transpose::ADJOINT
-                            : mlir::stablehlo::Transpose::NO_TRANSPOSE);
+            a_op.getValue(), b_op.getValue(), options.left, lower,
+            options.unitriangular, transpose_a);
     return triangular_solve_op;
   };
 }

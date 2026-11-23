@@ -17948,6 +17948,209 @@ module {{
     self.assertEqual([t.requires_grad for t in outputs], [True, False, False])
     self.assertEqual(outputs[1].stride(), frozen.stride())
 
+  def _capture_compiled_stablehlo(self, fn, *args, requires_grad=False):
+    debugs = []
+    compiled = torch.compile(
+        fn,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    out = compiled(*args)
+    if requires_grad:
+      out.sum().backward()
+    self.assertNotEmpty(debugs)
+    return debugs[0], out
+
+  def test_vpu_transcendentals_use_native_stablehlo(self):
+    """Verifies tanh/sigmoid/silu/gelu/glu emit native StableHLO ops (b/588734185)."""
+    x = torch.randn(4, 16, dtype=torch.bfloat16, device="tpu")
+    dbg_tanh, _ = self._capture_compiled_stablehlo(torch.tanh, x)
+    shlo_tanh = dbg_tanh.stablehlo_forward_text[0]
+    self.assertIn("stablehlo.tanh", shlo_tanh)
+    self.assertNotIn("exponential_minus_one", shlo_tanh)
+
+    dbg_sig, _ = self._capture_compiled_stablehlo(torch.sigmoid, x)
+    shlo_sig = dbg_sig.stablehlo_forward_text[0]
+    self.assertIn("stablehlo.logistic", shlo_sig)
+    self.assertNotIn("stablehlo.divide", shlo_sig)
+
+    dbg_silu, _ = self._capture_compiled_stablehlo(torch.nn.functional.silu, x)
+    self.assertIn("stablehlo.logistic", dbg_silu.stablehlo_forward_text[0])
+
+    dbg_gelu, _ = self._capture_compiled_stablehlo(
+        lambda t: torch.nn.functional.gelu(t, approximate="tanh"), x
+    )
+    self.assertIn("stablehlo.tanh", dbg_gelu.stablehlo_forward_text[0])
+
+  def test_glu_defers_f32_upcast_past_slice_stablehlo(self):
+    """Verifies glu splits bf16 halves before upcasting to f32 (b/588734623)."""
+    x = torch.randn(
+        4, 16, dtype=torch.bfloat16, device="tpu", requires_grad=True
+    )
+    dbg, _ = self._capture_compiled_stablehlo(
+        lambda t: torch.nn.functional.glu(t, dim=-1), x, requires_grad=True
+    )
+    fwd_shlo = dbg.stablehlo_forward_text[0]
+    self.assertIn("stablehlo.logistic", fwd_shlo)
+    self.assertRegex(
+        fwd_shlo,
+        r"stablehlo\.slice.*tensor<4x16xbf16>\) -> tensor<4x8xbf16>",
+    )
+    self.assertNotRegex(
+        fwd_shlo,
+        r"stablehlo\.convert.*tensor<4x16xbf16>\) -> tensor<4x16xf32>",
+    )
+
+  def test_scaled_mm_keeps_fp8_operands_stablehlo(self):
+    """Verifies _scaled_mm and 3D _scaled_grouped_mm keep native FP8 (b/588734125)."""
+    a = torch.randn(16, 16, dtype=torch.bfloat16, device="tpu").to(
+        torch.float8_e4m3fn
+    )
+    b = (
+        torch.randn(16, 16, dtype=torch.bfloat16, device="tpu")
+        .t()
+        .to(torch.float8_e4m3fn)
+    )
+    sa = torch.tensor(1.0, dtype=torch.float32, device="tpu")
+    sb = torch.tensor(1.0, dtype=torch.float32, device="tpu")
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      dbg_mm, _ = self._capture_compiled_stablehlo(
+          lambda x, y, sx, sy: torch._scaled_mm(
+              x, y, sx, sy, out_dtype=torch.bfloat16
+          ),
+          a,
+          b,
+          sa,
+          sb,
+      )
+    shlo_mm = dbg_mm.stablehlo_forward_text[0]
+    self.assertIn("stablehlo.dot_general", shlo_mm)
+    self.assertNotRegex(
+        shlo_mm, r"stablehlo\.convert.*f8E4M3FN.*-> tensor<[^>]*xf32>"
+    )
+    self.assertIn("DEFAULT", shlo_mm)
+
+    a3 = torch.randn(2, 16, 16, dtype=torch.bfloat16, device="tpu").to(
+        torch.float8_e4m3fn
+    )
+    b3 = (
+        torch.randn(2, 16, 16, dtype=torch.bfloat16, device="tpu")
+        .transpose(-1, -2)
+        .to(torch.float8_e4m3fn)
+    )
+    sa3 = torch.ones(2, 16, dtype=torch.float32, device="tpu")
+    sb3 = torch.ones(2, 16, dtype=torch.float32, device="tpu")
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      dbg_gmm, _ = self._capture_compiled_stablehlo(
+          lambda x, y, sx, sy: torch._scaled_grouped_mm(
+              x, y, sx, sy, out_dtype=torch.bfloat16
+          ),
+          a3,
+          b3,
+          sa3,
+          sb3,
+      )
+    shlo_gmm = dbg_gmm.stablehlo_forward_text[0]
+    self.assertIn("stablehlo.dot_general", shlo_gmm)
+    self.assertNotRegex(
+        shlo_gmm, r"stablehlo\.convert.*f8E4M3FN.*-> tensor<[^>]*xf32>"
+    )
+
+  def test_index_ops_use_i32_internally_stablehlo(self):
+    """Verifies sort/argmax/searchsorted/tril/triu/multinomial IR hygiene."""
+    x = torch.randn(4, 32, dtype=torch.float32, device="tpu")
+    dbg_sort, _ = self._capture_compiled_stablehlo(
+        lambda t: torch.sort(t, dim=-1), x
+    )
+    self.assertIn("tensor<4x32xi32>", dbg_sort.stablehlo_forward_text[0])
+
+    dbg_argmax, _ = self._capture_compiled_stablehlo(
+        lambda t: torch.argmax(t, dim=-1), x
+    )
+    self.assertIn("tensor<4x32xi32>", dbg_argmax.stablehlo_forward_text[0])
+
+    sorted_seq = torch.arange(32, dtype=torch.float32, device="tpu")
+    queries = torch.linspace(0, 31, 8, dtype=torch.float32, device="tpu")
+    dbg_ss, _ = self._capture_compiled_stablehlo(
+        lambda s, q: torch.searchsorted(s, q), sorted_seq, queries
+    )
+    shlo_ss = dbg_ss.stablehlo_forward_text[0]
+    self.assertIn("shift_right_logical", shlo_ss)
+    self.assertNotIn("stablehlo.divide", shlo_ss)
+
+    mat = torch.randn(8, 8, dtype=torch.float32, device="tpu")
+    dbg_tril, _ = self._capture_compiled_stablehlo(torch.tril, mat)
+    shlo_tril = dbg_tril.stablehlo_forward_text[0]
+    self.assertIn("tensor<8x8xi32>", shlo_tril)
+    self.assertNotIn("xi64>", shlo_tril)
+
+    dbg_triu, _ = self._capture_compiled_stablehlo(torch.triu, mat)
+    shlo_triu = dbg_triu.stablehlo_forward_text[0]
+    self.assertIn("tensor<8x8xi32>", shlo_triu)
+    self.assertNotIn("xi64>", shlo_triu)
+
+    probs = torch.full((4, 32), 1.0 / 32.0, dtype=torch.float32, device="tpu")
+    dbg_mn, _ = self._capture_compiled_stablehlo(
+        lambda p: torch.multinomial(p, num_samples=1, replacement=False),
+        probs,
+    )
+    self.assertNotIn("chlo.top_k", dbg_mn.stablehlo_forward_text[0])
+
+  def test_solve_triangular_unwraps_transpose_and_adjoint(self):
+    """Verifies A.mT / A.mH folds into triangular_solve attr (b/588734624)."""
+    torch.manual_seed(0)
+    a_cpu = torch.tril(torch.randn(2, 8, 8, dtype=torch.float32))
+    a_cpu.diagonal(dim1=-2, dim2=-1).fill_(2.0)
+    b_cpu = torch.randn(2, 8, 4, dtype=torch.float32)
+
+    a_tpu = a_cpu.to("tpu")
+    b_tpu = b_cpu.to("tpu")
+    dbg_real, out_real = self._capture_compiled_stablehlo(
+        lambda a, b: torch.linalg.solve_triangular(a.mT, b, upper=True),
+        a_tpu,
+        b_tpu,
+    )
+    shlo_real = dbg_real.stablehlo_forward_text[0]
+    self.assertIn("TRANSPOSE", shlo_real)
+    ref_real = torch.linalg.solve_triangular(a_cpu.mT, b_cpu, upper=True)
+    utils.assert_close(out_real.cpu(), ref_real, atol=1e-4, rtol=1e-4)
+
+    ac_cpu = torch.tril(torch.randn(2, 8, 8, dtype=torch.complex64))
+    ac_cpu.diagonal(dim1=-2, dim2=-1).fill_(2.0 + 1.0j)
+    bc_cpu = torch.randn(2, 8, 4, dtype=torch.complex64)
+    dbg_cplx, out_cplx = self._capture_compiled_stablehlo(
+        lambda a, b: torch.linalg.solve_triangular(a.mH, b, upper=True),
+        ac_cpu.to("tpu"),
+        bc_cpu.to("tpu"),
+    )
+    self.assertIn("ADJOINT", dbg_cplx.stablehlo_forward_text[0])
+    ref_cplx = torch.linalg.solve_triangular(ac_cpu.mH, bc_cpu, upper=True)
+    utils.assert_close(out_cplx.cpu(), ref_cplx, atol=1e-4, rtol=1e-4)
+
+  def test_cumsum_shape_aware_dispatch_parity(self):
+    """Verifies cumsum dispatches reduce_window vs chlo.scan accurately (b/588733851)."""
+    torch.manual_seed(0)
+    large_short_cpu = torch.randn(8, 64, 8, 128, dtype=torch.float32)
+    dbg_rw, out_rw = self._capture_compiled_stablehlo(
+        lambda t: torch.cumsum(t, dim=2), large_short_cpu.to("tpu")
+    )
+    self.assertIn("stablehlo.reduce_window", dbg_rw.stablehlo_forward_text[0])
+    utils.assert_close(
+        out_rw.cpu(),
+        torch.cumsum(large_short_cpu, dim=2),
+        atol=1e-4,
+        rtol=1e-4,
+    )
+
+    small_cpu = torch.randn(2, 32, 32, 64, dtype=torch.float32)
+    dbg_sm, out_sm = self._capture_compiled_stablehlo(
+        lambda t: torch.cumsum(t, dim=3), small_cpu.to("tpu")
+    )
+    self.assertIn("chlo.scan", dbg_sm.stablehlo_forward_text[0])
+    utils.assert_close(
+        out_sm.cpu(), torch.cumsum(small_cpu, dim=3), atol=1e-4, rtol=1e-4
+    )
+
 
 class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   """Tests for backward ops."""
@@ -26830,6 +27033,8 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       self.assert_close(
           golden_result=x_train_cpu.grad,
           torch_tpu_result=x_train_tpu.grad.cpu(),
+          # Native stablehlo.logistic on TPU v5e (EUP V1) rounds to ~1.6e-5.
+          atol=2.5e-5,
       )
 
   @parameterized.named_parameters(

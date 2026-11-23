@@ -108,11 +108,19 @@ absl::StatusOr<mlir::MlirOp> BuildCompareAllShlo(mlir::MlirOp self_op,
   const auto direction = right ? mlir::stablehlo::ComparisonDirection::LE
                                : mlir::stablehlo::ComparisonDirection::LT;
 
+  // Accumulate boolean counts in I32 when the boundaries length fits in signed
+  // 32-bit integers, avoiding emulated I64 addition across the [N, M] broadcast
+  // and widening only the reduced output back to `out_dtype`.
+  const mlir::ElementType accum_dtype =
+      out_dtype == mlir::ElementType::I32
+          ? mlir::ElementType::I32
+          : NarrowAxisIndexElementType(boundaries_op, 0);
+
   // Compare the broadcasted input with the broadcasted boundaries, and convert
-  // the boolean results to the desired output type (I32/I64) for summation.
+  // the boolean results to `accum_dtype` (I32/I64) for summation.
   const mlir::MlirOp compare_op = mlir::stablehlo::ConvertElementType(
       mlir::stablehlo::Compare(boundaries_bcast_op, self_bcast_op, direction),
-      out_dtype);
+      accum_dtype);
 
   // Reduce the compared results along the last dimension (boundaries
   // dimension).
@@ -120,16 +128,19 @@ absl::StatusOr<mlir::MlirOp> BuildCompareAllShlo(mlir::MlirOp self_op,
   mlir::MlirBuilder& builder = self_op.getBuilder();
   const mlir::SmallVector<mlir::MlirOp> reduce_results =
       mlir::stablehlo::Reduce(
-          builder, {compare_op}, {MakeScalarConstant(builder, 0, out_dtype)},
-          [out_dtype](mlir::RegionBuilder& region_builder) {
+          builder, {compare_op}, {MakeScalarConstant(builder, 0, accum_dtype)},
+          [accum_dtype](mlir::RegionBuilder& region_builder) {
             mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-                mlir::getElementType(region_builder.getContext(), out_dtype),
+                mlir::getElementType(region_builder.getContext(), accum_dtype),
                 region_builder.getRegion(), region_builder.getOpBuilder());
           },
           /*dimensions=*/{reduction_dim});
 
   TT_RET_CHECK(reduce_results.size() == 1, error::kInternal)
       << "expected 1 result from reduce op, got " << reduce_results.size();
+  if (accum_dtype != out_dtype) {
+    return mlir::stablehlo::ConvertElementType(reduce_results[0], out_dtype);
+  }
   return reduce_results[0];
 }
 

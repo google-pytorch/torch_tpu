@@ -59,12 +59,9 @@ absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {
       << "Expected the input dtype to be floating point, got "
       << ToString(scalar_type) << ". This is a TorchTPU bug.";
 
-  // Defined as silu(x) = x / (1 + exp(-x)):
-  mlir::MlirOp one = MakeConstantLike(input_op, 1.0);
-  mlir::MlirOp neg_x = stablehlo::Neg(input_op);
-  mlir::MlirOp exp_neg_x = stablehlo::Exp(neg_x);
-  mlir::MlirOp denom = stablehlo::Add(one, exp_neg_x);
-  return stablehlo::Div(input_op, denom);
+  // Defined as silu(x) = x * sigmoid(x):
+  mlir::MlirOp sigmoid_op = stablehlo::Logistic(input_op);
+  return stablehlo::Mul(input_op, sigmoid_op);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildSiluBackwardShlo(mlir::MlirOp grad_output_op,
@@ -78,7 +75,7 @@ absl::StatusOr<mlir::MlirOp> BuildSiluBackwardShlo(mlir::MlirOp grad_output_op,
       stablehlo::ConvertElementType(input_op, computation_dtype);
 
   // Mathematical formulation of the SiLU backward pass:
-  //   silu(x) = x * \sigma(x), where \sigma(x) = 1 / (1 + exp(-x)).
+  //   silu(x) = x * \sigma(x), where \sigma(x) = logistic(x).
   //   d(silu(x)) / dx = \sigma(x) * (1 + x * (1 - \sigma(x)))
   //   grad_input = grad_output * d(silu(x)) / dx
   //
@@ -87,10 +84,7 @@ absl::StatusOr<mlir::MlirOp> BuildSiluBackwardShlo(mlir::MlirOp grad_output_op,
   // intermediate HBM tensor allocations per SwiGLU MLP layer with a single
   // VMEM-fused VPU pass.
   mlir::MlirOp one = MakeConstantLike(comp_input, 1.0);
-  mlir::MlirOp neg_x = stablehlo::Neg(comp_input);
-  mlir::MlirOp exp_neg_x = stablehlo::Exp(neg_x);
-  mlir::MlirOp denom = stablehlo::Add(one, exp_neg_x);
-  mlir::MlirOp sigmoid_op = stablehlo::Div(one, denom);
+  mlir::MlirOp sigmoid_op = stablehlo::Logistic(comp_input);
   mlir::MlirOp one_minus_sigmoid = stablehlo::Subtract(one, sigmoid_op);
   mlir::MlirOp x_times_one_minus_sigmoid =
       stablehlo::Mul(comp_input, one_minus_sigmoid);

@@ -246,24 +246,6 @@ mlir::MlirOp ApplyRowwiseGroupScales(mlir::MlirOp mm_result,
   }
 }
 
-bool UnwrapTransposed3dMat2(mlir::MlirOp& mat2_op) {
-  if (GetTensorTypeOrDie(mat2_op).getRank() != 3) {
-    return false;
-  }
-  auto transpose_op =
-      mat2_op.getValue().getDefiningOp<mlir::stablehlo::TransposeOp>();
-  if (!transpose_op) {
-    return false;
-  }
-  const absl::Span<const int64_t> perm(transpose_op.getPermutation().data(),
-                                       transpose_op.getPermutation().size());
-  if (perm.size() == 3 && perm[0] == 0 && perm[1] == 2 && perm[2] == 1) {
-    mat2_op = mlir::MlirOp(mat2_op.getBuilder(), transpose_op.getOperand());
-    return true;
-  }
-  return false;
-}
-
 mlir::MlirOp ComputeGroupSizesFromOffsets(mlir::MlirOp offs_op) {
   mlir::MlirBuilder& builder = offs_op.getBuilder();
   if (!GetTensorTypeOrDie(offs_op).getElementType().isInteger(32)) {
@@ -310,10 +292,14 @@ mlir::MlirOp BuildRaggedDot2d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
 
 mlir::MlirOp BuildBatchedDot3d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
                                  bool transpose_mat2,
+                                 mlir::ElementType comp_dtype,
                                  mlir::stablehlo::Precision precision) {
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
+  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
   auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
       &self_op.getContext(), {precision, precision});
   const int64_t rhs_contracting_dim = transpose_mat2 ? 2 : 1;
+  const int64_t rhs_out_dim = transpose_mat2 ? 1 : 2;
   const mlir::stablehlo::DotDimensionNumbersAttr dot_dimension_numbers =
       mlir::stablehlo::DotDimensionNumbersAttr::get(
           &self_op.getContext(),
@@ -321,8 +307,13 @@ mlir::MlirOp BuildBatchedDot3d3d(mlir::MlirOp self_op, mlir::MlirOp mat2_op,
           /*rhs_batch_dimensions=*/{0},
           /*lhs_contracting_dimensions=*/{2},
           /*rhs_contracting_dimensions=*/{rhs_contracting_dim});
-  return mlir::stablehlo::DotGeneral(self_op, mat2_op, dot_dimension_numbers,
-                                     precision_config);
+  const mlir::RankedTensorType result_type =
+      mlir::makeTensorType(self_op.getContext(),
+                           {self_type.getShape()[0], self_type.getShape()[1],
+                            mat2_type.getShape()[rhs_out_dim]},
+                           comp_dtype);
+  return mlir::stablehlo::DotGeneral(result_type, self_op, mat2_op,
+                                     dot_dimension_numbers, precision_config);
 }
 
 // XLA:TPU's grouped matmul (Gmm) kernel tiles the ragged token dimension by
@@ -467,8 +458,9 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   const bool keep_explicit_mat2_transpose =
       a_is_2d && GetTensorTypeOrDie(mat2_op).getRank() == 3 &&
       rhs_2d3d_mode == RaggedDot2d3dRhsMode::kKeepExplicitTranspose;
-  const bool transpose_mat2 =
-      !keep_explicit_mat2_transpose && UnwrapTransposed3dMat2(mat2_op);
+  const bool transpose_mat2 = !keep_explicit_mat2_transpose &&
+                              GetTensorTypeOrDie(mat2_op).getRank() == 3 &&
+                              UnwrapTrailingMatrixTranspose(mat2_op);
   const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
   const bool b_is_2d = mat2_type.getRank() == 2;
 
@@ -476,22 +468,22 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   // prior to RaggedDot/DotGeneral because CHLO RaggedDot does not natively
   // handle sub-byte types like FP4/MXFP8 or mixed precision without explicit
   // casts, and TPU Mosaic RaggedDot fails to legalize F16 pack_subelements.
-  // Cases 1-3 keep FP8 x FP8 operands: Gmm consumes f8 natively on the MXU.
+  // All cases keep FP8 x FP8 operands natively on the MXU (b/588734125).
   const mlir::ElementType comp_dtype = (out_dtype == mlir::ElementType::F16)
                                            ? mlir::ElementType::F32
                                            : out_dtype;
   const auto is_f8 = [](mlir::Type t) {
     return mlir::isa<mlir::Float8E4M3FNType, mlir::Float8E5M2Type>(t);
   };
-  const bool is_ragged_dot = a_is_2d || b_is_2d;
-  const bool skip_upcast = is_f8(self_type.getElementType()) &&
-                           is_f8(mat2_type.getElementType()) && is_ragged_dot;
+  const bool skip_upcast =
+      is_f8(self_type.getElementType()) && is_f8(mat2_type.getElementType());
   if (!skip_upcast) {
     self_op = mlir::stablehlo::ConvertElementType(self_op, comp_dtype);
     mat2_op = mlir::stablehlo::ConvertElementType(mat2_op, comp_dtype);
   }
 
-  // Gmm kernel requires DEFAULT precision when consuming native FP8 operands.
+  // Gmm kernel and native FP8 dot_general require DEFAULT precision when
+  // consuming native FP8 operands.
   const mlir::stablehlo::Precision effective_precision =
       skip_upcast
           ? mlir::stablehlo::Precision::DEFAULT  // EXPLICIT_PRECISION_OK
@@ -544,7 +536,8 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   } else {
     // Case 4 (3D x 3D without offs): fallback to standard batched matrix
     // multiplication (DotGeneral).
-    result = BuildBatchedDot3d3d(self_op, mat2_op, transpose_mat2, precision);
+    result = BuildBatchedDot3d3d(self_op, mat2_op, transpose_mat2, comp_dtype,
+                                 effective_precision);
   }
   if (comp_dtype != out_dtype) {
     result = mlir::stablehlo::ConvertElementType(result, out_dtype);

@@ -98,21 +98,19 @@ absl::StatusOr<mlir::MlirOp> BuildStridedSliceScatterShlo(
   reshaped_src_sizes.reserve(input_sizes.size() + 1);
   std::vector<mlir::MlirOp> start_indices;
   start_indices.reserve(input_sizes.size() + 1);
+  const mlir::ElementType idx_type = NarrowIndexElementType(padded_len);
   for (size_t i = 0; i < input_sizes.size(); ++i) {
     if (static_cast<int64_t>(i) == dim) {
       reshaped_self_sizes.push_back(num_blocks);
       reshaped_self_sizes.push_back(step);
       reshaped_src_sizes.push_back(slice_len);
       reshaped_src_sizes.push_back(1);
-      start_indices.push_back(
-          MakeScalarConstant(builder, q, mlir::ElementType::I64));
-      start_indices.push_back(
-          MakeScalarConstant(builder, r, mlir::ElementType::I64));
+      start_indices.push_back(MakeScalarConstant(builder, q, idx_type));
+      start_indices.push_back(MakeScalarConstant(builder, r, idx_type));
     } else {
       reshaped_self_sizes.push_back(input_sizes[i]);
       reshaped_src_sizes.push_back(input_sizes[i]);
-      start_indices.push_back(
-          MakeScalarConstant(builder, 0, mlir::ElementType::I64));
+      start_indices.push_back(MakeScalarConstant(builder, 0, idx_type));
     }
   }
 

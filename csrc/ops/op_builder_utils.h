@@ -995,6 +995,61 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
 absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
     mlir::MlirOp op, const Dimensions& static_shape_after);
 
+// Index Width Hygiene Helpers
+
+// Returns `mlir::ElementType::I32` if non-negative `max_inclusive_value` fits
+// in a signed 32-bit integer (`[0, INT32_MAX]`), and `mlir::ElementType::I64`
+// otherwise. Callers use this to avoid TPU 64-bit integer emulation inside
+// index-producing ops while preventing silent 32-bit overflow (b/551808363).
+[[nodiscard]] mlir::ElementType NarrowIndexElementType(
+    int64_t max_inclusive_value);
+
+// Returns `mlir::ElementType::I32` if every value in
+// `[min_inclusive_value, max_inclusive_value]` fits in a signed 32-bit integer,
+// and `mlir::ElementType::I64` otherwise.
+[[nodiscard]] mlir::ElementType NarrowSignedIndexElementType(
+    int64_t min_inclusive_value, int64_t max_inclusive_value);
+
+// Returns the static size or bounded-dynamic upper bound along `dim` of `input`
+// (supporting negative `dim` indexing). Returns `std::nullopt` for out-of-range
+// dimensions, unbounded dynamic dimensions, or when `getDimensions` fails.
+[[nodiscard]] std::optional<int64_t> GetBoundedDimUpperBound(mlir::MlirOp input,
+                                                             int64_t dim);
+
+// Returns `mlir::ElementType::I32` if `dim` of `input` has a static or
+// bounded-dynamic upper bound that fits in `[0, INT32_MAX]`, and
+// `mlir::ElementType::I64` otherwise (including unbounded dynamic dimensions).
+[[nodiscard]] mlir::ElementType NarrowAxisIndexElementType(mlir::MlirOp input,
+                                                           int64_t dim);
+
+// Returns `mlir::ElementType::I32` if the product of the static or
+// bounded-dynamic upper bounds along `dims` (or all dimensions when `dims` is
+// empty) fits in `[0, INT32_MAX]`, and `mlir::ElementType::I64` otherwise.
+[[nodiscard]] mlir::ElementType NarrowElementsCountElementType(
+    mlir::MlirOp input, absl::Span<const int64_t> dims = {});
+
+// Trailing Matrix Transpose / Adjoint Unwrapping Helpers
+
+// Describes the unary matrix operation unwrapped from a trailing matrix
+// operand (`A`, `A^T`, or `A^H`).
+enum class MatrixTransposeKind {
+  kNone,
+  kTranspose,
+  kAdjoint,
+};
+
+// If `op` (rank >= 2) is produced by a `stablehlo.transpose` whose permutation
+// swaps only the last two dimensions (`[0, ..., rank-3, rank-1, rank-2]`),
+// updates `op` in place to the transpose operand and returns `true`.
+[[nodiscard]] bool UnwrapTrailingMatrixTranspose(mlir::MlirOp& op);
+
+// If `op` (rank >= 2) ends in a last-two-dim transpose (`A^T`) or a complex
+// conjugate-transpose (`A^H`, either `conj(transpose(x))` or
+// `transpose(conj(x))`), updates `op` in place to `x` and returns the matched
+// `MatrixTransposeKind`. A pure complex conjugate without a transpose is left
+// intact and returns `MatrixTransposeKind::kNone`.
+[[nodiscard]] MatrixTransposeKind UnwrapTrailingMatrixAdjoint(mlir::MlirOp& op);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_OP_BUILDER_UTILS_H_

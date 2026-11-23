@@ -110,19 +110,22 @@ absl::StatusOr<GluHalves> SplitGluHalves(int64_t dim, mlir::MlirOp input) {
 }
 
 absl::StatusOr<mlir::MlirOp> BuildGluShlo(int64_t dim, mlir::MlirOp input) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(input);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(orig_dtype));
+
+  // Split in the native input dtype before promoting each half so XLA can fuse
+  // the bf16/f16 -> f32 convert into the consumer instead of materializing a
+  // full-tensor f32 intermediate feeding two slice consumers (b/588734623).
   TT_ASSIGN_OR_RETURN(GluHalves halves, SplitGluHalves(dim, input));
-  mlir::MlirOp first_half = halves.first_half;
-  mlir::MlirOp second_half = halves.second_half;
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp first_half,
+                      CastIfNeeded(halves.first_half, computation_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp second_half,
+                      CastIfNeeded(halves.second_half, computation_dtype));
 
-  mlir::MlirOp neg = mlir::stablehlo::Neg(second_half);
-  mlir::MlirOp exp = mlir::stablehlo::Exp(neg);
-
-  mlir::MlirOp one = MakeConstantLike(second_half, 1.0);
-  mlir::MlirOp add = mlir::stablehlo::Add(one, exp);
-  mlir::MlirOp div = mlir::stablehlo::Div(one, add);
-
-  mlir::MlirOp result = mlir::stablehlo::Mul(first_half, div);
-  return result;
+  mlir::MlirOp gate = mlir::stablehlo::Logistic(second_half);
+  mlir::MlirOp result = mlir::stablehlo::Mul(first_half, gate);
+  return CastIfNeeded(result, orig_dtype);
 }
 
 absl::Status ValidateIsFloatingPoint(const at::Tensor& tensor,
@@ -147,19 +150,25 @@ absl::StatusOr<mlir::MlirOp> BuildGluBackwardShlo(int64_t dim,
                                                   mlir::MlirOp grad_output,
                                                   mlir::MlirOp self) {
   mlir::MlirBuilder& builder = self.getBuilder();
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(self);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(orig_dtype));
 
+  // Split in the native dtype first to keep each half's upcast single-consumer
+  // and fusible by XLA (b/588734623).
   TT_ASSIGN_OR_RETURN(GluHalves halves, SplitGluHalves(dim, self));
-  mlir::MlirOp first_half = halves.first_half;
-  mlir::MlirOp second_half = halves.second_half;
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp first_half,
+                      CastIfNeeded(halves.first_half, computation_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp second_half,
+                      CastIfNeeded(halves.second_half, computation_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp grad_output_acc,
+                      CastIfNeeded(grad_output, computation_dtype));
 
-  mlir::MlirOp neg = mlir::stablehlo::Neg(second_half);
-  mlir::MlirOp exp = mlir::stablehlo::Exp(neg);
   mlir::MlirOp one = MakeConstantLike(second_half, 1.0);
-  mlir::MlirOp add = mlir::stablehlo::Add(one, exp);
-  mlir::MlirOp sigmoid_second_half = mlir::stablehlo::Div(one, add);
+  mlir::MlirOp sigmoid_second_half = mlir::stablehlo::Logistic(second_half);
 
   // dX1 = dY * sigmoid(X2)
-  mlir::MlirOp dx1 = mlir::stablehlo::Mul(grad_output, sigmoid_second_half);
+  mlir::MlirOp dx1 = mlir::stablehlo::Mul(grad_output_acc, sigmoid_second_half);
 
   // 1.0 - sigmoid(X2)
   mlir::MlirOp one_minus_sigmoid =
@@ -169,6 +178,8 @@ absl::StatusOr<mlir::MlirOp> BuildGluBackwardShlo(int64_t dim,
   mlir::MlirOp dx1_first_half = mlir::stablehlo::Mul(dx1, first_half);
   mlir::MlirOp dx2 = mlir::stablehlo::Mul(dx1_first_half, one_minus_sigmoid);
 
+  TT_ASSIGN_OR_RETURN(dx1, CastIfNeeded(dx1, orig_dtype));
+  TT_ASSIGN_OR_RETURN(dx2, CastIfNeeded(dx2, orig_dtype));
   return mlir::stablehlo::Concatenate(builder, {dx1, dx2}, dim);
 }
 
@@ -204,9 +215,6 @@ absl::Status BuildGluBackwardOut(const at::Tensor& grad_output,
 
   TT_ASSIGN_OR_RETURN(const auto self_mlir_type,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
-  const auto comp_type = ToAccumulateType(self.scalar_type());
-  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
-                      ConvertTo<mlir::ElementType>(comp_type));
 
   auto op_builder = [dim](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
@@ -217,7 +225,6 @@ absl::Status BuildGluBackwardOut(const at::Tensor& grad_output,
   DispatchOpOptions<1> options = {
       .out_dtype = self_mlir_type,
       .out_dims = self_shape,
-      .computation_dtype = computation_dtype,
       .op_param_cache_keys = std::move(param_keys),
   };
   return DispatchOpOut<2>(std::move(op_builder), {grad_output, self},
@@ -242,15 +249,9 @@ at::Tensor& AtenGluOut(const at::Tensor& self, int64_t dim, at::Tensor& out) {
     auto out_dims = CopyIntVector(shape);
     out_dims[dim] = out_dims[dim] / 2;
 
-    const auto comp_type = ToAccumulateType(self.scalar_type());
-    TT_ASSIGN_OR_THROW(const auto computation_dtype,
-                       ConvertTo<mlir::ElementType>(comp_type));
-
-    TT_THROW_IF_ERROR(UnaryOpOut(self, out,
-                                 absl::bind_front(&BuildGluShlo, dim),
-                                 {.op_param_cache_keys = std::move(params_key),
-                                  .out_dims = out_dims,
-                                  .computation_dtype = computation_dtype}));
+    TT_THROW_IF_ERROR(UnaryOpOut(
+        self, out, absl::bind_front(&BuildGluShlo, dim),
+        {.op_param_cache_keys = std::move(params_key), .out_dims = out_dims}));
     return out;
   });
 }

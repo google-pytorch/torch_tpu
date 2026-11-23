@@ -66,35 +66,6 @@ namespace {
 // dim 1 [B, 5H] holding intermediate tensors for the fused backward pass.
 // Note: All StableHLO builder ops take non-const MlirOp& lvalues, so every
 // intermediate is a named variable.
-inline mlir::MlirOp BuildSigmoidForRnnCell(mlir::MlirOp x,
-                                           mlir::ElementType acc_dtype) {
-  if (acc_dtype != mlir::ElementType::F32) {
-    return mlir::stablehlo::Logistic(x);
-  }
-  mlir::MlirOp one = MakeConstantLike(x, 1.0);
-  mlir::MlirOp neg_x = mlir::stablehlo::Neg(x);
-  mlir::MlirOp exp_neg_x = mlir::stablehlo::Exp(neg_x);
-  mlir::MlirOp denom = mlir::stablehlo::Add(one, exp_neg_x);
-  return mlir::stablehlo::Div(one, denom);
-}
-
-inline mlir::MlirOp BuildTanhForRnnCell(mlir::MlirOp x,
-                                        mlir::ElementType acc_dtype) {
-  if (acc_dtype != mlir::ElementType::F32) {
-    return mlir::stablehlo::Tanh(x);
-  }
-  mlir::MlirOp neg_two = MakeConstantLike(x, -2.0);
-  mlir::MlirOp two = MakeConstantLike(x, 2.0);
-  mlir::MlirOp abs_x = mlir::stablehlo::Abs(x);
-  mlir::MlirOp scaled = mlir::stablehlo::Mul(neg_two, abs_x);
-  mlir::MlirOp u = mlir::stablehlo::Expm1(scaled);
-  mlir::MlirOp neg_u = mlir::stablehlo::Neg(u);
-  mlir::MlirOp denom = mlir::stablehlo::Add(two, u);
-  mlir::MlirOp mag = mlir::stablehlo::Div(neg_u, denom);
-  mlir::MlirOp sign_x = mlir::stablehlo::Sign(x);
-  return mlir::stablehlo::Mul(sign_x, mag);
-}
-
 absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGruCellShlo(
     mlir::MlirOp ig, mlir::MlirOp hg, mlir::MlirOp hx, int64_t batch,
     int64_t hidden, mlir::ElementType out_dtype,
@@ -114,22 +85,20 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGruCellShlo(
                : mlir::stablehlo::ConvertElementType(op, out_dtype);
   };
 
-  mlir::MlirOp ig_acc = to_acc(ig);
-  mlir::MlirOp hg_acc = to_acc(hg);
   mlir::MlirOp hx_acc = to_acc(hx);
 
   mlir::MlirOp i_r =
-      mlir::stablehlo::Slice(ig_acc, {0, 0}, {batch, hidden}, {1, 1});
-  mlir::MlirOp i_z =
-      mlir::stablehlo::Slice(ig_acc, {0, hidden}, {batch, 2 * hidden}, {1, 1});
-  mlir::MlirOp i_n = mlir::stablehlo::Slice(ig_acc, {0, 2 * hidden},
-                                            {batch, 3 * hidden}, {1, 1});
+      to_acc(mlir::stablehlo::Slice(ig, {0, 0}, {batch, hidden}, {1, 1}));
+  mlir::MlirOp i_z = to_acc(
+      mlir::stablehlo::Slice(ig, {0, hidden}, {batch, 2 * hidden}, {1, 1}));
+  mlir::MlirOp i_n = to_acc(
+      mlir::stablehlo::Slice(ig, {0, 2 * hidden}, {batch, 3 * hidden}, {1, 1}));
   mlir::MlirOp h_r =
-      mlir::stablehlo::Slice(hg_acc, {0, 0}, {batch, hidden}, {1, 1});
-  mlir::MlirOp h_z =
-      mlir::stablehlo::Slice(hg_acc, {0, hidden}, {batch, 2 * hidden}, {1, 1});
-  mlir::MlirOp h_n = mlir::stablehlo::Slice(hg_acc, {0, 2 * hidden},
-                                            {batch, 3 * hidden}, {1, 1});
+      to_acc(mlir::stablehlo::Slice(hg, {0, 0}, {batch, hidden}, {1, 1}));
+  mlir::MlirOp h_z = to_acc(
+      mlir::stablehlo::Slice(hg, {0, hidden}, {batch, 2 * hidden}, {1, 1}));
+  mlir::MlirOp h_n = to_acc(
+      mlir::stablehlo::Slice(hg, {0, 2 * hidden}, {batch, 3 * hidden}, {1, 1}));
 
   mlir::MlirOp pre_r = mlir::stablehlo::Add(i_r, h_r);
   mlir::MlirOp pre_z = mlir::stablehlo::Add(i_z, h_z);
@@ -154,11 +123,11 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGruCellShlo(
     h_n = mlir::stablehlo::Add(h_n, b2_n);
   }
 
-  mlir::MlirOp resetgate = BuildSigmoidForRnnCell(pre_r, acc_dtype);
-  mlir::MlirOp updategate = BuildSigmoidForRnnCell(pre_z, acc_dtype);
+  mlir::MlirOp resetgate = mlir::stablehlo::Logistic(pre_r);
+  mlir::MlirOp updategate = mlir::stablehlo::Logistic(pre_z);
   mlir::MlirOp r_hn = mlir::stablehlo::Mul(resetgate, h_n);
   mlir::MlirOp pre_n = mlir::stablehlo::Add(i_n, r_hn);
-  mlir::MlirOp newgate = BuildTanhForRnnCell(pre_n, acc_dtype);
+  mlir::MlirOp newgate = mlir::stablehlo::Tanh(pre_n);
 
   // hy = n + z * (hx - n)
   mlir::MlirOp hx_minus_n = mlir::stablehlo::Subtract(hx_acc, newgate);
@@ -195,18 +164,17 @@ absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildGruCellBackwardShlo(
   };
 
   mlir::MlirOp grad_hy_acc = to_acc(grad_hy);
-  mlir::MlirOp workspace_acc = to_acc(workspace);
 
-  mlir::MlirOp resetgate =
-      mlir::stablehlo::Slice(workspace_acc, {0, 0}, {batch, hidden}, {1, 1});
-  mlir::MlirOp updategate = mlir::stablehlo::Slice(workspace_acc, {0, hidden},
-                                                   {batch, 2 * hidden}, {1, 1});
-  mlir::MlirOp newgate = mlir::stablehlo::Slice(workspace_acc, {0, 2 * hidden},
-                                                {batch, 3 * hidden}, {1, 1});
-  mlir::MlirOp h_n = mlir::stablehlo::Slice(workspace_acc, {0, 4 * hidden},
-                                            {batch, 5 * hidden}, {1, 1});
-  mlir::MlirOp hx = mlir::stablehlo::Slice(workspace_acc, {0, 3 * hidden},
-                                           {batch, 4 * hidden}, {1, 1});
+  mlir::MlirOp resetgate = to_acc(
+      mlir::stablehlo::Slice(workspace, {0, 0}, {batch, hidden}, {1, 1}));
+  mlir::MlirOp updategate = to_acc(mlir::stablehlo::Slice(
+      workspace, {0, hidden}, {batch, 2 * hidden}, {1, 1}));
+  mlir::MlirOp newgate = to_acc(mlir::stablehlo::Slice(
+      workspace, {0, 2 * hidden}, {batch, 3 * hidden}, {1, 1}));
+  mlir::MlirOp h_n = to_acc(mlir::stablehlo::Slice(
+      workspace, {0, 4 * hidden}, {batch, 5 * hidden}, {1, 1}));
+  mlir::MlirOp hx = to_acc(mlir::stablehlo::Slice(workspace, {0, 3 * hidden},
+                                                  {batch, 4 * hidden}, {1, 1}));
 
   mlir::MlirOp one = MakeConstantLike(updategate, 1.0);
 
