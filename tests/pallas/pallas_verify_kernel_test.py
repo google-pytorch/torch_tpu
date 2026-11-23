@@ -6849,6 +6849,104 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     self.assertTrue(err_rep.passed, msg=err_rep.summary())
     _assert_clean_patch_state()
 
+  def test_interpret_sweep_prunes_noop_dimensions(self):
+    spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    orig_interpret_run = interpret_verifier._interpret_run
+
+    def _record_sweep(fn):
+      recorded: list[tuple[str, int | None, str]] = []
+
+      def _wrapped(raw_fn, args, kwargs, params, cpu_device, cpu_mesh=None):
+        recorded.append((
+            params.dma_execution_mode,
+            params.random_seed,
+            params.uninitialized_memory,
+        ))
+        return orig_interpret_run(
+            raw_fn, args, kwargs, params, cpu_device, cpu_mesh
+        )
+
+      with mock.patch.object(
+          interpret_verifier,
+          "_interpret_run",
+          autospec=True,
+          side_effect=_wrapped,
+      ):
+        rep = interpret_verifier.verify_with_cpu_interpret(fn, (spec,))
+      self.assertTrue(rep.passed, msg=rep.summary())
+      return recorded
+
+    # 1. DMA-free, non-parallel kernel: prunes both DMA mode and seed sweeps.
+    def no_dma_no_parallel(x: jax.Array) -> jax.Array:
+      return _single_block_call(
+          lambda x_ref, o_ref: o_ref.__setitem__(Ellipsis, x_ref[...] + 1.0), x
+      )
+
+    self.assertEqual(
+        _record_sweep(no_dma_no_parallel),
+        [("eager", 0, "nan"), ("eager", 0, "zero")],
+    )
+
+    # 2. DMA-free kernel with a parallel grid dim > 1: prunes DMA mode sweep
+    #    while keeping both seeds and their exact-schedule zero control runs.
+    def parallel_no_dma(x: jax.Array) -> jax.Array:
+      def kernel(x_ref, o_ref):
+        o_ref[...] = x_ref[...] + 1.0
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid=(2,),
+          in_specs=[pl.BlockSpec((4, 128), lambda i: (i, 0))],
+          out_specs=pl.BlockSpec((4, 128), lambda i: (i, 0)),
+          compiler_params=pltpu.CompilerParams(
+              dimension_semantics=("parallel",)
+          ),
+      )(x)
+
+    self.assertEqual(
+        _record_sweep(parallel_no_dma),
+        [
+            ("eager", 0, "nan"),
+            ("eager", 0, "zero"),
+            ("eager", 17, "nan"),
+            ("eager", 17, "zero"),
+        ],
+    )
+
+    # 3. Kernel with explicit DMA and no parallel dims: keeps both DMA modes
+    #    while pruning the redundant seed sweep.
+    def dma_no_parallel(x: jax.Array) -> jax.Array:
+      def kernel(x_hbm, o_ref, buf, sem):
+        copy = pltpu.make_async_copy(x_hbm, buf, sem)
+        copy.start()
+        copy.wait()
+        o_ref[...] = buf[...]
+
+      return pl.pallas_call(
+          kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          grid_spec=pltpu.PrefetchScalarGridSpec(
+              num_scalar_prefetch=0,
+              in_specs=[HBM_SPEC],
+              out_specs=pl.BlockSpec(x.shape, lambda: (0, 0)),
+              scratch_shapes=(
+                  pltpu.VMEM(x.shape, x.dtype),
+                  pltpu.SemaphoreType.DMA,
+              ),
+          ),
+      )(x)
+
+    self.assertEqual(
+        _record_sweep(dma_no_parallel),
+        [
+            ("eager", 0, "nan"),
+            ("eager", 0, "zero"),
+            ("on_wait", 0, "nan"),
+            ("on_wait", 0, "zero"),
+        ],
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
