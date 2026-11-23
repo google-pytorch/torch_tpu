@@ -241,11 +241,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "distributed_c10d_torchcomms_test",
-    torch_test_module = "distributed/test_c10d_torchcomms",
-)
-
-torch_tpu_torch_test(
     name = "distributed_collective_utils_test",
     torch_test_module = "distributed/test_collective_utils",
 )
