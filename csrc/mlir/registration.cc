@@ -22,6 +22,7 @@
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
+#include "csrc/mlir/passes/narrow_index_width.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
 #include "csrc/mlir/pipeline.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -42,6 +43,9 @@ void RegisterTorchTpuPasses() {
       []() -> std::unique_ptr<mlir::Pass> { return createDummyPass(); });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createLowerSeparableGatherToDotPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createNarrowIndexWidthPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createReassociateNormWeightsPass();

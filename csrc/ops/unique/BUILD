@@ -35,6 +35,7 @@ torch_tpu_cc_library(
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
+        "//csrc/ops/cumsum",
         "//csrc/ops/index_select",
         "//csrc/ops/sort",
         "@com_google_absl//absl/status:statusor",

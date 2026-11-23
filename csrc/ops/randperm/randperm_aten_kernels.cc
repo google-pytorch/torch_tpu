@@ -50,9 +50,10 @@ absl::StatusOr<mlir::MlirOp> BuildRandpermShlo(mlir::MlirOp state, int64_t n,
   auto& op_builder = builder.getOpBuilder();
   auto& ctx = builder.getContext();
 
-  // 1. Iota: [0, 1, ..., n-1], use I64 to avoid overflow
-  auto iota_type =
-      makeTensorType(ctx, {n}, builder.getOpBuilder().getI64Type());
+  // 1. Iota: [0, 1, ..., n-1], using I32 inside the sort when n fits in int32
+  // to halve the payload bitwidth (keeping UI64 RNG keys for collision safety).
+  const mlir::ElementType iota_elem_type = NarrowIndexElementType(n);
+  auto iota_type = makeTensorType(ctx, {n}, iota_elem_type);
   auto iota = mlir::stablehlo::Iota(builder, iota_type, 0);
 
   // 2. Prepare keys: Generate UI64 random numbers as keys for sorting.
@@ -84,7 +85,7 @@ absl::StatusOr<mlir::MlirOp> BuildRandpermShlo(mlir::MlirOp state, int64_t n,
       builder, {keys, iota}, comparator, /*dim*/ 0, /*is_stable=*/false);
 
   auto result_op = sorted_keys_and_values[1];
-  if (output_dtype != mlir::ElementType::I64) {
+  if (output_dtype != iota_elem_type) {
     auto result_tensor_type = makeTensorType(ctx, {n}, output_dtype);
     result_op =
         mlir::stablehlo::Convert(result_tensor_type, sorted_keys_and_values[1]);

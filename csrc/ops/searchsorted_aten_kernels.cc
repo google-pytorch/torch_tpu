@@ -17,6 +17,7 @@
 #include "csrc/ops/searchsorted_aten_kernels.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -194,34 +195,42 @@ absl::StatusOr<mlir::MlirOp> BuildSearchsortedLoopShlo(
     int64_t seq_len, int64_t num_iters, mlir::ElementType out_mlir_type,
     mlir::ElementType sorted_seq_elem_type, mlir::MlirBuilder& builder) {
   auto query_type = GetTensorTypeOrDie(query);
-  mlir::RankedTensorType out_tensor_type = mlir::makeTensorType(
-      builder.getContext(), query_type.getShape(), out_mlir_type);
+  // Perform the binary search in I32 when `seq_len` (and `mid + 1`) strictly
+  // fits in signed 32-bit integers, avoiding emulated I64 arithmetic inside the
+  // unrolled loop; widen to `out_mlir_type` (I64) once at the end.
+  const mlir::ElementType loop_index_type =
+      (out_mlir_type == mlir::ElementType::I32 ||
+       (seq_len >= 0 && seq_len < std::numeric_limits<int32_t>::max()))
+          ? mlir::ElementType::I32
+          : mlir::ElementType::I64;
+  mlir::RankedTensorType loop_tensor_type = mlir::makeTensorType(
+      builder.getContext(), query_type.getShape(), loop_index_type);
 
-  mlir::MlirOp low = MakeScalarConstant(builder, 0, out_mlir_type);
-  low = stablehlo::BroadcastInDim(out_tensor_type, low, {});
+  mlir::MlirOp low = MakeScalarConstant(builder, 0, loop_index_type);
+  low = stablehlo::BroadcastInDim(loop_tensor_type, low, {});
 
-  mlir::MlirOp init_high = MakeScalarConstant(builder, seq_len, out_mlir_type);
-  init_high = stablehlo::BroadcastInDim(out_tensor_type, init_high, {});
+  mlir::MlirOp init_high =
+      MakeScalarConstant(builder, seq_len, loop_index_type);
+  init_high = stablehlo::BroadcastInDim(loop_tensor_type, init_high, {});
   mlir::MlirOp high = init_high;
 
-  mlir::MlirOp one = MakeScalarConstant(builder, 1, out_mlir_type);
-  one = stablehlo::BroadcastInDim(out_tensor_type, one, {});
-
-  mlir::MlirOp two = MakeScalarConstant(builder, 2, out_mlir_type);
-  two = stablehlo::BroadcastInDim(out_tensor_type, two, {});
+  mlir::MlirOp one = MakeScalarConstant(builder, 1, loop_index_type);
+  one = stablehlo::BroadcastInDim(loop_tensor_type, one, {});
 
   mlir::MlirOp seq_len_minus_one =
-      MakeScalarConstant(builder, seq_len - 1, out_mlir_type);
+      MakeScalarConstant(builder, seq_len - 1, loop_index_type);
   seq_len_minus_one =
-      stablehlo::BroadcastInDim(out_tensor_type, seq_len_minus_one, {});
+      stablehlo::BroadcastInDim(loop_tensor_type, seq_len_minus_one, {});
 
   // Unrolled binary search loop: XLA/StableHLO requires bounded computation
   // loops to be unrolled at graph construction time. We execute `num_iters`
   // iterations, where `num_iters` is sufficient to converge on a sequence of
   // length `seq_len`.
   for (int64_t i = 0; i < num_iters; ++i) {
+    // diff = high - low >= 0, so logical right shift by 1 equals floor(diff/2)
+    // without triggering integer division emulation on TPU.
     auto diff = stablehlo::Subtract(high, low);
-    auto half_diff = stablehlo::Div(diff, two);
+    auto half_diff = stablehlo::ShiftRightLogical(diff, one);
     auto mid = stablehlo::Add(low, half_diff);
     auto clamped_mid = stablehlo::Min(mid, seq_len_minus_one);
 
@@ -265,6 +274,9 @@ absl::StatusOr<mlir::MlirOp> BuildSearchsortedLoopShlo(
     auto is_nan =
         stablehlo::Compare(query, query, stablehlo::ComparisonDirection::NE);
     result = stablehlo::Select(is_nan, init_high, result);
+  }
+  if (loop_index_type != out_mlir_type) {
+    result = stablehlo::ConvertElementType(result, out_mlir_type);
   }
   return result;
 }

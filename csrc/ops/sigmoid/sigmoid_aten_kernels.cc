@@ -216,11 +216,7 @@ absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(mlir::MlirOp input_op) {
                       InferComputationDtype(orig_dtype));
   TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
 
-  mlir::MlirOp one = MakeConstantLike(input_op, 1.0);
-  mlir::MlirOp neg_x = mlir::stablehlo::Neg(input_op);
-  mlir::MlirOp exp_neg_x = mlir::stablehlo::Exp(neg_x);
-  mlir::MlirOp denom = mlir::stablehlo::Add(one, exp_neg_x);
-  mlir::MlirOp result = mlir::stablehlo::Div(one, denom);
+  mlir::MlirOp result = mlir::stablehlo::Logistic(input_op);
   return CastIfNeeded(result, orig_dtype);
 }
 

@@ -16,6 +16,7 @@
 
 #include "csrc/ops/experimental/ragged_dot/ragged_dot_aten_kernels.h"
 
+#include <cstdint>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -31,6 +32,8 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/libtpu_version.h"
+#include "csrc/common/version.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -53,22 +56,49 @@
 namespace torch_tpu {
 namespace {
 
+enum class RaggedDotRhsTransposeMode {
+  kFoldTranspose,
+  kKeepExplicitTranspose,
+};
+
+// Mirrors `grouped_mm_aten_kernels.cc`: older libtpu builds
+// (< 0.0.53.dev20261110) fail window selection on k-minor `[g, n, k]`
+// ragged_dot rhs operands.
+// TODO(b/579516880): Remove once minimum OSS libtpu is >= 0.0.53.
+absl::StatusOr<RaggedDotRhsTransposeMode> GetAndAddRaggedDotRhsModeTo(
+    OpParamCacheKeys& param_keys) {
+  constexpr Version kMinLibtpuForKMinorRaggedDotRhs(0, 0, 53,
+                                                    Version::Dev(20261110));
+  const bool fold_transpose =
+      GetLibtpuVersion() >= kMinLibtpuForKMinorRaggedDotRhs;
+  TT_RETURN_IF_ERROR(
+      param_keys.SetParam("libtpu_k_minor_ragged_dot_rhs", fold_transpose));
+  return fold_transpose ? RaggedDotRhsTransposeMode::kFoldTranspose
+                        : RaggedDotRhsTransposeMode::kKeepExplicitTranspose;
+}
+
 static absl::StatusOr<mlir::MlirOp> BuildRaggedDotShlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp group_sizes,
-    mlir::ElementType output_element_type,
-    mlir::stablehlo::Precision precision) {
+    mlir::ElementType output_element_type, mlir::stablehlo::Precision precision,
+    RaggedDotRhsTransposeMode rhs_mode) {
+  const bool transpose_rhs =
+      rhs_mode == RaggedDotRhsTransposeMode::kFoldTranspose &&
+      UnwrapTrailingMatrixTranspose(rhs);
   const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
   const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  // Assuming mk, gkn, g -> mn
+  const int64_t rhs_contracting_dim = transpose_rhs ? 2 : 1;
+  const int64_t rhs_out_dim = transpose_rhs ? 1 : 2;
+  // Assuming mk, gkn (or transposed gnk), g -> mn
   auto dimension_numbers = mlir::chlo::RaggedDotDimensionNumbersAttr::get(
       &lhs.getContext(), /*lhsBatchingDimensions=*/{},
       /*rhsBatchingDimensions=*/{},
       /*lhsContractingDimensions=*/{1},
-      /*rhsContractingDimensions=*/{1},
+      /*rhsContractingDimensions=*/{rhs_contracting_dim},
       /*lhsRaggedDimensions=*/{0},
       /*rhsGroupDimensions=*/{0});
   mlir::Type out_type = mlir::makeTensorType(
-      lhs.getContext(), {lhs_type.getShape()[0], rhs_type.getShape()[2]},
+      lhs.getContext(),
+      {lhs_type.getShape()[0], rhs_type.getShape()[rhs_out_dim]},
       output_element_type);
 
   mlir::chlo::Precision chlo_precision =
@@ -103,11 +133,13 @@ static absl::StatusOr<DeviceBufferRef> RaggedDotCommon(
   TT_ASSIGN_OR_RETURN(auto out_dtype,
                       ConvertTo<mlir::ElementType>(out_scalar_type));
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
-  auto op_builder = [out_dtype,
-                     current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+  TT_ASSIGN_OR_RETURN(const RaggedDotRhsTransposeMode rhs_mode,
+                      GetAndAddRaggedDotRhsModeTo(param_keys));
+  auto op_builder = [out_dtype, current_precision,
+                     rhs_mode](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
     auto& [lhs, rhs, group_sizes] = inputs;
     return BuildRaggedDotShlo(lhs, rhs, group_sizes, out_dtype,
-                              current_precision);
+                              current_precision, rhs_mode);
   };
   return DispatchOp<3>(std::move(op_builder), {lhs, rhs, group_sizes},
                        {.out_dtype = out_dtype,
@@ -242,9 +274,11 @@ torch::autograd::variable_list AtenRaggedDotAutograd::backward(
 
   at::Tensor grad_lhs;  // UNINITIALIZED_TENSOR_OK
   if (ctx->needs_input_grad(0)) {
-    // rhs: [g, k, n] -> rhs_t: [g, n, k]
+    // rhs: [g, k, n] -> rhs_t: [g, n, k] (lazy transpose view, folded into
+    // `rhs_contracting_dimensions = {2}` inside BuildRaggedDotShlo when libtpu
+    // supports k-minor 3D ragged_dot RHS).
     // grad_out: [m, n], rhs_t: [g, n, k], group_sizes: [g] -> grad_lhs: [m, k]
-    at::Tensor rhs_t = rhs.transpose(1, 2).contiguous();
+    at::Tensor rhs_t = rhs.transpose(1, 2);
 
     // Cache the operator handle to avoid string schema lookup on every call.
     static const absl::NoDestructor op(

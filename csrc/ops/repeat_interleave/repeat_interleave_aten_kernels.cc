@@ -171,20 +171,26 @@ namespace {
 absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveIndicesShlo(
     mlir::MlirOp repeats, const int64_t output_size) {
   auto& builder = repeats.getBuilder();
-  auto& op_builder = builder.getOpBuilder();
-  const auto i64_type = op_builder.getI64Type();
 
   const mlir::RankedTensorType repeats_type = GetTensorTypeOrDie(repeats);
   const int64_t r_size = repeats_type.getDimSize(0);
 
-  // Ensure `repeats` is i64 so cumulative sums and index arithmetic do not
-  // overflow int32 on large tensors.
+  // Every valid non-negative repeat satisfies sum(repeats) == output_size, and
+  // the bucket sum along axis 1 lies in [1, r_size]. Use native I32 whenever
+  // both bounds fit in signed 32-bit integers to avoid emulated I64 arithmetic
+  // on the O(output_size * r_size) compare/reduce matrix.
+  const mlir::ElementType idx_elem_type =
+      NarrowIndexElementType(std::max(output_size, r_size));
+  const mlir::Type idx_mlir_type =
+      mlir::getElementType(builder.getContext(), idx_elem_type);
   mlir::MlirOp repeats_op =
-      mlir::stablehlo::ConvertElementType(repeats, i64_type);
+      GetElementTypeOrDie(repeats) == idx_elem_type
+          ? repeats
+          : mlir::stablehlo::ConvertElementType(repeats, idx_elem_type);
 
   // Step 1: Compute inclusive cumulative sum of `repeats` along axis 0.
   TT_ASSIGN_OR_RETURN(auto cumsum,
-                      BuildCumsumShlo(0, std::nullopt, repeats_op));
+                      BuildCumsumShlo(0, idx_elem_type, repeats_op));
 
   // Step 2: Compute exclusive cumulative sum (`cumsum_exclusive = cumsum -
   // repeats`), representing the starting output index for each input element.
@@ -194,7 +200,7 @@ absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveIndicesShlo(
   // 1]` and compare against `cumsum_exclusive` of shape `[1, r_size]`. Formula:
   // `indices = (iota(M)[:, None] >= cumsum_exclusive[None, :]).sum(-1) - 1`
   const auto iota_type =
-      mlir::makeTensorType(builder.getContext(), {output_size}, i64_type);
+      mlir::makeTensorType(builder.getContext(), {output_size}, idx_mlir_type);
   auto iota = mlir::stablehlo::Iota(builder, iota_type, 0);
 
   auto iota_reshaped = mlir::stablehlo::Reshape(iota, {output_size, 1});
@@ -212,23 +218,25 @@ absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveIndicesShlo(
 
   auto comp = mlir::stablehlo::Compare(
       iota_bcst, cumsum_bcst, mlir::stablehlo::ComparisonDirection::GE);
-  auto comp_i64 = mlir::stablehlo::ConvertElementType(comp, i64_type);
+  auto comp_idx = mlir::stablehlo::ConvertElementType(comp, idx_mlir_type);
 
   // Step 4: Sum across axis 1 (`r_size`) to count how many start offsets are
   // less than or equal to each output position `k`, yielding 1-based indices.
-  auto zero_init = MakeScalarConstant(builder, 0, i64_type);
+  auto zero_init = MakeScalarConstant(builder, 0, idx_mlir_type);
   auto sum_indices = mlir::stablehlo::Reduce(
-      builder, {comp_i64}, {zero_init},
-      [](mlir::RegionBuilder& rb) {
+      builder, {comp_idx}, {zero_init},
+      [idx_mlir_type](mlir::RegionBuilder& rb) {
         auto& body_builder = rb.getOpBuilder();
         mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-            body_builder.getI64Type(), rb.getRegion(), body_builder);
+            idx_mlir_type, rb.getRegion(), body_builder);
       },
       {1})[0];
 
   // Convert 1-based counts to 0-based gather indices.
-  auto one_cst = MakeConstantLike(sum_indices, 1LL);
-  return mlir::stablehlo::Subtract(sum_indices, one_cst);
+  auto one_cst = MakeScalarConstant(builder, 1, idx_mlir_type);
+  auto one_bcast = mlir::stablehlo::BroadcastInDim(
+      GetTensorTypeOrDie(sum_indices), one_cst, {});
+  return mlir::stablehlo::Subtract(sum_indices, one_bcast);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveShlo(

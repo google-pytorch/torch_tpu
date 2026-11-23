@@ -161,8 +161,9 @@ absl::StatusOr<MinMaxOutputs> BuildMinMaxShlo(c10::optional<int64_t> dim,
 
   TT_ASSIGN_OR_RETURN(ReductionInput prep,
                       PrepareReductionInput(input_op, dim));
-  mlir::MlirOp indices =
-      stablehlo::IotaLike(prep.op, prep.dim, mlir::ElementType::I64);
+  const mlir::ElementType index_dtype =
+      NarrowAxisIndexElementType(prep.op, prep.dim);
+  mlir::MlirOp indices = stablehlo::IotaLike(prep.op, prep.dim, index_dtype);
 
   const mlir::Type input_element_type =
       GetTensorTypeOrDie(input_op).getElementType();
@@ -180,13 +181,16 @@ absl::StatusOr<MinMaxOutputs> BuildMinMaxShlo(c10::optional<int64_t> dim,
   }
 
   mlir::MlirOp value_init = GetMinMaxInitValue(builder, op, input_element_type);
-  mlir::MlirOp index_init =
-      MakeScalarConstant(builder, 0, mlir::ElementType::I64);
+  mlir::MlirOp index_init = MakeScalarConstant(builder, 0, index_dtype);
 
   auto arg_min_max =
       stablehlo::Reduce(builder, {prep.op, indices}, {value_init, index_init},
                         reduce_body, reduce_dims);
-  MinMaxOutputs outputs{.values = arg_min_max[0], .indices = arg_min_max[1]};
+  mlir::MlirOp out_indices = index_dtype == mlir::ElementType::I64
+                                 ? arg_min_max[1]
+                                 : stablehlo::ConvertElementType(
+                                       arg_min_max[1], mlir::ElementType::I64);
+  MinMaxOutputs outputs{.values = arg_min_max[0], .indices = out_indices};
 
   if (mode == ReductionMode::kKeepDims) {
     TT_ASSIGN_OR_RETURN(outputs, RestoreReducedDims(input_op, outputs, prep.dim,

@@ -2216,4 +2216,218 @@ absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
                                      static_shape_after);
 }
 
+mlir::ElementType NarrowIndexElementType(const int64_t max_inclusive_value) {
+  constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
+  return (max_inclusive_value >= 0 && max_inclusive_value <= kInt32Max)
+             ? mlir::ElementType::I32
+             : mlir::ElementType::I64;
+}
+
+mlir::ElementType NarrowSignedIndexElementType(
+    const int64_t min_inclusive_value, const int64_t max_inclusive_value) {
+  constexpr int64_t kInt32Min = std::numeric_limits<int32_t>::min();
+  constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
+  return (min_inclusive_value >= kInt32Min &&
+          max_inclusive_value <= kInt32Max &&
+          min_inclusive_value <= max_inclusive_value)
+             ? mlir::ElementType::I32
+             : mlir::ElementType::I64;
+}
+
+std::optional<int64_t> GetBoundedDimUpperBound(mlir::MlirOp input,
+                                               const int64_t dim) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
+  const int64_t rank = type.getRank();
+  const int64_t normalized_dim = dim < 0 ? dim + rank : dim;
+  if (normalized_dim < 0 || normalized_dim >= rank) {
+    return std::nullopt;
+  }
+  const int64_t static_dim = type.getDimSize(normalized_dim);
+  if (!mlir::ShapedType::isDynamic(static_dim)) {
+    return static_dim;
+  }
+  // For bounded dynamic tensors, `getDimensions` resolves the upper bound.
+  mlir::FailureOr<mlir::stablehlo::Dimensions> dims_or =
+      mlir::stablehlo::getDimensions(input.getValue());
+  if (mlir::failed(dims_or)) {
+    return std::nullopt;
+  }
+  const int64_t bound = (*dims_or)[normalized_dim].size;
+  if (mlir::ShapedType::isDynamic(bound)) {
+    return std::nullopt;
+  }
+  return bound;
+}
+
+mlir::ElementType NarrowAxisIndexElementType(mlir::MlirOp input,
+                                             const int64_t dim) {
+  if (GetTensorTypeOrDie(input).getRank() == 0) {
+    return mlir::ElementType::I32;
+  }
+  const std::optional<int64_t> bound = GetBoundedDimUpperBound(input, dim);
+  return bound.has_value() ? NarrowIndexElementType(*bound)
+                           : mlir::ElementType::I64;
+}
+
+namespace {
+
+std::optional<Dimensions> ResolveShapeUpperBounds(mlir::MlirOp input,
+                                                  mlir::RankedTensorType type) {
+  if (type.hasStaticShape()) {
+    return CopyIntVector(type.getShape());
+  }
+  mlir::FailureOr<mlir::stablehlo::Dimensions> resolved =
+      mlir::stablehlo::getDimensions(input.getValue());
+  if (mlir::failed(resolved)) {
+    return std::nullopt;
+  }
+  return GetStaticShape(*resolved);
+}
+
+bool TryMultiplyDimBound(const Dimensions& bounds, int64_t raw_dim,
+                         int64_t& product) {
+  constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
+  const int64_t rank = static_cast<int64_t>(bounds.size());
+  const int64_t d = raw_dim < 0 ? raw_dim + rank : raw_dim;
+  if (d < 0 || d >= rank) {
+    return false;
+  }
+  const int64_t bound = bounds[d];
+  if (mlir::ShapedType::isDynamic(bound) || bound < 0) {
+    return false;
+  }
+  if (bound == 0) {
+    product = 0;
+    return true;
+  }
+  if (product > 0 && bound > kInt32Max / product) {
+    return false;
+  }
+  product *= bound;
+  return true;
+}
+
+bool DimBoundsProductFitsInInt32(const Dimensions& bounds,
+                                 absl::Span<const int64_t> dims) {
+  int64_t product = 1;
+  for (const int64_t raw_dim : dims) {
+    if (!TryMultiplyDimBound(bounds, raw_dim, product)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AllDimBoundsProductFitsInInt32(const Dimensions& bounds) {
+  int64_t product = 1;
+  for (size_t d = 0; d < bounds.size(); ++d) {
+    if (!TryMultiplyDimBound(bounds, static_cast<int64_t>(d), product)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+mlir::ElementType NarrowElementsCountElementType(
+    mlir::MlirOp input, const absl::Span<const int64_t> dims) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
+  if (type.getRank() == 0) {
+    return mlir::ElementType::I32;
+  }
+  const std::optional<Dimensions> bounds = ResolveShapeUpperBounds(input, type);
+  if (!bounds.has_value()) {
+    return mlir::ElementType::I64;
+  }
+  const bool fits = dims.empty() ? AllDimBoundsProductFitsInInt32(*bounds)
+                                 : DimBoundsProductFitsInInt32(*bounds, dims);
+  return fits ? mlir::ElementType::I32 : mlir::ElementType::I64;
+}
+
+namespace {
+
+// Returns the operand of `val` if it is a `stablehlo.transpose` swapping only
+// the last two dimensions (`[0, ..., rank-3, rank-1, rank-2]`).
+std::optional<mlir::Value> MatchTrailingMatrixTranspose(mlir::Value val) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() < 2) {
+    return std::nullopt;
+  }
+  auto transpose_op = val.getDefiningOp<mlir::stablehlo::TransposeOp>();
+  if (!transpose_op) {
+    return std::nullopt;
+  }
+  const llvm::ArrayRef<int64_t> perm = transpose_op.getPermutation();
+  const int64_t rank = type.getRank();
+  if (static_cast<int64_t>(perm.size()) != rank) {
+    return std::nullopt;
+  }
+  for (int64_t i = 0; i < rank - 2; ++i) {
+    if (perm[i] != i) {
+      return std::nullopt;
+    }
+  }
+  if (perm[rank - 2] != rank - 1 || perm[rank - 1] != rank - 2) {
+    return std::nullopt;
+  }
+  return transpose_op.getOperand();
+}
+
+// Returns the operand `x` if `val` matches the complex conjugate pattern
+// emitted by `BuildConjPhysicalShlo`: `complex(real(x), neg(imag(x)))`.
+std::optional<mlir::Value> MatchComplexConjugate(mlir::Value val) {
+  auto complex_op = val.getDefiningOp<mlir::stablehlo::ComplexOp>();
+  if (!complex_op) {
+    return std::nullopt;
+  }
+  auto real_op = complex_op.getLhs().getDefiningOp<mlir::stablehlo::RealOp>();
+  auto neg_op = complex_op.getRhs().getDefiningOp<mlir::stablehlo::NegOp>();
+  if (!real_op || !neg_op) {
+    return std::nullopt;
+  }
+  auto imag_op = neg_op.getOperand().getDefiningOp<mlir::stablehlo::ImagOp>();
+  if (!imag_op || real_op.getOperand() != imag_op.getOperand()) {
+    return std::nullopt;
+  }
+  return real_op.getOperand();
+}
+
+}  // namespace
+
+bool UnwrapTrailingMatrixTranspose(mlir::MlirOp& op) {
+  std::optional<mlir::Value> operand =
+      MatchTrailingMatrixTranspose(op.getValue());
+  if (!operand.has_value()) {
+    return false;
+  }
+  op = mlir::MlirOp(op.getBuilder(), *operand);
+  return true;
+}
+
+MatrixTransposeKind UnwrapTrailingMatrixAdjoint(mlir::MlirOp& op) {
+  const mlir::Value val = op.getValue();
+  // Case 1: transpose(conj(x)) or transpose(x).
+  if (std::optional<mlir::Value> t_operand =
+          MatchTrailingMatrixTranspose(val)) {
+    if (std::optional<mlir::Value> c_operand =
+            MatchComplexConjugate(*t_operand)) {
+      op = mlir::MlirOp(op.getBuilder(), *c_operand);
+      return MatrixTransposeKind::kAdjoint;
+    }
+    op = mlir::MlirOp(op.getBuilder(), *t_operand);
+    return MatrixTransposeKind::kTranspose;
+  }
+  // Case 2: conj(transpose(x)). Leave standalone conj(x) intact because
+  // `stablehlo.triangular_solve` has no non-transposed conjugate mode.
+  if (std::optional<mlir::Value> c_operand = MatchComplexConjugate(val)) {
+    if (std::optional<mlir::Value> t_operand =
+            MatchTrailingMatrixTranspose(*c_operand)) {
+      op = mlir::MlirOp(op.getBuilder(), *t_operand);
+      return MatrixTransposeKind::kAdjoint;
+    }
+  }
+  return MatrixTransposeKind::kNone;
+}
+
 }  // namespace torch_tpu

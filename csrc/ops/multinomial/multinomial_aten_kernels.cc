@@ -137,6 +137,16 @@ absl::StatusOr<mlir::MlirOp> BuildMultinomialShlo(mlir::MlirOp input_op,
 
     mlir::MlirOp perturbed_logits = stablehlo::Add(logits, gumbel_noise);
 
+    // Single-sample decode (`num_samples == 1`) only needs argmax, avoiding
+    // full-vocabulary `chlo.TopK` sorting network overhead.
+    if (num_samples == 1) {
+      TT_ASSIGN_OR_RETURN(
+          MinMaxOutputs argmax_out,
+          BuildMinMaxShlo(feature_dim, MinMaxOp::kMax, ReductionMode::kKeepDims,
+                          perturbed_logits));
+      return argmax_out.indices;
+    }
+
     TT_ASSIGN_OR_RETURN(TopKOutputs topk_results,
                         BuildTopKShlo(perturbed_logits, num_samples,
                                       feature_dim, TopKMode::kLargest));

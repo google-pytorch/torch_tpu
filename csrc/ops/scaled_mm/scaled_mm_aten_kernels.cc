@@ -60,6 +60,14 @@ namespace {
 
 enum class Operand { kLhs, kRhs };
 
+bool IsNativeFp8MlirType(const mlir::Type type) {
+  return mlir::isa<mlir::Float8E4M3FNType, mlir::Float8E5M2Type>(type);
+}
+
+bool IsNativeFp8ScalarType(const at::ScalarType dtype) {
+  return dtype == at::kFloat8_e4m3fn || dtype == at::kFloat8_e5m2;
+}
+
 absl::StatusOr<mlir::MlirOp> BuildStablehloDotGeneral(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
   mlir::MlirBuilder& builder = lhs.getBuilder();
@@ -68,11 +76,19 @@ absl::StatusOr<mlir::MlirOp> BuildStablehloDotGeneral(
       &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
       /*lhs_contracting_dimensions=*/{1}, /*rhs_contracting_dimensions=*/{0});
 
-  auto precision_config_attr =
-      mlir::stablehlo::PrecisionConfigAttr::get(&ctx, {precision, precision});
-
   auto lhs_type = GetTensorTypeOrDie(lhs);
   auto rhs_type = GetTensorTypeOrDie(rhs);
+  const bool native_fp8 = IsNativeFp8MlirType(lhs_type.getElementType()) &&
+                          IsNativeFp8MlirType(rhs_type.getElementType());
+  mlir::stablehlo::Precision effective_precision = precision;
+  if (native_fp8) {
+    // Native FP8 dot_general requires DEFAULT precision on the TPU FP8 MXU.
+    effective_precision =
+        mlir::stablehlo::Precision::DEFAULT;  // EXPLICIT_PRECISION_OK=fp8
+  }
+  auto precision_config_attr = mlir::stablehlo::PrecisionConfigAttr::get(
+      &ctx, {effective_precision, effective_precision});
+
   Dimensions result_shape = {lhs_type.getShape()[0], rhs_type.getShape()[1]};
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType lhs_elem_type,
@@ -114,13 +130,18 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
     std::optional<mlir::MlirOp> scale_result,
     std::optional<mlir::Type> out_dtype, mlir::stablehlo::Precision precision) {
-  // 1. Perform matrix multiplication with inferred computation dtype.
+  // 1. Perform matrix multiplication with native FP8 operands when both inputs
+  // are FP8 (accumulating in F32 on the MXU) to avoid f8->f32 upcast overhead
+  // (b/588734125).
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
                       BuildStablehloDotGeneral(lhs, rhs, precision));
 
-  // Cast mm_result to F32 to avoid type mismatch with scales (which are F32).
+  // Cast mm_result and scales to F32 inside the builder so scale_a/scale_b
+  // multiply directly in F32 even when `computation_dtype` is omitted.
   TT_ASSIGN_OR_RETURN(mm_result,
                       CastIfNeeded(mm_result, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(scale_a, CastIfNeeded(scale_a, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(scale_b, CastIfNeeded(scale_b, mlir::ElementType::F32));
 
   // Normalize row-wise / per-channel scales to [M, 1] / [1, N] so they
   // broadcast along the correct axis of the [M, N] result. Scalar (tensorwise)
@@ -146,9 +167,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   // further reduce multiplications.
   bool folded_scale_result = false;
   if (!bias.has_value() && scale_result.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_result_f32,
+                        CastIfNeeded(*scale_result, mlir::ElementType::F32));
     TT_ASSIGN_OR_RETURN(
         auto bcast_scale_result,
-        ApplyBroadcastIfNeeded<2>({combined_scale, *scale_result}));
+        ApplyBroadcastIfNeeded<2>({combined_scale, scale_result_f32}));
 
     combined_scale =
         mlir::stablehlo::Mul(bcast_scale_result[0], bcast_scale_result[1]);
@@ -687,10 +710,15 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
-  TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
-                      InferComputationDtype(self_elem_dtype));
+  std::optional<mlir::ElementType> comp_dtype_opt;
+  if (!(IsNativeFp8ScalarType(self.scalar_type()) &&
+        IsNativeFp8ScalarType(mat2.scalar_type()))) {
+    TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
+                        ConvertTo<mlir::ElementType>(self.scalar_type()));
+    TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
+                        InferComputationDtype(self_elem_dtype));
+    comp_dtype_opt = comp_dtype;
+  }
 
   const mlir::stablehlo::Precision current_precision =
       GetAndAddPrecisionTo(param_keys);
@@ -708,7 +736,7 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
       std::move(op_builder), inputs, out,
       {.out_dtype = target_elem_dtype,
        .out_dims = output_dims,
-       .computation_dtype = comp_dtype,
+       .computation_dtype = comp_dtype_opt,
        .op_param_cache_keys = std::move(param_keys)});
 }
 
@@ -800,10 +828,15 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
-  TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
-                      InferComputationDtype(self_elem_dtype));
+  std::optional<mlir::ElementType> comp_dtype_opt;
+  if (!(IsNativeFp8ScalarType(self.scalar_type()) &&
+        IsNativeFp8ScalarType(mat2.scalar_type()))) {
+    TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
+                        ConvertTo<mlir::ElementType>(self.scalar_type()));
+    TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
+                        InferComputationDtype(self_elem_dtype));
+    comp_dtype_opt = comp_dtype;
+  }
 
   mlir::stablehlo::Precision current_precision =
       use_fast_accum ? mlir::stablehlo::Precision::
@@ -847,7 +880,7 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
       std::move(op_builder), inputs, out,
       {.out_dtype = target_elem_dtype,
        .out_dims = output_dims,
-       .computation_dtype = comp_dtype,
+       .computation_dtype = comp_dtype_opt,
        .op_param_cache_keys = std::move(param_keys)});
 }
 

@@ -323,9 +323,10 @@ absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
                       CastIfNeeded(computation_input_op, computation_type));
 
   mlir::MlirOp result_op;
-  if (c10::isComplexType(computation_scalar_type)) {
-    result_op = mlir::stablehlo::Tanh(computation_input_op);
-  } else {
+  if (computation_scalar_type == c10::kDouble) {
+    // Keep the expm1 formulation for float64 (emulated as DF64 on TPU), where
+    // XLA's DF64 kTanh expansion `(exp(x) - exp(-x)) / (exp(x) + exp(-x))` has
+    // extra cancellation/rounding error.
     mlir::MlirOp two = MakeConstantLike(computation_input_op, 2.0);
     mlir::MlirOp neg_two = MakeConstantLike(computation_input_op, -2.0);
     mlir::MlirOp abs_x = mlir::stablehlo::Abs(computation_input_op);
@@ -336,8 +337,9 @@ absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
     mlir::MlirOp abs_tanh = mlir::stablehlo::Div(num, denom);
     mlir::MlirOp sign_x = mlir::stablehlo::Sign(computation_input_op);
     result_op = mlir::stablehlo::Mul(sign_x, abs_tanh);
+  } else {
+    result_op = mlir::stablehlo::Tanh(computation_input_op);
   }
-
   return CastIfNeeded(result_op, default_dtype);
 }
 

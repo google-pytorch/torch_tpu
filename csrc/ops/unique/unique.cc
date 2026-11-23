@@ -23,6 +23,7 @@
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/sort/sort.h"
@@ -71,35 +72,6 @@ absl::StatusOr<mlir::MlirOp> BuildUniqueMask(mlir::MlirBuilder& builder,
   mlir::MlirOp first_true =
       MakeConstant(builder, 1, mlir::ElementType::PRED, {1});
   return mlir::stablehlo::Concatenate(builder, {first_true, diffs}, 0);
-}
-
-absl::StatusOr<mlir::MlirOp> BuildCumsum1D(mlir::MlirBuilder& builder,
-                                           mlir::MlirOp input) {
-  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
-  const int64_t n = type.getDimSize(0);
-  auto window_dimensions =
-      mlir::DenseI64ArrayAttr::get(&builder.getContext(), {n});
-  auto window_strides =
-      mlir::DenseI64ArrayAttr::get(&builder.getContext(), {1});
-
-  mlir::SmallVector<int64_t, 2> padding_values = {n - 1, 0};
-  auto padding = mlir::DenseIntElementsAttr::get(
-      mlir::RankedTensorType::get({1, 2}, builder.getOpBuilder().getI64Type()),
-      llvm::ArrayRef<int64_t>(padding_values));
-
-  auto body_builder = [](mlir::RegionBuilder& rb) {
-    auto& op_builder = rb.getOpBuilder();
-    mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-        op_builder.getI64Type(), rb.getRegion(), op_builder);
-  };
-
-  auto init_value =
-      MakeScalarConstant(builder, 0, builder.getOpBuilder().getI64Type());
-  return mlir::stablehlo::ReduceWindow(builder, {input}, {init_value},
-                                       body_builder, window_dimensions,
-                                       window_strides,
-                                       /*base_dilations=*/{},
-                                       /*window_dilations=*/{}, padding)[0];
 }
 
 // Holds a 2D view of a tensor with slices along `dim` moved to axis 0 and all
@@ -445,22 +417,35 @@ mlir::MlirOp ExtractSortedUniqueIndices(mlir::MlirBuilder& builder,
 absl::StatusOr<mlir::MlirOp> BuildUniqueDimInverseIndices(
     mlir::MlirBuilder& builder, mlir::MlirOp mask, mlir::MlirOp p_indices) {
   const auto i64_type = builder.getOpBuilder().getI64Type();
-  mlir::MlirOp mask_i64 = mlir::stablehlo::ConvertElementType(mask, i64_type);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp cumsum_mask_full,
-                      BuildCumsum1D(builder, mask_i64));
-  mlir::MlirOp one_cst = MakeConstantLike(cumsum_mask_full, 1LL);
+  const mlir::ElementType sum_elem_type = NarrowAxisIndexElementType(mask, 0);
+  const mlir::Type sum_mlir_type =
+      mlir::getElementType(builder.getContext(), sum_elem_type);
+  mlir::MlirOp mask_int =
+      mlir::stablehlo::ConvertElementType(mask, sum_elem_type);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp cumsum_mask_full,
+      BuildCumsumShlo(/*normalized_dim=*/0, sum_elem_type, mask_int));
+  mlir::MlirOp one_cst = MakeScalarConstant(builder, 1, sum_elem_type);
+  mlir::MlirOp one_bcast = mlir::stablehlo::BroadcastInDim(
+      GetTensorTypeOrDie(cumsum_mask_full), one_cst, {});
   mlir::MlirOp cumsum_mask =
-      mlir::stablehlo::Subtract(cumsum_mask_full, one_cst);
+      mlir::stablehlo::Subtract(cumsum_mask_full, one_bcast);
 
-  const auto i64_i64_lt_comparator = [i64_type](mlir::RegionBuilder& rb) {
+  const auto key_val_lt_comparator = [i64_type,
+                                      sum_mlir_type](mlir::RegionBuilder& rb) {
     auto& body_builder = rb.getOpBuilder();
     mlir::stablehlo::buildSortComparisonBody(
-        {i64_type, i64_type}, mlir::stablehlo::ComparisonDirection::LT,
+        {i64_type, sum_mlir_type}, mlir::stablehlo::ComparisonDirection::LT,
         std::nullopt, &rb.getRegion(), &body_builder);
   };
-  return mlir::stablehlo::Sort(builder, {p_indices, cumsum_mask},
-                               i64_i64_lt_comparator, 0,
-                               /*is_stable=*/false)[1];
+  mlir::MlirOp sorted_inverse =
+      mlir::stablehlo::Sort(builder, {p_indices, cumsum_mask},
+                            key_val_lt_comparator, 0, /*is_stable=*/false)[1];
+  if (sum_elem_type != mlir::ElementType::I64) {
+    return mlir::stablehlo::ConvertElementType(sorted_inverse,
+                                               mlir::ElementType::I64);
+  }
+  return sorted_inverse;
 }
 
 mlir::MlirOp BuildUniqueDimCounts(mlir::MlirBuilder& builder,
