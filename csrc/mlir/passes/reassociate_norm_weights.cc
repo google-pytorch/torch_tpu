@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/PatternMatch.h"
@@ -51,9 +52,58 @@ mlir::Value SkipBroadcasts(mlir::Value v) {
   return v;
 }
 
+mlir::Type GetElementType(mlir::Type type) {
+  if (const auto shaped = mlir::dyn_cast<mlir::ShapedType>(type)) {
+    return shaped.getElementType();
+  }
+  return type;
+}
+
+bool IsSameCategoryConvert(mlir::stablehlo::ConvertOp convert) {
+  const mlir::Type in_elem = GetElementType(convert.getOperand().getType());
+  const mlir::Type out_elem = GetElementType(convert.getType());
+  return (mlir::isa<mlir::FloatType>(in_elem) &&
+          mlir::isa<mlir::FloatType>(out_elem)) ||
+         (mlir::isa<mlir::IntegerType>(in_elem) &&
+          mlir::isa<mlir::IntegerType>(out_elem));
+}
+
+// Returns true when `wide_type` and `narrow_type` are distinct float types and
+// every value of `narrow_type` converts losslessly to `wide_type` (covering
+// promotions such as bf16->f32, f16->f32, and f32->f64 while rejecting integer
+// or narrowing/cross-format round trips).
+bool IsWideningFloatPromotion(mlir::Type narrow_type, mlir::Type wide_type) {
+  const auto narrow_float =
+      mlir::dyn_cast<mlir::FloatType>(GetElementType(narrow_type));
+  const auto wide_float =
+      mlir::dyn_cast<mlir::FloatType>(GetElementType(wide_type));
+  if (!narrow_float || !wide_float || narrow_float == wide_float) {
+    return false;
+  }
+  return llvm::APFloatBase::isLosslesslyConvertibleTo(
+      narrow_float.getFloatSemantics(), wide_float.getFloatSemantics(),
+      /*IgnoreNaNs=*/true);
+}
+
+// Skips broadcast_in_dim and same-category convert ops (float->float or
+// int->int).
+mlir::Value SkipBroadcastsAndSameCategoryConverts(mlir::Value v) {
+  while (v) {
+    if (auto bcast = v.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>()) {
+      v = bcast.getOperand();
+    } else if (auto convert = v.getDefiningOp<mlir::stablehlo::ConvertOp>();
+               convert && IsSameCategoryConvert(convert)) {
+      v = convert.getOperand();
+    } else {
+      break;
+    }
+  }
+  return v;
+}
+
 // Checks if a value is a constant 1.0 (float) or 1 (integer) splat.
 bool IsOneSplat(mlir::Value val) {
-  val = SkipBroadcasts(val);
+  val = SkipBroadcastsAndSameCategoryConverts(val);
   auto const_op = val.getDefiningOp<mlir::stablehlo::ConstantOp>();
   if (!const_op) return false;
   auto attr = mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
@@ -82,7 +132,14 @@ std::optional<MatchedWeight> MatchOnePlusWeight(mlir::Value val) {
       val.getDefiningOp<mlir::stablehlo::BroadcastInDimOp>();
   mlir::Value inner_val = outer_bcast ? outer_bcast.getOperand() : val;
 
-  auto add_op = inner_val.getDefiningOp<mlir::stablehlo::AddOp>();
+  auto downcast_op = inner_val.getDefiningOp<mlir::stablehlo::ConvertOp>();
+  mlir::Value add_val = downcast_op ? downcast_op.getOperand() : inner_val;
+  if (downcast_op &&
+      !IsWideningFloatPromotion(inner_val.getType(), add_val.getType())) {
+    return std::nullopt;
+  }
+
+  auto add_op = add_val.getDefiningOp<mlir::stablehlo::AddOp>();
   if (!add_op) return std::nullopt;
 
   mlir::Value raw_weight;
@@ -92,6 +149,14 @@ std::optional<MatchedWeight> MatchOnePlusWeight(mlir::Value val) {
     raw_weight = add_op.getLhs();
   } else {
     return std::nullopt;
+  }
+
+  if (downcast_op) {
+    auto upcast_op = raw_weight.getDefiningOp<mlir::stablehlo::ConvertOp>();
+    if (!upcast_op || upcast_op.getOperand().getType() != inner_val.getType()) {
+      return std::nullopt;
+    }
+    raw_weight = upcast_op.getOperand();
   }
 
   return MatchedWeight{raw_weight, outer_bcast};
