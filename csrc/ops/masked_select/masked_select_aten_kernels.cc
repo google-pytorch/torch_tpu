@@ -18,6 +18,7 @@
 
 #include <optional>
 
+#include "ATen/MemoryOverlap.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/broadcast_tensors.h"
 #include "absl/status/status.h"
@@ -59,30 +60,26 @@ at::Tensor MaskedSelectFlat(const at::Tensor& self, const at::Tensor& mask) {
   return AtenGather(self_flat, 0, indices, /*sparse_grad=*/false);
 }
 
-// PrepareOutTensor validates that the out tensor is on TPU, resizes it to match
-// the result tensor's shape, and checks for dtype matching.
-absl::Status PrepareOutTensor(const at::Tensor& result, at::Tensor& out) {
-  TT_RET_CHECK(out.device().type() == GetPrivateUse1DeviceType(),
-               error::kInvalidArgument)
-      << "expected out tensor to be on tpu, got " << out.device().str();
-
-  // Make out have the same shape as result.
-  out = AtenResize_(out, result.sizes(), std::nullopt);
-
-  // Check that the out tensor dtype is the same as the result dtype.
-  TT_RET_CHECK(result.scalar_type() == out.scalar_type(),
-               error::kInvalidArgument)
-      << "expected out tensor to have dtype " << ToString(result.scalar_type())
-      << ", got " << ToString(out.scalar_type());
-  return absl::OkStatus();
-}
-
-// ValidateMaskTensorIsBool verifies that the mask tensor has boolean scalar
-// type.
+// Verifies that the mask tensor has boolean scalar type.
 absl::Status ValidateMaskTensorIsBool(const at::Tensor& mask) {
   TT_RET_CHECK(IsBool(mask), error::kInvalidArgument)
       << "expected mask to be a BoolTensor, got "
       << ToString(mask.scalar_type());
+  return absl::OkStatus();
+}
+
+// Validates out device, mask dtype, and out dtype before executing
+// masked_select or resizing out.
+absl::Status ValidateMaskedSelectOutInputs(const at::Tensor& self,
+                                           const at::Tensor& mask,
+                                           const at::Tensor& out) {
+  TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
+      << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << out.device().str();
+  TT_RETURN_IF_ERROR(ValidateMaskTensorIsBool(mask));
+  TT_RET_CHECK(self.scalar_type() == out.scalar_type(), error::kInvalidArgument)
+      << "expected out tensor to have dtype " << ToString(self.scalar_type())
+      << ", got " << ToString(out.scalar_type());
   return absl::OkStatus();
 }
 
@@ -110,11 +107,13 @@ at::Tensor& AtenMaskedSelectOut(const at::Tensor& self, const at::Tensor& mask,
   // subsequent AtenCopyFrom execution is recognized under the known composite
   // op stack.
   TT_KERNEL(OpName::kMaskedSelect, _, (self, mask, out), {
-    TT_THROW_IF_ERROR(ValidateMaskTensorIsBool(mask));
+    TT_THROW_IF_ERROR(ValidateMaskedSelectOutInputs(self, mask, out));
+    at::assert_no_internal_overlap(out);
+    at::assert_no_overlap(out, self);
+    at::assert_no_overlap(out, mask);
 
     const at::Tensor result = AtenMaskedSelect(self, mask);
-    TT_THROW_IF_ERROR(PrepareOutTensor(result, out));
-
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, result.sizes()));
     out = AtenCopyFrom(result, out, /*non_blocking=*/true);
     return out;
   });
