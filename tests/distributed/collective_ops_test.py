@@ -49,6 +49,7 @@ if __name__ == "__main__":  # We are in the parent process.
 
 import torch  # pylint: disable=g-import-not-at-top
 from torch import distributed as dist
+from torch.distributed import _functional_collectives as funcol
 from torch.distributed import device_mesh
 import torch.multiprocessing as mp
 
@@ -386,6 +387,77 @@ def _run_experimental_collectives_on_dim() -> None:
   )
   assert "all_gather_dim = 1" in stablehlo, stablehlo
   assert "scatter_dimension = 1" in stablehlo, stablehlo
+
+
+def _run_functional_collectives_on_dim_are_fused() -> None:
+  """Tests compiled functional collectives on a non-leading dim.
+
+  The compiler folds their dim-0 collective + chunk/cat relayouts into
+  collectives on the target dim; the results must match eager.
+  """
+  # Mesh dim 0 groups are strided ({0, 4}, ...), dim 1 groups are contiguous.
+  mesh = device_mesh.init_device_mesh("tpu", (2, dist.get_world_size() // 2))
+
+  # Spells out the dim-0 collective + chunk/cat relayouts that
+  # `funcol.all_gather_tensor` and `funcol.reduce_scatter_tensor` trace to on a
+  # non-leading dim, since some PyTorch versions don't let Dynamo trace into
+  # funcol's relayout helpers.
+  def _funcol_dim_collectives(x, y, group, size):
+    return (
+        torch.cat(
+            torch.chunk(funcol.all_gather_tensor(x, 0, group), size), dim=1
+        ),
+        torch.cat(
+            torch.chunk(funcol.all_gather_tensor(x, 0, group), size), dim=-1
+        ),
+        funcol.reduce_scatter_tensor(
+            torch.cat(torch.chunk(y, size, dim=1)), "sum", 0, group
+        ),
+        funcol.reduce_scatter_tensor(
+            torch.cat(torch.chunk(y, size, dim=-1)), "avg", 0, group
+        ),
+    )
+
+  debugs = []
+  compiled = torch.compile(
+      _funcol_dim_collectives,
+      backend="tpu",
+      fullgraph=True,
+      dynamic=False,
+      options={"serializable": False, "debug_callback": debugs.append},
+  )
+  for group in (mesh.get_group(0), mesh.get_group(1)):
+    ranks = dist.get_process_group_ranks(group)
+    size = len(ranks)
+    group_rank = dist.get_rank(group)
+    x = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    y = torch.arange(24 * size * size, dtype=torch.float32).reshape(
+        2, 3 * size, 4 * size
+    )
+    y_sum = size * y + 1000 * sum(ranks)
+    expected = (
+        torch.cat([x + 100 * r for r in ranks], dim=1),
+        torch.cat([x + 100 * r for r in ranks], dim=2),
+        y_sum.chunk(size, dim=1)[group_rank],
+        (y_sum / size).chunk(size, dim=2)[group_rank],
+    )
+    actual = compiled(
+        (x + 100 * dist.get_rank()).to("tpu"),
+        (y + 1000 * dist.get_rank()).to("tpu"),
+        group,
+        size,
+    )
+    for a, e in zip(actual, expected, strict=True):
+      utils.assert_close(a.cpu(), e)
+
+  stablehlo = "\n".join(
+      text for debug in debugs for text in debug.stablehlo_forward_text
+  )
+  assert "all_gather_dim = 1" in stablehlo, stablehlo
+  assert "all_gather_dim = 2" in stablehlo, stablehlo
+  assert "scatter_dimension = 1" in stablehlo, stablehlo
+  assert "scatter_dimension = 2" in stablehlo, stablehlo
+  assert "concatenate" not in stablehlo, stablehlo
 
 
 def _run_gather_scalar() -> None:
@@ -1417,6 +1489,9 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
   def test_experimental_collectives_on_dim(self) -> None:
     _run_experimental_collectives_on_dim()
+
+  def test_functional_collectives_on_dim_are_fused(self) -> None:
+    _run_functional_collectives_on_dim_are_fused()
 
   def test_gather_scalar(self) -> None:
     _run_gather_scalar()

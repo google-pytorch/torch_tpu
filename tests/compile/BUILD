@@ -676,6 +676,18 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "fuse_collective_relayouts_test",
+    srcs = ["fuse_collective_relayouts_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:fuse_collective_relayouts",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "async_compile_test",
     srcs = ["async_compile_test.py"],
     tags = [

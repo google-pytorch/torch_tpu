@@ -64,6 +64,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/compile/fx_passes:clone_mutated_returned_placeholders",
         "//src/torch_tpu/_internal/compile/fx_passes:force_collectives_output",
+        "//src/torch_tpu/_internal/compile/fx_passes:fuse_collective_relayouts",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
         "//src/torch_tpu/_internal/compile/fx_passes:propagate_symints",
         "//src/torch_tpu/_internal/compile/fx_passes:reorder_symints",
