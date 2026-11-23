@@ -30,6 +30,7 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/shape.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -48,6 +49,11 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
     kiln::Kernel kernel, absl::Span<const xla::Shape> inputs,
     const xla::Shape& output, absl::Span<const int64_t> operand_to_metadata,
     int aliased_parameter = -1);
+
+// Returns an unbounded dynamic shape of rank `rank` with a row-major layout
+// tiled by `tiles`.
+xla::Shape MakeUnboundedShape(xla::PrimitiveType type, int64_t rank,
+                              absl::Span<const xla::Tile> tiles);
 
 // Whether `shapes` resolve to exactly the on-device `layouts`, e.g. those a
 // kernel was compiled for.

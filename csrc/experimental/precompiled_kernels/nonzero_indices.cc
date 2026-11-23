@@ -573,19 +573,6 @@ absl::StatusOr<kiln::Kernel> BuildNonzeroIndices(int64_t rank,
                             });
 }
 
-// Returns an unbounded-dynamic shape of rank `rank` with a row-major layout
-// tiled by `tiles`.
-xla::Shape MakeUnbounded(const xla::PrimitiveType type, const int64_t rank,
-                         absl::Span<const xla::Tile> tiles) {
-  xla::Shape shape = xla::ShapeUtil::MakeShape(
-      type, Dimensions(rank, xla::Shape::kUnboundedSize),
-      std::vector<bool>(rank, true));
-  for (const xla::Tile& tile : tiles) {
-    *shape.mutable_layout()->add_tiles() = tile;
-  }
-  return shape;
-}
-
 // Maps the logical S64[K,D] destination onto the S32[R,128] view the Mosaic
 // kernel was compiled against; see the buffer contract in the header. Both
 // occupy 1024 * TileRows(D) * ceil(K/128) bytes.
@@ -641,11 +628,11 @@ xla::Layout NonzeroInputLayout() {
 // Returns the parameters for the nonzero indices kernel.
 template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim>
 std::vector<xla::Shape> NonzeroParameters() {
-  const xla::Shape input =
-      MakeUnbounded(ConvertTo<xla::PrimitiveType>(kDtype), kRank,
-                    NonzeroInputLayout<kDtype, kRank, kTileMinorDim>().tiles());
+  const xla::Shape input = MakeUnboundedShape(
+      ConvertTo<xla::PrimitiveType>(kDtype), kRank,
+      NonzeroInputLayout<kDtype, kRank, kTileMinorDim>().tiles());
   const xla::Shape output_view =
-      MakeUnbounded(xla::S32, /*rank=*/2, {xla::Tile({1, 128})});
+      MakeUnboundedShape(xla::S32, /*rank=*/2, {xla::Tile({1, 128})});
   xla::Shape output_dims = xla::ShapeUtil::MakeShape(xla::S32, {2});
   *output_dims.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
   xla::Shape input_dims = xla::ShapeUtil::MakeShape(xla::S32, {kRank});
@@ -710,7 +697,7 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options) {
   const xla::Shape output_view =
-      MakeUnbounded(xla::S32, /*rank=*/2, {xla::Tile({1, 128})});
+      MakeUnboundedShape(xla::S32, /*rank=*/2, {xla::Tile({1, 128})});
   TT_ASSIGN_OR_RETURN(const kiln::DType kiln_dtype, ToKilnDType(kDtype));
   TT_ASSIGN_OR_RETURN(kiln::Kernel kernel,
                       BuildNonzeroIndices(kRank, kiln_dtype));

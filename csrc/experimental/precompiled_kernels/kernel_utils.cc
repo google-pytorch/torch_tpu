@@ -27,6 +27,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
@@ -39,6 +40,8 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -69,6 +72,17 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
   return WrapXlaError(
       client.CompileAndLoad(computation, std::move(*compile_options)),
       /*context=*/"failed to compile the Mosaic kernel");
+}
+
+xla::Shape MakeUnboundedShape(const xla::PrimitiveType type, const int64_t rank,
+                              absl::Span<const xla::Tile> tiles) {
+  xla::Shape shape = xla::ShapeUtil::MakeShape(
+      type, Dimensions(rank, xla::Shape::kUnboundedSize),
+      std::vector<bool>(rank, true));
+  for (const xla::Tile& tile : tiles) {
+    *shape.mutable_layout()->add_tiles() = tile;
+  }
+  return shape;
 }
 
 bool HasDeviceLayouts(absl::Span<const Shape> shapes,
