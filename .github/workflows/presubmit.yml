@@ -49,9 +49,6 @@ on:
           - 'us-central1'
           - 'us-east1'
           - 'asia-southeast1'
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
