@@ -87,6 +87,8 @@ torch_tpu_py_library(
 
 torch_tpu_py_test(
     name = "worker_supervisor_test",
+    # Worker startup dominates; several minutes under sanitizers.
+    timeout = "long",
     srcs = ["worker_supervisor_test.py"],
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [

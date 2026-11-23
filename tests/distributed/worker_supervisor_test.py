@@ -29,9 +29,13 @@ from tests import seed_test_utils
 from tests.distributed import worker_supervisor
 
 # Upper bound for spawned workers to start or exit; only reached on failure.
-_STARTUP_TIMEOUT_SECONDS = 120.0
-# Bounded sleep for "hung" test workers, so that even a leaked one exits.
-_HANG_SECONDS = 120
+# Generous because starting several workers concurrently takes minutes under
+# sanitizers.
+_STARTUP_TIMEOUT_SECONDS = 300.0
+# Bounded sleep for "hung" test workers, so that even a leaked one exits. It
+# must outlast the startup of the slowest peer, or a "hung" worker may exit on
+# its own before the supervisor kills it.
+_HANG_SECONDS = int(2 * _STARTUP_TIMEOUT_SECONDS)
 
 
 def _mark_ready(local_rank: int, output_dir: str) -> None:
