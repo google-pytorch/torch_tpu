@@ -376,6 +376,19 @@ class _DeviceModuleMeta(abc.ABCMeta):
     """Sets the eager execution mode for TPU."""
     _execution_mode_module.eager_mode = value
 
+  @property
+  def _initialized(cls) -> bool:
+    """Whether the TPU runtime is initialized, as `torch.cuda._initialized`.
+
+    PyTorch reads this private attribute of the device module. For example,
+    `torch.utils.checkpoint` saves and restores the device RNG state only when
+    it is true.
+    """
+    return (
+        not cls._public_module()._is_in_bad_fork()  # pylint: disable=protected-access
+        and _device_ops_backend._is_initialized()  # pylint: disable=protected-access
+    )
+
   def __getattr__(cls, name: str) -> Any:
     stages_map = getattr(cls, "__tt_api_stages__", {})
     # Pass `cls` as `tt_api_globals` so `_resolve_module_attribute` only binds
@@ -613,10 +626,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     .. warning::
         This API is experimental and subject to change in future releases.
     """
-    return (
-        not cls._public_module()._is_in_bad_fork()  # pylint: disable=protected-access
-        and _device_ops_backend._is_initialized()  # pylint: disable=protected-access
-    )
+    return cls._initialized
 
   @classmethod
   def _lazy_init(cls) -> None:

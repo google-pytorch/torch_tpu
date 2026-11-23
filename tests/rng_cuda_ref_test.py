@@ -23,8 +23,10 @@ import unittest
 from absl import flags
 from absl import logging
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal.utils import annotations
+from torch_tpu._internal.utils import test_utils
 from tests import accelerator_test_utils
 from tests import oss_utils
 from tests import seed_test_utils
@@ -593,6 +595,34 @@ class RngCudaRefTest(_BaseRngTest):
     next_after_functional = torch.multinomial(weights, 4)
     self.assertTrue(torch.equal(out, second))
     self.assertTrue(torch.equal(next_after_out, next_after_functional))
+
+  @parameterized.named_parameters(
+      ("reentrant", True),
+      ("non_reentrant", False),
+  )
+  def test_eager_activation_checkpointing_dropout(self, use_reentrant):
+    """Verifies eager checkpoint recomputes the forward dropout mask."""
+    linear = torch.nn.Linear(8, 8).to(self.device)
+    dropout = torch.nn.Dropout(p=0.5)
+
+    def fn(x):
+      return dropout(linear(x))
+
+    x = torch.randn(4, 8, device=self.device, requires_grad=True)
+
+    torch.manual_seed(1)
+    torch.utils.checkpoint.checkpoint(
+        fn, x, use_reentrant=use_reentrant
+    ).sum().backward()
+    checkpointed_grads = [x.grad, linear.weight.grad]
+
+    x.grad = None
+    linear.zero_grad(set_to_none=True)
+    torch.manual_seed(1)
+    fn(x).sum().backward()
+    expected_grads = [x.grad, linear.weight.grad]
+
+    test_utils.assert_close(checkpointed_grads, expected_grads)
 
 
 class CompiledRngTest(_BaseRngTest):
