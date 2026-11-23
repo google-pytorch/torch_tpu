@@ -174,6 +174,13 @@ def _has_test_filter() -> bool:
 COMPLEX_DTYPES = op_testing.COMPLEX_DTYPES
 FLOAT_DTYPES = op_testing.FLOAT_DTYPES
 INTEGRAL_DTYPES = op_testing.INTEGRAL_DTYPES
+_NON_BOOL_INTEGRAL_DTYPES = (
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+)
 UNQUANTIZED_NUMERIC_DTYPES = op_testing.UNQUANTIZED_NUMERIC_DTYPES
 ALL_NUMERIC_DTYPES = op_testing.ALL_NUMERIC_DTYPES
 _SPARSE_COO_EXCLUDE_DTYPES = tuple(
@@ -1440,7 +1447,12 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_adaptive_avg_pool2d(self):
     self.do_test_op(
         "nn.functional.adaptive_avg_pool2d",
-        exclude_dtypes=(torch.bool,),
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=(torch.bool,)
+        + _if_tpu_vs_gpu_compiled(
+            (torch.uint8, torch.int8, torch.int16, torch.int32), ()
+        ),
     )
 
   def test_adaptive_avg_pool3d(self):
@@ -1459,6 +1471,9 @@ class TestOps(op_testing.OpInfoTestBase):
         "nn.functional.adaptive_max_pool2d",
         # TODO: adaptive_max_pool2d_backward is not implemented on TPU yet.
         check_grad=False,
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
     )
 
   def test_add(self):
@@ -1470,7 +1485,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_addcmul(self):
     self.do_test_op(
         "addcmul",
-        # TODO(b/568080282): Fix addcmul_ succeeding on bool in compiled mode.
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -1524,19 +1541,23 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "addmv",
         # GPU (CUDA) does not support integral dtypes for addmv.
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
             torch.complex64,
-        ),
+        )
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
         exclude_inplace_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
             torch.float64,
             torch.complex64,
-        ),
+        )
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_all(self):
@@ -1548,7 +1569,10 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_any(self):
     self.do_test_op(
         "any",
-        exclude_dtypes=(torch.int4,),
+        # TODO(b/584809741): Failure-consistency mismatch on compiled uint8
+        # out-variant (Dynamo fake-tensor error on GPU where TPU succeeds).
+        exclude_dtypes=(torch.int4,)
+        + _if_tpu_vs_gpu_compiled((torch.uint8,), ()),
     )
 
   def test_amax(self):
@@ -1595,10 +1619,20 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_argmax(self):
-    self.do_test_op("argmax")
+    self.do_test_op(
+        "argmax",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_argmin(self):
-    self.do_test_op("argmin")
+    self.do_test_op(
+        "argmin",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_as_strided(self):
     self.do_test_op("as_strided")
@@ -1624,6 +1658,8 @@ class TestOps(op_testing.OpInfoTestBase):
         # GPU short-circuits empty-batch inputs in avg_pool1d before checking
         # dtype, whereas TorchTPU's ValidateAvgPool1dDtype rejects bool, uint8,
         # int8, int16, int32, and complex64 upfront.
+        # Intended divergence (b/584809741): Inductor compiles int64; TPU
+        # matches eager CUDA in rejecting it.
         exclude_dtypes=(
             torch.bool,
             torch.uint8,
@@ -1631,22 +1667,31 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int16,
             torch.int32,
         )
-        + COMPLEX_DTYPES,
+        + COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.int64,), ()),
     )
 
   def test_avg_pool2d(self):
     self.do_test_op(
         "nn.functional.avg_pool2d",
-        exclude_dtypes=(torch.bool,),
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=(torch.bool,)
+        + _if_tpu_vs_gpu_compiled(
+            (torch.int8, torch.int16, torch.int32, torch.int64), ()
+        ),
     )
 
   def test_avg_pool3d(self):
     self.do_test_op(
         "nn.functional.avg_pool3d",
         # TODO: GPU does not support integral, complex, and `float16` dtypes.
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(torch.uint8, torch.int8, torch.int16)
         + COMPLEX_DTYPES
-        + (torch.float16,),
+        + (torch.float16,)
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_baddbmm(self):
@@ -1726,7 +1771,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("bitwise_and")
 
   def test_bitwise_left_shift(self):
-    self.do_test_op("bitwise_left_shift")
+    self.do_test_op(
+        "bitwise_left_shift",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_bitwise_not(self):
     self.do_test_op(
@@ -1739,7 +1790,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("bitwise_or")
 
   def test_bitwise_right_shift(self):
-    self.do_test_op("bitwise_right_shift")
+    self.do_test_op(
+        "bitwise_right_shift",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_bitwise_xor(self):
     self.do_test_op("bitwise_xor")
@@ -1788,6 +1845,10 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_ceil(self):
     self.do_test_op(
         "ceil",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_channel_shuffle(self):
@@ -1857,8 +1918,12 @@ class TestOps(op_testing.OpInfoTestBase):
         # In gradient mode, the test harness computes losses via `t.sum()`,
         # which fails on CUDA (`"sum_cuda" not implemented for 'Float8_e4m3fn'`)
         # but succeeds on TorchTPU, causing a failure-consistency mismatch.
+        # TODO(b/584809741): In compiled mode, TPU fails on float8_e4m3fn
+        # scalar fill value where Inductor succeeds.
         exclude_dtypes=(
-            (torch.float8_e4m3fn,) if op_testing._COMPUTE_GRAD.value else None
+            (torch.float8_e4m3fn,)
+            if op_testing._COMPUTE_GRAD.value
+            else _if_tpu_vs_gpu_compiled((torch.float8_e4m3fn,), ())
         ),
     )
 
@@ -1872,7 +1937,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("count_nonzero")
 
   def test_cross_entropy(self):
-    self.do_test_op("nn.functional.cross_entropy")
+    self.do_test_op(
+        "nn.functional.cross_entropy",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+    )
 
   def test_ctc_loss(self):
     self.do_test_op(
@@ -1887,7 +1957,13 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_cumprod(self):
-    self.do_test_op("cumprod")
+    self.do_test_op(
+        "cumprod",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_cummax(self):
     self.do_test_op("cummax")
@@ -1895,7 +1971,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_cumsum(self):
     self.do_test_op(
         "cumsum",
-        # TODO(b/568080282): Fix cumsum_ succeeding on bool in compiled mode.
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -1919,11 +1997,14 @@ class TestOps(op_testing.OpInfoTestBase):
         # and actual results can be slightly above the strict tolerance of
         # 1e-05.
         # GPU (CUDA) does not support integral dtypes for dot.
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
-        ),
+        )
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_native_dropout_backward(self):
@@ -1931,12 +2012,15 @@ class TestOps(op_testing.OpInfoTestBase):
         "native_dropout_backward",
         # GPU (CUDA) does not support complex and integral dtypes for
         # native_dropout_backward.
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
         )
-        + COMPLEX_DTYPES,
+        + COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_einsum(self):
@@ -2123,6 +2207,10 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_floor(self):
     self.do_test_op(
         "floor",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_floor_divide(self):
@@ -2142,7 +2230,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("fmin")
 
   def test_fmod(self):
-    self.do_test_op("fmod")
+    self.do_test_op(
+        "fmod",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   @category("foreach")
   def test_foreach_abs(self):
@@ -2169,10 +2263,14 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_foreach_addcdiv",
         # TODO(b/485291373): fix _foreach_addcdiv() failing with complex dtypes.
-        exclude_dtypes=COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/485291373): fix _foreach_addcdiv_() failing with complex
         # dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
         # and calls where 'value' is a list of scalars (PyTorch OpInfo passes
         # 'value' kwarg which the C++ binding rejects for list of scalars).
@@ -2189,9 +2287,13 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_addcmul(self):
     self.do_test_op(
         "_foreach_addcmul",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/485291373): fix _foreach_addcmul_() failing with complex
         # dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
         # and calls where 'value' is a list of scalars (PyTorch OpInfo passes
         # 'value' kwarg which the C++ binding rejects for list of scalars).
@@ -2223,9 +2325,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_foreach_clamp_max",
         # TODO: fix _foreach_clamp_max() failing with complex dtypes.
-        exclude_dtypes=COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO: fix _foreach_clamp_max_() failing with complex dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   @category("foreach")
@@ -2233,9 +2339,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_foreach_clamp_min",
         # TODO: fix _foreach_clamp_min() failing with complex dtypes.
-        exclude_dtypes=COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO: fix _foreach_clamp_min_() failing with complex dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   @category("foreach")
@@ -2299,8 +2409,12 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_lerp(self):
     self.do_test_op(
         "_foreach_lerp",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
         # TODO(b/485291373): fix _foreach_lerp_() failing with complex dtypes.
-        exclude_inplace_dtypes=(torch.complex64,),
+        exclude_inplace_dtypes=(torch.complex64,)
+        + _if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
     )
 
   @category("foreach")
@@ -2338,9 +2452,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_foreach_maximum",
         # TODO: fix _foreach_maximum() failing with complex dtypes.
-        exclude_dtypes=COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO: fix _foreach_maximum_() failing with complex dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   @category("foreach")
@@ -2348,9 +2466,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_foreach_minimum",
         # TODO: fix _foreach_minimum() failing with complex dtypes.
-        exclude_dtypes=COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO: fix _foreach_minimum_() failing with complex dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   @category("foreach")
@@ -2405,7 +2527,12 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_pow(self):
-    self.do_test_op("_foreach_pow")
+    self.do_test_op(
+        "_foreach_pow",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   @category("foreach")
   def test_foreach_reciprocal(self):
@@ -2444,9 +2571,19 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_foreach_sub",
         # TODO: fix _foreach_sub() failing with complex dtypes.
-        exclude_dtypes=COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO: fix _foreach_sub_() failing with complex dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        # Intended divergence (b/584809741): Inductor accepts bool scalar args;
+        # TPU matches eager CUDA in rejecting them.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and any(isinstance(arg, bool) for arg in op_input.args)
+        ),
     )
 
   @category("foreach")
@@ -2468,9 +2605,10 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_frac(self):
     self.do_test_op(
         "frac",
-        # TODO(b/568080282): Clean up exclude_dtypes once Dynamo recompile_limit
-        # eager fallback is fixed.
-        exclude_dtypes=(_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ())),
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
     )
 
   def test_full(self):
@@ -2582,14 +2720,27 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_grid_sample(self):
     self.do_test_op(
         "nn.functional.grid_sample",
-        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.complex64,), ()),
+        # Intended divergence (b/584809741): Inductor compiles complex/integral
+        # dtypes; TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64, *INTEGRAL_DTYPES), ()
+        ),
         # TODO(b/544855640): TPU implementation hangs on float64:
         # test_grid_sample (subtest_name='grid_sample_float64_subtest2') hangs
         # indefinitely with float64 on TPU, causing test timeout.
+        # Intended divergence (b/584809741): Inductor compiles 5D bicubic
+        # grid_sample; TPU matches eager CUDA in rejecting it.
         skip_if=lambda variant, op_input: (
-            op_testing._torch_tpu_vs_gpu_mode()
-            and op_testing._COMPUTE_GRAD.value
-            and op_input.input_value.dtype == torch.float64
+            (
+                op_testing._torch_tpu_vs_gpu_mode()
+                and op_testing._COMPUTE_GRAD.value
+                and op_input.input_value.dtype == torch.float64
+            )
+            or (
+                op_testing.is_tpu_vs_gpu_compiled()
+                and op_input.input_value.ndim == 5
+                and op_input.kwargs.get("mode") == "bicubic"
+            )
         ),
         # Cap samples to avoid shard timeouts in grad_tpu_vs_gpu mode, as
         # grid_sample gradient computation is slow on TPU and generates many
@@ -2757,7 +2908,14 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_ldexp(self):
-    self.do_test_op("ldexp")
+    self.do_test_op(
+        "ldexp",
+        # TODO(b/584809741): ldexp_ overflows differently on int8/uint8 under
+        # Inductor vs TPU.
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.int8, torch.uint8), ()
+        ),
+    )
 
   def test_le(self):
     self.do_test_op(
@@ -2769,7 +2927,15 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("nn.functional.leaky_relu")
 
   def test_lerp(self):
-    self.do_test_op("lerp")
+    self.do_test_op(
+        "lerp",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
+            _NON_BOOL_INTEGRAL_DTYPES, ()
+        ),
+    )
 
   def test_lgamma(self):
     self.do_test_op(
@@ -2914,6 +3080,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_linspace(self):
     self.do_test_op(
         "linspace",
+        # TODO(b/584809741): Inductor compiles bool and rounds integral
+        # linspace differently from TPU.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
         # PyTorch's upstream sample generator for linspace includes a hardcoded
         # sample without a device kwarg: `yield SampleInput(1, args=(3, 1))`
         # (see common_methods_invocations.py).
@@ -2940,10 +3109,20 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("log2")
 
   def test_log_sigmoid(self):
-    self.do_test_op("nn.functional.logsigmoid")
+    self.do_test_op(
+        "nn.functional.logsigmoid",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+    )
 
   def test_log_softmax(self):
-    self.do_test_op("log_softmax")
+    self.do_test_op(
+        "log_softmax",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+    )
 
   def test_log_softmax_backward_data(self):
     self.do_test_op(
@@ -3026,12 +3205,14 @@ class TestOps(op_testing.OpInfoTestBase):
         # delegated, but due to the same reason above, there are some funky
         # lowering causing delegation to fail for us. This requires additional
         # work to fix. For now, we just exclude bool dtypes.
-        # TODO: make matmul fail for integral dtypes to match GPU.
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
-        ),
+        )
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_multinomial(self):
@@ -3072,7 +3253,10 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.uint8,
             torch.int8,
             torch.int16,
-        ),
+        )
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_max_pool2d(self):
@@ -3089,7 +3273,10 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.uint8,
             torch.int8,
             torch.int16,
-        ),
+        )
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_max_pool3d(self):
@@ -3107,7 +3294,10 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.uint8,
             torch.int8,
             torch.int16,
-        ),
+        )
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_mean(self):
@@ -3158,8 +3348,12 @@ class TestOps(op_testing.OpInfoTestBase):
         "native_batch_norm",
         # TODO: fix native_batch_norm(out=...) failing.
         check_out_variant=False,
+        # Intended divergence (b/584809741): Inductor compiles complex/integral
+        # dtypes; TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(torch.float64,)
-        + _if_tpu_vs_gpu_compiled((torch.complex64,), ()),
+        + _if_tpu_vs_gpu_compiled(
+            (torch.complex64, *_NON_BOOL_INTEGRAL_DTYPES), ()
+        ),
     )
 
   def test_native_batch_norm_legit(self):
@@ -3167,8 +3361,12 @@ class TestOps(op_testing.OpInfoTestBase):
         "_native_batch_norm_legit",
         # TODO: fix _native_batch_norm_legit(out=...) failing.
         check_out_variant=False,
+        # Intended divergence (b/584809741): Inductor compiles complex/integral
+        # dtypes; TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(torch.float64,)
-        + _if_tpu_vs_gpu_compiled((torch.complex64,), ()),
+        + _if_tpu_vs_gpu_compiled(
+            (torch.complex64, *_NON_BOOL_INTEGRAL_DTYPES), ()
+        ),
     )
 
   def test_native_group_norm(self):
@@ -3229,7 +3427,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nll_loss(self):
     self.do_test_op(
         "nn.functional.nll_loss",
-        exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        # Intended divergence (b/584809741): Inductor compiles complex/integral
+        # dtypes; TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64, *_NON_BOOL_INTEGRAL_DTYPES), ()
+        ),
     )
 
   @also_run_static
@@ -3274,7 +3476,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("permute")
 
   def test_pow(self):
-    self.do_test_op("pow")
+    self.do_test_op(
+        "pow",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_nn_functional_conv1d(self):
     self.do_test_op(
@@ -3334,7 +3541,11 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO: fix relu() with uint8/int8/int16 dtypes.
         # xla_cuda has no support for complex64::min():
         # https://github.com/openxla/stablehlo/issues/560
-        exclude_dtypes=(torch.uint8, torch.int8, torch.int16) + COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=(torch.uint8, torch.int8, torch.int16)
+        + COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_nn_functional_rms_norm(self):
@@ -3392,7 +3603,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_batch_norm(self):
     self.do_test_op(
         "nn.functional.batch_norm",
-        exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        # Intended divergence (b/584809741): Inductor compiles complex/integral
+        # dtypes; TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64, *_NON_BOOL_INTEGRAL_DTYPES), ()
+        ),
     )
 
   def test_nn_functional_elu(self):
@@ -3402,7 +3617,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("nn.functional.gelu")
 
   def test_nn_functional_glu(self):
-    self.do_test_op("nn.functional.glu")
+    self.do_test_op(
+        "nn.functional.glu",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+    )
 
   def test_nn_functional_prelu(self):
     self.do_test_op(
@@ -3412,7 +3632,13 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_nn_functional_hardsigmoid(self):
-    self.do_test_op("nn.functional.hardsigmoid")
+    self.do_test_op(
+        "nn.functional.hardsigmoid",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+    )
 
   def test_nn_functional_hardswish(self):
     self.do_test_op(
@@ -3421,7 +3647,11 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_nn_functional_hardtanh(self):
-    self.do_test_op("nn.functional.hardtanh")
+    self.do_test_op(
+        "nn.functional.hardtanh",
+        # TODO(b/584809741): Inductor uint8 hardtanh differs from TPU by 1.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.uint8,), ()),
+    )
 
   def test_nn_functional_linear(self):
     self.do_test_op(
@@ -3437,23 +3667,32 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "nn.functional.silu",
         # TODO: fix nn.functional.silu() failing with complex dtypes.
+        # Intended divergence (b/584809741): Inductor compiles int32/int64; TPU
+        # matches eager CUDA in rejecting them.
         exclude_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
         )
-        + COMPLEX_DTYPES,
+        + COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.int32, torch.int64), ()),
         # TODO: fix nn.functional.silu_() failing with complex dtypes.
         exclude_inplace_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
         )
-        + COMPLEX_DTYPES,
+        + COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.int32, torch.int64), ()),
     )
 
   def test_nn_functional_softplus(self):
-    self.do_test_op("nn.functional.softplus")
+    self.do_test_op(
+        "nn.functional.softplus",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+    )
 
   def test_nn_functional_unfold(self):
     self.do_test_op(
@@ -3466,7 +3705,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_mse_loss(self):
     self.do_test_op(
         "nn.functional.mse_loss",
-        exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        # Intended divergence (b/584809741): Inductor compiles complex/integral
+        # dtypes; TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64, *_NON_BOOL_INTEGRAL_DTYPES), ()
+        ),
     )
 
   def test_pdist_forward(self):
@@ -3521,11 +3764,18 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "nn.functional.pad",
         variant_test_name="reflect",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_remainder(self):
     self.do_test_op(
         "remainder",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_repeat(self):
@@ -3569,7 +3819,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("roll")
 
   def test_round(self):
-    self.do_test_op("round")
+    self.do_test_op(
+        "round",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_rsqrt(self):
     self.do_test_op("rsqrt")
@@ -3679,7 +3935,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("select_scatter")
 
   def test_safe_softmax(self):
-    self.do_test_op("torch.ops.aten._safe_softmax.default")
+    self.do_test_op(
+        "torch.ops.aten._safe_softmax.default",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+    )
 
   def test_scalar_tensor(self):
     self.do_test_op("scalar_tensor")
@@ -3695,7 +3956,10 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.float8_e5m2,
             torch.float4_e2m1fn_x2,
             torch.int4,
-        ),
+        )
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # Upstream generates 288 samples per dtype; cap to prevent test
         # shard timeouts (10 samples per op dtype results in ~15m test time).
         max_samples_per_op_dtype=4,
@@ -3744,7 +4008,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("slice_scatter")
 
   def test_softmax(self):
-    self.do_test_op("softmax")
+    self.do_test_op(
+        "softmax",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+    )
 
   def test_softmax_backward_data(self):
     self.do_test_op(
@@ -3934,7 +4203,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("tanh")
 
   def test_threshold(self):
-    self.do_test_op("nn.functional.threshold")
+    self.do_test_op(
+        "nn.functional.threshold",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_to(self):
     self.do_test_op(
@@ -3986,7 +4261,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("triu")
 
   def test_trunc(self):
-    self.do_test_op("trunc")
+    self.do_test_op(
+        "trunc",
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_unbind(self):
     self.do_test_op("unbind")
@@ -4134,10 +4415,22 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_std(self):
-    self.do_test_op("std")
+    self.do_test_op(
+        "std",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+    )
 
   def test_var(self):
-    self.do_test_op("var", exclude_dtypes=COMPLEX_DTYPES + (torch.bool,))
+    self.do_test_op(
+        "var",
+        # Intended divergence (b/584809741): Inductor compiles integral dtypes;
+        # TPU matches eager CUDA in rejecting them.
+        exclude_dtypes=COMPLEX_DTYPES
+        + (torch.bool,)
+        + _if_tpu_vs_gpu_compiled(_NON_BOOL_INTEGRAL_DTYPES, ()),
+    )
 
   def test_var_mean(self):
     self.do_test_op("var_mean")
@@ -4146,11 +4439,14 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "vdot",
         # GPU (CUDA) does not support integral dtypes for vdot.
+        # Intended divergence (b/584809741): Inductor compiles bool/int32/int64;
+        # TPU matches eager CUDA in rejecting them.
         exclude_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
-        ),
+        )
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_view(self):
@@ -4195,7 +4491,12 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_xlogy(self):
     self.do_test_op(
         "xlogy",
+        # Intended divergence (b/584809741): Inductor compiles complex64; TPU
+        # matches eager CUDA in rejecting complex dtypes.
         exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        exclude_inplace_dtypes=(
+            _if_tpu_vs_gpu_compiled((torch.complex64,), ())
+        ),
     )
 
   def test_zeros(self):
@@ -4211,7 +4512,10 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "bucketize",
         # No total order for complex numbers.
-        exclude_dtypes=COMPLEX_DTYPES,
+        # Intended divergence (b/584809741): Inductor compiles bool; TPU
+        # matches eager CUDA in rejecting it.
+        exclude_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_geqrf(self):
@@ -4264,6 +4568,16 @@ class TestOps(op_testing.OpInfoTestBase):
             + _if_tpu_vs_gpu_compiled((torch.float64,), ())
         ),
         check_grad=False,
+        # TODO(b/584809741): Inductor raises TypeError on need_weights=False
+        # (positional `args[9]` in `_sample_inputs_native_multi_head_attention`)
+        # and 0-batch empty-query samples that succeed on TPU.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and (
+                (len(op_input.args) > 9 and not op_input.args[9])
+                or op_input.input_value.numel() == 0
+            )
+        ),
     )
 
   def test_transformer_encoder_layer_fwd(self):
