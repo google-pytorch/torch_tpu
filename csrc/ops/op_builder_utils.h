@@ -823,6 +823,12 @@ absl::StatusOr<DynamicMlirOpResults> ToResultVector(
 absl::StatusOr<DynamicMlirOpResults> ToResultVector(
     absl::StatusOr<mlir::MlirOp> results);
 
+// Computes the NumPy-broadcasted shape of `lhs_dims` and `rhs_dims`,
+// preserving bounded dynamic dimension metadata.
+absl::StatusOr<mlir::stablehlo::Dimensions> InferBroadcastDimensions(
+    absl::Span<const mlir::stablehlo::DimensionInfo> lhs_dims,
+    absl::Span<const mlir::stablehlo::DimensionInfo> rhs_dims);
+
 // Builds a module name from the current Python stack frame.
 // In most cases this frame is the one that triggered a materialization.
 //

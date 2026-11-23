@@ -16,6 +16,7 @@
 
 #include "csrc/ops/op_builder_utils.h"
 
+#include <algorithm>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -968,6 +969,38 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
   }
   return BoundConvolutionResult(result, dimension_numbers, windows,
                                 static_lhs.runtime_sizes);
+}
+
+absl::StatusOr<stablehlo::Dimensions> InferBroadcastDimensions(
+    const absl::Span<const stablehlo::DimensionInfo> lhs_dims,
+    const absl::Span<const stablehlo::DimensionInfo> rhs_dims) {
+  const size_t result_rank = std::max(lhs_dims.size(), rhs_dims.size());
+  stablehlo::Dimensions result(result_rank);
+  for (size_t i = 1; i <= result_rank; ++i) {
+    const stablehlo::DimensionInfo dim_a =
+        i <= lhs_dims.size() ? lhs_dims[lhs_dims.size() - i]
+                             : stablehlo::DimensionInfo{.size = 1};
+    const stablehlo::DimensionInfo dim_b =
+        i <= rhs_dims.size() ? rhs_dims[rhs_dims.size() - i]
+                             : stablehlo::DimensionInfo{.size = 1};
+    const size_t res_idx = result_rank - i;
+    if (!dim_a.boundOp.has_value() && dim_a.size == 1) {
+      result[res_idx] = dim_b;
+      continue;
+    }
+    if (!dim_b.boundOp.has_value() && dim_b.size == 1) {
+      result[res_idx] = dim_a;
+      continue;
+    }
+    TT_RET_CHECK(dim_a.size == dim_b.size, error::kInvalidArgument)
+        << "expected compatible shapes for broadcasting, got " << dim_a.size
+        << " and " << dim_b.size;
+    TT_RET_CHECK(dim_a.boundOp.has_value() == dim_b.boundOp.has_value(),
+                 error::kInvalidArgument)
+        << "cannot mix bounded and static dimensions in broadcast";
+    result[res_idx] = dim_a;
+  }
+  return result;
 }
 
 std::string ConsumeMlirDiagnostics(
