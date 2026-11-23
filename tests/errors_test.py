@@ -22477,6 +22477,19 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.split_with_sizes_copy(self_0d, [1], dim=0, out=out)
 
+  def test_chunk_cat_empty_tensor(self):
+    tensors = [
+        torch.zeros(4, device=et.device()),
+        torch.zeros(0, device=et.device()),
+    ]
+    out = torch.empty(0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_chunk_cat expects non-empty tensor""",
+        gpu="""_chunk_cat expects non-empty tensor""",
+    ):
+      torch._chunk_cat(tensors, 0, 2, out=out)
+
   def test_select_scatter_errors(self):
     self_0d = torch.tensor(1.0, device=et.device())
     src_0d = torch.tensor(2.0, device=et.device())

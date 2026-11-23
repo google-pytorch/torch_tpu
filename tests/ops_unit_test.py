@@ -7190,15 +7190,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
 
-  def test_chunk_cat_empty_tensor(self):
-    def fn(device):
-      out = torch.empty(0, device=device)
-      tensors = [torch.zeros(4, device=device), torch.zeros(0, device=device)]
-      torch._chunk_cat(tensors, 0, 2, out=out)
-      return out
-
-    self.assert_close_tpu_vs_cpu(fn, allow_failure=True)
-
   def test_atan2(self):
     x = torch.tensor([2], dtype=torch.int32)
     y = torch.tensor([3], dtype=torch.float32)

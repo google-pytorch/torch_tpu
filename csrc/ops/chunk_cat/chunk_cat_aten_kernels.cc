@@ -134,13 +134,21 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
       mlir::MlirOp result = mlir::stablehlo::Concatenate(builder, chunks, axis);
       return mlir::stablehlo::Reshape(result, result_dims);
     };
+    // DispatchOp rather than DispatchOpOut: no input aliases out, so there is
+    // nothing to donate, and DispatchOpOut would resize out to the result's
+    // shape. out keeps its shape [leading..., num_chunks, chunk_row_numel]
+    // (resized above), while the result is 1-D {out_numel} when out covers
+    // its storage contiguously. Both describe the same bytes, so
+    // AssignBufferToAtTensor adopts the 1-D buffer as out's storage without
+    // changing out's shape, and the reduce-scatter that reads that storage as
+    // 1-D needs no relayout. The inputs keep their dtype until the result is
+    // cast to out's dtype, so the slices and concatenation move fewer bytes.
     TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
                        DispatchOp<kDynamicSize>(
                            std::move(op_builder),
                            tensors.vec(),  // VEC_OK
                            {.out_dtype = out_dtype,
                             .out_dims = result_dims,
-                            .computation_dtype = out_dtype,
                             .op_param_cache_keys = std::move(param_keys)}));
     TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
     return out;
