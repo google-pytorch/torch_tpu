@@ -17,6 +17,7 @@
 import gc
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.utils import test_utils
@@ -2278,6 +2279,49 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(t1_clone.cpu(), torch.tensor([-11.0, -22.0])))
       self.assertTrue(torch.equal(t1.cpu(), torch.tensor([-1.0, -2.0])))
       self.assertTrue(torch.equal(t2.cpu(), torch.tensor([-3.0, -4.0])))
+
+  @parameterized.product(
+      eager_mode=[EagerMode.DEFER_NEVER, EagerMode.DEFER_AND_FUSE],
+      optimizer_cls=[
+          torch.optim.Adam,
+          torch.optim.AdamW,
+          torch.optim.SGD,
+          torch.optim.Adagrad,
+      ],
+  )
+  def test_fused_optimizer_multi_step_with_0_element_param(
+      self, eager_mode, optimizer_cls
+  ):
+    """Verifies fused optimizers over several steps with an empty parameter.
+
+    Fused optimizers donate their in-place inputs explicitly. Assigning an
+    empty result back to a tensor is a no-op, so donating an empty parameter
+    or state buffer would leave it pointing at a consumed buffer and fail on
+    the next step. FSDP ranks can hold such empty parameter shards.
+    """
+    optimizer_kwargs = {"lr": 0.01}
+    if optimizer_cls is torch.optim.SGD:
+      optimizer_kwargs["momentum"] = 0.9
+
+    def train(fused):
+      p_empty = torch.empty((0, 4), dtype=torch.float32, device=self.device)
+      p = torch.tensor(
+          [1.0, 2.0, -1.0], dtype=torch.float32, device=self.device
+      )
+      optimizer = optimizer_cls(
+          [p_empty, p], **optimizer_kwargs, fused=fused, foreach=not fused
+      )
+      for step in range(1, 4):
+        p_empty.grad = torch.empty_like(p_empty)
+        p.grad = torch.tensor(
+            [0.1, -0.2, 0.3], dtype=torch.float32, device=self.device
+        ) * float(step)
+        optimizer.step()
+      self.assertEqual(p_empty.cpu().shape, (0, 4))
+      return p.cpu()
+
+    with execution_mode.set_eager_mode(eager_mode):
+      test_utils.assert_close(train(fused=True), train(fused=False))
 
   def test_foreach_inplace_with_tupled_arguments_donates_in_defer_never(self):
     """Verifies foreach ops whose program takes its arguments as a tuple.
