@@ -37,11 +37,11 @@ torch_tpu_py_library(
     ],
 )
 
-py_binary(
-    name = "torch_test_runner",
+torch_tpu_py_library(
+    name = "torch_test_runner_lib",
     testonly = True,
     srcs = ["torch_test_runner.py"],
-    type_checking = True,
+    visibility = ["//tests:__pkg__"],
     deps = [
         ":torch_test_configs",
         "//shims/absl_py:app",
@@ -51,6 +51,14 @@ py_binary(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
+)
+
+py_binary(
+    name = "torch_test_runner",
+    testonly = True,
+    srcs = ["torch_test_runner.py"],
+    type_checking = True,
+    deps = [":torch_test_runner_lib"],
 )
 
 # The test targets below are auto-generated. Please do not edit them manually.

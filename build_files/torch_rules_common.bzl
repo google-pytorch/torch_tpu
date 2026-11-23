@@ -41,8 +41,10 @@ def torch_tpu_torch_test_impl(
         **kwargs):
     """Creates a Python test target to run an upstream PyTorch test suite with TorchTPU.
 
-    The PyTorch test directory is located via `TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR`
-    environment variable, which callers are responsible for setting up.
+    The PyTorch test directory is located from Bazel runfiles (`@pytorch_test`,
+    configured via `--repo_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR` in OSS) or
+    overridden at runtime via the `TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR`
+    environment variable (e.g. `--test_env` or Google3 test wrapper).
 
     Args:
         name: Name of the test target.

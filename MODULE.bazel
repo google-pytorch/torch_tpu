@@ -285,6 +285,12 @@ use_repo(pip, pypi_cuda = "torch_tpu_cuda_pypi")
 ) for tv in EXTRA_GLUE_TORCH_VERSIONS]
 
 # Custom repository rules
+pytorch_test_repo = use_repo_rule("//bazel:pytorch_test_repo.bzl", "pytorch_test_repo")
+
+pytorch_test_repo(
+    name = "pytorch_test",
+)
+
 torch_local_repo = use_repo_rule("//bazel:torch_local_repo.bzl", "torch_local_repo")
 
 torch_local_repo(
