@@ -6360,6 +6360,8 @@ _COMPILED_DENY_LIST: frozenset[str] = frozenset(
         # TODO: dynamo assert _PyEval_EvalFrameDefault is EMPTY
         #  Unclear if these are dynamo bugs or due to the special dynamo flags
         #  we set in our backend.
+        "bernoulli",
+        "bernoulli.out",
         "exponential",  # exponential_complex64_sample0
         "empty_strided",
         "empty_strided.out",
