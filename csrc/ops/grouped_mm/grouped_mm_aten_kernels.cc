@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -588,6 +590,29 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
   TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
                       InferComputationDtype(self_elem_type));
 
+  const bool is_scalar_scale =
+      IsScalarScaleOp(scale_a) && IsScalarScaleOp(scale_b);
+  if (!is_scalar_scale) {
+    // ApplyRowwiseGroupScales builds static shapes from the operand shapes.
+    struct NamedOperand {
+      std::string_view name;
+      mlir::MlirOp op;
+    };
+    std::vector<NamedOperand> operands = {{"self", self_op},
+                                          {"mat2", mat2_op},
+                                          {"scale_a", scale_a},
+                                          {"scale_b", scale_b}};
+    if (offs_op.has_value()) {
+      operands.push_back({"offs", *offs_op});
+    }
+    for (const NamedOperand& operand : operands) {
+      const mlir::RankedTensorType type = GetTensorTypeOrDie(operand.op);
+      TT_RET_CHECK(type.hasStaticShape(), error::kPythonNotImplementedError)
+          << "expected static shapes with rowwise scales, got bounded dynamic "
+          << operand.name << " of type " << mlir::debugString(type);
+    }
+  }
+
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
                       BuildGroupedMmShlo(self_op, mat2_op, offs_op, comp_dtype,
                                          precision, rhs_2d3d_mode));
@@ -601,8 +626,6 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
 
   const bool a_is_2d = self_type.getRank() == 2;
   const bool b_is_2d = mat2_type.getRank() == 2;
-  const bool is_scalar_scale =
-      IsScalarScaleOp(scale_a) && IsScalarScaleOp(scale_b);
 
   mlir::MlirOp scaled_result;
   if (!is_scalar_scale) {
