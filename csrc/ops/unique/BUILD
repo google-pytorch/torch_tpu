@@ -38,7 +38,6 @@ torch_tpu_cc_library(
         "//csrc/ops/index_select",
         "//csrc/ops/sort",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",

@@ -857,7 +857,6 @@ enum class OpName {
   kUniqueCountsFromSorted,
   kUniqueDim,
   kUniqueDimConsecutive,
-  kUniqueInverseFromSorted,
   kUniqueSortAndCount,
   kUniqueValuesFromSorted,
   kUnsqueeze,
@@ -2586,8 +2585,6 @@ ToString(  // NOLINT(google-readability-function-size)
       return "unique_dim";
     case OpName::kUniqueDimConsecutive:
       return "unique_dim_consecutive";
-    case OpName::kUniqueInverseFromSorted:
-      return "unique_inverse_from_sorted";
     case OpName::kUniqueSortAndCount:
       return "unique_sort_and_count";
     case OpName::kUniqueValuesFromSorted:

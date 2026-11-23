@@ -21,7 +21,6 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/index_select/index_select.h"
@@ -538,14 +537,18 @@ absl::StatusOr<BuildUniqueSortAndCountShloOutputs> BuildUniqueSortAndCountShlo(
       },
       {0})[0];
 
-  mlir::MlirOp permutation;
+  mlir::MlirOp inverse;
   if (return_inverse == ReturnInverse::kTrue) {
-    permutation = sorted_res.indices;
+    TT_ASSIGN_OR_RETURN(inverse, BuildUniqueDimInverseIndices(
+                                     builder, mask, sorted_res.indices));
+    const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+    if (input_type.getRank() != 1) {
+      inverse = mlir::stablehlo::Reshape(inverse, input_type.getShape());
+    }
   } else {
-    TT_ASSIGN_OR_RETURN(permutation, MakeZeroSizedTensor(builder, i64_type));
+    TT_ASSIGN_OR_RETURN(inverse, MakeZeroSizedTensor(builder, i64_type));
   }
-  return BuildUniqueSortAndCountShloOutputs{count, sorted_res.values,
-                                            permutation};
+  return BuildUniqueSortAndCountShloOutputs{count, sorted_res.values, inverse};
 }
 
 absl::StatusOr<mlir::MlirOp> BuildUniqueValuesFromSortedShlo(
@@ -578,19 +581,6 @@ absl::StatusOr<mlir::MlirOp> BuildUniqueCountsFromSortedShlo(
   mlir::MlirOp s_unique_indices =
       ExtractSortedUniqueIndices(builder, mask, n, output_size);
   return BuildUniqueDimCounts(builder, s_unique_indices, n, output_size);
-}
-
-absl::StatusOr<mlir::MlirOp> BuildUniqueInverseFromSortedShlo(
-    mlir::MlirOp sorted, mlir::MlirOp permutation,
-    const absl::Span<const int64_t> input_dims) {
-  auto& builder = sorted.getBuilder();
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp mask, BuildUniqueMask(builder, sorted));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp inverse,
-                      BuildUniqueDimInverseIndices(builder, mask, permutation));
-  if (input_dims.size() != 1) {
-    inverse = mlir::stablehlo::Reshape(inverse, input_dims);
-  }
-  return inverse;
 }
 
 absl::StatusOr<BuildUniqueDimPrepareOutputs> BuildUniqueDimPrepareShlo(

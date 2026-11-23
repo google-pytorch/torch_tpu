@@ -63,9 +63,9 @@ absl::StatusOr<int64_t> ExtractOutputSize(const at::Tensor& count_tensor) {
 
 // The outputs of `UniqueSortAndCount`; see `BuildUniqueSortAndCountShlo`.
 struct UniqueSortAndCountResult {
-  at::Tensor count;        // UNINITIALIZED_TENSOR_OK=set by UniqueSortAndCount
-  at::Tensor sorted;       // UNINITIALIZED_TENSOR_OK=set by UniqueSortAndCount
-  at::Tensor permutation;  // UNINITIALIZED_TENSOR_OK=set by UniqueSortAndCount
+  at::Tensor count;    // UNINITIALIZED_TENSOR_OK=set by UniqueSortAndCount
+  at::Tensor sorted;   // UNINITIALIZED_TENSOR_OK=set by UniqueSortAndCount
+  at::Tensor inverse;  // UNINITIALIZED_TENSOR_OK=set by UniqueSortAndCount
 };
 
 absl::StatusOr<UniqueSortAndCountResult> UniqueSortAndCount(
@@ -81,13 +81,13 @@ absl::StatusOr<UniqueSortAndCountResult> UniqueSortAndCount(
   const int64_t n = self.numel();
   const Dimensions count_dims = {};
   const Dimensions sorted_dims = {n};
-  const Dimensions permutation_dims = return_inverse == ReturnInverse::kTrue
-                                          ? Dimensions({n})
-                                          : Dimensions({0});
+  const Dimensions inverse_dims = return_inverse == ReturnInverse::kTrue
+                                      ? CopyIntVector(self.sizes())
+                                      : Dimensions({0});
   const std::array<absl::Span<const int64_t>, 3> dims = {
       absl::Span<const int64_t>(count_dims),
       absl::Span<const int64_t>(sorted_dims),
-      absl::Span<const int64_t>(permutation_dims)};
+      absl::Span<const int64_t>(inverse_dims)};
   const FixedSizeSpan<const absl::Span<const int64_t>, 3> out_dims_list(dims);
 
   auto shlo_builder =
@@ -96,7 +96,7 @@ absl::StatusOr<UniqueSortAndCountResult> UniqueSortAndCount(
     TT_ASSIGN_OR_RETURN(const auto outputs,
                         BuildUniqueSortAndCountShlo(input, return_inverse));
     return std::array<mlir::MlirOp, 3>{outputs.count, outputs.sorted,
-                                       outputs.permutation};
+                                       outputs.inverse};
   };
 
   TT_ASSIGN_OR_RETURN(
@@ -154,26 +154,6 @@ absl::StatusOr<at::Tensor> UniqueCountsFromSorted(const at::Tensor& sorted,
   return MakeTensor(std::move(result));
 }
 
-absl::StatusOr<at::Tensor> UniqueInverseFromSorted(
-    const at::Tensor& sorted, const at::Tensor& permutation,
-    const at::IntArrayRef input_sizes) {
-  Dimensions out_dims = CopyIntVector(input_sizes);
-  auto shlo_builder = [out_dims](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-      -> absl::StatusOr<mlir::MlirOp> {
-    auto& [sorted_op, permutation_op] = inputs;
-    return BuildUniqueInverseFromSortedShlo(sorted_op, permutation_op,
-                                            out_dims);
-  };
-  TT_ASSIGN_OR_RETURN(
-      DeviceBufferRef result,
-      DispatchOp<2>(std::move(shlo_builder), {sorted, permutation},
-                    {.op_name = OpName::kUniqueInverseFromSorted,
-                     .out_dtype = mlir::ElementType::I64,
-                     .out_dims = out_dims,
-                     .op_param_cache_keys = OpParamCacheKeys::Empty()}));
-  return MakeTensor(std::move(result));
-}
-
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> Unique2(
     const at::Tensor& self, const ReturnInverse return_inverse,
     const ReturnCounts return_counts) {
@@ -209,17 +189,13 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> Unique2(
       at::Tensor values,
       UniqueValuesFromSorted(sorted_and_count.sorted, output_size));
   TT_ASSIGN_OR_RETURN(
-      at::Tensor inverse,
-      return_inverse == ReturnInverse::kTrue
-          ? UniqueInverseFromSorted(sorted_and_count.sorted,
-                                    sorted_and_count.permutation, self.sizes())
-          : make_empty_long({0}));
-  TT_ASSIGN_OR_RETURN(
       at::Tensor counts,
       return_counts == ReturnCounts::kTrue
           ? UniqueCountsFromSorted(sorted_and_count.sorted, output_size)
           : make_empty_long({0}));
-  return std::make_tuple(values, inverse, counts);
+  // `UniqueSortAndCount` computes the inverse if requested, and otherwise
+  // returns it with shape (0,).
+  return std::make_tuple(values, sorted_and_count.inverse, counts);
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>> UniqueDimPrepare(

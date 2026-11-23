@@ -21,7 +21,6 @@
 #include <string>
 
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
@@ -51,15 +50,17 @@ struct BuildUniqueSortAndCountShloOutputs {
   mlir::MlirOp count;
   // [N]: the flattened input, sorted in ascending order.
   mlir::MlirOp sorted;
-  // I64[N]: for each sorted element, its index in the flattened input. I64[0]
-  // unless `return_inverse` is kTrue.
-  mlir::MlirOp permutation;
+  // I64 of the input's shape: for each input element, the index of its value
+  // among the unique values. I64[0] unless `return_inverse` is kTrue.
+  mlir::MlirOp inverse;
 };
 
-// The first phase of `_unique2`: sorts the flattened `input` and counts its
-// unique values. The other phases take `sorted` as input so that the input is
-// sorted only once, and so that each output can be computed by a graph whose
-// cache key does not depend on the data-dependent number of unique values.
+// The first phase of `_unique2`: sorts the flattened `input`, counts its unique
+// values and, if `return_inverse` is kTrue, computes the inverse, which does
+// not depend on the number of unique values. The other phases take `sorted` as
+// input so that the input is sorted only once, and so that each output can be
+// computed by a graph whose cache key does not depend on the data-dependent
+// number of unique values.
 absl::StatusOr<BuildUniqueSortAndCountShloOutputs> BuildUniqueSortAndCountShlo(
     mlir::MlirOp input, ReturnInverse return_inverse);
 
@@ -72,13 +73,6 @@ absl::StatusOr<mlir::MlirOp> BuildUniqueValuesFromSortedShlo(
 // `sorted` (the `sorted` output of `BuildUniqueSortAndCountShlo`).
 absl::StatusOr<mlir::MlirOp> BuildUniqueCountsFromSortedShlo(
     int64_t output_size, mlir::MlirOp sorted);
-
-// Returns I64 of shape `input_dims`: for each element of the original input,
-// the index of its value among the unique values. `sorted` and `permutation`
-// are the outputs of `BuildUniqueSortAndCountShlo`.
-absl::StatusOr<mlir::MlirOp> BuildUniqueInverseFromSortedShlo(
-    mlir::MlirOp sorted, mlir::MlirOp permutation,
-    absl::Span<const int64_t> input_dims);
 
 struct BuildUniqueDimPrepareOutputs {
   mlir::MlirOp count;
