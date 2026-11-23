@@ -376,6 +376,16 @@ class _DeviceModuleMeta(abc.ABCMeta):
     """Sets the eager execution mode for TPU."""
     _execution_mode_module.eager_mode = value
 
+  @property
+  def _initialized(cls) -> bool:
+    """Whether the TPU runtime has been initialized.
+
+    Matches `torch.cuda._initialized` / `torch.xpu._initialized`, which
+    `torch.utils.checkpoint` checks before saving and restoring device RNG
+    state.
+    """
+    return _device_ops_backend._is_initialized()  # pylint: disable=protected-access
+
   def __getattr__(cls, name: str) -> Any:
     stages_map = getattr(cls, "__tt_api_stages__", {})
     # Pass `cls` as `tt_api_globals` so `_resolve_module_attribute` only binds
@@ -729,6 +739,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       A `torch.Tensor` representing the RNG state of the default generator.
     """
     _rng_validate_device_index(device, torch.accelerator.current_device_index())
+    if (
+        execution_mode.eager_mode
+        == execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+        and torch._guards.detect_fake_mode() is not None
+    ):
+      return torch.empty((16,), dtype=torch.uint8, device="cpu")
     return _device_ops_backend.get_rng_state(-1)
 
   @classmethod

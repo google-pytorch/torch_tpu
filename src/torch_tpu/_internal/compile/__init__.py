@@ -20,6 +20,7 @@ from torch._functorch._aot_autograd import utils as aot_utils
 from torch_tpu._internal.compile import flex_attention_redirect
 from torch_tpu._internal.compile import grouped_mm_meta
 from torch_tpu._internal.compile import meta_registration_overrides
+from torch_tpu._internal.compile import rng_prim_registrations
 from torch_tpu._internal.compile._backend import async_compile
 from torch_tpu._internal.compile._backend import AsyncCompilationSubmitted
 from torch_tpu._internal.compile._backend import clear_cache
@@ -78,6 +79,7 @@ _register_scan_operator()
 flex_attention_redirect.patch()
 grouped_mm_meta.register()
 meta_registration_overrides.register()
+rng_prim_registrations.register()
 
 
 def _register_nested_compile_region_operator() -> None:

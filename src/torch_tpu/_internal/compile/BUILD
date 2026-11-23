@@ -100,6 +100,7 @@ torch_tpu_py_library(
         ":grouped_mm_meta",
         ":meta_registration_overrides",
         ":nested_compile_region",
+        ":rng_prim_registrations",
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
@@ -149,6 +150,15 @@ torch_tpu_py_library(
     name = "meta_registration_overrides",
     srcs = ["meta_registration_overrides.py"],
     deps = ["//shims/torch:pytorch"],
+)
+
+torch_tpu_py_library(
+    name = "rng_prim_registrations",
+    srcs = ["rng_prim_registrations.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
+    ],
 )
 
 torch_tpu_py_library(

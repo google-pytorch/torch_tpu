@@ -383,6 +383,72 @@ _NON_CONSTANT_OP_TAGS = frozenset({
 })
 
 
+_EAGER_RNG_STATE_HOPS = frozenset((
+    torch.ops.higher_order.run_and_save_rng_state,
+    torch.ops.higher_order.run_with_rng_state,
+))
+
+
+def _is_eager_rng_hop_or_getitem(node: torch.fx.Node) -> bool:
+  """Returns True for functional RNG state HOPs or getitems unpacking them."""
+  curr: Any = node
+  while (
+      isinstance(curr, torch.fx.Node)
+      and curr.op == "call_function"
+      and (
+          curr.target == operator.getitem
+          or getattr(curr.target, "__name__", "") == "getitem"
+      )
+      and curr.args
+  ):
+    curr = curr.args[0]
+  return (
+      isinstance(curr, torch.fx.Node)
+      and curr.op == "call_function"
+      and curr.target in _EAGER_RNG_STATE_HOPS
+  )
+
+
+def _eager_rng_hop_device(node: torch.fx.Node) -> _Device:
+  """Returns the RNG device targeted by an eager functional RNG HOP node."""
+  device_kwarg = node.kwargs.get("device")
+  if device_kwarg is not None:
+    dev = (
+        torch.device(device_kwarg)
+        if isinstance(device_kwarg, str)
+        else device_kwarg
+    )
+    if isinstance(dev, torch.device):
+      return _Device.CPU if dev.type == _Device.CPU else _Device.TPU
+
+  val = node.meta.get("val")
+  if node.target is torch.ops.higher_order.run_and_save_rng_state:
+    op_val = val[1] if isinstance(val, tuple) and len(val) >= 2 else None
+    op_args = node.args[1:]
+  else:
+    op_val = val
+    op_args = node.args[2:]
+
+  out_devices = {
+      leaf.device.type
+      for leaf in pytree.tree_leaves(op_val)
+      if isinstance(leaf, torch.Tensor)
+  }
+  if out_devices:
+    return _Device.CPU if out_devices == {_Device.CPU} else _Device.TPU
+
+  arg_devices: set[str] = set()
+  for leaf in pytree.tree_leaves(op_args):
+    if isinstance(leaf, torch.device):
+      arg_devices.add(leaf.type)
+    elif isinstance(leaf, torch.fx.Node):
+      arg_devices.update(_tensor_device_types(leaf))
+  if arg_devices:
+    return _Device.CPU if arg_devices == {_Device.CPU} else _Device.TPU
+
+  return _Device.TPU
+
+
 def _tensor_device_types(node: torch.fx.Node) -> Set[str]:
   """Returns the device types of the tensors in the value of `node`."""
   return {
@@ -423,6 +489,12 @@ def _assign_devices(
   devices: dict[torch.fx.Node, _Device | None] = {}
   for node in graph.nodes:
     if node.op in ("placeholder", "output"):
+      continue
+    if _is_eager_rng_hop_or_getitem(node):
+      # `run_and_save_rng_state` / `run_with_rng_state` save/restore host CPU
+      # RNG state bytes around a TPU RNG op, so run them (and tuple-unpacking
+      # getitems) eagerly between compiled TPU submodules.
+      devices[node] = _Device.CPU
       continue
     outputs = _tensor_device_types(node)
     op = getattr(node.target, "overloadpacket", node.target)
@@ -1015,10 +1087,17 @@ class SplitCompiler(compiler.Compiler):
 
       device = devices[node]
       inputs = list(node.all_input_nodes)
-      if torch.Tag.nondeterministic_seeded in getattr(node.target, "tags", ()):
+      rng_device = None
+      if node.op == "call_function" and node.target in _EAGER_RNG_STATE_HOPS:
+        rng_device = _eager_rng_hop_device(node)
+      elif torch.Tag.nondeterministic_seeded in getattr(
+          node.target, "tags", ()
+      ):
+        rng_device = device
+      if rng_device is not None:
         # Random ops on each device keep their order to draw the same values.
-        inputs.append(last_random_ops.get(device))
-        last_random_ops[device] = node
+        inputs.append(last_random_ops.get(rng_device))
+        last_random_ops[rng_device] = node
       stage = _ScheduledStage.after(stages[n] for n in inputs if n in stages)
       # `device` is None for unconstrained constants / SymInt ops (`deferred`).
       if device is not None:
