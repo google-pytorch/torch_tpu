@@ -322,6 +322,7 @@ Google Cloud environment.
 | :--- | :--- |
 | `TORCH_TPU_TOPOLOGY` | Physical topology of the TPU slice (e.g., `2x2x1`, `2x2x4`). |
 | `TORCH_TPU_SLICEBUILDER_ADDRESSES` | Comma-separated `host:port` worker addresses for the TPU slice builder service. |
+| `TORCH_TPU_SLICE_RANK` | Zero-based index of this process in `TORCH_TPU_SLICEBUILDER_ADDRESSES` when initializing the full PJRT slice, allowing the default `torch.distributed` `WORLD` to span a subslice while still permitting full-slice or custom `ProcessGroupTpu`s across the slice (defaults to `RANK % len(TORCH_TPU_SLICEBUILDER_ADDRESSES)`). |
 | `TORCH_TPU_DEVICES_PER_HOST` | Number of TPU chips per host when deriving slice builder addresses. |
 | `TORCH_TPU_BASE_PORT` | Starting port number when deriving slice builder addresses. |
 | `TORCH_TPU_SPMD_HANDSHAKE_STAGE` | Stage at which ranks verify that collective graphs match across ranks. |

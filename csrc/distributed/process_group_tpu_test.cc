@@ -941,5 +941,78 @@ TEST(ProcessGroupTpuTest,
   EXPECT_FALSE(store->check({"missing_key"}));
 }
 
+TEST(ProcessGroupTpuTest,
+     GatherSubgroupsViaNodeLocalStoreIsolatesScopedJobsOnSharedRootStore) {
+  constexpr int64_t kJobWorldSize = 4;
+  constexpr int64_t kJob0PgSize = 2;
+  constexpr int64_t kJob1PgSize = 4;
+
+  auto root_store = c10::make_intrusive<c10d::HashStore>();
+  root_store->setTimeout(kTestStoreTimeout);
+
+  const std::vector<int64_t>  // INT_VEC_OK
+      job0_rank_to_device_id = {0, 1, 2, 3};
+  const std::vector<int64_t>  // INT_VEC_OK
+      job1_rank_to_device_id = {4, 5, 6, 7};
+  const std::vector<int64_t>  // INT_VEC_OK
+      rank_to_topo_order = {0, 1, 2, 3};
+
+  std::vector<DeviceGroup> job0_members(kJobWorldSize);
+  std::vector<DeviceGroupList> job0_subgroups(kJobWorldSize);
+  std::vector<DeviceGroup> job1_members(kJobWorldSize);
+  std::vector<DeviceGroupList> job1_subgroups(kJobWorldSize);
+
+  std::vector<std::thread> threads;
+  threads.reserve(2 * kJobWorldSize);
+
+  for (int64_t r = 0; r < kJobWorldSize; ++r) {
+    const std::string job0_sub_prefix = (r < 2) ? "sub_a" : "sub_b";
+    auto job0_root = c10::make_intrusive<c10d::PrefixStore>("job0", root_store);
+    auto job0_pg_store =
+        c10::make_intrusive<c10d::PrefixStore>(job0_sub_prefix, job0_root);
+    const int64_t job0_pg_rank = r % kJob0PgSize;
+
+    threads.emplace_back([job0_pg_store, &job0_rank_to_device_id,
+                          &rank_to_topo_order, &job0_members, &job0_subgroups,
+                          r, job0_pg_rank]() {
+      const absl::Status status = GatherSubgroupsViaNodeLocalStore(
+          job0_pg_store.get(), /*local_store=*/nullptr, /*local_rank=*/0,
+          /*local_world_size=*/1, job0_pg_rank, kJob0PgSize, r,
+          job0_rank_to_device_id, rank_to_topo_order, /*gather_id=*/0,
+          job0_members[r], job0_subgroups[r], "job0:");
+      EXPECT_TRUE(status.ok()) << status;
+    });
+
+    auto job1_root = c10::make_intrusive<c10d::PrefixStore>("job1", root_store);
+    auto job1_pg_store =
+        c10::make_intrusive<c10d::PrefixStore>("world", job1_root);
+    threads.emplace_back([job1_pg_store, &job1_rank_to_device_id,
+                          &rank_to_topo_order, &job1_members, &job1_subgroups,
+                          r]() {
+      const absl::Status status = GatherSubgroupsViaNodeLocalStore(
+          job1_pg_store.get(), /*local_store=*/nullptr, /*local_rank=*/0,
+          /*local_world_size=*/1, r, kJob1PgSize, r, job1_rank_to_device_id,
+          rank_to_topo_order, /*gather_id=*/0, job1_members[r],
+          job1_subgroups[r], "job4:");
+      EXPECT_TRUE(status.ok()) << status;
+    });
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  const std::vector<DeviceGroup> expected_job0_groups = {{0, 1}, {2, 3}};
+  const std::vector<DeviceGroup> expected_job1_groups = {{0, 1, 2, 3}};
+  for (int64_t r = 0; r < kJobWorldSize; ++r) {
+    const DeviceGroup expected_members =
+        (r < 2) ? DeviceGroup{0, 1} : DeviceGroup{2, 3};
+    EXPECT_EQ(job0_members[r], expected_members);
+    EXPECT_EQ(job0_subgroups[r].groups(), expected_job0_groups);
+    EXPECT_EQ(job1_members[r], (DeviceGroup{0, 1, 2, 3}));
+    EXPECT_EQ(job1_subgroups[r].groups(), expected_job1_groups);
+  }
+}
+
 }  // namespace
 }  // namespace torch_tpu

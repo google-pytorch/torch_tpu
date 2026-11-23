@@ -16,6 +16,7 @@
 
 #include "csrc/distributed/slicebuilder/discovery.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,26 +31,40 @@
 
 namespace torch_tpu {
 
-static absl::Status ValidateRequiredDistributedEnvVars() {
+static absl::Status ValidateRequiredDistributedEnvVars(
+    const std::optional<int>& explicit_slice_rank) {
   std::vector<std::string> missing_torchrun_vars;
-  if (!GetIntegerEnvOnce<kRankEnvVar>().has_value()) {
-    missing_torchrun_vars.push_back(kRankEnvVar);
-  }
-  if (!GetIntegerEnvOnce<kLocalRankEnvVar>().has_value()) {
-    missing_torchrun_vars.push_back(kLocalRankEnvVar);
-  }
-  if (!GetIntegerEnvOnce<kWorldSizeEnvVar>().has_value()) {
-    missing_torchrun_vars.push_back(kWorldSizeEnvVar);
-  }
-  if (!GetEnvOnce<kMasterAddrEnvVar>().has_value()) {
-    missing_torchrun_vars.push_back(kMasterAddrEnvVar);
-  }
-  if (!GetIntegerEnvOnce<kMasterPortEnvVar>().has_value()) {
-    missing_torchrun_vars.push_back(kMasterPortEnvVar);
+  const std::optional<std::string>& sb_addrs =
+      GetEnvOnce<kTorchTpuSlicebuilderAddressesEnvVar>();
+  if (explicit_slice_rank.has_value()) {
+    const std::optional<int> world_size = GetIntegerEnvOnce<kWorldSizeEnvVar>();
+    if (world_size.has_value() && sb_addrs.has_value() && !sb_addrs->empty()) {
+      const std::vector<std::string> addresses = absl::StrSplit(*sb_addrs, ',');
+      if (*world_size > static_cast<int>(addresses.size()) &&
+          !GetIntegerEnvOnce<kLocalRankEnvVar>().has_value()) {
+        missing_torchrun_vars.push_back(kLocalRankEnvVar);
+      }
+    }
+  } else {
+    if (!GetIntegerEnvOnce<kRankEnvVar>().has_value()) {
+      missing_torchrun_vars.push_back(kRankEnvVar);
+    }
+    if (!GetIntegerEnvOnce<kLocalRankEnvVar>().has_value()) {
+      missing_torchrun_vars.push_back(kLocalRankEnvVar);
+    }
+    if (!GetIntegerEnvOnce<kWorldSizeEnvVar>().has_value()) {
+      missing_torchrun_vars.push_back(kWorldSizeEnvVar);
+    }
+    if (!GetEnvOnce<kMasterAddrEnvVar>().has_value()) {
+      missing_torchrun_vars.push_back(kMasterAddrEnvVar);
+    }
+    if (!GetIntegerEnvOnce<kMasterPortEnvVar>().has_value()) {
+      missing_torchrun_vars.push_back(kMasterPortEnvVar);
+    }
   }
 
   std::vector<std::string> missing_tpu_vars;
-  if (!GetEnvOnce<kTorchTpuSlicebuilderAddressesEnvVar>().has_value()) {
+  if (!sb_addrs.has_value()) {
     missing_tpu_vars.push_back(kTorchTpuSlicebuilderAddressesEnvVar);
   }
   if (!GetEnvOnce<kTorchTpuTopologyEnvVar>().has_value()) {
@@ -86,20 +101,9 @@ static absl::Status ValidateRequiredDistributedEnvVars() {
 
 absl::StatusOr<DistributedWorkerConfiguration>
 GetDistributedWorkerConfiguration() {
-  TT_RETURN_IF_ERROR(ValidateRequiredDistributedEnvVars());
-
-  TT_ASSIGN_OR_RETURN(const int rank,
-                      (GetRequiredIntegerEnvOnce<kRankEnvVar>()));
-  TT_ASSIGN_OR_RETURN(const int local_rank,
-                      (GetRequiredIntegerEnvOnce<kLocalRankEnvVar>()));
-
-  // Get the master address from the environment variables.
-  std::string master_addr;
-  TT_ASSIGN_OR_RETURN(master_addr, GetRequiredEnvOnce<kMasterAddrEnvVar>());
-
-  // Get the world size from the environment variables.
-  TT_ASSIGN_OR_RETURN(const int world_size,
-                      (GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>()));
+  const std::optional<int> explicit_slice_rank =
+      GetIntegerEnvOnce<kTorchTpuSliceRankEnvVar>();
+  TT_RETURN_IF_ERROR(ValidateRequiredDistributedEnvVars(explicit_slice_rank));
 
   // Get the slice builder addresses from the environment variables.
   TT_ASSIGN_OR_RETURN(
@@ -110,12 +114,48 @@ GetDistributedWorkerConfiguration() {
     return TT_ERROR(error::kFailedPrecondition)
            << kTorchTpuSlicebuilderAddressesEnvVar << " is empty.";
   }
-  if (rank < 0) {
-    return TT_ERROR(error::kFailedPrecondition)
-           << "RANK " << rank << " is out of bounds (negative)";
-  }
   std::vector<std::string> addresses = absl::StrSplit(sb_addrs, ',');
-  int slice_rank = rank % static_cast<int>(addresses.size());
+
+  int rank = 0;
+  int local_rank = 0;
+  int world_size = 0;
+  int slice_rank = 0;
+  if (explicit_slice_rank.has_value()) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=covered in C++ discovery_test.
+        *explicit_slice_rank >= 0 &&
+            *explicit_slice_rank < static_cast<int>(addresses.size()),
+        error::kFailedPrecondition)
+        << "expected " << kTorchTpuSliceRankEnvVar << " to be in [0, "
+        << addresses.size() << "), got " << *explicit_slice_rank;
+    rank = GetIntegerEnvOnce<kRankEnvVar>().value_or(*explicit_slice_rank);
+    if (rank < 0) {
+      return TT_ERROR(error::kFailedPrecondition)
+             << "RANK " << rank << " is out of bounds (negative)";
+    }
+    local_rank =
+        GetIntegerEnvOnce<kLocalRankEnvVar>().value_or(*explicit_slice_rank);
+    world_size = GetIntegerEnvOnce<kWorldSizeEnvVar>().value_or(
+        static_cast<int>(addresses.size()));
+    slice_rank = *explicit_slice_rank;
+  } else {
+    TT_ASSIGN_OR_RETURN(rank, (GetRequiredIntegerEnvOnce<kRankEnvVar>()));
+    TT_ASSIGN_OR_RETURN(local_rank,
+                        (GetRequiredIntegerEnvOnce<kLocalRankEnvVar>()));
+
+    // Get the master address from the environment variables.
+    std::string master_addr;
+    TT_ASSIGN_OR_RETURN(master_addr, GetRequiredEnvOnce<kMasterAddrEnvVar>());
+
+    // Get the world size from the environment variables.
+    TT_ASSIGN_OR_RETURN(world_size,
+                        (GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>()));
+
+    if (rank < 0) {
+      return TT_ERROR(error::kFailedPrecondition)
+             << "RANK " << rank << " is out of bounds (negative)";
+    }
+    slice_rank = rank % static_cast<int>(addresses.size());
+  }
 
   // Get the local port.
   std::string my_addr = addresses[slice_rank];
@@ -139,6 +179,7 @@ GetDistributedWorkerConfiguration() {
       .sb_addrs = sb_addrs,
       .sb_port = sb_port,
       .topology = topology,
+      .slice_rank = explicit_slice_rank,
   };
 
   ABSL_LOG(INFO) << "DistributedWorkerConfiguration: "

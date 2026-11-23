@@ -17,7 +17,9 @@
 #include "csrc/common/environment.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -287,10 +289,26 @@ absl::Status InitializeDistributedEnvironment(
            << "expected RANK to be >= 0, got " << config.rank;
   }
   std::vector<std::string> addresses = absl::StrSplit(config.sb_addrs, ',');
-  const int slice_rank = config.rank % static_cast<int>(addresses.size());
+  int slice_rank = config.rank % static_cast<int>(addresses.size());
+  if (config.slice_rank.has_value()) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=covered in C++ environment_test.
+        *config.slice_rank >= 0 &&
+            *config.slice_rank < static_cast<int>(addresses.size()),
+        error::kInvalidArgument)
+        << "expected slice_rank to be in [0, " << addresses.size() << "), got "
+        << *config.slice_rank;
+    slice_rank = *config.slice_rank;
+  }
   SafeSetEnv<kCloudTpuTaskIdEnvVar>(absl::StrCat(slice_rank));
 
-  SelectVisibleDevice(absl::StrCat(config.local_rank));
+  if (config.slice_rank.has_value()) {
+    const int64_t host_device_count = GetTpuDeviceCount();
+    const int64_t default_device =
+        host_device_count > 0 ? (slice_rank % host_device_count) : slice_rank;
+    SelectVisibleDevice(absl::StrCat(default_device));
+  } else {
+    SelectVisibleDevice(absl::StrCat(config.local_rank));
+  }
 
   const std::vector<std::string> topology_dims =
       absl::StrSplit(config.topology, ',');

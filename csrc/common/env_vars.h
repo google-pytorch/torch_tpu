@@ -246,6 +246,12 @@ inline constexpr char kTorchTpuLaunchBlockingEnvVar[] =
 // The output directory for TPU profiler XPlane files.
 inline constexpr char kTorchTpuProfilerOutputDirEnvVar[] =
     "TORCH_TPU_PROFILER_OUTPUT_DIR";
+// Zero-based index of this process in TORCH_TPU_SLICEBUILDER_ADDRESSES when
+// initializing the full PJRT slice, allowing the default torch.distributed
+// WORLD to span a subslice while still permitting full-slice or custom
+// ProcessGroupTpus across the slice. When unset, defaults to
+// RANK % len(TORCH_TPU_SLICEBUILDER_ADDRESSES).
+inline constexpr char kTorchTpuSliceRankEnvVar[] = "TORCH_TPU_SLICE_RANK";
 inline constexpr char kTorchTpuSlicebuilderAddressesEnvVar[] =
     "TORCH_TPU_SLICEBUILDER_ADDRESSES";  // Set by Torch TPU specific launchers.
 // Specifies the stage at which ranks perform a handshake to check that they
@@ -440,6 +446,7 @@ inline constexpr auto kEnvVarInfo = MakeConstexprMap<std::string_view,
      {SymbolStage::Experimental(), EnvVarType::kBoolean}},
     {kTorchTpuProfilerOutputDirEnvVar,
      {SymbolStage::Experimental(), EnvVarType::kString}},
+    {kTorchTpuSliceRankEnvVar, {SymbolStage::Experimental(), EnvVarType::kInt}},
     {kTorchTpuSlicebuilderAddressesEnvVar,
      {SymbolStage::Experimental(), EnvVarType::kString}},
     {kTorchTpuSpmdHandshakeStageEnvVar,

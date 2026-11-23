@@ -141,7 +141,8 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
     int64_t world_rank, absl::Span<const int64_t> global_rank_to_device_id,
     absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
     DeviceGroup& out_member_world_ranks,
-    DeviceGroupList& out_subgroup_member_world_ranks);
+    DeviceGroupList& out_subgroup_member_world_ranks,
+    std::string_view key_scope = "");
 
 // Asynchronous queue for two-sided P2P send operations. Decouples the caller
 // thread from blocking Store calls by executing blocking Store::multiGet on
@@ -204,6 +205,13 @@ class P2pSendQueue {
 
 class ProcessGroupTpu : public c10d::Backend {
  public:
+  enum class GroupKind {
+    kAuto,
+    kDefaultWorld,
+    kWorldSubgroup,
+    kIndependent,
+  };
+
   // The standard pattern for PyTorch distributed backend initialization is
   // to use a distributed key-value store to exchange various information
   // required to set up a particular communication backend.
@@ -214,7 +222,7 @@ class ProcessGroupTpu : public c10d::Backend {
   //
   // Note that PyTorch rank is not necessarily the same as TPU global device id.
   ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store, int rank,
-                  int group_size);
+                  int group_size, GroupKind kind = GroupKind::kAuto);
 
   // This class is neither copyable nor movable.
   ProcessGroupTpu(const ProcessGroupTpu&) = delete;
@@ -232,9 +240,7 @@ class ProcessGroupTpu : public c10d::Backend {
     return member_device_ids_;
   }
 
-  const DeviceAssignment& device_assignment() const {
-    return device_assignment_;
-  }
+  const DeviceAssignment& device_assignment() const;
 
   // Returns the replica groups emitted as StableHLO replica_groups: positions
   // into device_assignment_, a single group {0, ..., K-1}. These are NOT world
@@ -483,7 +489,8 @@ class ProcessGroupTpu : public c10d::Backend {
   // unique, non-overlapping subgroups (as world ranks) that partition the
   // world. Returns an error if the subgroups overlap or do not cover the world.
   absl::StatusOr<DeviceGroupList> GatherAllSubgroups(
-      const DeviceGroup& member_world_ranks, int64_t world_size);
+      const DeviceGroup& member_world_ranks, int64_t world_size,
+      std::string_view key_scope = "");
 
   // Exchanges device attributes across all world ranks and populates the
   // process-wide world topology. Must be called by a world-sized group.

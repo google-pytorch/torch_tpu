@@ -310,6 +310,63 @@ TEST(EnvironmentDeathTest,
       ExitedWithCode(0), "");
 }
 
+TEST(EnvironmentDeathTest,
+     InitializeDistributedEnvironmentUsesExplicitSliceRank) {
+  EXPECT_EXIT(
+      {
+        SafeUnsetEnv<kCloudTpuTaskIdEnvVar>();
+        SafeUnsetEnv<kTpuVisibleDevicesEnvVar>();
+        SafeUnsetEnv<kTpuVisibleChipsEnvVar>();
+
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
+        config.rank = 0;
+        config.local_rank = 0;
+        config.sb_addrs = "host0:1234,host1:1234";
+        config.slice_rank = 1;
+
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kCloudTpuTaskIdEnvVar), "1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "1");
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+  EXPECT_EXIT(
+      {
+        SafeUnsetEnv<kCloudTpuTaskIdEnvVar>();
+        SafeSetEnv<kTpuVisibleDevicesEnvVar>("0");
+        SafeUnsetEnv<kTpuVisibleChipsEnvVar>();
+
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
+        config.rank = 0;
+        config.local_rank = 0;
+        config.sb_addrs = "host0:1234,host1:1234";
+        config.slice_rank = 1;
+
+        ABSL_CHECK_OK(InitializeDistributedEnvironment(config));
+        ABSL_CHECK_STREQ(std::getenv(kCloudTpuTaskIdEnvVar), "1");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
+        ABSL_CHECK_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(EnvironmentDeathTest,
+     InitializeDistributedEnvironmentRejectsOutOfRangeSliceRank) {
+  EXPECT_EXIT(
+      {
+        DistributedWorkerConfiguration config = GetDefaultDistWorkerConfig();
+        config.sb_addrs = "host0:1234,host1:1234";
+        config.slice_rank = 2;
+
+        const absl::Status status = InitializeDistributedEnvironment(config);
+        ABSL_CHECK(absl::IsInvalidArgument(status)) << status;
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
 // SliceBuilder addresses of one slice made of two hosts with four processes
 // each.
 constexpr char kTwoHostSliceAddresses[] =
