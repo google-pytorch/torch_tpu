@@ -10373,6 +10373,12 @@ Note: this function is intended to be used with the output produced by torch.lin
           tpu_dtype="int64",
           gpu_dtype="Long",
       ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_dtype="Float8_e4m3fn",
+      ),
   )
   def test_native_dropout_backward_unsupported_dtypes(
       self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
@@ -10385,6 +10391,69 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu=f""""masked_scale" not implemented for '{gpu_dtype}'""",
     ):
       torch.ops.aten.native_dropout_backward(grad_output, mask, 2.0)
+
+  @parameterized.named_parameters(
+      ("bool", torch.bool, "bool", "Bool"),
+      ("uint8", torch.uint8, "uint8", "Byte"),
+      ("int8", torch.int8, "int8", "Char"),
+      ("int16", torch.int16, "int16", "Short"),
+      ("int32", torch.int32, "int32", "Int"),
+      ("int64", torch.int64, "int64", "Long"),
+      ("float8_e4m3fn", torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+  )
+  def test_masked_scale_unsupported_dtypes(
+      self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
+  ):
+    self_t = torch.empty((2, 3), device=et.device(), dtype=dtype)
+    mask = torch.ones((2, 3), device=et.device(), dtype=torch.uint8)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""masked_scale(): not implemented for {tpu_dtype}""",
+        gpu=f""""masked_scale" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten._masked_scale(self_t, mask, 2.0)
+
+  @parameterized.named_parameters(
+      ("bool", torch.bool, "bool"),
+      ("int32", torch.int32, "int32"),
+      ("float32", torch.float32, "float32"),
+  )
+  def test_masked_scale_invalid_mask_dtype(
+      self, mask_dtype: torch.dtype, expected_dtype: str
+  ):
+    self_t = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    mask = torch.ones((2, 3), device=et.device(), dtype=mask_dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""masked_scale(): expected mask dtype to be uint8, got {expected_dtype}""",
+        gpu="""mask should be torch.uint8 dtype""",
+    ):
+      torch.ops.aten._masked_scale(self_t, mask, 2.0)
+
+  @parameterized.named_parameters(
+      ("masked_scale", True),
+      ("dropout_bwd", False),
+  )
+  def test_masked_scale_and_dropout_backward_incompatible_mask_shape(
+      self, is_masked_scale: bool
+  ):
+    op, op_name, mask_dtype = (
+        (torch.ops.aten._masked_scale, "masked_scale", torch.uint8)
+        if is_masked_scale
+        else (
+            torch.ops.aten.native_dropout_backward,
+            "native_dropout_backward",
+            torch.bool,
+        )
+    )
+    grad_or_self = torch.ones((4, 8), device=et.device(), dtype=torch.float32)
+    mask = torch.ones((3, 8), device=et.device(), dtype=mask_dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 0""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 0""",
+    ):
+      op(grad_or_self, mask, 2.0)
 
   def test_weight_norm_interface_dim(self):
     if et.is_on_gpu():
