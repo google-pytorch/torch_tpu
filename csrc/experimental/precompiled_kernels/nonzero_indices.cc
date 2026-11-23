@@ -19,11 +19,13 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <numeric>
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -32,11 +34,13 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/experimental/precompiled_kernels/kernel_utils.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
+#include "csrc/internal/mosaic/kiln_utils.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/layout.h"
@@ -50,16 +54,16 @@ namespace torch_tpu {
 namespace {
 
 // Identifies a precompiled nonzero indices kernel. Kernels of different input
-// ranks are told apart by their shapeless keys, so they may share an id. The
-// value is used as the `id_key` of the kernel's `CompilationCacheKey`, which is
-// persisted in the names of the tier-2 cache entries, so values must be
-// explicit, non-negative, and must never be reused or renumbered. -1 is
-// reserved for keys that don't identify a dynamic kernel.
+// ranks or dtypes are told apart by their extentless keys, so they may share
+// an id. The value is used as the `id_key` of the kernel's
+// `CompilationCacheKey`, which is persisted in the names of the tier-2 cache
+// entries, so values must be explicit, non-negative, and must never be reused
+// or renumbered. -1 is reserved for keys that don't identify a dynamic kernel.
 enum class NonzeroKernelId : int {
   // The nonzero indices kernel for 2D inputs.
   kNonzeroKGreaterThan2 = 1,
-  // The nonzero indices kernels named by the minor dimension of their input
-  // tile: 1D inputs, and 3D to 8D inputs with kNonzeroInputMinorTile128.
+  // The nonzero indices kernels named by the minor dimension of their input's
+  // first tile: 1D inputs, and 3D to 8D inputs with kNonzeroInputMinorTile128.
   kNonzeroInputMinorTile1024 = 2,
   kNonzeroInputMinorTile512 = 3,
   kNonzeroInputMinorTile256 = 4,
@@ -100,7 +104,10 @@ constexpr int64_t TileRows(int64_t rank) {
 // A rank-one F32 input is handled as the single row of a rank-two input, and
 // only its column coordinates are written, into an S64[K,1] allocation. An
 // input of rank 3 to 8 is handled as its [M,N] slices in row-major order, in
-// one loop whose index is split into the leading coordinates.
+// one loop whose index is split into the leading coordinates. A U8 input is
+// handled like an F32 one, but rows of a U8 block are packed four to a 32-bit
+// word, so RowSegment reads them through an I32 view of the block and
+// NonzeroFlags checks the byte of the row in each word.
 //
 // This is a stream compaction: each nonzero's rank is computed directly and the
 // element is routed to it, at a fixed number of vector operations per input
@@ -164,15 +171,16 @@ constexpr int64_t TileRows(int64_t rank) {
 // input is rank one).
 struct Window {
   Scalar base;   // Logical column origin
-  Scalar n_pad;  // Width padded to 128-lane tiles
+  Scalar n_pad;  // Width padded to whole input tiles
   Scalar tiles;  // 1024-column compaction steps
 };
 
-// Pad physical transfer width; NonzeroFlags masks the logical tail.
-Window MakeWindow(Scalar base, Scalar width) {
+// Pad physical transfer width to a multiple of `granule`; NonzeroFlags masks
+// the logical tail.
+Window MakeWindow(Scalar base, Scalar width, int64_t granule) {
   // TODO(b/562066667): Drop MultipleOf once the OSS jaxlib proves `& -kLanes`.
   const Scalar n_pad =
-      kiln::MultipleOf((width + (kLanes - 1)) & -kLanes, kLanes);
+      kiln::MultipleOf((width + (granule - 1)) & -granule, granule);
   return {base, n_pad, (n_pad + (kTile - 1)) >> kTileShift};
 }
 
@@ -271,7 +279,7 @@ class NonzeroKernel {
       kiln::If(
           n_ > kWindow, [this] { ProcessWideRows(); },
           [this] {
-            const Window w = MakeWindow(kiln::I32(0), n_);
+            const Window w = MakeWindow(kiln::I32(0), n_, kLanes);
             const Scalar row_blocks = (m_ + (kSublanes - 1)) >> kSublaneShift;
             kiln::EmitPipeline(
                 0, row_blocks, {InputBlocks([this, w](Scalar rb) {
@@ -308,7 +316,11 @@ class NonzeroKernel {
   // Window `window` of a row wider than kWindow.
   Window WideWindow(Scalar window) {
     const Scalar base = window * kWindow;
-    return MakeWindow(base, Min(n_ - base, kWindow));
+    // DMAs of a rank-one U8 input move whole T(512)(128)(4,1) tiles, four
+    // 128-element rows packed into 128 words.
+    const int64_t granule =
+        x_.rank() == 1 && x_.dtype() == kiln::u8 ? 4 * kLanes : kLanes;
+    return MakeWindow(base, Min(n_ - base, kWindow), granule);
   }
 
   // Input stream whose step `s` holds `region(s)` of the input, prefetched
@@ -348,20 +360,44 @@ class NonzeroKernel {
   Stream CompactTile(const Window& w, kiln::VmemRef block, Scalar tile_idx,
                      Scalar row_in_block, Scalar row) {
     const Scalar offset = tile_idx * kTile;
-    const kiln::VmemRef segment =
-        x_.rank() == 1
-            ? block(kiln::Slice(offset, kTile))
-            : block(kiln::Slice(row_in_block, 1), kiln::Slice(offset, kTile));
-    const Tile values = kiln::Load(segment).Reshape({kSublanes, kLanes});
+    const bool is_u8 = x_.dtype() == kiln::u8;
+    const Tile loaded =
+        kiln::Load(RowSegment(block, row_in_block, kiln::Slice(offset, kTile)));
+    // A rank-one U8 segment is loaded whole, so it's widened here.
+    const Tile values = (is_u8 && x_.rank() == 1 ? loaded.ToI32() : loaded)
+                            .Reshape({kSublanes, kLanes});
+    // Above rank one, a U8 row is byte `row_in_block % 4` of its words.
+    const Scalar shift =
+        is_u8 && x_.rank() != 1 ? (row_in_block & 3) << 3 : kiln::I32(0);
     const Scalar col0 = w.base + offset;
-    const Tile flags = NonzeroFlags(values, row, col0);
+    const Tile flags = NonzeroFlags(values.Bitcast(kiln::i32), shift,
+                                    is_u8 ? 8 : 31, row, col0);
     const auto [distance, total] = Prefix(1 - flags, flags);
     return {CompactPositions(flags, distance), total, row, col0};
   }
 
-  // Mask in-bounds nonzeros; bitcast avoids flushing subnormals to zero.
-  Tile NonzeroFlags(Tile values, Scalar row, Scalar col0) {
-    const Tile nonzero = (values.Bitcast(kiln::i32) & 0x7fffffff) > 0;
+  // Returns `columns` of row `row_in_block` of `block`. A U8 block packs rows
+  // 4g to 4g+3 into the bytes of row g of its I32 view, the lowest row in the
+  // lowest byte, and Mosaic can't load those rows alone, so above rank one a
+  // U8 row comes with the three rows packed alongside it.
+  kiln::VmemRef RowSegment(kiln::VmemRef block, Scalar row_in_block,
+                           kiln::SliceDim columns) const {
+    if (x_.rank() == 1) {
+      return block(columns);
+    }
+    if (x_.dtype() == kiln::u8) {
+      return block.Bitcast(kiln::i32)(kiln::Slice(row_in_block >> 2, 1),
+                                      columns);
+    }
+    return block(kiln::Slice(row_in_block, 1), columns);
+  }
+
+  // Mask in-bounds elements with any of the `bits` bits from `shift` of their
+  // I32 words set: those of a U8, or all but the sign of an F32, so that -0.0
+  // is zero (the bitcast to I32 avoids flushing subnormals to zero).
+  Tile NonzeroFlags(Tile words, Scalar shift, int64_t bits, Scalar row,
+                    Scalar col0) {
+    const Tile nonzero = ((words >> shift) & ((int64_t{1} << bits) - 1)) > 0;
     // Subtract `col0` rather than adding it to `pos_` to avoid S32 overflow.
     const Tile in_bounds = pos_ < Select(row < m_, n_ - col0, 0);
     return Select(nonzero & in_bounds, pos_.Full(1), 0);
@@ -521,11 +557,12 @@ class NonzeroKernel {
 // Define the Mosaic memrefs: input, private destination and aliased result.
 // The HLO wrapper provides runtime dimensions and the result/destination
 // alias.
-absl::StatusOr<kiln::Kernel> BuildNonzeroIndices(int64_t rank) {
+absl::StatusOr<kiln::Kernel> BuildNonzeroIndices(int64_t rank,
+                                                 kiln::DType dtype) {
   const kiln::Dimensions dynamic_input(rank, kiln::kDynamic);
   const kiln::Dimensions dynamic_2d = {kiln::kDynamic, kiln::kDynamic};
   return kiln::CreateKernel(kiln::GridSpec{.name = "main"},
-                            kiln::InSpec::Hbm(kiln::f32(dynamic_input)),
+                            kiln::InSpec::Hbm(dtype(dynamic_input)),
                             kiln::InSpec::Hbm(kiln::i32(dynamic_2d)),
                             kiln::OutSpec::Hbm(kiln::i32(dynamic_2d)),
                             [](kiln::HbmRef input, kiln::HbmRef /*destination*/,
@@ -537,13 +574,15 @@ absl::StatusOr<kiln::Kernel> BuildNonzeroIndices(int64_t rank) {
 }
 
 // Returns an unbounded-dynamic shape of rank `rank` with a row-major layout
-// tiled by `tile`.
+// tiled by `tiles`.
 xla::Shape MakeUnbounded(const xla::PrimitiveType type, const int64_t rank,
-                         const xla::Tile& tile) {
+                         absl::Span<const xla::Tile> tiles) {
   xla::Shape shape = xla::ShapeUtil::MakeShape(
       type, Dimensions(rank, xla::Shape::kUnboundedSize),
       std::vector<bool>(rank, true));
-  *shape.mutable_layout()->add_tiles() = tile;
+  for (const xla::Tile& tile : tiles) {
+    *shape.mutable_layout()->add_tiles() = tile;
+  }
   return shape;
 }
 
@@ -578,27 +617,35 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
   return results;
 }
 
-// Returns the input layout of the buffer contract for rank-`kRank` inputs
-// tiled T(8,kTileMinorDim) or T(kTileMinorDim); see the header. A rank-one F32
-// array is stored in logical order whatever its tile, and the kernel reads no
-// further than the T(128) padding, so the 1-D kernels differ only in this
-// layout.
-template <int kRank, int64_t kTileMinorDim>
+// Returns the input layout of the buffer contract for rank-`kRank` `kDtype`
+// inputs whose first tile is T(8,kTileMinorDim) or T(kTileMinorDim); see the
+// header. A rank-one F32 array is stored in logical order whatever its tile,
+// and the kernel reads no further than the T(128) padding, so the 1-D kernels
+// differ only in this layout. U8 layouts add inner tiles that pack four rows
+// (of 128 elements for rank one) to a word, which loads unpack.
+template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim>
 xla::Layout NonzeroInputLayout() {
   Indices minor_to_major(kRank);
   std::iota(minor_to_major.rbegin(), minor_to_major.rend(), 0);
-  return xla::Layout(minor_to_major,
-                     {kRank == 1 ? xla::Tile({kTileMinorDim})
-                                 : xla::Tile({8, kTileMinorDim})});
+  std::vector<xla::Tile> tiles = {kRank == 1 ? xla::Tile({kTileMinorDim})
+                                             : xla::Tile({8, kTileMinorDim})};
+  if constexpr (kDtype == mlir::ElementType::UI8 && kRank == 1) {
+    tiles.push_back(xla::Tile({kLanes}));
+  }
+  if constexpr (kDtype == mlir::ElementType::UI8) {
+    tiles.push_back(xla::Tile({4, 1}));
+  }
+  return xla::Layout(minor_to_major, tiles);
 }
 
 // Returns the parameters for the nonzero indices kernel.
-template <int kRank, int64_t kTileMinorDim>
+template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim>
 std::vector<xla::Shape> NonzeroParameters() {
-  const xla::Shape input = MakeUnbounded(
-      xla::F32, kRank, NonzeroInputLayout<kRank, kTileMinorDim>().tiles()[0]);
+  const xla::Shape input =
+      MakeUnbounded(ConvertTo<xla::PrimitiveType>(kDtype), kRank,
+                    NonzeroInputLayout<kDtype, kRank, kTileMinorDim>().tiles());
   const xla::Shape output_view =
-      MakeUnbounded(xla::S32, /*rank=*/2, xla::Tile({1, 128}));
+      MakeUnbounded(xla::S32, /*rank=*/2, {xla::Tile({1, 128})});
   xla::Shape output_dims = xla::ShapeUtil::MakeShape(xla::S32, {2});
   *output_dims.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
   xla::Shape input_dims = xla::ShapeUtil::MakeShape(xla::S32, {kRank});
@@ -608,12 +655,12 @@ std::vector<xla::Shape> NonzeroParameters() {
 
 // Returns the UnboundedDynamicExecutionMetadata for the nonzero indices
 // kernel.
-template <int kRank, int64_t kTileMinorDim>
+template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim>
 UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
-  // One logical input, the F32[...,M,N] or F32[N] payload. The S64[K,kRank]
-  // destination is a donated output: `Execute` allocates it directly in the
-  // S32[R,128] view the kernel was compiled against, so callers never see the
-  // physical view.
+  // One logical input, the [...,M,N] or [N] payload. The
+  // S64[K,kRank] destination is a donated output: `Execute` allocates it
+  // directly in the S32[R,128] view the kernel was compiled against, so callers
+  // never see the physical view.
   UnboundedDynamicExecutionMetadata dynamic_meta{
       .logical_input_to_pjrt_param = {0},
       .donated_output_params =
@@ -627,7 +674,7 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
       .metadata_params =
           {
               UnboundedDynamicExecutionMetadata::MetadataParamBinding{
-                  .buffer_pjrt_idx = 0,  // F32 input -> its dimensions
+                  .buffer_pjrt_idx = 0,  // Input -> its dimensions
                   .shape_pjrt_idx = 2,
               },
               UnboundedDynamicExecutionMetadata::MetadataParamBinding{
@@ -635,18 +682,18 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
                   .shape_pjrt_idx = 3,
               },
           },
-      .pjrt_param_shapes = NonzeroParameters<kRank, kTileMinorDim>(),
+      .pjrt_param_shapes = NonzeroParameters<kDtype, kRank, kTileMinorDim>(),
       .output_transform = BitcastToLogicalIndices,
       .is_compatible =
           [](absl::Span<const Shape> input_shapes,
              absl::Span<const Shape> output_shapes) {
             // The extentless key already fixes the number, ranks and dtypes of
-            // the operands: one rank-kRank F32 input and one rank-2 S64
+            // the operands: one rank-kRank kDtype input and one rank-2 S64
             // output. The layouts are those of the kernel's buffer contract.
             return output_shapes[0].dimensions()[1] == kRank &&
                    HasDeviceLayouts(
                        input_shapes,
-                       {NonzeroInputLayout<kRank, kTileMinorDim>()}) &&
+                       {NonzeroInputLayout<kDtype, kRank, kTileMinorDim>()}) &&
                    HasDeviceLayouts(
                        output_shapes,
                        {xla::Layout({0, 1},
@@ -658,21 +705,25 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
 
 // Builds and compiles the Mosaic nonzero kernel for rank-`kRank` inputs. See
 // `GetNonzeroUnboundedDynamicKernels` in the header for their contracts.
-template <int kRank, int64_t kTileMinorDim>
+template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim>
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options) {
   const xla::Shape output_view =
-      MakeUnbounded(xla::S32, /*rank=*/2, xla::Tile({1, 128}));
-  TT_ASSIGN_OR_RETURN(kiln::Kernel kernel, BuildNonzeroIndices(kRank));
-  return CompileMosaicKernel(
-      client, std::move(compile_options), std::move(kernel),
-      NonzeroParameters<kRank, kTileMinorDim>(), output_view, {2, 3, -1, -1},
-      /*aliased_parameter=*/1);
+      MakeUnbounded(xla::S32, /*rank=*/2, {xla::Tile({1, 128})});
+  TT_ASSIGN_OR_RETURN(const kiln::DType kiln_dtype, ToKilnDType(kDtype));
+  TT_ASSIGN_OR_RETURN(kiln::Kernel kernel,
+                      BuildNonzeroIndices(kRank, kiln_dtype));
+  return CompileMosaicKernel(client, std::move(compile_options),
+                             std::move(kernel),
+                             NonzeroParameters<kDtype, kRank, kTileMinorDim>(),
+                             output_view, {2, 3, -1, -1},
+                             /*aliased_parameter=*/1);
 }
 
 // Returns the ExtentlessKey a nonzero graph would be lowered to.
-ExtentlessKey NonZeroCacheKey(int64_t rank) {
+ExtentlessKey NonZeroCacheKey(const mlir::ElementType dtype,
+                              const int64_t rank) {
   // Only ranks and dtypes reach the extentless key, so these extents are
   // placeholders.
   const Dimensions input_dims(rank, -1);
@@ -680,7 +731,7 @@ ExtentlessKey NonZeroCacheKey(int64_t rank) {
 
   GraphSignature graph;
   graph.SetCorePinningMode(CorePinningMode::kUnpinned);
-  const int in = graph.AddInput(input_dims, mlir::ElementType::F32);
+  const int in = graph.AddInput(input_dims, dtype);
   int out = -1;
   graph.AddOp(OpName::kNonzero, OpParamCacheKeys::Empty(),
               /*donated_inputs=*/{},
@@ -692,47 +743,67 @@ ExtentlessKey NonZeroCacheKey(int64_t rank) {
   return graph.GetKey().extentless_key();
 }
 
-template <int kRank, int64_t kTileMinorDim = 128>
-UnboundedDynamicKernelRegistration GetNonzeroUnboundedDynamicKernel(
-    NonzeroKernelId id) {
+// Returns the id of the kernel for rank-`rank` inputs whose first tile has
+// minor dimension `tile_minor_dim`; see NonzeroKernelId.
+constexpr NonzeroKernelId GetNonzeroKernelId(const int rank,
+                                             const int64_t tile_minor_dim) {
+  if (rank == 2) {
+    return NonzeroKernelId::kNonzeroKGreaterThan2;
+  }
+  switch (tile_minor_dim) {
+    case 1024:
+      return NonzeroKernelId::kNonzeroInputMinorTile1024;
+    case 512:
+      return NonzeroKernelId::kNonzeroInputMinorTile512;
+    case 256:
+      return NonzeroKernelId::kNonzeroInputMinorTile256;
+    default:
+      return NonzeroKernelId::kNonzeroInputMinorTile128;
+  }
+}
+
+template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim = 128>
+UnboundedDynamicKernelRegistration GetNonzeroUnboundedDynamicKernel() {
   return {
       .kernel =
           UnboundedDynamicKernel{
-              .build = BuildNonzeroIndicesExecutable<kRank, kTileMinorDim>,
-              .metadata = MakeNonzeroDynamicMetadata<kRank, kTileMinorDim>(),
-              .key = MakeUnboundedDynamicKernelCacheKey(NonZeroCacheKey(kRank),
-                                                        static_cast<int>(id)),
+              .build =
+                  BuildNonzeroIndicesExecutable<kDtype, kRank, kTileMinorDim>,
+              .metadata =
+                  MakeNonzeroDynamicMetadata<kDtype, kRank, kTileMinorDim>(),
+              .key = MakeUnboundedDynamicKernelCacheKey(
+                  NonZeroCacheKey(kDtype, kRank),
+                  static_cast<int>(GetNonzeroKernelId(kRank, kTileMinorDim))),
               .enabled_by_default = true,
           },
   };
+}
+
+// Returns the `kDtype` kernels: one 1-D kernel for each of XLA's default 1-D
+// layouts for `kDtype`, whose first tile is T(k1dTileMinorDim), then the 2-D
+// to 8-D kernels. NonzeroInputLayout adds the rest of each layout, e.g. the
+// (128)(4,1) of U8[N]{0:T(1024)(128)(4,1)}.
+template <mlir::ElementType kDtype, int64_t... k1dTileMinorDim>
+std::vector<UnboundedDynamicKernelRegistration> GetNonzeroKernelsOfDtype() {
+  return {GetNonzeroUnboundedDynamicKernel<kDtype, 1, k1dTileMinorDim>()...,
+          GetNonzeroUnboundedDynamicKernel<kDtype, 2>(),
+          GetNonzeroUnboundedDynamicKernel<kDtype, 3>(),
+          GetNonzeroUnboundedDynamicKernel<kDtype, 4>(),
+          GetNonzeroUnboundedDynamicKernel<kDtype, 5>(),
+          GetNonzeroUnboundedDynamicKernel<kDtype, 6>(),
+          GetNonzeroUnboundedDynamicKernel<kDtype, 7>(),
+          GetNonzeroUnboundedDynamicKernel<kDtype, 8>()};
 }
 
 }  // namespace
 
 std::vector<UnboundedDynamicKernelRegistration>
 GetNonzeroUnboundedDynamicKernels() {
-  return {GetNonzeroUnboundedDynamicKernel<1, 1024>(
-              NonzeroKernelId::kNonzeroInputMinorTile1024),
-          GetNonzeroUnboundedDynamicKernel<1, 512>(
-              NonzeroKernelId::kNonzeroInputMinorTile512),
-          GetNonzeroUnboundedDynamicKernel<1, 256>(
-              NonzeroKernelId::kNonzeroInputMinorTile256),
-          GetNonzeroUnboundedDynamicKernel<1, 128>(
-              NonzeroKernelId::kNonzeroInputMinorTile128),
-          GetNonzeroUnboundedDynamicKernel<2>(
-              NonzeroKernelId::kNonzeroKGreaterThan2),
-          GetNonzeroUnboundedDynamicKernel<3>(
-              NonzeroKernelId::kNonzeroInputMinorTile128),
-          GetNonzeroUnboundedDynamicKernel<4>(
-              NonzeroKernelId::kNonzeroInputMinorTile128),
-          GetNonzeroUnboundedDynamicKernel<5>(
-              NonzeroKernelId::kNonzeroInputMinorTile128),
-          GetNonzeroUnboundedDynamicKernel<6>(
-              NonzeroKernelId::kNonzeroInputMinorTile128),
-          GetNonzeroUnboundedDynamicKernel<7>(
-              NonzeroKernelId::kNonzeroInputMinorTile128),
-          GetNonzeroUnboundedDynamicKernel<8>(
-              NonzeroKernelId::kNonzeroInputMinorTile128)};
+  std::vector<UnboundedDynamicKernelRegistration> kernels =
+      GetNonzeroKernelsOfDtype<mlir::ElementType::F32, 1024, 512, 256, 128>();
+  absl::c_move(GetNonzeroKernelsOfDtype<mlir::ElementType::UI8, 1024, 512>(),
+               std::back_inserter(kernels));
+  return kernels;
 }
 
 }  // namespace torch_tpu

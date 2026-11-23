@@ -159,6 +159,27 @@ _NONZERO_SERVED_CASES = (
     _nonzero_case((1, 2, 1, 2, 8, 129), _ALL_NONZERO),
     _nonzero_case((2, 1, 2, 1, 2, 8, 129), 99),
     _nonzero_case((1, 2, 1, 2, 1, 2, 8, 129), _ALL_NONZERO),
+    # U8, packed four rows (of 128 for 1-D) to a word: row counts that aren't a
+    # multiple of four, several tiles per row, wide rows, flushes, the default
+    # 1-D tiles T(512) and T(1024) around their boundary, then one case per
+    # rank above two.
+    _nonzero_case((5, 5), 3, torch.uint8),
+    _nonzero_case((9, 1100), _ALL_NONZERO, torch.uint8),
+    _nonzero_case((5, 16385), 3, torch.uint8),
+    _nonzero_case((9, 129), 1025, torch.uint8),
+    _nonzero_case((2,), 2, torch.uint8),
+    _nonzero_case((129,), 2, torch.uint8),
+    _nonzero_case((512,), _ALL_NONZERO, torch.uint8),
+    _nonzero_case((513,), _ALL_NONZERO, torch.uint8),
+    _nonzero_case((3000,), 1025, torch.uint8),
+    _nonzero_case((40000,), 777, torch.uint8),
+    _nonzero_case((3, 16, 129), 1025, torch.uint8),
+    _nonzero_case((2, 8, 16385), 5, torch.uint8),
+    _nonzero_case((2, 3, 8, 129), _ALL_NONZERO, torch.uint8),
+    _nonzero_case((2, 1, 3, 8, 129), 777, torch.uint8),
+    _nonzero_case((1, 2, 1, 2, 8, 129), _ALL_NONZERO, torch.uint8),
+    _nonzero_case((2, 1, 2, 1, 2, 8, 129), 99, torch.uint8),
+    _nonzero_case((1, 2, 1, 2, 1, 2, 8, 129), _ALL_NONZERO, torch.uint8),
 )
 
 _NONZERO_NOT_SERVED_CASES = (
@@ -167,6 +188,10 @@ _NONZERO_NOT_SERVED_CASES = (
     _nonzero_case((5, 1), 5),
     _nonzero_case((5, 3), 5),
     _nonzero_case((2, 4, 4), 5),
+    # Nor is it T(8,128)(4,1) for U8, e.g. T(32,128)(4,1) when M is a multiple
+    # of 32.
+    _nonzero_case((3, 7), 5, torch.uint8),
+    _nonzero_case((32, 129), 5, torch.uint8),
     # K = 0 skips the index graph; K <= rank rounded up to a power of two uses
     # row-major S64[K,rank] layout.
     _nonzero_case((17, 257), 0),
@@ -176,7 +201,7 @@ _NONZERO_NOT_SERVED_CASES = (
     _nonzero_case((3000,), 1),
     _nonzero_case((16,), 1),
     _nonzero_case((2, 8, 129), 4),
-    # Not F32, or rank above 8.
+    # Neither F32 nor U8, or rank above 8.
     _nonzero_case((17, 257), 5, torch.bfloat16),
     _nonzero_case((3000,), 5, torch.bfloat16),
     _nonzero_case((16,), 5, torch.bfloat16),
@@ -270,14 +295,20 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
 
     (x_tpu,), result = self.run_and_check_cache(torch.nonzero, x, served=True)
 
-    # XLA's default 1-D tile: N rounded up to a power of two in [128, 1024].
-    tile = min(max(128, 1 << (x.numel() - 1).bit_length()), 1024)
+    if x.dtype == torch.float32:
+      # XLA's default 1-D tile: N rounded up to a power of two in [128, 1024].
+      tiles_1d = [[min(max(128, 1 << (x.numel() - 1).bit_length()), 1024)]]
+      tiles = [[8, 128]]
+    else:
+      # U8 tiles pack four rows (of 128 for 1-D) to a word.
+      tiles_1d = [[512 if x.numel() <= 512 else 1024], [128], [4, 1]]
+      tiles = [[8, 128], [4, 1]]
     # (minor_to_major, tiles, element_size_in_bits); see nonzero_indices.h.
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(x_tpu),
-        ([0], [[tile]], 0)
+        ([0], tiles_1d, 0)
         if x.ndim == 1
-        else (list(range(x.ndim))[::-1], [[8, 128]], 0),
+        else (list(range(x.ndim))[::-1], tiles, 0),
     )
     self.assertEqual(
         torch.tpu.get_device_layout_if_materialized(result),
