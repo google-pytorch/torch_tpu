@@ -19,8 +19,37 @@
 #include <tuple>
 
 #include "ATen/core/ATen_fwd.h"
+#include "absl/status/statusor.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
+
+enum class LuPivotTarget {
+  kRows,
+  kColumns,
+};
+
+enum class LuPivotDirection {
+  // Applies P by iterating swaps in reverse order (`k = num_pivots - 1 .. 0`).
+  kForward,
+  // Applies P^T by iterating swaps in forward order (`k = 0 .. num_pivots -
+  // 1`).
+  kInverse,
+};
+
+struct LuPivotOptions {
+  LuPivotTarget target = LuPivotTarget::kRows;
+  LuPivotDirection direction = LuPivotDirection::kForward;
+};
+
+// Applies a batch of 1-indexed LAPACK/PyTorch LU pivot swaps (`pivots` of shape
+// `(B..., P)`) to the rows or columns of `input` (of shape `(B..., R, C)`).
+// Supports both static and bounded dynamic batch and matrix dimensions.
+// Callers must ensure that the runtime `P` is at most the runtime size of the
+// pivoted dimension (`R` for rows, `C` for columns).
+absl::StatusOr<mlir::MlirOp> ApplyLuPivots(mlir::MlirOp input,
+                                           mlir::MlirOp pivots,
+                                           const LuPivotOptions& options);
 
 // Computes LU factorization of a matrix or batch of matrices `A` using
 // partial pivoting. Returns a tuple containing:

@@ -2592,6 +2592,71 @@ LINALG_CHOLESKY_EX_CONFIGS = (
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class LuUnpackConfig:
+  """Configuration for LuUnpack benchmarks."""
+
+  batch_size: int
+  matrix_size: int
+  unpack_data: bool = True
+  unpack_pivots: bool = True
+
+
+LU_UNPACK_CONFIGS = (
+    LuUnpackConfig(
+        batch_size=1,
+        matrix_size=64,
+    ),
+    LuUnpackConfig(
+        batch_size=1,
+        matrix_size=256,
+    ),
+    LuUnpackConfig(
+        batch_size=16,
+        matrix_size=128,
+    ),
+    LuUnpackConfig(
+        batch_size=16,
+        matrix_size=256,
+    ),
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class LinalgLuSolveConfig:
+  """Configuration for LinalgLuSolve benchmarks."""
+
+  batch_size: int
+  matrix_size: int
+  nrhs: int
+  left: bool = True
+  adjoint: bool = False
+
+
+LINALG_LU_SOLVE_CONFIGS = (
+    LinalgLuSolveConfig(
+        batch_size=1,
+        matrix_size=64,
+        nrhs=16,
+    ),
+    LinalgLuSolveConfig(
+        batch_size=1,
+        matrix_size=256,
+        nrhs=64,
+    ),
+    LinalgLuSolveConfig(
+        batch_size=16,
+        matrix_size=128,
+        nrhs=32,
+    ),
+    LinalgLuSolveConfig(
+        batch_size=16,
+        matrix_size=256,
+        nrhs=64,
+    ),
+)
+
+
 def microbenchmark_name(config_dataclass: Any) -> str:
   """Returns a string representation of the dataclass suitable for a test name.
 

@@ -35,6 +35,7 @@ torch_tpu_py_library(
     srcs = [
         "__init__.py",
         "attention.py",
+        "linalg.py",
         "linear.py",
         "normalization.py",
     ],

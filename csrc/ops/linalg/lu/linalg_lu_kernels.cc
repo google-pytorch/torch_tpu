@@ -30,18 +30,16 @@
 #include "ATen/ops/_linalg_check_errors.h"
 #include "ATen/ops/add.h"
 #include "ATen/ops/any.h"
-#include "ATen/ops/arange.h"
 #include "ATen/ops/argmax.h"
 #include "ATen/ops/diagonal.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/empty_like.h"
 #include "ATen/ops/eq.h"
 #include "ATen/ops/eye.h"
-#include "ATen/ops/gather.h"
-#include "ATen/ops/reshape.h"
 #include "ATen/ops/tril.h"
 #include "ATen/ops/triu.h"
 #include "ATen/ops/where.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
@@ -51,6 +49,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -66,6 +65,7 @@
 #include "mlir/IR/TypeRange.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -436,36 +436,26 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
     return absl::OkStatus();
   }
 
-  // Flatten batch dimensions.
-  const at::Tensor pivots_flat =
-      at::reshape(pivots, {-1, pivots.size(-1)}).to(at::kLong).sub(1);
-  const int64_t n_batch = pivots_flat.size(0);
-  const int64_t n_pivots = pivots_flat.size(1);
-  at::Tensor permutation = at::arange(size, pivots.options().dtype(at::kLong))
-                               .unsqueeze(0)
-                               .expand({n_batch, size})
-                               .clone();
-  for (int64_t i = 0; i < n_pivots; ++i) {
-    // Forward swaps apply P^T, reverse swaps apply P.
-    const int64_t k = inverse ? i : n_pivots - 1 - i;
-    const at::Tensor pivot_index = pivots_flat.select(1, k).unsqueeze(1);
-    const at::Tensor permutation_at_k =
-        permutation.select(1, k).unsqueeze(1).clone();
-    const at::Tensor permutation_at_pivot =
-        at::gather(permutation, 1, pivot_index);
-    permutation.select(1, k).copy_(permutation_at_pivot.squeeze(1));
-    permutation.scatter_(1, pivot_index, permutation_at_k);
-  }
-  const int64_t rows = tensor.size(-2);
-  const int64_t cols = tensor.size(-1);
-  const at::Tensor tensor_flat = tensor.reshape({n_batch, rows, cols});
-  const at::Tensor gather_indices =
-      to_rows ? permutation.unsqueeze(2).expand({n_batch, rows, cols})
-              : permutation.unsqueeze(1).expand({n_batch, rows, cols});
-  const at::Tensor permuted =
-      at::gather(tensor_flat, to_rows ? 1 : 2, gather_indices);
-  tensor.copy_(permuted.reshape(tensor.sizes()));
-  return absl::OkStatus();
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(tensor.scalar_type()));
+  auto cache_keys = OpParamCacheKeys::Empty();
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("step", "P"));
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("to_rows", to_rows));
+  TT_RETURN_IF_ERROR(cache_keys.SetParam("inverse", inverse));
+
+  const LuPivotOptions pivot_options{
+      .target = to_rows ? LuPivotTarget::kRows : LuPivotTarget::kColumns,
+      .direction =
+          inverse ? LuPivotDirection::kInverse : LuPivotDirection::kForward,
+  };
+  auto op_builder = [pivot_options](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    return ApplyLuPivots(inputs[0], inputs[1], pivot_options);
+  };
+  return DispatchOpOut<2>(std::move(op_builder), {tensor, pivots}, tensor,
+                          {.out_dtype = out_dtype,
+                           .out_dims = tensor.sizes(),
+                           .op_param_cache_keys = std::move(cache_keys)});
 }
 
 absl::Status ValidateLuUnpackInputs(const at::Tensor& lu_data,
@@ -646,6 +636,162 @@ absl::Status ValidateLuFactorExInputs(const at::Tensor& a, const at::Tensor& lu,
 }
 
 }  // namespace
+
+absl::StatusOr<mlir::MlirOp> ApplyLuPivots(mlir::MlirOp input,
+                                           mlir::MlirOp pivots,
+                                           const LuPivotOptions& options) {
+  namespace stablehlo = mlir::stablehlo;
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType pivots_type = GetTensorTypeOrDie(pivots);
+  const int64_t rank = input_type.getRank();
+  const int64_t pivots_rank = pivots_type.getRank();
+  ABSL_CHECK_GE(rank, 2)  // CRASH_OK=internal invariant.
+      << "Expected rank >= 2, got " << rank << ". This is a TorchTPU bug.";
+  ABSL_CHECK_EQ(pivots_rank, rank - 1)  // CRASH_OK=internal invariant.
+      << "Expected pivots rank (" << pivots_rank << ") == input rank - 1 ("
+      << (rank - 1) << "). This is a TorchTPU bug.";
+
+  const StaticAtBounds static_input = MakeStaticAtBounds(input);
+  const StaticAtBounds static_pivots = MakeStaticAtBounds(pivots);
+  const mlir::RankedTensorType static_in_type =
+      GetTensorTypeOrDie(static_input.op);
+  const mlir::RankedTensorType static_piv_type =
+      GetTensorTypeOrDie(static_pivots.op);
+
+  int64_t num_batches = 1;
+  for (int64_t d = 0; d < rank - 2; ++d) {
+    TT_RET_CHECK(static_in_type.getDimSize(d) == static_piv_type.getDimSize(d),
+                 error::kInvalidArgument)
+        << "expected input and pivots to have matching batch upper bounds at "
+           "dimension "
+        << d << ", got " << static_in_type.getDimSize(d) << " and "
+        << static_piv_type.getDimSize(d);
+    num_batches *= static_in_type.getDimSize(d);
+  }
+  const int64_t rows = static_in_type.getDimSize(rank - 2);
+  const int64_t cols = static_in_type.getDimSize(rank - 1);
+  const int64_t size = options.target == LuPivotTarget::kRows ? rows : cols;
+  const int64_t num_pivots = static_piv_type.getDimSize(pivots_rank - 1);
+  if (num_batches == 0 || rows == 0 || cols == 0 || num_pivots == 0) {
+    return input;
+  }
+
+  mlir::MlirBuilder& builder = input.getBuilder();
+  mlir::MlirOp pivots_i32 =
+      stablehlo::ConvertElementType(static_pivots.op, mlir::ElementType::I32);
+  mlir::MlirOp ones_piv = MakeConstantLike(pivots_i32, 1);
+  mlir::MlirOp pivots_zero_based = stablehlo::Subtract(pivots_i32, ones_piv);
+  mlir::MlirOp identity_pivots = stablehlo::IotaLike(
+      pivots_zero_based, pivots_rank - 1, mlir::ElementType::I32);
+  pivots_zero_based = FillPastRuntimeSizes(pivots_zero_based, identity_pivots,
+                                           static_pivots.runtime_sizes);
+  mlir::MlirOp zero_piv = MakeConstantLike(pivots_zero_based, 0);
+  mlir::MlirOp max_piv = MakeConstantLike(pivots_zero_based, size - 1);
+  pivots_zero_based = stablehlo::Clamp(zero_piv, pivots_zero_based, max_piv);
+  mlir::MlirOp pivots_flat =
+      stablehlo::Reshape(pivots_zero_based, {num_batches, num_pivots});
+
+  const mlir::RankedTensorType perm_type = mlir::makeTensorType(
+      builder.getContext(), {num_batches, size}, mlir::ElementType::I32);
+  mlir::MlirOp init_perm =
+      stablehlo::Iota(builder, perm_type, /*iota_dimension=*/1);
+  mlir::MlirOp zero_i32 =
+      MakeScalarConstant(builder, 0, mlir::ElementType::I32);
+
+  const LuPivotDirection direction = options.direction;
+  mlir::SmallVector<mlir::MlirOp> while_results = stablehlo::While(
+      builder, {zero_i32, init_perm, pivots_flat},
+      [num_pivots](mlir::RegionBuilder& cond) {
+        mlir::SmallVector<mlir::MlirOp> args =
+            stablehlo::Arguments(cond, cond.getOp<stablehlo::WhileOp>());
+        mlir::MlirOp limit =
+            MakeScalarConstant(cond, num_pivots, mlir::ElementType::I32);
+        mlir::MlirOp cond_val = stablehlo::Compare(
+            args[0], limit, stablehlo::ComparisonDirection::LT);
+        stablehlo::Return(cond, cond_val);
+      },
+      [num_batches, num_pivots, direction,
+       perm_type](mlir::RegionBuilder& body) {
+        mlir::SmallVector<mlir::MlirOp> args =
+            stablehlo::Arguments(body, body.getOp<stablehlo::WhileOp>());
+        mlir::MlirOp step = args[0];
+        mlir::MlirOp perm = args[1];
+        mlir::MlirOp pivs = args[2];
+
+        mlir::MlirOp one_i32 =
+            MakeScalarConstant(body, 1, mlir::ElementType::I32);
+        mlir::MlirOp next_step = stablehlo::Add(step, one_i32);
+
+        mlir::MlirOp k = step;
+        if (direction == LuPivotDirection::kForward) {
+          mlir::MlirOp last_idx =
+              MakeScalarConstant(body, num_pivots - 1, mlir::ElementType::I32);
+          k = stablehlo::Subtract(last_idx, step);
+        }
+
+        mlir::MlirOp zero_idx =
+            MakeScalarConstant(body, 0, mlir::ElementType::I32);
+        mlir::MlirOp pk_slice =
+            stablehlo::DynamicSlice(pivs, {zero_idx, k}, {num_batches, 1});
+        mlir::MlirOp val_at_k_slice =
+            stablehlo::DynamicSlice(perm, {zero_idx, k}, {num_batches, 1});
+
+        mlir::MlirOp col_iota =
+            stablehlo::Iota(body, perm_type, /*iota_dimension=*/1);
+        mlir::MlirOp pk_bcast =
+            stablehlo::BroadcastInDim(perm_type, pk_slice, {0, 1});
+        mlir::MlirOp k_bcast = stablehlo::BroadcastInDim(perm_type, k, {});
+        mlir::MlirOp val_at_k_bcast =
+            stablehlo::BroadcastInDim(perm_type, val_at_k_slice, {0, 1});
+
+        mlir::MlirOp is_pk = stablehlo::Compare(
+            col_iota, pk_bcast, stablehlo::ComparisonDirection::EQ);
+        mlir::MlirOp zero_perm = MakeConstantLike(perm, 0);
+        mlir::MlirOp masked_at_pk = stablehlo::Select(is_pk, perm, zero_perm);
+        mlir::MlirOp val_at_pk_1d =
+            stablehlo::Reduce(body, {masked_at_pk}, {zero_idx},
+                              [](mlir::RegionBuilder& rb) {
+                                stablehlo::buildReduceBody<stablehlo::AddOp>(
+                                    rb.getOpBuilder().getI32Type(),
+                                    rb.getRegion(), rb.getOpBuilder());
+                              },
+                              {1})[0];
+        mlir::MlirOp val_at_pk_bcast =
+            stablehlo::BroadcastInDim(perm_type, val_at_pk_1d, {0});
+
+        mlir::MlirOp is_k = stablehlo::Compare(
+            col_iota, k_bcast, stablehlo::ComparisonDirection::EQ);
+        mlir::MlirOp after_pk = stablehlo::Select(is_pk, val_at_k_bcast, perm);
+        mlir::MlirOp next_perm =
+            stablehlo::Select(is_k, val_at_pk_bcast, after_pk);
+        stablehlo::Return(body, {next_step, next_perm, pivs});
+      });
+
+  mlir::MlirOp final_perm = while_results[1];
+  mlir::MlirOp flat_input =
+      stablehlo::Reshape(static_input.op, {num_batches, rows, cols});
+  mlir::MlirOp gather_indices =
+      stablehlo::Reshape(final_perm, {num_batches, size, 1});
+
+  const bool is_rows = options.target == LuPivotTarget::kRows;
+  const stablehlo::GatherDimensionNumbersAttr gather_dnums =
+      stablehlo::GatherDimensionNumbersAttr::get(
+          &input.getContext(),
+          /*offset_dims=*/{is_rows ? int64_t{2} : int64_t{1}},
+          /*collapsed_slice_dims=*/{is_rows ? int64_t{1} : int64_t{2}},
+          /*operand_batching_dims=*/{0},
+          /*start_indices_batching_dims=*/{0},
+          /*start_index_map=*/{is_rows ? int64_t{1} : int64_t{2}},
+          /*index_vector_dim=*/2);
+  const Indices slice_sizes =
+      is_rows ? Indices{1, 1, cols} : Indices{1, rows, 1};
+  mlir::MlirOp permuted_flat =
+      stablehlo::Gather(flat_input, gather_indices, gather_dnums, slice_sizes,
+                        /*indices_are_sorted=*/false);
+  mlir::MlirOp permuted =
+      stablehlo::Reshape(permuted_flat, static_in_type.getShape());
+  return RestoreDynamicDimSizes(permuted, static_input.runtime_sizes);
+}
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
     const at::Tensor& a, bool pivot, bool check_errors, at::Tensor& lu,
