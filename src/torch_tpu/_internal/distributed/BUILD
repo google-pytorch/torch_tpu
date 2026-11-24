@@ -229,8 +229,10 @@ pybind_extension(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/strings",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )

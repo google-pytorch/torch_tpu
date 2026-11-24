@@ -298,39 +298,18 @@ def _init_device_impl(device: str) -> torch.device:
     # register_backend string-handling bug fixed upstream in
     # pytorch/pytorch#187960; the list form is correct regardless.
     print("Initializing TPU distributed runtime", file=sys.stderr)
+    for backend_name in ("tpu_dist", "tpu"):
+      torch.distributed.Backend.register_backend(
+          backend_name,
+          tpu_distributed.create_process_group,
+          extended_api=True,
+          devices=["tpu"],
+      )
+    if hasattr(torch.distributed.Backend, "default_device_backend_map"):
+      torch.distributed.Backend.default_device_backend_map["tpu"] = "tpu_dist"
+
     from torch_tpu._internal.distributed import torchcomm_tpu  # pylint: disable=g-import-not-at-top
 
-    def _create_c10d_process_group(dist_backend_opts, _pg_options):
-      is_default_world = not torch.distributed.is_initialized()
-      group_id = dist_backend_opts.group_id
-      is_world_subgroup = (
-          not is_default_world
-          and torch.distributed.is_initialized()
-          and bool(dist_backend_opts.global_ranks_in_group)
-          and group_id.isdigit()
-          and len(group_id) < 40
-      )
-      return tpu_distributed.create_process_group(
-          dist_backend_opts.store,
-          dist_backend_opts.group_rank,
-          dist_backend_opts.group_size,
-          dist_backend_opts.timeout,
-          is_default_world=is_default_world,
-          is_world_subgroup=is_world_subgroup,
-      )
-
-    torch.distributed.Backend.register_backend(
-        "tpu_dist",
-        _create_c10d_process_group,
-        extended_api=True,
-        devices=["tpu"],
-    )
-    torch.distributed.Backend.register_backend(
-        "tpu",
-        _create_c10d_process_group,
-        extended_api=True,
-        devices=["tpu"],
-    )
     torchcomm_tpu.register_torchcomms_tpu()
 
   # Register the Kineto backend using the internal C++ lifecycle module.

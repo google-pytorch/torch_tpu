@@ -836,18 +836,22 @@ def register_torchcomms_tpu() -> bool:
   except (ImportError, AttributeError, TypeError):
     pass
 
-  # 2. Register with PyTorch c10d Backend
+  # 2. Register with PyTorch c10d Backend if TPU device init has not run
   try:
     if tpu_distributed is not None:
       for name in ("tpu", "tpu_dist"):
-        try:
-          torch.distributed.Backend.register_backend(
-              name, tpu_distributed.create_process_group, devices=["tpu"]
-          )
-        except Exception:
-          pass
-      if hasattr(torch.distributed.Backend, "default_device_backend_map"):
-        torch.distributed.Backend.default_device_backend_map["tpu"] = "tpu_dist"
+        if not dist.is_backend_available(name):
+          try:
+            dist.Backend.register_backend(
+                name,
+                tpu_distributed.create_process_group,
+                extended_api=True,
+                devices=["tpu"],
+            )
+          except Exception:
+            pass
+      if hasattr(dist.Backend, "default_device_backend_map"):
+        dist.Backend.default_device_backend_map["tpu"] = "tpu_dist"
   except Exception:
     pass
 

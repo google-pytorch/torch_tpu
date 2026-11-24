@@ -15,13 +15,16 @@
  */
 
 #include <chrono>  // NOLINT - needed for pybind11 integration
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/check.h"
+#include "absl/strings/ascii.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
@@ -43,19 +46,47 @@ namespace torch_tpu {
 //
 namespace {
 
-// This function will be registered as the TPU distributed backend init
-// function (see `torch.distributed.Backend.register_backend`) and called by
-// pytorch when the user calls `torch.distributed.init_process_group()`.
+// Direct constructor for independent TPU process groups (such as
+// custom-store process groups and `TorchCommsTPU`).
 c10::intrusive_ptr<c10d::Backend> MakeProcessGroup(
     const c10::intrusive_ptr<c10d::Store>& store, int rank, int size,
-    std::chrono::duration<float>& /*timeout*/, bool is_default_world,
-    bool is_world_subgroup) {
+    std::chrono::duration<float>& /*timeout*/) {
+  return c10::make_intrusive<ProcessGroupTpu>(
+      store, rank, size, ProcessGroupTpu::GroupKind::kIndependent);
+}
+
+// Registered as the TPU c10d backend creator via
+// `torch.distributed.Backend.register_backend(..., extended_api=True)`.
+// Classifies default WORLD, SPMD world subgroups, and independent process
+// groups (such as `new_group(..., use_local_synchronization=True)`).
+c10::intrusive_ptr<c10d::Backend> MakeC10dProcessGroup(
+    pybind11::handle dist_backend_opts, pybind11::handle /*pg_options*/) {
+  PyBindModule dist = PyBindModule::Import("torch.distributed");
+  const bool is_default_world = !dist.attr("is_initialized")().cast<bool>();
+  const bool has_global_ranks =
+      pybind11::len(dist_backend_opts.attr("global_ranks_in_group")) > 0;
+  const std::string group_id =
+      dist_backend_opts.attr("group_id").cast<std::string>();
+  // Standard SPMD `new_group`, `new_subgroups`, and `DeviceMesh` assign
+  // sequential decimal IDs (`str(_world.group_count)`), whereas
+  // `new_group(..., use_local_synchronization=True)` assigns a 40-char
+  // SHA-1 hex digest.
+  constexpr size_t kSha1HexDigestLen = 40;
+  const bool is_sequential_group_id =
+      !group_id.empty() && group_id.size() < kSha1HexDigestLen &&
+      absl::c_all_of(group_id, absl::ascii_isdigit);
+
   ProcessGroupTpu::GroupKind kind = ProcessGroupTpu::GroupKind::kIndependent;
   if (is_default_world) {
     kind = ProcessGroupTpu::GroupKind::kDefaultWorld;
-  } else if (is_world_subgroup) {
+  } else if (has_global_ranks && is_sequential_group_id) {
     kind = ProcessGroupTpu::GroupKind::kWorldSubgroup;
   }
+
+  c10::intrusive_ptr<c10d::Store> store =
+      dist_backend_opts.attr("store").cast<c10::intrusive_ptr<c10d::Store>>();
+  const int rank = dist_backend_opts.attr("group_rank").cast<int>();
+  const int size = dist_backend_opts.attr("group_size").cast<int>();
   return c10::make_intrusive<ProcessGroupTpu>(store, rank, size, kind);
 }
 
@@ -118,10 +149,8 @@ std::vector<int64_t> GetLocalDeviceCoords() {  // INT_VEC_OK
 TT_PYBIND11_MODULE(tpu_distributed, m) {
   // Custom distributed backend initialization happens from the Python side,
   // so we need to expose this init function.
-  m.def("create_process_group", &MakeProcessGroup, pybind11::arg("store"),
-        pybind11::arg("rank"), pybind11::arg("size"), pybind11::arg("timeout"),
-        pybind11::kw_only(), pybind11::arg("is_default_world") = false,
-        pybind11::arg("is_world_subgroup") = false);
+  m.def("create_process_group", &MakeProcessGroup);
+  m.def("create_process_group", &MakeC10dProcessGroup);
   m.def("rank_to_device_id", &GetRankToDeviceId);
 
   // We expose these as helper functions on the Python side

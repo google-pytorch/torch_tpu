@@ -483,6 +483,14 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     self.assertEqual(
         dist.Backend.default_device_backend_map.get("tpu"), "tpu_dist"
     )
+    for backend_name in ("TPU_DIST", "TPU"):
+      # pylint: disable-next=protected-access
+      plugin = dist.Backend._plugins[backend_name]
+      self.assertTrue(plugin.extended_api)
+      self.assertEqual(
+          plugin.creator_fn,
+          torchcomm_tpu.tpu_distributed.create_process_group,
+      )
 
   def test_unsupported_stubs_raise_not_implemented(self):
     """Verifies that unsupported collective or communicator features raise NotImplementedError."""
