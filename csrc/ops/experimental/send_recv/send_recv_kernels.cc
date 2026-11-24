@@ -44,16 +44,21 @@ absl::StatusOr<ProcessGroupTpu*> GetProcessGroupTpu() {
 
   c10::intrusive_ptr<c10d::ProcessGroup> pg =
       c10d::resolve_process_group(kDefaultProcessGroupName);
-  TT_RET_CHECK(pg != nullptr, error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=c10d::resolve_process_group throws when
+                 // not found instead of returning nullptr
+      pg != nullptr, error::kInternal)
       << "failed to resolve default process group";
   c10::intrusive_ptr<c10d::Backend> backend =
       pg->getBackend(c10::DeviceType::PrivateUse1);
-  TT_RET_CHECK(backend != nullptr, error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=pg->getBackend throws when backend is
+                 // missing instead of returning nullptr
+      backend != nullptr, error::kInternal)
       << "failed to get backend for tpu device";
 
   auto process_group_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
   TT_RET_CHECK(process_group_tpu != nullptr, error::kInternal)
-      << "failed to cast c10d::Backend to ProcessGroupTpu";
+      << "expected default process group TPU backend to be a TPU process "
+         "group, got a non-TPU backend";
   return process_group_tpu;
 }
 

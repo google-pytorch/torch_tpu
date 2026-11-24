@@ -349,7 +349,9 @@ absl::StatusOr<DeviceBufferRef> CreateConstantDeviceBufferRefImpl(
                         mlir::MlirBuilder& builder,
                         absl::Span<mlir::MlirOp> inputs)
       -> absl::StatusOr<DynamicMlirOpResults> {
-    TT_RET_CHECK(inputs.empty(), error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal op_builder invariant; inputs
+                   // is always empty
+        inputs.empty(), error::kInvalidArgument)
         << "unexpected input to constant op";
 
     auto ranked_tensor_type =
@@ -398,7 +400,9 @@ absl::StatusOr<DeviceBufferRef> CreateConstantDeviceBufferRefImpl(
 
   TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
                                         std::move(params)));
-  TT_RET_CHECK(results.size() == 1, error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; output_shapes
+                 // always has size 1
+      results.size() == 1, error::kInternal)
       << "CreateConstantDeviceBufferRef should return exactly one output";
   return std::move(results[0]);
 }
@@ -421,7 +425,9 @@ absl::StatusOr<DeviceBufferRef> CreateEmptyDeviceBufferRef(
                      element_type](mlir::MlirBuilder& builder,
                                    absl::Span<mlir::MlirOp> inputs)
       -> absl::StatusOr<DynamicMlirOpResults> {
-    TT_RET_CHECK(inputs.empty(), error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal op_builder invariant; inputs
+                   // is always empty
+        inputs.empty(), error::kInvalidArgument)
         << "CreateEmptyDeviceBufferRef should not be called with any inputs";
     return DynamicMlirOpResults{
         BuildFillUninitialized(builder, element_type, dimensions)};
@@ -450,7 +456,9 @@ absl::StatusOr<DeviceBufferRef> CreateZeroSizeDeviceBufferRef(
       break;
     }
   }
-  TT_RET_CHECK(is_zero_sized, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=callers check for zero-sized dimensions
+                 // first
+      is_zero_sized, error::kInvalidArgument)
       << "CreateZeroSizeDeviceBufferRef requires a zero-sized tensor, but got: "
       << ToString(dimensions);
   return CreateConstantDeviceBufferRefImpl({}, std::move(dimensions),
@@ -464,8 +472,9 @@ absl::StatusOr<int64_t> RequiredStorageBytes(
     absl::Span<const int64_t> view_dimensions,
     absl::Span<const int64_t> view_strides, mlir::ElementType view_element_type,
     int64_t view_storage_offset) {
-  TT_RET_CHECK(view_dimensions.size() == view_strides.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=at::Tensor sizes and strides always
+                 // have equal length
+      view_dimensions.size() == view_strides.size(), error::kInvalidArgument)
       << "view dimensions and strides must have the same size.";
   // The number of storage elements required is
   //  storage_offset + 1 + maximum element index.
@@ -552,7 +561,9 @@ AsStridedInverseBuilderResult MakeAsStridedInverseBuilder(
                           mlir::MlirBuilder& builder,
                           absl::Span<mlir::MlirOp> inputs)
         -> absl::StatusOr<DynamicMlirOpResults> {
-      TT_RET_CHECK(inputs.size() == 1, error::kInternal)
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal op_builder invariant;
+                     // inputs always has size 1
+          inputs.size() == 1, error::kInternal)
           << "expected 1 input, got " << inputs.size();
       mlir::MlirOp sliced_input =
           SliceOperandIfNeeded(inputs[0], view_dimensions);
@@ -576,7 +587,9 @@ AsStridedInverseBuilderResult MakeAsStridedInverseBuilder(
                         mlir::MlirBuilder& builder,
                         absl::Span<mlir::MlirOp> inputs)
       -> absl::StatusOr<DynamicMlirOpResults> {
-    TT_RET_CHECK(inputs.size() == 2, error::kInternal)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal op_builder invariant; inputs
+                   // always has size 2
+        inputs.size() == 2, error::kInternal)
         << "expected 2 inputs, got " << inputs.size();
     mlir::MlirOp sliced_input =
         SliceOperandIfNeeded(inputs[1], view_dimensions);
@@ -602,8 +615,9 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
   absl::Span<const int64_t> view_strides = tpu_layout.strides;
   int64_t view_storage_offset = tpu_layout.storage_offset;
   mlir::ElementType view_element_type = tpu_layout.element_type;
-  TT_RET_CHECK(view_dimensions.size() == view_strides.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=at::Tensor sizes and strides always
+                 // have equal length
+      view_dimensions.size() == view_strides.size(), error::kInvalidArgument)
       << "view dimensions and strides must have the same size.";
   // If the view is zero-sized, then we don't need a view decomposition; a view
   // of nothing is valid.
@@ -667,7 +681,9 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
                         mlir::MlirBuilder& builder,
                         absl::Span<mlir::MlirOp> inputs)
       -> absl::StatusOr<DynamicMlirOpResults> {
-    TT_RET_CHECK(inputs.size() == 1, error::kInternal)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal op_builder invariant; inputs
+                   // always has size 1
+        inputs.size() == 1, error::kInternal)
         << "expected 1 input, got " << inputs.size();
     TT_ASSIGN_OR_RETURN(auto output,
                         ViewSequenceShlo(inputs[0], view_sequence));
@@ -710,8 +726,9 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
   absl::Span<const int64_t> view_strides = tpu_layout.strides;
   int64_t view_storage_offset = tpu_layout.storage_offset;
   mlir::ElementType view_element_type = tpu_layout.element_type;
-  TT_RET_CHECK(view_dimensions.size() == view_strides.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=at::Tensor sizes and strides always
+                 // have equal length
+      view_dimensions.size() == view_strides.size(), error::kInvalidArgument)
       << "view dimensions and strides must have the same size.";
   TT_RET_CHECK(!IsOverlapping(view_dimensions, view_strides),
                error::kFailedPrecondition)

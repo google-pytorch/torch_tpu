@@ -615,7 +615,9 @@ struct ViewCacheKeyVisitor {
   //    dimension is a cache miss, not worth a partially symbolic key.
   template <typename T>
   absl::StatusOr<std::string> operator()(const T& primitive) const {
-    return TT_ERROR(error::kPythonNotImplementedError)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=ViewSequenceCacheKey catches this
+                      // status and falls back to static cache keys
+               error::kPythonNotImplementedError)
            << "View primitive does not support "
               "dynamic cache keys for type: "
            << typeid(T).name();

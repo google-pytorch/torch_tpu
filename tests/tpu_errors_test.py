@@ -1462,7 +1462,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       with et.assert_raises_message(
           NotImplementedError,
-          tpu="""convolution_backward(): expected the convolution result shape inferred at the upper bounds of the lhs operand of type tensor<1x?x8xf32, #stablehlo.bounds<?, 6, ?>> and the rhs operand of type tensor<1x3x6xf32> to be [3, 2, 3], got [3, 6, 3]; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
+          tpu="""convolution_backward(): expected the convolution result shape inferred at the upper bounds of the lhs operand of a float32 tensor with shape [1, 6, 8] and the rhs operand of a float32 tensor with shape [1, 3, 6] to be [3, 2, 3], got [3, 6, 3]; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
       ):
         _, grad_weight, _ = torch.ops.aten.convolution_backward(
             grad_output,
@@ -1591,7 +1591,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""linalg_solve_triangular(): cannot mix bounded and static dimensions in broadcast""",
+          tpu="""linalg_solve_triangular(): cannot mix bounded and static dimensions in broadcast at output dimension 0: lhs dimension 0 is static (size 6) and rhs dimension 0 is bounded (size 6)""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.linalg.solve_triangular(a, b, upper=True).cpu()
@@ -1681,13 +1681,15 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.einsum("ij->ji", x)
 
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
+  @et.why_tpu_only(
+      "GPU grid_sampler does not validate interpolation_mode on host."
+  )
   def test_grid_sampler_2d_invalid_interpolation_mode(self):
     inp = torch.ones(1, 1, 2, 2, device=et.device())
     grid = torch.zeros(1, 2, 2, 2, device=et.device())
 
     with et.assert_raises_message(
-        RuntimeError,
+        NotImplementedError,
         tpu="""grid_sampler_2d(): expected the interpolation mode to be 0 (bilinear), 1 (nearest), or 2 (bicubic), got 3""",
     ):
       interpolation_mode = 3
@@ -7108,6 +7110,112 @@ class InternalApiTpuErrorsTest(et.TpuOnlyErrorTestBase):
           experimental_config=config,
       ):
         pass
+
+
+class OpsTpuOnlyErrorCoverageTest(et.TpuOnlyErrorTestBase):
+  """Tests TPU-only error messages for ops."""
+
+  @et.why_tpu_only("torch.ops.tpu._send is a TPU-specific distributed op.")
+  def test_experimental_send_fake_tpu_backend(self):
+    x = torch.ones((2, 2), device=et.device())
+    dist.init_process_group(
+        f"{et.device().type}:fake",
+        store=fake_pg.FakeStore(),
+        rank=0,
+        world_size=2,
+    )
+    try:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""send(): expected default process group TPU backend to be a TPU process group, got a non-TPU backend""",
+      ):
+        torch.ops.tpu._send([x], 0, 0)
+    finally:
+      dist.destroy_process_group()
+
+  @et.why_tpu_only("GPU grid_sampler does not validate padding_mode on host.")
+  def test_grid_sampler_2d_invalid_padding_mode(self):
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 2), device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""grid_sampler_2d(): expected the padding mode to be 0 (zeros), 1 (border), or 2 (reflection), got 3""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 0, 3, False)
+
+  @et.why_tpu_only(
+      "GPU supports 3D bicubic interpolation (interpolation_mode=2), whereas"
+      " TPU grid_sampler_3d only supports bilinear and nearest."
+  )
+  def test_grid_sampler_3d_invalid_interpolation_mode(self):
+    inp = torch.ones((1, 1, 2, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 2, 3), device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""grid_sampler_3d(): expected the interpolation mode to be 0 (bilinear) or 1 (nearest), got 2""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp, grid, 2, 0, False)
+
+  @et.why_tpu_only(
+      "SDPA custom kernel on TPU does not support causal mask with attn_bias;"
+      " GPU supports it."
+  )
+  def test_sdpa_cudnn_causal_and_attn_bias_mutually_exclusive(self):
+    q = torch.ones((1, 2, 4, 8), dtype=torch.bfloat16, device=et.device())
+    k = torch.ones((1, 2, 4, 8), dtype=torch.bfloat16, device=et.device())
+    v = torch.ones((1, 2, 4, 8), dtype=torch.bfloat16, device=et.device())
+    bias = torch.zeros((1, 2, 4, 4), dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_dot_product_cudnn_attention(): causal mask and attention bias are mutually exclusive""",
+    ):
+      torch.ops.aten._scaled_dot_product_cudnn_attention(
+          q, k, v, bias, False, 0.0, True, False, scale=None
+      )[0].cpu()
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="expand_ambiguous",
+          input_shape=(6, 4),
+          dynamic_dim=0,
+          target_shape=(2, 3, 4),
+          expected_msg=(
+              "add(): cannot infer which output dimension should be bounded"
+              " dynamic when reshaping from [6, 4] to [2, 3, 4]: bounded input"
+              " dimension 0 splits into multiple non-unit output dimensions"
+              " [0, 1]"
+          ),
+      ),
+      dict(
+          testcase_name="same_rank_mismatch",
+          input_shape=(2, 6),
+          dynamic_dim=1,
+          target_shape=(3, 4),
+          expected_msg=(
+              "add(): reshape reassociation not supported for same sized"
+              " reshapes: from [2, 6] to [3, 4]"
+          ),
+      ),
+      dict(
+          testcase_name="no_reassociation",
+          input_shape=(2, 3, 4),
+          dynamic_dim=1,
+          target_shape=(4, 6),
+          expected_msg=(
+              "add(): unable to determine reassociation indices from [2, 3, 4]"
+              " to [4, 6]"
+          ),
+      ),
+  )
+  @et.why_tpu_only("Bounded dynamic reshape checks are TPU-specific.")
+  def test_dynamic_reshape_error(
+      self, input_shape, dynamic_dim, target_shape, expected_msg
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones(input_shape, device=et.device())
+      dynamism.mark_dynamic(x, dynamic_dim, 2, 8)
+      with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+        (x.reshape(*target_shape) + 1.0).cpu()
 
 
 if __name__ == "__main__":
