@@ -26,10 +26,12 @@ Cheatsheet for testing in TorchTPU.
 ### TDD Enforcement Checklist
 
 *   **Strict Verification**: When requested to verify a failure, run the
-    specific test, confirm it fails, and that the failure is related to the
-    missing feature or bug.
-*   **Success Verification**: After the developer implements the fix, run the
-    test again to verify it passes.
+    specific test, confirm `--test_filter` executed at least one test (a filter
+    matching zero tests can still exit 0), and confirm that the failure is
+    related to the missing feature or bug rather than a syntax or import error.
+*   **Success Verification**: After the developer implements the fix, re-run the
+    exact same test target label and compatible `--test_filter` to verify it
+    passes.
 *   **Report Results**: Provide clear, concise output.
 
 ## Test Locations
@@ -41,9 +43,22 @@ Cheatsheet for testing in TorchTPU.
     instead of adding a duplicate: remove `@op_testing.unimplemented_on_tpu`,
     remove newly supported dtypes from `exclude_dtypes` /
     `exclude_inplace_dtypes`, and drop `check_grad=False` or
-    `check_out_variant=False` once those paths work.
-*   **`tests/ops_unit_test.py`**: Thorough unit tests for edge cases, dtypes,
-    shapes, and non-contiguous inputs. **Always** add tests here.
+    `check_out_variant=False` once those paths work. A single `do_test_op` entry
+    already expands across eager, grad (`ops_test_grad_tpu_vs_gpu`),
+    `torch.compile` (`ops_test_compiled`), bounded dynamism
+    (`ops_test_dynamic*`), symbolic shapes (`ops_test_symbolic_shapes`), `BASE`
+    / `OUT` (zero-element resize and out-dtype casting) / `INPLACE` variants,
+    supported dtypes, and `OpInfo.sample_inputs`; never place custom imperative
+    assertions inside `TestOps.test_<op>`.
+*   **`tests/ops_unit_test.py`**: Targeted unit tests **only** for net-new
+    coverage not already exercised by `ops_test.py` (or `dynamism_test.py`) —
+    such as ops without `OpInfo` / `do_test_op` coverage, omitted edge inputs
+    (`-0.0` signbits, specific broadcasts or non-contiguous strides), modes or
+    dtypes currently excluded in `ops_test.py` or `DYNAMISM_DENY_LISTS`, or
+    TPU-specific execution modes and IR checks. Never duplicate grad, dynamism,
+    op-variant, dtype, or `sample_inputs` coverage already expanded by
+    `do_test_op`. Use `self.assertEqual` or `self.assert_close` (never raw
+    `torch.testing.assert_close`) and `@parameterized.named_parameters`.
 *   **`tests/errors_test.py`**: Tests ensuring quality and parity (w.r.t. GPU)
     of error messages. Add tests here when the error condition occurs on both
     TPU and GPU (or crashes on GPU). Always try this file first before
@@ -99,6 +114,10 @@ Per
 *   **Use real resources where cheap**: temporary directories for the
     filesystem, real (test-scoped) environment variables, and multi-process
     `gloo` groups for `torch.distributed`.
+*   **Avoid spawning subprocesses in unit tests**: prefer in-process fakes or
+    threads to spawning `torch_tpu` subprocesses, as each process pays full
+    startup overhead and can push a test past its timeout. Never initialize TPU
+    at module import time.
 *   **Mutation check**: when adding or rewriting a test, verify that it fails if
     the covered behavior is removed or broken.
 
