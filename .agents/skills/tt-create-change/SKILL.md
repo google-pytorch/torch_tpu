@@ -50,8 +50,14 @@ Follow these guidelines:
         implementation works, as this is redundant with the code itself.
     *   Keep the description concise, professional, and objective, per "Concise
         Writing for Humans" in `AGENTS.md`.
-*   **References**: link related GitHub issues (e.g. `Fixes #123`). Do not
-    reference links that external readers cannot open.
+*   **References**: when a pull request is associated with a GitHub issue, use
+    the full clickable issue URL (e.g.
+    `https://github.com/google-pytorch/torch_tpu/issues/<number>`) rather than a
+    bare `#<number>`, and use a GitHub-recognized linking verb:
+    `Fixes https://github.com/google-pytorch/torch_tpu/issues/<number>` (or
+    `Closes https://...`) on the final pull request that resolves the issue, and
+    `Part of https://...` on intermediate pull requests. Do not reference links
+    that external readers cannot open.
 *   **Commit messages**: give every commit a real message. CI rejects commits
     whose message contains `[NO DESCRIPTION SET]`.
 *   **Agent Attribution**: if an AI assistant made meaningful contributions, you
