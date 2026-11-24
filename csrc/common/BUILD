@@ -303,7 +303,6 @@ torch_tpu_cc_library(
         ":to_string",
         "//csrc/eager:device_buffer",
         "//shims/torch:aten_headers",
-        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -1006,6 +1005,7 @@ torch_tpu_cc_test(
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/strings",
+        "@llvm-project//mlir:IR",
     ],
 )
 

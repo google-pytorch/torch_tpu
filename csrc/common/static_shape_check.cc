@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
-#include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -32,42 +31,11 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
-#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 namespace torch_tpu {
 
 namespace {
-
-// Return a string representation of the shape of `type`.
-//
-// This is similar to calling `ToString(type.getShape())`, with the difference
-// that it will replace every dynamic dimension by the word 'dyn'.
-//
-// For example, given the input tensor:
-//
-//   ```py
-//   tensor = torch.rand(2, 3, 4, 5)
-//   dynamism.mark_dynamic(tensor, 0, 1, 10)
-//   dynamism.mark_dynamic(tensor, 2, 1, 10)
-//   ```
-//
-// This function will return the string below:
-//
-//   [dyn, 3, dyn, 5]
-//
-std::string GetShapeStringWithDynamicDimensions(mlir::RankedTensorType type) {
-  std::vector<std::string> str(type.getRank());
-
-  absl::c_transform(type.getShape(), str.begin(), [](const int64_t size) {
-    // String representation of dimension `i`.
-    //   - "dyn", if `i` is dynamic
-    //   - the size of dimension `i`, otherwise
-    return mlir::ShapedType::isDynamic(size) ? "dyn" : std::to_string(size);
-  });
-
-  return absl::StrCat("[", absl::StrJoin(str, /* separator= */ ", "), "]");
-}
 
 // Return a string representation of the shape of `sizes`.
 //
@@ -129,8 +97,7 @@ absl::Status ValidateStaticShapeImpl(
 absl::Status ValidateStaticShape(mlir::RankedTensorType type,
                                  const std::string_view arg_name) {
   auto get_extra_error_message = [type]() {
-    return absl::StrCat(" within shape ",
-                        GetShapeStringWithDynamicDimensions(type));
+    return absl::StrCat(" within shape ", MlirShapeToString(type.getShape()));
   };
 
   return ValidateStaticShapeImpl(type.getNumDynamicDims(), arg_name,

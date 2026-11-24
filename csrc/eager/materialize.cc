@@ -563,7 +563,9 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
         continue;
       }
       if (ABSL_PREDICT_FALSE(node->is_placeholder())) {
-        return TT_ERROR(error::kInternal)
+        return TT_ERROR(  // ERROR_COV_INFEASIBLE=unreachable; MaterializeSpan
+                          // checks placeholders first
+                   error::kInternal)
                << "cannot Materialize() a placeholder tensor or a tensor that "
                   "depends on a placeholder. \nPlaceholder tensors should only "
                   "appear in compiled mode, which should never try to "
@@ -598,7 +600,9 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
         continue;
       }
       if (ABSL_PREDICT_FALSE(node->is_placeholder())) {
-        return TT_ERROR(error::kInternal)
+        return TT_ERROR(  // ERROR_COV_INFEASIBLE=unreachable; MaterializeSpan
+                          // checks placeholders first
+                   error::kInternal)
                << "cannot Materialize() a placeholder tensor or a tensor that "
                   "depends on a placeholder. \nPlaceholder tensors should only "
                   "appear in compiled mode, which should never try to "

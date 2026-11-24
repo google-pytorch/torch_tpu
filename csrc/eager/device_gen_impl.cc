@@ -49,6 +49,7 @@
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/api_error_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -242,13 +243,6 @@ class DeviceGenerators {
 
 namespace {
 
-std::string GetGeneratorDeviceTypeName(const c10::DeviceType device_type) {
-  if (device_type == c10::DeviceType::PrivateUse1) {
-    return "TPU";
-  }
-  return c10::DeviceTypeName(device_type);
-}
-
 absl::StatusOr<c10::DeviceIndex> NormalizeDeviceIndex(c10::DeviceIndex idx) {
   TT_ASSIGN_OR_RETURN(DeviceGenerators* const instances,
                       DeviceGenerators::GetDefaultInstance());
@@ -256,7 +250,9 @@ absl::StatusOr<c10::DeviceIndex> NormalizeDeviceIndex(c10::DeviceIndex idx) {
   if (idx == -1) {
     const auto* guard =
         c10::impl::getDeviceGuardImpl(c10::DeviceType::PrivateUse1);
-    TT_RET_CHECK(guard != nullptr, error::kFailedPrecondition)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=TpuDeviceGuardImpl is statically
+                   // registered
+        guard != nullptr, error::kFailedPrecondition)
         << "PrivateUse1 device guard is not registered.";
     idx = guard->getDevice().index();
   }
@@ -438,15 +434,23 @@ DeviceGeneratorImplBase::DeviceGeneratorImplBase(
 
 absl::Status DeviceGeneratorImplBase::ValidateDeviceStateTensor(
     const at::Tensor& rng_state) const {
-  TT_RET_CHECK(rng_state.device() == device(), error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // or move rng_state to device()
+      rng_state.device() == device(), error::kFailedPrecondition)
       << "expected rng_state to be on device " << device() << ", got "
       << rng_state.device();
-  TT_RET_CHECK(rng_state.dtype() == at::kUInt64, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // uint64 rng_state
+      rng_state.dtype() == at::kUInt64, error::kFailedPrecondition)
       << "expected rng_state to be of dtype uint64, got "
       << ToString(rng_state.scalar_type());
-  TT_RET_CHECK(rng_state.dim() == 1, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // 1D rng_state
+      rng_state.dim() == 1, error::kFailedPrecondition)
       << "expected rng_state to be a 1D tensor, got " << rng_state.dim();
-  TT_RET_CHECK(rng_state.size(0) == 2, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // size-2 rng_state
+      rng_state.size(0) == 2, error::kFailedPrecondition)
       << "expected rng_state size 2, got " << rng_state.size(0);
   return absl::OkStatus();
 }
@@ -595,7 +599,7 @@ void EagerModeDeviceGeneratorImpl::SetStateImpl(
                      new_state.layout() == at::kStrided,
                  error::kFailedPrecondition)
       << "expected rng state to be a CPU ByteTensor (uint8, strided), got "
-      << GetGeneratorDeviceTypeName(new_state.device().type()) << " "
+      << GetDeviceTypeName(new_state.device().type()) << " "
       << ToString(new_state.scalar_type()) << " ("
       << (new_state.layout() == at::kStrided ? "strided" : "non-strided")
       << ")";
@@ -639,7 +643,7 @@ void EagerModeDeviceGeneratorImpl::GraphsafeSetStateImpl(
   }
   TT_CHECK_THROW(false, error::kInvalidArgument)
       << "expected a TPU generator, got "
-      << (state ? GetGeneratorDeviceTypeName(state->device().type()) : "null")
+      << (state ? GetDeviceTypeName(state->device().type()) : "null")
       << " generator";
 }
 
@@ -787,7 +791,7 @@ void ExportModeDeviceGeneratorImpl::GraphsafeSetStateImpl(
                    // non-DeviceGeneratorImplBase generator state.
       false, error::kInvalidArgument)
       << "expected a TPU generator, got "
-      << (state ? GetGeneratorDeviceTypeName(state->device().type()) : "null")
+      << (state ? GetDeviceTypeName(state->device().type()) : "null")
       << " generator";
 }
 
