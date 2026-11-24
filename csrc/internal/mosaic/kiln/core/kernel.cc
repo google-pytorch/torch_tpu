@@ -164,7 +164,9 @@ absl::StatusOr<mlir::FlatSymbolRefAttr> EmitIndexMapFunction(
   KernelScope scope(fn, spec);
   IndexIndices indices = map.Invoke();
   TT_RETURN_IF_ERROR(scope.builder_scope.error());
-  TT_RET_CHECK(indices.size() == block_rank, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=KernelSpec block_rank and index_map
+                 // arities are fixed at compile time by each C++ kernel.
+      indices.size() == block_rank, error::kInvalidArgument)
       << "index map must return one index per block dimension";
   llvm::SmallVector<mlir::Value> results;
   for (const IndexArg& s : indices) {
@@ -183,7 +185,9 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
     for (const KernelSpec::Block& s :
          llvm::concat<const KernelSpec::Block>(spec.in_specs, spec.out_specs)) {
       if (s.map.has_mapping()) {
-        return TT_ERROR(error::kInvalidArgument)
+        return TT_ERROR(  // ERROR_COV_INFEASIBLE=KernelSpec grid_rank and
+                          // index_map usage are fixed by each C++ kernel.
+                   error::kInvalidArgument)
                << "index_map windowing requires a non-empty grid";
       }
     }
@@ -208,7 +212,9 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
        llvm::concat<const KernelSpec::Block>(spec.in_specs, spec.out_specs)) {
     if (s.space == MemorySpace::kHbm) {
       if (s.map.has_mapping()) {
-        return TT_ERROR(error::kInvalidArgument)
+        return TT_ERROR(  // ERROR_COV_INFEASIBLE=KernelSpec operand spaces and
+                          // index_map usage are fixed by each C++ kernel.
+                   error::kInvalidArgument)
                << "HBM operands do not support index_map windowing";
       }
       window_params.push_back(b.getDictionaryAttr({}));
@@ -270,7 +276,10 @@ absl::Status Kernel::Canonicalize() {
   pm.addPass(mlir::createTrivialDeadCodeEliminationPass());
   pm.addPass(mlir::createCSEPass());
   if (llvm::failed(pm.run(*impl_->module))) {
-    return TT_ERROR(error::kInternal) << "failed to canonicalize Kiln kernel";
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Internal MLIR pass failure on a
+                      // valid C++-constructed Kiln module.
+               error::kInternal)
+           << "failed to canonicalize Kiln kernel";
   }
   return absl::OkStatus();
 }
@@ -280,15 +289,21 @@ std::string Kernel::ToString() const { return PrintModule(*impl_->module); }
 absl::StatusOr<std::string> Kernel::Serialize() && {
   TT_RETURN_IF_ERROR(Canonicalize());
   if (llvm::failed(SerializeMosaicKernel(impl_->module.get()))) {
-    return TT_ERROR(error::kInternal) << "failed to serialize mosaic kernel";
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Internal Mosaic pass failure on
+                      // a valid C++-constructed Kiln module.
+               error::kInternal)
+           << "failed to serialize mosaic kernel";
   }
   return ToString();
 }
 
 absl::Status Kernel::Verify() const {
   if (llvm::failed(mlir::verify(impl_->module.get()))) {
-    return TT_ERROR(error::kInternal) << "Kiln kernel failed verification:\n"
-                                      << ToString();
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Internal MLIR verify failure on
+                      // a valid C++-constructed Kiln module.
+               error::kInternal)
+           << "Kiln kernel failed verification:\n"
+           << ToString();
   }
   return absl::OkStatus();
 }
@@ -313,7 +328,9 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
   const int64_t grid_rank = spec.grid.grid.size();
   if (!spec.grid.dimension_semantics.empty() &&
       spec.grid.dimension_semantics.size() != grid_rank) {
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=KernelSpec grid_rank and
+                      // dimension_semantics are fixed by each C++ kernel.
+               error::kInvalidArgument)
            << "dimension_semantics must have one entry per grid axis";
   }
 
