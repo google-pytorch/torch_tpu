@@ -7190,6 +7190,36 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
 
+  def test_chunk_cat_out_aliases_input(self):
+    """out may be one of the inputs: the inputs are read before out changes."""
+
+    def fn(device):
+      x = torch.tensor([1.0, 2.0, 3.0], device=device)
+      torch._chunk_cat([x], 0, 2, out=x)
+      return x
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_chunk_cat_negative_dim(self):
+    tensors = [torch.randn(2, 5, 3), torch.randn(2, 3, 3)]
+
+    def fn(device):
+      out = torch.empty(0, device=device)
+      torch._chunk_cat([t.to(device) for t in tensors], -2, 2, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_chunk_cat_real_to_complex_out(self):
+    tensors = [torch.randn(5, 3), torch.randn(7)]
+
+    def fn(device):
+      out = torch.empty(0, dtype=torch.complex64, device=device)
+      torch._chunk_cat([t.to(device) for t in tensors], 0, 2, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
   def test_atan2(self):
     x = torch.tensor([2], dtype=torch.int32)
     y = torch.tensor([3], dtype=torch.float32)

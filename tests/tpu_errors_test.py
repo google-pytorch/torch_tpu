@@ -128,6 +128,27 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     ):
       x.cpu()
 
+  @et.why_tpu_only("TPU stores float4_e2m1fn_x2 with its last dimension unpacked.")
+  def test_chunk_cat_float4(self):
+    t = torch.empty(4, 2, dtype=torch.float4_e2m1fn_x2, device=et.device())
+    out = torch.empty(2, 4, dtype=torch.float4_e2m1fn_x2, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""chunk_cat(): not implemented for float4_e2m1fn_x2""",
+    ):
+      torch._chunk_cat([t], 0, 2, out=out)
+
+  @et.why_tpu_only("Bounded dynamism is a TorchTPU feature.")
+  def test_chunk_cat_dynamic_input(self):
+    t = torch.zeros(8, 4, device=et.device())
+    dynamism.mark_dynamic(t, 0, 2, 8)
+    out = torch.empty(0, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""chunk_cat(): not implemented for inputs with dynamic dimensions""",
+    ):
+      torch._chunk_cat([t], 0, 2, out=out)
+
   @et.why_tpu_only("On-device layouts only exist for TPU tensors.")
   def test_compiled_program_rejects_input_in_another_layout(self):
     @torch.compile(backend="tpu", fullgraph=True)
