@@ -18,13 +18,37 @@ on:
   # Allow manual runs from the Actions tab for testing
   workflow_dispatch:
     inputs:
+      platform:
+        description: >-
+          Comma-separated BENCHMARK_PLATFORM target(s) from
+          perflab/benchmark_registry.pbtxt (e.g. 'v7_1x1x1', 'v7_2x2x1',
+          'b200_1', or 'v7_1x1x1,b200_1').
+        required: true
+        type: string
       benchmark_filter:
-        description: "Regex to filter by benchmark name (e.g., 'test_qwen3.*')."
+        description: >-
+          Regex to filter by benchmark name (e.g. 'torch_benchmarks',
+          'layer_benchmarks', or 'torch_benchmarks_shard_00_of_16'). Required
+          when a platform spans multiple suites (e.g. 'v7_1x1x1'); optional when
+          platform uniquely identifies a suite (e.g. 'v7_2x2x1').
         required: false
         type: string
         default: ""
-      environment_filter:
-        description: "Regex to filter by environment configuration ID (e.g., 'tpu-v7.*')."
+      test_filter:
+        description: >-
+          TESTBRIDGE_TEST_ONLY filter of the benchmark cases to run, e.g.
+          '*.test_benchmark_<benchmark>_<run mode>', or
+          '<benchmark>_<run mode>' for the distributed suites. Disables sharding
+          (TEST_TOTAL_SHARDS=1) and launches one shard per matched suite.
+        required: false
+        type: string
+        default: ""
+      experiment_ref:
+        description: >-
+          Git ref of this repository to benchmark: a full 40-character SHA,
+          branch, tag, or 'refs/pull/<number>/head' for a pull request,
+          including one from a fork. Defaults to the ref the workflow runs on.
+          Review fork PRs before running.
         required: false
         type: string
         default: ""
@@ -61,8 +85,256 @@ permissions:
   contents: read
 
 jobs:
+  resolve:
+    name: Resolve commit and benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      benchmark_filter: ${{ steps.select.outputs.benchmark_filter }}
+      environment_filter: ${{ steps.select.outputs.environment_filter }}
+    steps:
+      - name: Checkout TorchTPU
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Pin the commit, so that every job benchmarks the same one even if the
+      # ref moves during the run.
+      - name: Resolve commit
+        id: commit
+        shell: bash
+        env:
+          EXPERIMENT_REF: ${{ inputs.experiment_ref || github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 -- origin "$EXPERIMENT_REF"
+          exp_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          echo "sha=${exp_sha}" >> "$GITHUB_OUTPUT"
+          git show "${exp_sha}:perflab/benchmark_registry.pbtxt" > "${RUNNER_TEMP}/benchmark_registry.pbtxt"
+          git show "${exp_sha}:.github/actions/run-benchmark/action.yml" > "${RUNNER_TEMP}/exp_action.yml" 2>/dev/null || : > "${RUNNER_TEMP}/exp_action.yml"
+      # Validate inputs against the target commit's registry up front so typos
+      # fail in seconds before building a wheel or claiming a runner. When
+      # test_filter is set, sharding is disabled (TEST_TOTAL_SHARDS=1) and each
+      # matched sharded suite is narrowed to a single entry.
+      - name: Validate inputs and select benchmarks
+        id: select
+        shell: bash
+        env:
+          PLATFORM: ${{ inputs.platform }}
+          BENCHMARK_FILTER: ${{ inputs.benchmark_filter }}
+          TEST_FILTER: ${{ inputs.test_filter }}
+          CUSTOM_METADATA: ${{ inputs.custom_metadata }}
+        run: |
+          set -euo pipefail
+          registry="${RUNNER_TEMP}/benchmark_registry.pbtxt"
+          exp_action="${RUNNER_TEMP}/exp_action.yml"
+          python3 - "${registry}" "${exp_action}" "${GITHUB_OUTPUT}" <<'PYTHON'
+          import json
+          import os
+          import re
+          import sys
+
+          platform_input = os.environ["PLATFORM"]
+          benchmark_filter = os.environ["BENCHMARK_FILTER"]
+          test_filter = os.environ["TEST_FILTER"]
+          custom_metadata = os.environ["CUSTOM_METADATA"]
+          registry_path, exp_action_path, gh_output = sys.argv[1:4]
+
+          def _suite_name(bench_name):
+            return re.sub(r"_shard_\d+_of_\d+$", "", bench_name)
+
+          def _anchor_exact(values):
+            escaped = [re.escape(v) for v in values]
+            if len(escaped) == 1:
+              return f"^{escaped[0]}$"
+            return "^(" + "|".join(escaped) + ")$"
+
+          if custom_metadata:
+            try:
+              parsed = json.loads(custom_metadata)
+            except json.JSONDecodeError as exc:
+              sys.exit(f"custom_metadata is not valid JSON: {exc}")
+            if not isinstance(parsed, dict):
+              sys.exit("custom_metadata must be a JSON object.")
+
+          if not platform_input.strip():
+            sys.exit(
+                "platform is required (comma-separated BENCHMARK_PLATFORM"
+                " values, e.g. 'v7_1x1x1', 'v7_2x2x1', 'b200_1', or"
+                " 'v7_1x1x1,b200_1')."
+            )
+
+          raw_tokens = [tok.strip() for tok in platform_input.split(",")]
+          if any(not tok for tok in raw_tokens):
+            sys.exit(
+                f"platform {platform_input!r} contains an empty entry; pass"
+                " comma-separated platform names (e.g. 'v7_1x1x1,b200_1')."
+            )
+          requested_platforms = list(dict.fromkeys(raw_tokens))
+          requested_set = set(requested_platforms)
+
+          bench_re = None
+          if benchmark_filter:
+            try:
+              bench_re = re.compile(benchmark_filter)
+            except re.error as exc:
+              sys.exit(
+                  f"benchmark_filter {benchmark_filter!r} is not a valid"
+                  f" regex: {exc}"
+              )
+
+          # Parse every (benchmark_name, env_id, BENCHMARK_PLATFORM | None)
+          # entry from perflab/benchmark_registry.pbtxt.
+          registry = []
+          current_name = None
+          current_env = None
+          with open(registry_path, encoding="utf-8") as f:
+            for line in f:
+              if line.startswith("benchmarks {"):
+                current_name = None
+                current_env = None
+                continue
+              if line.startswith("  }"):
+                current_env = None
+                continue
+              name_match = re.match(r'^  name:\s*"([^"]+)"\s*$', line)
+              if name_match:
+                current_name = name_match.group(1)
+                current_env = None
+                continue
+              env_match = re.match(r'^    id:\s*"([^"]+)"\s*$', line)
+              if env_match and current_name is not None:
+                current_env = env_match.group(1)
+                registry.append([current_name, current_env, None])
+                continue
+              hw_match = re.match(
+                  r'^\s+workload_action_inputs\s*\{\s*key:\s*"env_vars_hw"\s+'
+                  r'value:\s*"([^"]*)"\s*\}\s*$',
+                  line,
+              )
+              if hw_match and current_env is not None and registry:
+                for pair in hw_match.group(1).split(","):
+                  if pair.startswith("BENCHMARK_PLATFORM="):
+                    registry[-1][2] = pair.split("=", 1)[1]
+                    break
+
+          if not registry:
+            sys.exit(
+                "No benchmark entries parsed from"
+                " perflab/benchmark_registry.pbtxt."
+            )
+
+          valid_platforms = sorted({plat for _, _, plat in registry if plat})
+          unknown = [p for p in requested_platforms if p not in valid_platforms]
+          if unknown:
+            sys.exit(
+                f"Unknown platform(s): {', '.join(unknown)}. Available"
+                " platforms in perflab/benchmark_registry.pbtxt:"
+                f" {', '.join(valid_platforms)}."
+            )
+
+          # Require benchmark_filter when a requested platform spans multiple
+          # suites (e.g. v7_1x1x1 runs both torch_benchmarks and
+          # layer_benchmarks) so empty filter never fans out unexpectedly.
+          if not bench_re:
+            for plat in requested_platforms:
+              suites = sorted(
+                  {_suite_name(n) for n, _, p in registry if p == plat}
+              )
+              if len(suites) > 1:
+                sys.exit(
+                    f"platform {plat!r} belongs to multiple suites"
+                    f" ({', '.join(suites)}); set benchmark_filter (e.g."
+                    f" '{suites[-1]}', or '.*' for all)."
+                )
+
+          matched = [
+              (name, env_id, plat)
+              for name, env_id, plat in registry
+              if plat in requested_set
+              and (not bench_re or bench_re.search(name))
+          ]
+          matched_platforms = {plat for _, _, plat in matched}
+          missing = [p for p in requested_platforms if p not in matched_platforms]
+          if missing:
+            details = "; ".join(
+                f"{p} -> {', '.join(sorted({_suite_name(n) for n, _, rp in registry if rp == p}))}"
+                for p in missing
+            )
+            sys.exit(
+                f"benchmark_filter {benchmark_filter!r} matched no entries for"
+                f" platform(s): {', '.join(missing)} (available suites:"
+                f" {details})."
+            )
+
+          exp_action_text = open(exp_action_path, encoding="utf-8").read()
+
+          sharded_suites = set()
+          if test_filter:
+            selected_pairs = []
+            first_shard = {}
+            for name, env_id, plat in matched:
+              suite = _suite_name(name)
+              if suite != name:
+                sharded_suites.add(suite)
+                first_shard.setdefault(suite, name)
+                if name != first_shard[suite]:
+                  continue
+              selected_pairs.append((name, env_id, plat))
+
+            if sharded_suites and "TEST_TOTAL_SHARDS" not in exp_action_text:
+              sys.exit(
+                  "experiment_ref predates the run-benchmark action update"
+                  " needed to disable sharding for test_filter; rebase onto"
+                  " main or omit test_filter."
+              )
+
+            selected_plats = {p for _, _, p in selected_pairs}
+            dropped = [p for p in requested_platforms if p not in selected_plats]
+            if dropped:
+              sys.exit(
+                  f"platform(s) {', '.join(dropped)} are not present on the"
+                  " selected first shard of the matched suite(s)."
+              )
+          else:
+            selected_pairs = matched
+
+          selected_names = list(dict.fromkeys(n for n, _, _ in selected_pairs))
+          selected_envs = list(dict.fromkeys(e for _, e, _ in selected_pairs))
+          selected_name_set = set(selected_names)
+          selected_env_set = set(selected_envs)
+
+          # BAP executes the Cartesian product benchmark_filter x
+          # environment_filter. Reject platform combos whose bounding box would
+          # drag in unrequested targets (e.g. v7_1x1x1,b200_8 also hits b200_1
+          # and v7_2x2x1).
+          extras = sorted({
+              f"{n}/{e} ({p or 'unknown'})"
+              for n, e, p in registry
+              if n in selected_name_set
+              and e in selected_env_set
+              and p not in requested_set
+          })
+          if extras:
+            sys.exit(
+                f"platform(s) {', '.join(requested_platforms)} cannot be"
+                " combined in one BAP run because the Cartesian filter would"
+                f" also trigger unrequested target(s): {', '.join(extras)}."
+                " Trigger separate runs instead."
+            )
+
+          resolved_bench_filter = _anchor_exact(selected_names)
+          resolved_env_filter = _anchor_exact(selected_envs)
+          print(f"Resolved platforms: {requested_platforms}")
+          print(f"  benchmark_filter: {resolved_bench_filter}")
+          print(f"  environment_filter: {resolved_env_filter}")
+
+          with open(gh_output, "a", encoding="utf-8") as out:
+            out.write(f"benchmark_filter={resolved_bench_filter}\n")
+            out.write(f"environment_filter={resolved_env_filter}\n")
+          PYTHON
+
   build_wheel:
     name: Build torch_tpu wheel
+    needs: [resolve]
     if: ${{ !inputs.torch_tpu_wheel }}
     runs-on: linux-x86-n4-16
     container:
@@ -75,7 +347,7 @@ jobs:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ needs.resolve.outputs.sha }}
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
@@ -83,9 +355,10 @@ jobs:
           python_version: ${{ inputs.python_version }}
   run_benchmarks:
     name: Run TorchTPU benchmarks
-    needs: [build_wheel]
+    needs: [resolve, build_wheel]
     if: >-
       !cancelled() &&
+      needs.resolve.result == 'success' &&
       (needs.build_wheel.result == 'success' ||
        needs.build_wheel.result == 'skipped')
     permissions:
@@ -99,9 +372,17 @@ jobs:
       registry_file: "perflab/benchmark_registry.pbtxt"
       bap_ref: "df45de4a2390d7510af1e9d747f47cd6f6b9bb94"
       runner: "linux-x86-n4-16"
-      benchmark_filter: ${{ inputs.benchmark_filter }}
-      environment_filter: ${{ inputs.environment_filter }}
-      custom_metadata: ${{ inputs.custom_metadata }}
+      benchmark_filter: ${{ needs.resolve.outputs.benchmark_filter }}
+      environment_filter: ${{ needs.resolve.outputs.environment_filter }}
+      experiment_ref: ${{ needs.resolve.outputs.sha }}
+      # experiment_ref is pinned to a commit SHA, so BAP would otherwise record
+      # the SHA as the result's branch. When neither custom_metadata nor
+      # experiment_ref is set, default to the workflow branch (matching
+      # nightly_benchmarks.yml).
+      custom_metadata: ${{ (inputs.custom_metadata != '{}' && inputs.custom_metadata) || (!inputs.experiment_ref && format('{{"branch":"{0}"}}', github.ref_name)) || '{}' }}
       custom_env_vars: |
         TORCH_TPU_WHEEL=${{ inputs.torch_tpu_wheel || needs.build_wheel.outputs.gcs_wheel_path }}
         TORCH_TPU_PYTHON_VERSION=${{ inputs.python_version }}
+        TESTBRIDGE_TEST_ONLY=${{ inputs.test_filter }}
+        ${{ inputs.test_filter && 'TEST_TOTAL_SHARDS=1' || '' }}
+        ${{ inputs.test_filter && 'TEST_SHARD_INDEX=0' || '' }}
