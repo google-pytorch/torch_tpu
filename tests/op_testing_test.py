@@ -2078,6 +2078,66 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
         ),
     )
 
+  def test_compile_bucket_size(self):
+    td = dynamism_test_utils.TensorDim
+    # Single dim and 2 dims per tensor keep the default bucket size (None).
+    single_dim_plan = dynamism_test_utils.DynamicMarkingPlan(
+        label="t0d0",
+        tensor_dims=(td(0, 0),),
+        coupled_dims=(td(0, 0),),
+    )
+    self.assertIsNone(dynamism_test_utils.compile_bucket_size(single_dim_plan))
+
+    two_dims_two_tensors_plan = dynamism_test_utils.DynamicMarkingPlan(
+        label="t0d0_t0d1",
+        tensor_dims=(td(0, 0), td(0, 1)),
+        coupled_dims=(td(0, 0), td(0, 1), td(1, 0), td(1, 1)),
+    )
+    self.assertIsNone(
+        dynamism_test_utils.compile_bucket_size(two_dims_two_tensors_plan)
+    )
+
+    # 3+ dynamic dims on a single tensor use the smaller multi-dim bucket size.
+    three_dims_plan = dynamism_test_utils.DynamicMarkingPlan(
+        label="t0d0_t0d1_t0d2",
+        tensor_dims=(td(0, 0), td(0, 1), td(0, 2)),
+        coupled_dims=(td(0, 0), td(0, 1), td(0, 2)),
+    )
+    self.assertEqual(
+        dynamism_test_utils.compile_bucket_size(three_dims_plan),
+        dynamism_test_utils.MULTI_DIM_BUCKET_SIZE,
+    )
+
+  def test_is_valid_coupled_plan_uses_multi_dim_bucket_step_with_unified_dims(
+      self,
+  ):
+    add_op = op_testing._get_op("add")
+    dyn_info = dynamism_test_utils.DynamicOpInfo(add_op)
+    # 3D tensor with two equal dims unified during tracing: only 2 canonical
+    # symbols remain, yet all 3 dims on tensor 0 are marked dynamic so guard
+    # validation must use `MULTI_DIM_BUCKET_SIZE` (16), not 128.
+    inp = torch.ones(4, 3, 3)
+    op_args = dynamism_test_utils._OpArgs(inp, (), {})  # pylint: disable=protected-access
+    td = dynamism_test_utils.TensorDim
+    coupled = (td(0, 0), td(0, 1), td(0, 2))
+
+    def op_with_unified_dims(x):
+      torch._check(x.shape[1] == x.shape[2])  # pylint: disable=protected-access
+      # Satisfied at hint=4 and bucket_step=16 (16 % 3 == 1), but violated at
+      # bucket_step=128 (128 % 3 == 2) and fallback 2*4=8 (8 % 3 == 2).
+      if x.shape[0] % 3 != 1:
+        raise ValueError("dim 0 mod 3 must be 1")
+      return x + 1
+
+    self.assertTrue(
+        dyn_info._is_valid_coupled_plan(  # pylint: disable=protected-access
+            op_with_unified_dims,
+            op_args,
+            coupled,
+            dynamism_test_utils.DynamismMode.COMPILE,
+        )
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
