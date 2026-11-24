@@ -281,7 +281,9 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2cShlo(
   auto elem_type = input_type.getElementType();
   if (!mlir::isa<mlir::ComplexType>(elem_type)) {
     TT_ASSIGN_OR_RETURN(auto scalar_type, ConvertTo<at::ScalarType>(elem_type));
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Checked by caller before
+                      // DispatchOp.
+               error::kInvalidArgument)
            << "expected complex input type, got " << ToString(scalar_type);
   }
   auto float_type = mlir::cast<mlir::ComplexType>(elem_type).getElementType();
@@ -351,7 +353,9 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2rShlo(
   auto elem_type = input_type.getElementType();
   if (!mlir::isa<mlir::ComplexType>(elem_type)) {
     TT_ASSIGN_OR_RETURN(auto scalar_type, ConvertTo<at::ScalarType>(elem_type));
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Checked by caller before
+                      // DispatchOp.
+               error::kInvalidArgument)
            << "expected complex input type, got " << ToString(scalar_type);
   }
   auto float_type = mlir::cast<mlir::ComplexType>(elem_type).getElementType();
@@ -565,9 +569,7 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2c_out
-                         // does not exist
-            self.is_complex(), error::kInvalidArgument)
+        TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
             << "expected complex input type, got "
             << ToString(self.scalar_type());
 
@@ -661,9 +663,7 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2r_out
-                         // does not exist
-            self.is_complex(), error::kInvalidArgument)
+        TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
             << "expected complex input type, got "
             << ToString(self.scalar_type());
 

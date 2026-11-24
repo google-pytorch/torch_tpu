@@ -55,8 +55,9 @@ absl::StatusOr<ScatterOp> GetReduceOp(const std::string_view reduce) {
     return ScatterOp::kAmin;
   }
   return TT_ERROR(error::kInvalidArgument)
-         << "Expected reduce to be one of prod, mean, amax or amin but got "
-         << reduce;
+         << "expected reduce to be one of 'prod', 'mean', 'amax', or 'amin', "
+            "got '"
+         << reduce << "'";
 }
 
 absl::Status IndexReduce(const at::Tensor& self, int64_t dim,

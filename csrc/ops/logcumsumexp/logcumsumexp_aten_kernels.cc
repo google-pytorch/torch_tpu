@@ -179,15 +179,8 @@ at::Tensor AtenLogcumsumexp(const at::Tensor& self, const int64_t dim) {
 at::Tensor& AtenLogcumsumexpOut(const at::Tensor& self, const int64_t dim,
                                 at::Tensor& out) {
   TT_KERNEL(OpName::kLogcumsumexpOut, param_keys, (self, dim, out), {
-    // The out variant is unreachable in eager mode: functionalization rewrites
-    // _logcumsumexp.out into the functional _logcumsumexp plus a copy, so the
-    // identical check in AtenLogcumsumexp fires first. Kept as a defensive
-    // check for non-functionalized paths.
     if (self.dim() > 0 && self.numel() > 0) {
-      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=functionalization rewrites .out
-                       // to the functional _logcumsumexp, whose identical check
-                       // fires first
-          self.is_floating_point(), error::kInvalidArgument)
+      TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
           << "expected the input dtype to be floating point, got "
           << ToString(self.scalar_type());
     }

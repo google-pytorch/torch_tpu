@@ -262,11 +262,16 @@ absl::StatusOr<at::Tensor> ContiguousToView(
     DeviceBufferRef contiguous_buffer, absl::Span<const int64_t> target_strides,
     int64_t target_storage_offset) {
   // Check argument validity.
-  TT_RET_CHECK(contiguous_buffer.dimensions().size() == target_strides.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pass strides from a validated
+                 // at::Tensor
+      contiguous_buffer.dimensions().size() == target_strides.size(),
+      error::kInvalidArgument)
       << "must specify the same number of strides as dimensions in the tensor";
-  TT_RET_CHECK(target_storage_offset >= 0, error::kInvalidArgument)
-      << "expected target_storage_offset to be >= 0, got "
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pass storage_offset from a
+                 // validated at::Tensor
+      target_storage_offset >= 0, error::kInvalidArgument)
+      << "expected target_storage_offset to be >= 0, "
+         "got "
       << target_storage_offset;
 
   if (target_storage_offset == 0 &&

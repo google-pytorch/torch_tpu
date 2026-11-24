@@ -278,12 +278,18 @@ void SetTpuBoundsEnv(const std::string& host_bounds,
 absl::Status InitializeDistributedEnvironment(
     const DistributedWorkerConfiguration& config) {
   if (config.sb_addrs.empty()) {
-    return TT_ERROR(error::kFailedPrecondition)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Validated earlier in
+                      // GetDistributedWorkerConfiguration(); covered in C++
+                      // environment_test.
+               error::kFailedPrecondition)
            << "the " << kTorchTpuSlicebuilderAddressesEnvVar
            << " environment variable must not be empty";
   }
   if (config.rank < 0) {
-    return TT_ERROR(error::kFailedPrecondition)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Validated earlier in
+                      // GetDistributedWorkerConfiguration(); covered in C++
+                      // environment_test.
+               error::kFailedPrecondition)
            << "expected RANK to be >= 0, got " << config.rank;
   }
   std::vector<std::string> addresses = absl::StrSplit(config.sb_addrs, ',');

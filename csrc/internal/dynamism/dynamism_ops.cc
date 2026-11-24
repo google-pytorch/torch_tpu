@@ -51,11 +51,13 @@ namespace {
 absl::StatusOr<mlir::MlirOp> Pad(mlir::MlirOp input_op,
                                  const Dimensions& target_dimensions) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  TT_RET_CHECK(input_type.hasStaticShape(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers always construct static
+                 // input_op.
+      input_type.hasStaticShape(), error::kInvalidArgument)
       << "expected static shape, got dynamic shape "
       << ToString(input_type.getShape());
-  TT_RET_CHECK(input_type.getRank() == target_dimensions.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers always match rank of input_op.
+      input_type.getRank() == target_dimensions.size(), error::kInvalidArgument)
       << "expected input dimensions size to match target dimensions size, got "
          "input dimensions size="
       << input_type.getRank()
@@ -66,7 +68,9 @@ absl::StatusOr<mlir::MlirOp> Pad(mlir::MlirOp input_op,
   for (int i = 0; i < input_type.getRank(); ++i) {
     int64_t upper_bound = target_dimensions[i];
     int padding_size = upper_bound - input_type.getDimSize(i);
-    TT_RET_CHECK(padding_size >= 0, error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=MarkDynamic and MakePadDynamicShapes
+                   // enforce upper_bound >= dim_size.
+        padding_size >= 0, error::kInvalidArgument)
         << "expected padding size to be >= 0, got " << padding_size;
     if (padding_size > 0) {
       was_padded = true;
@@ -92,16 +96,19 @@ absl::StatusOr<mlir::MlirOp> Pad(mlir::MlirOp input_op,
 absl::StatusOr<mlir::MlirOp> Slice(mlir::MlirOp input_op,
                                    const Dimensions& target_dimensions) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  TT_RET_CHECK(input_type.getRank() == target_dimensions.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=MakeDynamicTensorType uses
+                 // dimensions_vec[i].size().
+      input_type.getRank() == target_dimensions.size(), error::kInvalidArgument)
       << "expected input dimensions size to match target dimensions size, got "
          "input dimensions size="
       << input_type.getRank()
       << " target dimensions size=" << target_dimensions.size();
 
   if (input_type.hasStaticShape()) {
-    TT_RET_CHECK(input_type.getShape().equals(target_dimensions),
-                 error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=GetSliceModule skips static shapes
+                   // before calling Slice.
+        input_type.getShape().equals(target_dimensions),
+        error::kInvalidArgument)
         << "expected input shape to match target dimensions, got input shape="
         << ToString(input_type.getShape())
         << " target dimensions=" << ToString(target_dimensions);
@@ -174,7 +181,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetPadModule(
   ABSL_VLOG(2) << "[GetPadModule] Creating a padding module for dynamism with "
                << shapes.size() << " shapes.";
   TT_RET_CHECK(!shapes.empty(), error::kInvalidArgument)
-      << "PadModule requires at least one shape.";
+      << "expected at least one shape, got 0";
   std::string module_name = "pad_module";
   mlir::ModuleBuilder mb(mlir_context, module_name);
   mlir::func::FunctionBuilder fb(mb, "main");
@@ -273,16 +280,21 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetSliceModule(
     absl::Span<const mlir::ElementType> input_dtypes) {
   ABSL_VLOG(2) << "[GetSliceModule] creating a slice module for dynamism with "
                << dimensions_vec.size() << " shapes.";
-  TT_RET_CHECK(!dimensions_vec.empty(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Validated by UnpackSliceInputs and
+                 // CompilationCache.
+      !dimensions_vec.empty(), error::kInvalidArgument)
       << "expected at least one dimensions vector, got none";
-  TT_RET_CHECK(dimensions_vec.size() == padded_dimensions_vec.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Validated by UnpackSliceInputs and
+                 // CompilationCache.
+      dimensions_vec.size() == padded_dimensions_vec.size(),
+      error::kInvalidArgument)
       << "expected dimensions vector and padded dimensions vector to have the "
          "same size, got dimensions vector size="
       << dimensions_vec.size()
       << " padded dimensions vector size=" << padded_dimensions_vec.size();
-  TT_RET_CHECK(dimensions_vec.size() == input_dtypes.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Validated by UnpackSliceInputs and
+                 // CompilationCache.
+      dimensions_vec.size() == input_dtypes.size(), error::kInvalidArgument)
       << "expected dimensions vector and input dtypes to have the same size, "
          "got "
          "dimensions vector size="

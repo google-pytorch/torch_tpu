@@ -424,6 +424,7 @@ torch_tpu_cc_library(
         ":structured_log_buffer",
         ":tensor_to_buffer",
         "//csrc/common:cache_key",
+        "//csrc/common:device_type",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",

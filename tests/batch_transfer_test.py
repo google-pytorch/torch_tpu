@@ -209,7 +209,8 @@ class BatchTransferTest(seed_test_utils.RepeatableTest):
     tpu_slice = tpu_base[2:12]
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Requires TPU v5lite hardware
-        RuntimeError, 'destination TPU tensor must be a contiguous base tensor'
+        RuntimeError,
+        'expected destination TPU tensor to be a contiguous base tensor',
     ):
       batch_transfer.batch_transfer_h2d([cpu_tensor_large], [tpu_slice])
 

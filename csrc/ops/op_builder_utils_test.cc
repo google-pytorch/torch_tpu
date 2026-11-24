@@ -1197,8 +1197,9 @@ TEST(DynamicReshapeFromStaticDimensions, ErrorExpandDynamicToMultiple) {
                         static_output_shape, op_builder_utils_builder);
   ASSERT_FALSE(result.reshaped_op.ok());
   EXPECT_EQ(result.reshaped_op.status().code(), error::kInvalidArgument);
-  EXPECT_THAT(result.reshaped_op.status().message(),
-              testing::HasSubstr("expands to multiple non one output dims"));
+  EXPECT_THAT(
+      result.reshaped_op.status().message(),
+      testing::HasSubstr("splits into multiple non-unit output dimensions"));
 }
 
 TEST(DynamicReshapeFromStaticDimensions, ErrorNonTransposeLikeReshape) {
@@ -2681,11 +2682,11 @@ TEST(ConvolutionLike, MismatchedResultDimsReturnsNotImplementedError) {
       result.status().message(),
       testing::HasSubstr(
           "expected the convolution result shape inferred at the upper bounds "
-          "of the lhs operand of type tensor<1x4x?xf32, "
-          "#stablehlo.bounds<?, ?, 8>> and the rhs operand of type "
-          "tensor<4x1x3xf32> to be [1, 4, 9], got [1, 4, 10]; only the batch "
-          "and spatial dimensions of the input (and of grad_output in "
-          "convolution_backward) may be bounded dynamic"));
+          "of the lhs operand of a float32 tensor with shape [1, 4, 8] and the "
+          "rhs operand of a float32 tensor with shape [4, 1, 3] to be [1, 4, "
+          "9], got [1, 4, 10]; only the batch and spatial dimensions of the "
+          "input (and of grad_output in convolution_backward) may be bounded "
+          "dynamic"));
 }
 
 class ConvolutionLikeUnsupportedTest

@@ -19,6 +19,7 @@
 
 #include <string>
 
+#include "c10/core/DeviceType.h"
 #include "torch/headeronly/core/DeviceType.h"
 
 namespace torch_tpu {
@@ -44,6 +45,15 @@ enum class PjRtDeviceType {
 // the flexibility to support other hardware types in the future if we want to.
 [[nodiscard]] inline std::string GetPrivateUse1DeviceDebugName() {
   return "tpu";
+}
+
+// Returns a user-facing uppercase device type name (e.g. "TPU", "CPU").
+[[nodiscard]] inline std::string GetDeviceTypeName(
+    c10::DeviceType device_type) {
+  if (device_type == GetPrivateUse1DeviceType()) {
+    return "TPU";
+  }
+  return c10::DeviceTypeName(device_type);
 }
 
 }  // namespace torch_tpu

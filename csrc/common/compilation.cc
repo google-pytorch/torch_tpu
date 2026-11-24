@@ -204,7 +204,9 @@ LoadedExecutableWithMetadata::MakeShared(
     Indices argument_indices,
     std::optional<UnboundedDynamicExecutionMetadata> dynamic_execution_metadata,
     std::optional<xla::PjRtDeviceDimensions> subslice_origin) {
-  TT_RET_CHECK(executable, error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=executable is absl_nonnull and never
+                 // null on OK XLA status.
+      executable, error::kInternal)
       << "cannot create SharedLoadedExecutableWithMetadata from null "
          "executable.";
 

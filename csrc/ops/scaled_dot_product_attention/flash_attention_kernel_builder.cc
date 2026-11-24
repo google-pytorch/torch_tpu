@@ -341,7 +341,8 @@ absl::Status ValidateDtype(at::ScalarType dtype) {
     return absl::OkStatus();
   }
   return TT_ERROR(error::kPythonNotImplementedError)
-         << "unsupported dtype for sdpa custom kernel";
+         << "expected query dtype to be float32 or bfloat16, got "
+         << ToString(dtype);
 }
 
 mlir::MlirOp PadSequenceDim(mlir::MlirOp input, int64_t seq_dim,
@@ -455,7 +456,7 @@ absl::StatusOr<FlashAttnConfig> CreateFlashAttnConfig(
     const Tiling& tiling, mlir::stablehlo::Precision precision) {
   if (is_causal && attn_bias.has_value()) {
     return TT_ERROR(error::kInvalidArgument)
-           << "Causal mask and attn bias are mutually exclusive.";
+           << "causal mask and attention bias are mutually exclusive";
   }
 
   auto query_type = GetTensorTypeOrDie(query);
@@ -480,7 +481,9 @@ absl::StatusOr<FlashAttnConfig> CreateFlashAttnConfig(
 
   if (num_heads % kv_num_heads != 0) {
     return TT_ERROR(error::kInvalidArgument)
-           << "num_heads must be divisible by kv_num_heads for MQA/GQA";
+           << "expected num_heads to be divisible by kv_num_heads for MQA/GQA, "
+              "got num_heads="
+           << num_heads << " and kv_num_heads=" << kv_num_heads;
   }
 
   FlashAttnConfig config;

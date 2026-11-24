@@ -245,8 +245,9 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsNonAsciiRejected) {
       UpdateProfileOptions("custom_opt:\"value_µ\"", opts, run_dir);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), error::kInvalidArgument);
-  EXPECT_NE(status.message().find("contains non-ASCII characters"),
-            std::string::npos);
+  EXPECT_EQ(status.message(),
+            "expected custom_config to contain only ASCII characters, got "
+            "'custom_opt:\"value_µ\"' where 'µ' is not ASCII");
 }
 
 TEST(TpuProfilerPluginTest, UpdateProfileOptionsInvalidValue) {
@@ -272,7 +273,7 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsMalformedAdvancedValue) {
   EXPECT_EQ(status.code(), error::kInvalidArgument);
   EXPECT_EQ(status.message(),
             "expected the advanced option 'unknown_option' to be a "
-            "quoted string, boolean (true/false), or integer, got 'abc'");
+            "quoted string, Boolean (true/false), or integer, got 'abc'");
 }
 
 TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnmatchedQuote) {
@@ -285,7 +286,7 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnmatchedQuote) {
   EXPECT_EQ(status.code(), error::kInvalidArgument);
   EXPECT_EQ(status.message(),
             "expected the advanced option 'unknown_option' to be a "
-            "quoted string, boolean (true/false), or integer, got '\"abc'");
+            "quoted string, Boolean (true/false), or integer, got '\"abc'");
 }
 
 TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnmatchedClosingQuote) {
@@ -298,7 +299,7 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnmatchedClosingQuote) {
   EXPECT_EQ(status.code(), error::kInvalidArgument);
   EXPECT_EQ(status.message(),
             "expected the advanced option 'unknown_option' to be a "
-            "quoted string, boolean (true/false), or integer, got 'abc\"'");
+            "quoted string, Boolean (true/false), or integer, got 'abc\"'");
 }
 
 TEST(TpuProfilerPluginTest, UpdateProfileOptionsInvalidEscapeSequence) {

@@ -30,6 +30,7 @@ import datetime
 import os
 import re
 import time
+import unittest
 
 from absl.testing import absltest
 import jax
@@ -109,6 +110,12 @@ def run_all_reduce_error() -> None:
           NotImplementedError, tpu=expected_64bit_msg
       ):
         dist.all_reduce(t, op=reduce_op)
+
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.all_reduce(): reduce option not supported: premul_sum""",
+  ):
+    dist.all_reduce(x, op=dist._make_nccl_premul_sum(2.0))
 
 
 def run_all_gather_tensor_wrong_number_output_dimensions() -> None:
@@ -795,6 +802,97 @@ def run_collective_validation_errors() -> None:
   run_scatter_wrong_number_inputs()
   run_scatter_wrong_shape_output()
   run_scatter_mismatch_input_shapes()
+  run_process_group_validation_errors()
+
+
+def run_process_group_validation_errors() -> None:
+  """Tests ProcessGroupTpu input validation errors across collectives."""
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  pg = dist.group.WORLD
+  x = torch.ones(2, device="tpu", dtype=torch.float32)
+
+  with et.assert_raises_message(
+      NotImplementedError,
+      tpu="""distributed.all_reduce(): expected a single tensor, got 2""",
+  ):
+    pg.allreduce([x, x], dist.AllreduceOptions())
+
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.broadcast(): expected a single tensor, got 2""",
+  ):
+    pg.broadcast([x, x], dist.BroadcastOptions())
+
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.all_gather_into_tensor(): expected inputs and outputs to have the same size, got 2 vs 1""",
+  ):
+    pg.allgather_into_tensor_coalesced([x], [x, x])
+
+  scatter_opts = dist.ScatterOptions()
+  scatter_opts.rootRank = 0
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.scatter(): expected a single output tensor, got 2""",
+  ):
+    pg.scatter([x, x], [[]], scatter_opts)
+
+  if rank == 0:
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""distributed.scatter(): expected a single list of input tensors on the root rank, got 0""",
+    ):
+      pg.scatter([x], [], scatter_opts)
+  else:
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""distributed.scatter(): on non-root rank {rank} the list of input tensors must be empty""",
+    ):
+      pg.scatter([x], [[x] * world_size], scatter_opts)
+
+  with et.assert_raises_message(
+      NotImplementedError,
+      tpu="""distributed.reduce_scatter(): expected a single input tensor list, got 0""",
+  ):
+    pg.reduce_scatter([x], [], dist.ReduceScatterOptions())
+
+  with et.assert_raises_message(
+      NotImplementedError,
+      tpu="""distributed.reduce_scatter(): expected a single output tensor list, got 2""",
+  ):
+    pg.reduce_scatter([x, x], [[x] * world_size], dist.ReduceScatterOptions())
+
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.reduce_scatter_tensor_coalesced(): expected inputs and outputs to have the same size, got 2 vs 1""",
+  ):
+    pg.reduce_scatter_tensor_coalesced([x], [x, x], dist.ReduceScatterOptions())
+
+  barrier_device_ids_opts = dist.BarrierOptions()
+  barrier_device_ids_opts.device_ids = [1]
+  backend = dist.get_backend_impl(device=torch.device("tpu:0"))
+  with et.assert_raises_message(
+      NotImplementedError,
+      tpu="""distributed.barrier(): expected device_ids in barrier options to be empty or [0], got [1]""",
+  ):
+    backend.barrier(barrier_device_ids_opts)
+
+  barrier_timeout_opts = dist.BarrierOptions()
+  barrier_timeout_opts.timeout = datetime.timedelta(seconds=1)
+  with et.assert_raises_message(
+      NotImplementedError,
+      tpu="""distributed.barrier(): expected timeout in barrier options to be unset, got 1000 ms""",
+  ):
+    backend.barrier(barrier_timeout_opts)
+
+  barrier_device_opts = dist.BarrierOptions()
+  barrier_device_opts.device = torch.device("tpu:0")
+  with et.assert_raises_message(
+      NotImplementedError,
+      tpu="""distributed.barrier(): expected device in barrier options to be unset, got 'tpu:0'""",
+  ):
+    backend.barrier(barrier_device_opts)
 
 
 def run_conflicting_device_assignments_error() -> None:
@@ -1044,6 +1142,20 @@ def run_all_to_all_single_errors() -> None:
   run_all_to_all_single_invalid_split_sizes_sum_error()
   run_all_to_all_single_uneven_trailing_dims_mismatch_error()
   run_all_to_all_single_uneven_dim_count_mismatch_error()
+  run_all_to_all_single_equal_splits_shape_mismatch_error()
+
+
+def run_all_to_all_single_equal_splits_shape_mismatch_error() -> None:
+  world_size = dist.get_world_size()
+  input_tensor = torch.ones(world_size, dtype=torch.float32, device="tpu")
+  output_tensor = torch.empty(world_size * 2, dtype=torch.float32, device="tpu")
+  expected_msg = (
+      "distributed.all_to_all_single(): expected shape of input and output to"
+      f" be the same for equal splits, got [{world_size}] vs"
+      f" [{world_size * 2}]"
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    torch.distributed.all_to_all_single(output_tensor, input_tensor)
 
 
 def run_all_to_all_unequal_tensor_list_size_error() -> None:
@@ -1137,7 +1249,7 @@ def run_all_to_all_dim_count_mismatch_error() -> None:
   ]
   expected_msg = (
       "distributed.all_to_all(): expected all input tensors to have the same"
-      " number of dimensions, got 2 and 1"
+      " number of dimensions, got 2 vs 1"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all(output_tensors, input_tensors)
@@ -1165,6 +1277,49 @@ def run_all_to_all_errors() -> None:
   run_all_to_all_unequal_output_tensor_trailing_dims_error()
   run_all_to_all_dim_count_mismatch_error()
   run_all_to_all_dtype_mismatch_error()
+  run_all_to_all_pg_dtype_and_output_dim_errors()
+
+
+def run_all_to_all_pg_dtype_and_output_dim_errors() -> None:
+  world_size = dist.get_world_size()
+  pg = dist.group.WORLD
+  device = "tpu"
+
+  input_tensors = [
+      torch.ones(1, device=device, dtype=torch.int64) for _ in range(world_size)
+  ]
+  input_tensors[1] = torch.ones(1, device=device, dtype=torch.float32)
+  output_tensors = [
+      torch.ones(1, device=device, dtype=torch.int64) for _ in range(world_size)
+  ]
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.all_to_all(): expected all input tensors to have the same dtype, got float32 vs int64""",
+  ):
+    pg.alltoall(output_tensors, input_tensors, dist.AllToAllOptions())
+
+  input_tensors = [
+      torch.ones(1, device=device, dtype=torch.int64) for _ in range(world_size)
+  ]
+  output_tensors = [
+      torch.ones(1, device=device, dtype=torch.float32)
+      for _ in range(world_size)
+  ]
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.all_to_all(): expected all output tensors to have the same dtype, got float32 vs int64""",
+  ):
+    pg.alltoall(output_tensors, input_tensors, dist.AllToAllOptions())
+
+  output_tensors = [
+      torch.ones(1, device=device, dtype=torch.int64) for _ in range(world_size)
+  ]
+  output_tensors[0] = torch.ones((1, 2), device=device, dtype=torch.int64)
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.all_to_all(): expected all output tensors to have the same number of dimensions, got 2 vs 1""",
+  ):
+    torch.distributed.all_to_all(output_tensors, input_tensors)
 
 
 def _make_ragged_all_to_all_metadata(
@@ -1440,6 +1595,199 @@ class CollectiveErrorsTest(
   def test_all_to_all_collective_errors(self):
     run_all_to_all_collective_errors()
 
+  @unittest.skipIf(
+      not hasattr(dist, "_supports_window"),
+      "PyTorch distributed window API is not available.",
+  )
+  def test_window_errors(self):
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    peer_rank = (rank + 1) % world_size
+
+    non_contig_tpu = torch.ones((4, 4), dtype=torch.float32, device="tpu").t()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected window tensor to be contiguous, got non-contiguous tensor with shape [4, 4] and strides [1, 4]""",
+    ):
+      dist._new_window(non_contig_tpu)
+
+    host_pool = torch.zeros(
+        (16,), dtype=torch.float32, device="cpu"
+    ).pin_memory()
+    win_host = dist._new_window(host_pool)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected source TPU tensor to be contiguous for zero-copy DMA, got non-contiguous tensor with shape [4, 4] and strides [1, 4]""",
+    ):
+      win_host.put(
+          non_contig_tpu,
+          dst_rank=rank,
+          target_offset_nelems=0,
+          async_op=False,
+      )
+
+    tpu_src = torch.ones((8,), dtype=torch.float32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected target offset (64 bytes) + size (32 bytes) to be <= registered window buffer size (64 bytes), got 96 bytes""",
+    ):
+      win_host.put(
+          tpu_src, dst_rank=rank, target_offset_nelems=16, async_op=False
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected target offset to be >= 0, got -1""",
+    ):
+      win_host.put(
+          tpu_src, dst_rank=rank, target_offset_nelems=-1, async_op=False
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"""target byte offset overflowed for offset 4611686018427387904 elements and element size 4 bytes: .*"""
+        ),
+    ):
+      win_host.put(
+          tpu_src,
+          dst_rank=rank,
+          target_offset_nelems=(1 << 62),
+          async_op=False,
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"""target end byte offset overflowed for offset 9223372036854775804 bytes and size 32 bytes: .*"""
+        ),
+    ):
+      win_host.put(
+          tpu_src,
+          dst_rank=rank,
+          target_offset_nelems=(1 << 61) - 1,
+          async_op=False,
+      )
+
+    tpu_pool = torch.zeros((16,), dtype=torch.float32, device="tpu")
+    win_tpu = dist._new_window(tpu_pool)
+    non_contig_cpu = torch.ones((4, 4), dtype=torch.float32, device="cpu").t()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected source CPU tensor to be contiguous for zero-copy DMA, got non-contiguous tensor with shape [4, 4] and strides [1, 4]""",
+    ):
+      win_tpu.put(
+          non_contig_cpu,
+          dst_rank=rank,
+          target_offset_nelems=0,
+          async_op=False,
+      )
+
+    cpu_src = torch.ones((8,), dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected target offset (64 bytes) + size (32 bytes) to be <= registered window buffer size (64 bytes), got 96 bytes""",
+    ):
+      win_tpu.put(
+          cpu_src, dst_rank=rank, target_offset_nelems=16, async_op=False
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected target_offset_nelems to be 0 for remote peer P2P transfers, got 1""",
+    ):
+      win_tpu.put(
+          tpu_src, dst_rank=peer_rank, target_offset_nelems=1, async_op=False
+      )
+
+    win_tpu.tensor_deregister()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected a registered window tensor before calling put(), got unregistered window""",
+    ):
+      win_tpu.put(
+          tpu_src, dst_rank=peer_rank, target_offset_nelems=0, async_op=False
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected a registered window tensor before calling signal(), got unregistered window""",
+    ):
+      win_tpu.signal(peer_rank=peer_rank, async_op=False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected a registered window tensor before calling wait_signal(), got unregistered window""",
+    ):
+      win_tpu.wait_signal(peer_rank=peer_rank, async_op=False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected a registered window tensor, got unregistered window""",
+    ):
+      win_tpu.map_remote_tensor(rank)
+
+
+def run_p2p_send_timeout() -> None:
+  """Tests that P2P send work raises when waiting on a timed-out store."""
+  rank = int(os.environ["RANK"])
+  store = dist.TCPStore(
+      os.environ["MASTER_ADDR"],
+      int(os.environ["MASTER_PORT"]),
+      _PG_WORLD_SIZE,
+      is_master=rank == 0,
+      timeout=_LONG_TIMEOUT,
+  )
+  _init_tpu()
+  dist.init_process_group(
+      backend="tpu_dist",
+      store=store,
+      rank=rank,
+      world_size=_PG_WORLD_SIZE,
+      timeout=_LONG_TIMEOUT,
+  )
+  if rank == 0:
+    store.set_timeout(datetime.timedelta(milliseconds=200))
+    t = torch.ones((4,), dtype=torch.float32, device="tpu")
+    work = dist.isend(t, dst=1, tag=0)
+    expected_msg = re.compile(
+        r"p2p send timed out waiting for descriptors:.*", re.DOTALL
+    )
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      work.wait()
+    store.set_timeout(_LONG_TIMEOUT)
+  _barrier(store, "p2p_timeout_done")
+  if rank < 3:
+    group_err = re.compile(
+        _API_PREFIX
+        + rf"expected TPU slice size \({ _PG_WORLD_SIZE }\) to be divisible by"
+        r" process group size, got 3.*",
+        re.DOTALL,
+    )
+    with et.assert_raises_message(RuntimeError, tpu=group_err):
+      dist.new_group(ranks=[0, 1, 2])
+  else:
+    dist.new_group(ranks=[0, 1, 2])
+  _barrier(store, "non_divisible_group_done")
+  dist.destroy_process_group()
+
+
+def run_initial_pg_size_mismatch() -> None:
+  """Tests that the first initialized TPU process group must match world size."""
+  rank = int(os.environ["RANK"])
+  if rank == 0:
+    _init_tpu()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""create_process_group(): expected the first initialized TPU process group to have size 8 (world size), got 1""",
+    ):
+      dist.init_process_group(
+          backend="tpu_dist",
+          store=dist.HashStore(),
+          rank=0,
+          world_size=1,
+      )
+
 
 class ProcessGroupTpuErrorsTest(et.TpuOnlyDistributedErrorTestBase):
 
@@ -1457,6 +1805,18 @@ class ProcessGroupTpuErrorsTest(et.TpuOnlyDistributedErrorTestBase):
     distributed_utils.dist_run(
         nproc_per_node=_PG_WORLD_SIZE,
         fn=run_missing_rank_and_local_rank_out_of_range,
+    )
+
+  def test_p2p_send_timeout(self):
+    distributed_utils.dist_run(
+        nproc_per_node=_PG_WORLD_SIZE,
+        fn=run_p2p_send_timeout,
+    )
+
+  def test_initial_pg_size_mismatch(self):
+    distributed_utils.dist_run(
+        nproc_per_node=_PG_WORLD_SIZE,
+        fn=run_initial_pg_size_mismatch,
     )
 
 

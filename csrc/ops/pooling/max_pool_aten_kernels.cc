@@ -327,7 +327,9 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolShlo(
       GetTensorTypeOrDie(batch_input_info.batch_input);
   const int64_t total_num_dims = input_shape.getRank();
   const int64_t expected_dims = spatial_dim_count + 2;
-  TT_RET_CHECK(total_num_dims == expected_dims, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=CreateBatchInput() catches this error
+                 // first.
+      total_num_dims == expected_dims, error::kInvalidArgument)
       << "expected input shape dim size == " << expected_dims << " , got "
       << total_num_dims;
 
@@ -457,9 +459,11 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp input,
     const int64_t spatial_dim_count, Dimensions kernel_size, Dimensions stride,
     Dimensions padding, Dimensions dilation, const bool ceil_mode) {
-  TT_RET_CHECK(std::all_of(dilation.begin(), dilation.end(),
-                           std::bind_front(std::equal_to(), 1)),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=F.max_pool2d falls back to
+                 // max_pool2d_with_indices when dilation != 1.
+      std::all_of(dilation.begin(), dilation.end(),
+                  std::bind_front(std::equal_to(), 1)),
+      error::kInvalidArgument)
       << "max_pool backwards only supports trivial dilations";
 
   auto& builder = grad_output.getBuilder();

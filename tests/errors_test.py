@@ -3908,10 +3908,21 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Storage size calculation overflowed with sizes=[5, 2] and strides=[4611686018427387904, 1]""",
-        tpu="""empty_strided(): product of 4 and 4611686018427387904 overflows as int64""",
+        tpu="""empty_strided(): storage size calculation overflowed for sizes [5, 2] and strides [4611686018427387904, 1]: product of 4 and 4611686018427387904 overflows as int64""",
     ):
       torch.empty_strided(
           (5, 2), (1 << 62, 1), device=et.device(), dtype=torch.float32
+      )
+
+  def test_empty_strided_storage_size_add_overflow(self):
+    """Tests that empty_strided fails when summing dimension spans overflows int64."""
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Storage size calculation overflowed with sizes=[2, 2] and strides=[4611686018427387904, 4611686018427387904]""",
+        tpu="""empty_strided(): storage size calculation overflowed for sizes [2, 2] and strides [4611686018427387904, 4611686018427387904]: sum of 4611686018427387904 and 4611686018427387904 overflows as int64""",
+    ):
+      torch.empty_strided(
+          (2, 2), (1 << 62, 1 << 62), device=et.device(), dtype=torch.float32
       )
 
   def test_index_put_too_many_indices_after_expanding_boolean_tensors(self):
@@ -10978,6 +10989,17 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu="""value cannot be converted to type uint8_t without overflow""",
     ):
       inp.masked_fill_(mask, 2**31)
+
+  def test_masked_fill_float4_scalar_unsupported(self):
+    inp = torch.empty((2, 4), dtype=torch.float4_e2m1fn_x2, device=et.device())
+    mask = torch.ones((2, 4), dtype=torch.bool, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else NotImplementedError,
+        tpu="""masked_fill(): unsupported cast of float64 scalar (1) to type float4_e2m1fn_x2""",
+        gpu=""""masked_fill_" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.masked_fill(inp, mask, 1.0)
 
   def test_masked_fill_inplace_invalid_broadcast(self):
     inp = torch.ones(2, dtype=torch.float32, device=et.device())
@@ -19505,6 +19527,129 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
       ):
         torch.flip(t_scalar, [0, -1])
 
+  def test_index_reduce_invalid_reduce(self):
+    self_tensor = torch.ones((2, 2), device=et.device())
+    index = torch.tensor([0], device=et.device())
+    source = torch.ones((1, 2), device=et.device())
+    out = torch.empty_like(self_tensor)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_reduce(): expected reduce to be one of 'prod', 'mean', 'amax', or 'amin', got 'invalid'""",
+        gpu="""index_reduce(): Expected reduce to be one of prod, mean, amax or amin but got invalid.""",
+    ):
+      torch.ops.aten.index_reduce.out(
+          self_tensor, 0, index, source, "invalid", out=out
+      )
+
+  @et.gpu_crashes_or_raises(
+      "CUDA hits illegal memory access when save_mean and save_invstd are None"
+      " with training=True."
+  )
+  def test_native_batch_norm_backward_missing_save_stats(self):
+    grad_out = torch.ones((2, 3, 4, 4), device=et.device())
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): save_mean and save_invstd must be provided when training=True""",
+        gpu="""CUDA error: an illegal memory access was encountered""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          None,
+          None,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+      torch.accelerator.synchronize()
+
+  def test_div_unsupported_mode(self):
+    lhs = torch.ones((2, 2), device=et.device())
+    rhs = torch.ones((2, 2), device=et.device())
+    out = torch.empty_like(lhs)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""div(): unsupported mode for div: 'invalid'""",
+        gpu="""div expected rounding_mode to be one of None, 'trunc', or 'floor' but found 'invalid'""",
+    ):
+      torch.ops.aten.div.out_mode(lhs, rhs, rounding_mode="invalid", out=out)
+
+  def test_binary_cross_entropy_invalid_reduction(self):
+    inp = torch.full((2, 2), 0.5, device=et.device())
+    target = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""binary_cross_entropy(): expected valid reduction mode (Sum, Mean, or None), got 99""",
+        gpu="""src is undefined""",
+    ):
+      torch.ops.aten.binary_cross_entropy(inp, target, reduction=99)
+      torch.accelerator.synchronize()
+
+  def test_linalg_qr_insufficient_dims_and_invalid_mode(self):
+    x_1d = torch.ones((3,), device=et.device())
+    q_1d = torch.empty((0,), device=et.device())
+    r_1d = torch.empty((0,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_qr(): expected input tensor to have at least 2 dimensions, got 1""",
+        gpu="""linalg.qr: The input tensor A must have at least 2 dimensions.""",
+    ):
+      torch.ops.aten.linalg_qr.out(x_1d, "reduced", Q=q_1d, R=r_1d)
+
+    x_2d = torch.ones((2, 2), device=et.device())
+    q_2d = torch.empty((2, 2), device=et.device())
+    r_2d = torch.empty((2, 2), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_qr(): expected mode to be one of 'reduced', 'complete', or 'r', got 'invalid'""",
+        gpu="""qr received unrecognized mode 'invalid' but expected one of 'reduced' (default), 'r', or 'complete'""",
+    ):
+      torch.ops.aten.linalg_qr.out(x_2d, "invalid", Q=q_2d, R=r_2d)
+
+  @parameterized.named_parameters(
+      ("bool", torch.bool, "bool", "Bool"),
+      ("int32", torch.int32, "int32", "Int"),
+      ("complex64", torch.complex64, "complex64", "ComplexFloat"),
+  )
+  def test_leaky_relu_backward_unsupported_dtypes(
+      self, dtype, tpu_dtype, gpu_dtype
+  ):
+    tpu_msgs = {
+        "bool": "bool input is unsupported",
+        "int32": "expected non-integer dtype, got int32",
+        "complex64": "expected non-complex dtype, got complex64",
+    }
+    grad_out = torch.ones((2, 2), device=et.device()).to(dtype)
+    self_tensor = torch.ones((2, 2), device=et.device()).to(dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""leaky_relu_backward(): {tpu_msgs[tpu_dtype]}""",
+        gpu=f""""leaky_relu_backward_cuda" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten.leaky_relu_backward(grad_out, self_tensor, 0.1, False)
+
+  def test_leaky_relu_backward_grad_input_negative_slope_with_self_is_result(
+      self,
+  ):
+    grad_out = torch.ones((2, 2), device=et.device())
+    result = torch.ones((2, 2), device=et.device())
+    grad_in = torch.empty_like(grad_out)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): expected slopes to be >= 0 for self_is_result=true, got -0.1""",
+        gpu="""In-place leakyReLu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead. File an issue at https://github.com/pytorch/pytorch if you do require supporting in-place leakRelu backward calculation with negative slope""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, result, -0.1, True, grad_input=grad_in
+      )
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 
@@ -21116,6 +21261,331 @@ class UnaryOpsErrorTest(et.ErrorTestBase):
             gpu=f"""{op_name} is not supported for complex inputs""",
         ):
           op(t, out=out)
+
+  def test_generator_set_state_invalid_tensor_type(self):
+    gen = torch.Generator(device=et.device())
+    bad_dtype = torch.zeros(16, dtype=torch.int32)
+    bad_device = torch.zeros(16, dtype=torch.uint8, device=et.device())
+    exc_type = RuntimeError if et.is_on_tpu() else TypeError
+
+    with et.assert_raises_message(
+        exc_type,
+        tpu="""expected rng state to be a CPU ByteTensor (uint8, strided), got CPU int32 (strided)""",
+        gpu="""RNG state must be a torch.ByteTensor""",
+    ):
+      gen.set_state(bad_dtype)
+
+    with et.assert_raises_message(
+        exc_type,
+        tpu="""expected rng state to be a CPU ByteTensor (uint8, strided), got TPU uint8 (strided)""",
+        gpu="""RNG state must be a torch.ByteTensor""",
+    ):
+      gen.set_state(bad_device)
+
+  def test_generator_set_state_non_contiguous(self):
+    gen = torch.Generator(device=et.device())
+    non_contig = torch.zeros(32, dtype=torch.uint8)[::2]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected rng state to be contiguous, got non-contiguous tensor with strides [2]""",
+        gpu="""RNG state must be contiguous""",
+    ):
+      gen.set_state(non_contig)
+
+  def test_generator_set_state_invalid_shape(self):
+    gen = torch.Generator(device=et.device())
+    bad_shape = torch.zeros(3, dtype=torch.uint8)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected rng state to have shape [16], got [3]""",
+        gpu="""RNG state is wrong size""",
+    ):
+      gen.set_state(bad_shape)
+
+  def test_generator_graphsafe_set_state_invalid_type(self):
+    dev_gen = torch.Generator(device=et.device())
+    cpu_gen = torch.Generator(device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected a TPU generator, got CPU generator""",
+        gpu="""Expected a CUDA Generator""",
+    ):
+      dev_gen.graphsafe_set_state(cpu_gen)
+
+
+class OpsErrorCoverageTest(et.ErrorTestBase):
+  """Tests error messages for ops across TPU and GPU."""
+
+  @parameterized.named_parameters(
+      ("kernel_size", "kernel_size", (2,), (1, 1), (0, 0), (1, 1)),
+      ("dilation", "dilation", (2, 2), (1,), (0, 0), (1, 1)),
+      ("padding", "padding", (2, 2), (1, 1), (0,), (1, 1)),
+      ("stride", "stride", (2, 2), (1, 1), (0, 0), (1,)),
+  )
+  def test_im2col_invalid_param_dim(
+      self, param_name, kernel_size, dilation, padding, stride
+  ):
+    t = torch.ones((1, 1, 4, 4), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""im2col(): expected {param_name} to have 2 dimensions, got 1""",
+        gpu=f"""It is expected {param_name} equals to 2, but got size 1""",
+    ):
+      torch.ops.aten.im2col(t, kernel_size, dilation, padding, stride)
+
+  def test_foreach_add_broadcast_error(self):
+    a = torch.ones((2, 3), device=et.device())
+    b = torch.ones((4, 5), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_add(): failed to broadcast tensors with shapes [2, 3] and [4, 5]: incompatible sizes 3 and 5 at trailing dimension -1""",
+        gpu="""The size of tensor a (3) must match the size of tensor b (5) at non-singleton dimension 1""",
+    ):
+      torch._foreach_add([a], [b])[0].cpu()
+
+  def test_im2col_invalid_input_dim(self):
+    t = torch.ones((1, 1, 1, 4, 4), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected input to have 3 or 4 dimensions, got 5""",
+        gpu="""Expected 3D or 4D (batch mode) tensor with possibly 0 batch size and other non-zero dimensions for input, but got: [1, 1, 1, 4, 4]""",
+    ):
+      torch.ops.aten.im2col(t, (2, 2), (1, 1), (0, 0), (1, 1))
+
+  def test_im2col_non_positive_output_shape(self):
+    t = torch.ones((1, 1, 2, 2), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected output shape to be positive, got -2x-2""",
+        gpu="""Given input with spatial size (2, 2), kernel_size=(5, 5), dilation=(1, 1), padding=(0, 0), calculated shape of the array of sliding blocks as (-2, -2), but its components must be at least one.""",
+    ):
+      torch.ops.aten.im2col(t, (5, 5), (1, 1), (0, 0), (1, 1))
+
+  def test_grid_sampler_2d_bilinear_invalid_grid_last_dim(self):
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 4), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected 2 or 3 spatial dimensions for bilinear interpolation, got 4""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [1, 2, 2, 4]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 0, 0, False).cpu()
+
+  def test_grid_sampler_2d_bicubic_invalid_grid_last_dim(self):
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 3), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected 2 spatial dimensions for bicubic interpolation, got 3""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [1, 2, 2, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 2, 0, False).cpu()
+
+  def test_grid_sampler_2d_backward_bicubic_invalid_grid_last_dim(self):
+    grad_out = torch.ones((1, 1, 2, 2), device=et.device())
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 3), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected 2 spatial dimensions for bicubic interpolation, got 3""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [1, 2, 2, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out, inp, grid, 2, 0, False, [True, True]
+      )[0].cpu()
+
+  def test_sdpa_cudnn_mqa_gqa_head_dim_not_divisible(self):
+    q = torch.ones((1, 4, 4, 8), dtype=torch.bfloat16, device=et.device())
+    k = torch.ones((1, 3, 4, 8), dtype=torch.bfloat16, device=et.device())
+    v = torch.ones((1, 3, 4, 8), dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_dot_product_cudnn_attention(): expected num_heads to be divisible by kv_num_heads for MQA/GQA, got num_heads=4 and kv_num_heads=3""",
+        gpu="""cuDNN Frontend error: For group-query attention, number of heads for key and query must be a factor of number of heads for query""",
+    ):
+      torch.ops.aten._scaled_dot_product_cudnn_attention(
+          q, k, v, None, False, 0.0, False, False, scale=None
+      )[0].cpu()
+
+  def test_fft_c2c_out_non_complex_input(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(4, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2c(): expected complex input type, got float32""",
+        gpu="""Expected self.is_complex() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
+    ):
+      torch.ops.aten._fft_c2c.out(t, [0], 0, True, out=out)
+
+  def test_fft_c2r_out_non_complex_input(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(4, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2r(): expected complex input type, got float32""",
+        gpu="""Expected self.is_complex() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
+    ):
+      torch.ops.aten._fft_c2r.out(t, [0], 0, 4, out=out)
+
+  def test_sigmoid_backward_grad_input_int_output(self):
+    grad_out = torch.ones(2, device=et.device(), dtype=torch.int32)
+    out = torch.ones(2, device=et.device(), dtype=torch.int32)
+    grad_in = torch.empty(2, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""sigmoid_backward(): not implemented for input type int32""",
+        gpu=""""sigmoid_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.sigmoid_backward.grad_input(
+          grad_out, out, grad_input=grad_in
+      )
+
+  def test_reflection_pad2d_backward_invalid_dim(self):
+    inp = torch.randn(1, 1, 4, 4, device=et.device())
+    grad_output = torch.randn(4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reflection_pad2d_backward(): expected grad_output to have at least 3 dimensions, got 2""",
+        gpu="""grad_output channel unexpected. Expected: 1, Got: 4""",
+    ):
+      torch.ops.aten.reflection_pad2d_backward(grad_output, inp, [1, 1, 1, 1])
+
+  @et.gpu_crashes_or_raises(
+      "PyTorch CUDA reflection_pad2d_backward reads past the 2-element padding"
+      " list, producing garbage expected height."
+  )
+  def test_reflection_pad2d_backward_invalid_padding_len(self):
+    inp = torch.randn(1, 1, 4, 4, device=et.device())
+    grad_output = torch.randn(1, 1, 6, 6, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reflection_pad2d_backward(): expected padding to have 4 elements, got 2""",
+    ):
+      torch.ops.aten.reflection_pad2d_backward(grad_output, inp, [1, 1])
+
+  def test_reflection_pad2d_backward_invalid_padding_size(self):
+    inp = torch.randn(1, 1, 4, 4, device=et.device())
+    grad_output = torch.randn(1, 1, 6, 6, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reflection_pad2d_backward(): expected grad_output height and width after removing padding to be > 0, got (4, -2)""",
+        gpu="""grad_output width unexpected. Expected: 12, Got: 6""",
+    ):
+      torch.ops.aten.reflection_pad2d_backward(grad_output, inp, [4, 4, 1, 1])
+
+  def test_replication_pad2d_backward_invalid_dim(self):
+    inp = torch.randn(1, 1, 4, 4, device=et.device())
+    grad_output = torch.randn(4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""replication_pad2d_backward(): expected grad_output to have at least 3 dimensions, got 2""",
+        gpu="""grad_output channel unexpected. Expected: 1, Got: 4""",
+    ):
+      torch.ops.aten.replication_pad2d_backward(grad_output, inp, [1, 1, 1, 1])
+
+  def test_replication_pad2d_backward_invalid_padding_len(self):
+    inp = torch.randn(1, 1, 4, 4, device=et.device())
+    grad_output = torch.randn(1, 1, 6, 6, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""replication_pad2d_backward(): expected padding to have 4 elements, got 2""",
+        gpu="""padding size is expected to be 4, but got: 2""",
+    ):
+      torch.ops.aten.replication_pad2d_backward(grad_output, inp, [1, 1])
+
+  def test_replication_pad2d_backward_invalid_padding_size(self):
+    inp = torch.randn(1, 1, 4, 4, device=et.device())
+    grad_output = torch.randn(1, 1, 6, 6, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""replication_pad2d_backward(): expected grad_output height and width after removing padding to be > 0, got (4, -2)""",
+        gpu="""grad_output width unexpected. Expected: 12, Got: 6""",
+    ):
+      torch.ops.aten.replication_pad2d_backward(grad_output, inp, [4, 4, 1, 1])
+
+  def test_replication_pad3d_backward_invalid_dim(self):
+    inp = torch.randn(1, 1, 4, 4, 4, device=et.device())
+    grad_output = torch.randn(4, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""replication_pad3d_backward(): expected grad_output to have at least 4 dimensions, got 3""",
+        gpu="""grad_output channel unexpected. Expected: 1, Got: 4""",
+    ):
+      torch.ops.aten.replication_pad3d_backward(
+          grad_output, inp, [1, 1, 1, 1, 1, 1]
+      )
+
+  def test_replication_pad3d_backward_invalid_padding_len(self):
+    inp = torch.randn(1, 1, 4, 4, 4, device=et.device())
+    grad_output = torch.randn(1, 1, 6, 6, 6, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""replication_pad3d_backward(): expected padding to have 6 elements, got 2""",
+        gpu="""padding size is expected to be 6, but got: 2""",
+    ):
+      torch.ops.aten.replication_pad3d_backward(grad_output, inp, [1, 1])
+
+  def test_softmax_backward_data_out_direct_int_input(self):
+    grad_out = torch.ones(2, 3, device=et.device(), dtype=torch.int32)
+    out = torch.ones(2, 3, device=et.device(), dtype=torch.int32)
+    grad_in = torch.empty(2, 3, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""softmax_backward_data(): not implemented for input type int32""",
+        gpu=""""host_softmax_backward" not implemented for 'Int'""",
+    ):
+      torch.ops.aten._softmax_backward_data.out(
+          grad_out, out, 0, torch.int32, grad_input=grad_in
+      )
+
+  def test_logcumsumexp_out_int_input(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.int32)
+    out = torch.empty(4, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""logcumsumexp(): expected the input dtype to be floating point, got int32""",
+        gpu=""""logcumsumexp_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten._logcumsumexp.out(t, 0, out=out)
+
+  def test_linalg_svd_u_1d(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.float32)
+    u = torch.empty((4, 4), device=et.device(), dtype=torch.float32)
+    s = torch.empty(4, device=et.device(), dtype=torch.float32)
+    vh = torch.empty((4, 4), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_svd(): expected input to have at least 2 dimensions, got 1""",
+        gpu="""linalg.svd: The input tensor A must have at least 2 dimensions.""",
+    ):
+      torch.ops.aten._linalg_svd.U(t, False, True, driver=None, U=u, S=s, Vh=vh)
+
+  def test_addmv_out_bool_mat(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    mat = torch.ones(5, 5, device=et.device(), dtype=torch.bool)
+    vec = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""addmv(): expected non-bool dtype for the second argument, got bool""",
+        gpu="""addmv input tensors must have the same dtype, but got Float, Bool, and Float""",
+    ):
+      torch.ops.aten.addmv.out(t, mat, vec, out=out)
+
+  def test_addmv_out_bool_vec(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    mat = torch.ones(5, 5, device=et.device(), dtype=torch.float32)
+    vec = torch.ones(5, device=et.device(), dtype=torch.bool)
+    out = torch.empty(5, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""addmv(): expected non-bool dtype for the third argument, got bool""",
+        gpu="""addmv input tensors must have the same dtype, but got Float, Float, and Bool""",
+    ):
+      torch.ops.aten.addmv.out(t, mat, vec, out=out)
 
 
 if __name__ == "__main__":

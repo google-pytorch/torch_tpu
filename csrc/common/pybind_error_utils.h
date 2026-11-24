@@ -24,6 +24,7 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/str_cat.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/python_context.h"
 #include "pybind11/gil.h"
@@ -57,12 +58,7 @@ struct ErrorHandlingHelper<Ret(Args...)> {
   // However, we split it so that we can test it separately.
   template <typename F>
   static Ret impl(const std::string_view api_name, const F& f, Args... args) {
-    ScopedPythonContextCapturer capturer(PythonApiName{api_name});
-    try {
-      return f(std::forward<Args>(args)...);
-    } catch (const TtError& e) {
-      TranslateToC10ErrorAndThrow(e);
-    }
+    return RunWithApiErrorHandling(api_name, f, std::forward<Args>(args)...);
   }
 
   // Wraps the Python API callable in a lambda that executes with proper

@@ -37,7 +37,8 @@ at::Tensor PyMarkDynamic(const at::Tensor& tensor, int64_t dimension,
                          int64_t lower_bound, int64_t upper_bound) {
   TT_CHECK_THROW(tensor.device().type() == GetPrivateUse1DeviceType(),
                  error::kInvalidArgument)
-      << "tensor is not on the PrivateUse1 device";
+      << "expected tensor to be on TPU, got "
+      << GetDeviceTypeName(tensor.device().type());
   TT_ASSIGN_OR_THROW(auto base_or_view_tensor,
                      // if tensor is a base, then return value is the same as
                      // the input tensor, otherwise returns a new view tensor.
@@ -49,7 +50,8 @@ std::vector<BoundedDynamicDimension> PyGetDynamismInfo(
     const at::Tensor& tensor) {
   TT_CHECK_THROW(tensor.device().type() == GetPrivateUse1DeviceType(),
                  error::kInvalidArgument)
-      << "tensor is not on the PrivateUse1 device";
+      << "expected tensor to be on TPU, got "
+      << GetDeviceTypeName(tensor.device().type());
   auto maybe_dynamism_info = GetDynamismInfo(tensor);
   if (maybe_dynamism_info.ok()) {
     return std::vector<BoundedDynamicDimension>(maybe_dynamism_info->begin(),

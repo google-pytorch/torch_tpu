@@ -534,7 +534,7 @@ absl::StatusOr<DivOpOptions> GetDivOpBuilder(
     return GetDivOpOptionsFloorMode();
   }
   return TT_ERROR(error::kInvalidArgument)
-         << "Unsupported mode for div: " << mode.value();
+         << "unsupported mode for div: '" << mode.value() << "'";
 }
 
 absl::Status ValidateFloorDivideInputs(const at::Tensor& self,
@@ -911,7 +911,9 @@ absl::StatusOr<LdexpFloatFormat> GetLdexpFloatFormat(
                             .mantissa_bits = 10,
                             .int_elem_type = mlir::ElementType::I16};
   }
-  return TT_ERROR(error::kInvalidArgument)
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=BinaryOp only dispatches F16, BF16,
+                    // F32, F64, C64, and C128 to BuildLdexpShlo.
+             error::kInvalidArgument)
          << "unsupported element type for ldexp: " << ToString(float_elem_type);
 }
 

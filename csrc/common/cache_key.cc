@@ -73,7 +73,9 @@ absl::StatusOr<FingerprintType> EncodeParamCacheKey(const at::Scalar value) {
     typed_value_fp = FingerprintCat(EncodeParamCacheKey(cd.real()),
                                     EncodeParamCacheKey(cd.imag()));
   } else {
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=All at::Scalar types (float, int,
+                      // bool, complex) are handled above.
+               error::kInvalidArgument)
            << "unable to create key for scalar type";
   }
   const at::ScalarType dtype = value.type();
@@ -351,7 +353,9 @@ namespace {
 
 bool IsShapeCompatibleWithBounds(const Shape& shape,
                                  absl::Span<const DimensionBounds> bounds) {
-  TT_CHECK_THROW(shape.dimensions().size() == bounds.size(), error::kInternal)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal invariant; extentless_key
+                   // guarantees matching tensor ranks.
+      shape.dimensions().size() == bounds.size(), error::kInternal)
       << "shape and bounds spans must have the same size";
   for (int i = 0; i < shape.dimensions().size(); ++i) {
     const int64_t dim = shape.dimensions()[i];
@@ -484,7 +488,9 @@ GraphKey SliceModuleCacheKey(
                << target_shapes.size() << " shapes:";
   GraphSignature graph;
   std::vector<bool> requires_slicing(target_shapes.size(), false);
-  TT_CHECK_THROW(target_shapes.size() == padded_shapes.size(), error::kInternal)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal invariant; callers construct
+                   // target_shapes and padded_shapes with equal size.
+      target_shapes.size() == padded_shapes.size(), error::kInternal)
       << "target shapes and padded shapes must have the same size, "
       << "got " << target_shapes.size() << " and " << padded_shapes.size();
 

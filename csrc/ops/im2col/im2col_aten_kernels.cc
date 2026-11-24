@@ -51,7 +51,9 @@ absl::StatusOr<mlir::MlirOp> BuildIm2ColShlo(mlir::MlirOp input,
   // Input: (N, C, H, W)
   const auto input_type = GetTensorTypeOrDie(input);
   const auto input_shape = input_type.getShape();
-  TT_RET_CHECK(input_shape.size() == 4, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=AtenIm2Col validates input.dim() == 4
+                 // before calling BuildIm2ColShlo
+      input_shape.size() == 4, error::kInvalidArgument)
       << "input must be 4D, got " << input_shape.size() << "D";
 
   const int64_t batch = input_shape[0];

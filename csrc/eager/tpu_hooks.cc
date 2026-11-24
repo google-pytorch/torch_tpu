@@ -82,7 +82,8 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
   // This error message should not be hit; it should be impossible for users to
   // construct a torch.device with a negative device index, which will fail
   // before this point.
-  TT_CHECK_THROW(device_index >= 0, error::kInvalidArgument)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=see comment above
+      device_index >= 0, error::kInvalidArgument)
       << "expected device index to be >= 0, got "
       << static_cast<int>(device_index);
 
@@ -445,7 +446,9 @@ double TpuDeviceGuardImpl::ElapsedTime(
   EventSnapshot* end = reinterpret_cast<EventSnapshot*>(event2);
   TT_ASSIGN_OR_THROW(bool start_ready, start->Query());
   TT_ASSIGN_OR_THROW(bool end_ready, end->Query());
-  TT_CHECK_THROW(start_ready && end_ready, error::kFailedPrecondition)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=InlineEvent::elapsedTime checks
+                   // query() first
+      start_ready && end_ready, error::kFailedPrecondition)
       << "both events must be completed before calculating elapsed time";
   TT_ASSIGN_OR_THROW(std::chrono::steady_clock::time_point start_time,
                      start->CompletionTime());

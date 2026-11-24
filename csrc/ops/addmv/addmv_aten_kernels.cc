@@ -167,18 +167,14 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(mat.scalar_type());
 
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch implementation promotes dtype
-                 // before dtype check.
-      !IsBool(mat), error::kInvalidArgument)
-      << "the dtype of the second argument cannot be bool";
+  TT_RET_CHECK(!IsBool(mat), error::kInvalidArgument)
+      << "expected non-bool dtype for the second argument, got bool";
   TT_RET_CHECK(mat.dim() == 2, error::kInvalidArgument)
       << "expected the second argument to be a matrix (2D tensor), got "
       << mat.dim() << "D tensor";
 
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch implementation promotes dtype
-                 // before dtype check.
-      !IsBool(vec), error::kInvalidArgument)
-      << "the dtype of the third argument cannot be bool";
+  TT_RET_CHECK(!IsBool(vec), error::kInvalidArgument)
+      << "expected non-bool dtype for the third argument, got bool";
   TT_RET_CHECK(vec.dim() == 1, error::kInvalidArgument)
       << "expected the third argument to be a vector (1D tensor), got "
       << vec.dim() << "D tensor";

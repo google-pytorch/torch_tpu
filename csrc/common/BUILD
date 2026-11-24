@@ -272,9 +272,19 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "api_error_utils",
+    hdrs = ["api_error_utils.h"],
+    deps = [
+        ":error_utils",
+        "//csrc/ops:python_context",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "pybind_error_utils",
     hdrs = ["pybind_error_utils.h"],
     deps = [
+        ":api_error_utils",
         ":error_utils",
         "//csrc/ops:python_context",
         "//shims/pybind11",
@@ -2098,6 +2108,7 @@ torch_tpu_cc_library(
     hdrs = ["device_type.h"],
     deps = [
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
     ],
 )

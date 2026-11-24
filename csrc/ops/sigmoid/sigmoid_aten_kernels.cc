@@ -245,11 +245,8 @@ at::Tensor& AtenSigmoidBackwardGradInput(const at::Tensor& grad_output,
                                          at::Tensor& grad_input) {
   TT_KERNEL(
       OpName::kSigmoidBackwardGradInput, _, (grad_output, output, grad_input), {
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=input checked during forward
-                         // pass. It is guaranteed to be floating point or
-                         // complex in the backward pass.
-            output.is_floating_point() || output.is_complex(),
-            error::kPythonNotImplementedError)
+        TT_CHECK_THROW(output.is_floating_point() || output.is_complex(),
+                       error::kPythonNotImplementedError)
             << "not implemented for input type "
             << ToString(output.scalar_type());
         TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=all dtypes are supported.

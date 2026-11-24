@@ -46,6 +46,7 @@
 #include "c10/util/Optional.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -243,7 +244,9 @@ c10::DeviceIndex NormalizeDeviceIndex(c10::DeviceIndex idx) {
   if (idx == -1) {
     const auto* guard =
         c10::impl::getDeviceGuardImpl(c10::DeviceType::PrivateUse1);
-    TT_CHECK_THROW(guard != nullptr, error::kFailedPrecondition)
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=TpuDeviceGuardImpl is statically
+                     // registered
+        guard != nullptr, error::kFailedPrecondition)
         << "PrivateUse1 device guard is not registered.";
     idx = guard->getDevice().index();
   }
@@ -415,15 +418,23 @@ DeviceGeneratorImplBase::DeviceGeneratorImplBase(
 
 absl::Status DeviceGeneratorImplBase::ValidateDeviceStateTensor(
     const at::Tensor& rng_state) const {
-  TT_RET_CHECK(rng_state.device() == device(), error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // or move rng_state to device()
+      rng_state.device() == device(), error::kFailedPrecondition)
       << "expected rng_state to be on device " << device() << ", got "
       << rng_state.device();
-  TT_RET_CHECK(rng_state.dtype() == at::kUInt64, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // uint64 rng_state
+      rng_state.dtype() == at::kUInt64, error::kFailedPrecondition)
       << "expected rng_state to be of dtype uint64, got "
       << ToString(rng_state.scalar_type());
-  TT_RET_CHECK(rng_state.dim() == 1, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // 1D rng_state
+      rng_state.dim() == 1, error::kFailedPrecondition)
       << "expected rng_state to be a 1D tensor, got " << rng_state.dim();
-  TT_RET_CHECK(rng_state.size(0) == 2, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers construct
+                 // size-2 rng_state
+      rng_state.size(0) == 2, error::kFailedPrecondition)
       << "expected rng_state size 2, got " << rng_state.size(0);
   return absl::OkStatus();
 }
@@ -576,12 +587,18 @@ void EagerModeDeviceGeneratorImpl::set_state(
                      new_state.dtype() == at::kByte &&
                      new_state.layout() == at::kStrided,
                  error::kFailedPrecondition)
-      << "expect rng state to be a torch.ByteTensor";
+      << "expected rng state to be a CPU ByteTensor (uint8, strided), got "
+      << GetDeviceTypeName(new_state.device().type()) << " "
+      << ToString(new_state.scalar_type()) << " ("
+      << (new_state.layout() == at::kStrided ? "strided" : "non-strided")
+      << ")";
   TT_CHECK_THROW(new_state.is_contiguous(), error::kFailedPrecondition)
-      << "expect rng state to be contiguous";
+      << "expected rng state to be contiguous, got non-contiguous tensor with "
+         "strides "
+      << new_state.strides();
   TT_CHECK_THROW(new_state.sizes() == c10::IntArrayRef({16}),
                  error::kFailedPrecondition)
-      << "expect rng state to be shape (16,), got " << new_state.sizes();
+      << "expected rng state to have shape [16], got " << new_state.sizes();
   at::Tensor state_tensor = new_state.view(at::kUInt64).to(device());
   TT_THROW_IF_ERROR(ValidateDeviceStateTensor(state_tensor));
   TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
@@ -607,7 +624,8 @@ void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
     return;
   }
   TT_CHECK_THROW(false, error::kInvalidArgument)
-      << "Expected DeviceGeneratorImplBase in graphsafe_set_state";
+      << "expected a TPU generator, got "
+      << GetDeviceTypeName(state->device().type()) << " generator";
 }
 
 DeviceGeneratorImplBase* EagerModeDeviceGeneratorImpl::clone_impl() const {
