@@ -154,6 +154,19 @@ torch_tpu_py_test(
     ],
 )
 
+# Lives in tests/ rather than tests/torch/ so CI's
+# `bazel query 'kind("py_test", //tests/torch:all)'`
+# only selects PyTorch device-generic TPU tests.
+torch_tpu_py_test(
+    name = "torch_test_runner_test",
+    srcs = ["torch_test_runner_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//tests/torch:torch_test_runner_lib",
+    ],
+)
+
 # The target name must be `<golden file prefix>_per_test_case`, matching
 # op_testing._golden_file_prefix() and _GPU_GOLDEN_PER_TEST_CASE_SUFFIX.
 split_gpu_goldens(
