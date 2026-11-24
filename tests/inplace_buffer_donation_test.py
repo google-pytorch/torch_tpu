@@ -2581,6 +2581,112 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       expected[1:4] = a.cpu().T
       self.assertTrue(torch.equal(base.cpu(), expected))
 
+  def test_fused_optimizers_multi_step_with_0_element_shards(self):
+    """Verifies multi-step fused optimizers do not donate 0-element buffers."""
+    for mode in (EagerMode.DEFER_NEVER, EagerMode.DEFER_AND_FUSE):
+      with execution_mode.set_eager_mode(mode):
+        for optim_name, optim_cls in (
+            ("AdamW", torch.optim.AdamW),
+            ("Adam", torch.optim.Adam),
+        ):
+          with self.subTest(mode=mode.name, optimizer=optim_name):
+            # Combine a standalone 0-element parameter, an FSDP2-style 0-length
+            # slice view of a non-empty padded storage (whose optimizer moment
+            # buffers are standalone 0-element tensors from zeros_like), and a
+            # non-empty parameter across multiple steps.
+            p_empty = torch.nn.Parameter(
+                torch.zeros((0, 8), dtype=torch.float32, device=self.device)
+            )
+            padded = torch.ones((4, 8), dtype=torch.float32, device=self.device)
+            p_empty_view = torch.nn.Parameter(padded[:0])
+            p_init = torch.tensor([1.0, -2.0, 3.0, -4.0], dtype=torch.float32)
+            p = torch.nn.Parameter(p_init.to(self.device))
+            _ = p_empty.cpu()
+            _ = padded.cpu()
+            _ = p.cpu()
+
+            p_cpu = torch.nn.Parameter(p_init.clone())
+            opt_tpu = optim_cls(
+                [p_empty, p_empty_view, p], lr=1e-2, amsgrad=True, fused=True
+            )
+            opt_cpu = optim_cls([p_cpu], lr=1e-2, amsgrad=True, fused=False)
+
+            for step_idx in range(1, 4):
+              g_cpu = torch.tensor(
+                  [0.1, -0.2, 0.3, -0.4], dtype=torch.float32
+              ) * float(step_idx)
+              p_empty.grad = torch.zeros_like(p_empty)
+              p_empty_view.grad = torch.zeros_like(p_empty_view)
+              p.grad = g_cpu.to(self.device)
+              p_cpu.grad = g_cpu.clone()
+              opt_tpu.step()
+              opt_cpu.step()
+
+            torch.accelerator.synchronize()
+            self.assertEqual(p_empty.cpu().shape, (0, 8))
+            self.assertEqual(p_empty_view.cpu().shape, (0, 8))
+            self.assertTrue(torch.equal(padded.cpu(), torch.ones((4, 8))))
+            test_utils.assert_close(p.cpu(), p_cpu.detach())
+
+        with self.subTest(mode=mode.name, optimizer="FusedSGD"):
+          p_empty = torch.zeros((0, 8), dtype=torch.float32, device=self.device)
+          p = torch.tensor([1.0, -2.0], dtype=torch.float32, device=self.device)
+          g_empty = torch.zeros_like(p_empty)
+          mb_empty = torch.zeros_like(p_empty)
+          mb = torch.zeros_like(p)
+          _ = p_empty.cpu()
+          _ = mb_empty.cpu()
+          for step_idx in range(1, 4):
+            g = torch.tensor(
+                [0.2, -0.3], dtype=torch.float32, device=self.device
+            ) * float(step_idx)
+            torch.ops.aten._fused_sgd_.default(
+                [p_empty, p],
+                [g_empty, g],
+                [mb_empty, mb],
+                weight_decay=0.01,
+                momentum=0.9,
+                lr=0.01,
+                dampening=0.0,
+                nesterov=False,
+                maximize=False,
+                is_first_step=(step_idx == 1),
+            )
+          self.assertEqual(p_empty.cpu().shape, (0, 8))
+          self.assertEqual(mb_empty.cpu().shape, (0, 8))
+
+        with self.subTest(mode=mode.name, optimizer="FusedAdagrad"):
+          p_empty = torch.zeros((0, 8), dtype=torch.float32, device=self.device)
+          p = torch.tensor([1.0, -2.0], dtype=torch.float32, device=self.device)
+          g_empty = torch.zeros_like(p_empty)
+          v_empty = torch.zeros_like(p_empty)
+          v = torch.zeros_like(p)
+          _ = p_empty.cpu()
+          _ = v_empty.cpu()
+          for step_idx in range(1, 4):
+            g = torch.tensor(
+                [0.2, -0.3], dtype=torch.float32, device=self.device
+            ) * float(step_idx)
+            steps = [
+                torch.tensor(
+                    float(step_idx), dtype=torch.float32, device=self.device
+                )
+                for _ in range(2)
+            ]
+            torch.ops.aten._fused_adagrad_.default(
+                [p_empty, p],
+                [g_empty, g],
+                [v_empty, v],
+                steps,
+                lr=0.01,
+                lr_decay=0.0,
+                weight_decay=0.01,
+                eps=1e-10,
+                maximize=False,
+            )
+          self.assertEqual(p_empty.cpu().shape, (0, 8))
+          self.assertEqual(v_empty.cpu().shape, (0, 8))
+
 
 if __name__ == "__main__":
   absltest.main()

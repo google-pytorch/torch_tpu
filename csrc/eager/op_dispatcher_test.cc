@@ -614,6 +614,70 @@ TEST(AutoDonateInPlaceBuffers,
   SetEagerMode(EagerMode::kDeferAndFuse);
 }
 
+TEST(CreateDeferred, DoesNotDonateZeroElementBuffers) {
+  constexpr auto f32_type = mlir::ElementType::F32;
+  absl::Cleanup reset_mode = [] { SetEagerMode(EagerMode::kDeferAndFuse); };
+  ScopedPythonContextCapturer capturer(OpName::kFusedAdamw);
+
+  auto dummy_builder = [](mlir::MlirBuilder& b, absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    return DynamicMlirOpResults(inputs.begin(), inputs.end());
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(auto empty_in,
+                          CreateEmptyDeviceBufferRef({0, 4}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(auto nonempty_in,
+                          CreateEmptyDeviceBufferRef({2, 4}, f32_type));
+  at::Tensor t_empty = MakeTensor(empty_in);
+  at::Tensor t_nonempty = MakeTensor(nonempty_in);
+  EXPECT_EQ(empty_in.live_data_ptrs(), 1);
+  EXPECT_EQ(nonempty_in.live_data_ptrs(), 1);
+
+  const std::vector<Shape> out_shapes = {
+      Shape(Dimensions{0, 4}, f32_type),
+      Shape(Dimensions{2, 4}, f32_type),
+  };
+
+  // In eager mode, explicit donated_indices (e.g. from fused optimizers) must
+  // skip 0-element inputs even when live_data_ptrs == 1, while still donating
+  // non-empty exclusively owned inputs.
+  SetEagerMode(EagerMode::kDeferNever);
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto eager_refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kFusedAdamw, dummy_builder, {empty_in, nonempty_in},
+          OpParamCacheKeys::Empty(), out_shapes, OpSplitMode::kNone,
+          /*donated_indices=*/Indices{0, 1}));
+  ASSERT_TRUE(eager_refs[0].deferred_op() != nullptr);
+  EXPECT_THAT(eager_refs[0].deferred_op()->donated_indices(), ElementsAre(1));
+
+  // In FX graph compilation mode, 0-element inputs are also excluded while
+  // non-empty inputs bypass the live_data_ptrs exclusivity check.
+  at::Tensor t_nonempty_alias = MakeTensor(nonempty_in);
+  EXPECT_EQ(nonempty_in.live_data_ptrs(), 2);
+  SetEagerMode(EagerMode::kInternalCompileFxGraph);
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto compile_refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kFusedAdamw, dummy_builder, {empty_in, nonempty_in},
+          OpParamCacheKeys::Empty(), out_shapes, OpSplitMode::kNone,
+          /*donated_indices=*/Indices{0, 1}));
+  ASSERT_TRUE(compile_refs[0].deferred_op() != nullptr);
+  EXPECT_THAT(compile_refs[0].deferred_op()->donated_indices(), ElementsAre(1));
+
+  // Custom kernels preserve explicit donated_indices unchanged.
+  SetEagerMode(EagerMode::kDeferNever);
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto custom_refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kCustomKernel, dummy_builder, {empty_in, nonempty_in},
+          OpParamCacheKeys::Empty(), out_shapes, OpSplitMode::kNone,
+          /*donated_indices=*/Indices{0, 1}));
+  ASSERT_TRUE(custom_refs[0].deferred_op() != nullptr);
+  EXPECT_THAT(custom_refs[0].deferred_op()->donated_indices(),
+              ElementsAre(0, 1));
+}
+
 TEST(AssignBufferToOutput, ErrorOnUndefinedOutput) {
   ScopedPythonContextCapturer capturer(OpName::kAdd);
   at::Tensor undefined_output;  // UNINITIALIZED_TENSOR_OK

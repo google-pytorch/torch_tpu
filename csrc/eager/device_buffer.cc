@@ -425,22 +425,32 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   //    is > 1. Skipping donation ensures in-place mutations do not corrupt
   //    the buffer needed for gradient computation.
   //
-  // We only donate an input buffer if it exists (`dbl != nullptr`) and
+  // 3. Zero-Element Buffers (`input_ref.num_elements() == 0`):
+  //    `AssignBufferToAtTensor` is a no-op for 0-element results and does not
+  //    update the tensor's storage pointer. Donating a 0-element buffer would
+  //    invalidate its underlying `PjRtBuffer` without replacing it, causing
+  //    subsequent ops on that tensor to fail with "Donation requested for
+  //    invalid buffer" (while saving 0 bytes).
+  //
+  // We only donate an input buffer if it exists (`dbl != nullptr`), is
+  // non-empty (`input_ref.num_elements() != 0`), and (in eager modes)
   // satisfies the per-slot exclusivity check (`input_ref.live_data_ptrs() ==
   // 1`), falling back safely to normal allocation otherwise.
   //
   // Note: We bypass this check for custom kernels (Pallas), which manage buffer
-  // donation explicitly through their compiler/runtime signatures, and for
-  // internal graph-capture modes (where DAG buffer assignment is handled
-  // globally).
-  if (SupportsInplaceBufferDonation(eager_mode) && !donated_indices.empty() &&
-      op_name != OpName::kCustomKernel) {
+  // donation explicitly through their compiler/runtime signatures; internal
+  // graph-capture modes skip only the `live_data_ptrs` check (since DAG buffer
+  // assignment is handled globally).
+  if (!donated_indices.empty() && op_name != OpName::kCustomKernel) {
+    const bool check_exclusive_ownership =
+        SupportsInplaceBufferDonation(eager_mode);
     Indices safe_donated_indices;
     safe_donated_indices.reserve(donated_indices.size());
     for (int64_t idx : donated_indices) {
       const auto& input_ref = inputs[idx];
       const auto& dbl = input_ref.device_buffer_list();
-      if (dbl != nullptr && input_ref.live_data_ptrs() == 1) {
+      if (dbl != nullptr && input_ref.num_elements() != 0 &&
+          (!check_exclusive_ownership || input_ref.live_data_ptrs() == 1)) {
         safe_donated_indices.push_back(idx);
       }
     }
