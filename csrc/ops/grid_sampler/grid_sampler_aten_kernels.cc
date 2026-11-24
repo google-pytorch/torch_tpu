@@ -1937,10 +1937,7 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGridSamplerBicubicBackwardShlo(
   int64_t rank = input_shape.size();
   int64_t offset_dim_size = rank - spatial_dim_size;
 
-  TT_RET_CHECK(
-      spatial_dim_size == 2,
-      error::kInvalidArgument)  // ERROR_COV_INFEASIBLE=Bicubic mode is
-                                // validated at higher level before lowering
+  TT_RET_CHECK(spatial_dim_size == 2, error::kInvalidArgument)
       << "expected 2 spatial dimensions for bicubic "
          "interpolation, got "
       << spatial_dim_size;
@@ -2197,7 +2194,9 @@ std::tuple<at::Tensor, at::Tensor> AtenGridSampler3dBackward(
                   inputs[0], inputs[1], inputs[2], align_corners, pm,
                   output_mask[0], output_mask[1]);
             }
-            return TT_ERROR(error::kPythonNotImplementedError)
+            return TT_ERROR(  // ERROR_COV_INFEASIBLE=Validate3DInterpolationMode
+                              // validates interpolation_mode before DispatchOp
+                       error::kPythonNotImplementedError)
                    << "only nearest and bilinear interpolation modes are "
                       "supported for "
                       "grid_sampler_3d_backward currently, got "

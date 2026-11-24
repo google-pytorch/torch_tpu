@@ -422,7 +422,6 @@ class CoverageForFile:
     """Returns the serialized statistics map for the file."""
     return {
         "infeasible": len(self.infeasible_locs),
-        "remaining": len(self.to_cover_locs),
         "total": len(self.locs),
     }
 
@@ -518,7 +517,7 @@ COVERAGE_DATA_PATH = "tests/error_coverage_data.yaml"
 
 # The order of the per-file statistics in the coverage data file, from the most
 # to the least important.
-_STATS_ORDER = ("remaining", "total", "infeasible")
+_STATS_ORDER = ("total", "infeasible")
 
 
 class _FlowDict(dict):
@@ -652,12 +651,11 @@ class CoverageCheckResult:
   """The result of checking the coverage against the coverage data file.
 
   Attributes:
-    regressions: Files with more uncovered error macros than the coverage data
-      file allows. The error tests need to cover them.
-    outdated: Outdated entries of the coverage data file: entries that allow
-      more uncovered error macros than there are, so that they could hide a
-      future regression, and entries of files that no longer have error macros
-      to cover. The coverage data file needs to be updated.
+    regressions: Files with uncovered (and feasible to cover) error macros. The
+      error tests need to cover them.
+    outdated: Outdated entries of the coverage data file: entries of files that
+      no longer have error macros to cover. The coverage data file needs to be
+      updated.
     infeasible_but_covered: `file:line` of the error macros that are marked as
       infeasible to test but actually tested. If their tests were removed,
       nothing would notice, so their ERROR_COV_INFEASIBLE comments need to be
@@ -677,24 +675,19 @@ def check_coverage(
 ) -> CoverageCheckResult:
   """Checks the actual coverage against the coverage data file.
 
-  The `remaining` (uncovered and feasible to cover) count of each file must
-  match the coverage data file exactly:
+  Every feasible error macro in every file must be covered:
 
-  - If a file has more uncovered error macros than its entry allows (or has any
-    while it has no entry), it's a coverage regression.
-  - If a file has fewer, its entry is outdated: a future regression of up to
-    that many macros would go unnoticed.
+  - If a file has any uncovered error macros (`actual_remaining > 0`), it's a
+    coverage regression, whether or not the file has an entry in the coverage
+    data file.
 
   Entries of files that no longer have error macros to cover (e.g. deleted
-  files) are outdated too. This assumes that every file in the coverage data
+  files) are outdated. This assumes that every file in the coverage data
   file exists in both google3 and OSS: the internal files under `google/`,
   which Copybara doesn't export, are never in it.
 
   Error macros marked as ERROR_COV_INFEASIBLE but covered are reported too, as
   their tests could be removed unnoticed.
-
-  As the check compares counts, a change that covers one macro and uncovers
-  another in the same file passes.
 
   Differences in the `total` and `infeasible` counts, and files that are
   missing from the coverage data file but fully covered, are only warnings, as
@@ -742,25 +735,16 @@ def check_coverage(
         )
       continue
 
-    expected_file_data = expected_coverages[file_path]
-    expected_remaining = expected_file_data.get("remaining", 0)
-    if actual_remaining > expected_remaining:
+    if actual_remaining > 0:
       regressions.append(
-          f"""\
-{file_path} has an error coverage regression.
-Before, {expected_remaining} such macros in the file were uncovered.
-With this CL, {actual_remaining} such macros in the file are uncovered:
-{report}
-Make sure at least {actual_remaining - expected_remaining} of them are covered."""
-      )
-    elif actual_remaining < expected_remaining:
-      outdated.append(
-          f"{file_path}: {COVERAGE_DATA_PATH} expects"
-          f" {expected_remaining} uncovered error macros, but only"
-          f" {actual_remaining} are uncovered now. Lower its `remaining` from"
-          f" {expected_remaining} to {actual_remaining}."
+          f"{file_path} has an error coverage regression.\n{actual_remaining}"
+          f" error macros in the file are uncovered:\n{report}\nMake sure all"
+          f" {actual_remaining} of them are covered, or marked with `//"
+          " ERROR_COV_INFEASIBLE=<why>` if they cannot be triggered via normal"
+          " user Python code through public APIs."
       )
 
+    expected_file_data = expected_coverages[file_path]
     expected_total = expected_file_data.get("total", 0)
     expected_infeasible = expected_file_data.get("infeasible", 0)
     actual_total = len(actual_coverage.locs)
@@ -802,38 +786,34 @@ def failure_message(result: CoverageCheckResult, repo_root: str) -> str | None:
   sections = []
   if result.regressions:
     joined_regressions = "\n\n".join(result.regressions)
-    sections.append(f"""\
-TT_ERROR, TT_RET_CHECK, and TT_CHECK_THROW macros need to be covered in \
-tests/errors_test.py (preferred), tests/tpu_errors_test.py (if the error \
-occurs on TPU only) or tests/distributed/collective_errors_test.py (for \
-collectives).
-
-{joined_regressions}
-
-You can ignore regressions caused by other people. However, please avoid \
-introducing new regressions. If it's infeasible to test an error macro (e.g. \
-because the function never returns an error Status), please add an \
-`// ERROR_COV_INFEASIBLE=<why>` comment on the same line as the macro.
-
-If this failure is caused by recent changes by others, you may update the \
-coverage data in {COVERAGE_DATA_PATH} to match the reality so that \
-error_coverage_test passes.""")
+    sections.append(
+        "TT_ERROR, TT_RET_CHECK, and TT_CHECK_THROW macros need to be covered"
+        " in tests/errors_test.py (preferred), tests/tpu_errors_test.py (if the"
+        " error occurs on TPU only) or"
+        " tests/distributed/collective_errors_test.py (for collectives).\n\n"
+        f"{joined_regressions}\n\n"
+        "Please avoid introducing new regressions. If it's infeasible to test"
+        " an error macro (e.g. because the function never returns an error"
+        " Status), please add an `// ERROR_COV_INFEASIBLE=<why>` comment on"
+        " the same line as the macro."
+    )
   if result.outdated:
     joined_outdated = "\n".join(f"- {entry}" for entry in result.outdated)
-    sections.append(f"""\
-{COVERAGE_DATA_PATH} is outdated, so it could hide a future error coverage \
-regression. Please update it:
-
-{joined_outdated}""")
+    sections.append(
+        f"{COVERAGE_DATA_PATH} is outdated. Please update it:\n\n"
+        f"{joined_outdated}"
+    )
   if result.infeasible_but_covered:
     joined_locs = "\n".join(f"- {loc}" for loc in result.infeasible_but_covered)
-    sections.append(f"""\
-These error macros are marked as infeasible to test, but the error tests cover \
-them. If their tests were removed, nothing would notice. Please remove the \
-ERROR_COV_INFEASIBLE comment of each, and update {COVERAGE_DATA_PATH}:
-
-{joined_locs}""")
+    sections.append(
+        "These error macros are marked as infeasible to test, but the error"
+        " tests cover them. If their tests were removed, nothing would notice."
+        " Please remove the ERROR_COV_INFEASIBLE comment of each, and update"
+        f" {COVERAGE_DATA_PATH}:\n\n"
+        f"{joined_locs}"
+    )
   if not sections:
     return None
-  sections.append(_update_instructions(repo_root))
+  if result.outdated or result.infeasible_but_covered:
+    sections.append(_update_instructions(repo_root))
   return "\n\n".join(sections)

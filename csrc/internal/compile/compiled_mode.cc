@@ -46,6 +46,7 @@
 #include "c10/core/TensorImpl.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -268,7 +269,8 @@ absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
   Dimensions physical_sizes = CopyIntVector(sizes);
   if (dtype == at::kFloat4_e2m1fn_x2) {
     TT_RET_CHECK(!physical_sizes.empty(), error::kInvalidArgument)
-        << "tensors of float4_e2m1fn_x2 dtype must be at least 1D";
+        << "expected tensors of float4_e2m1fn_x2 dtype to have at least 1 "
+           "dimension, got 0";
     physical_sizes.back() *= 2;
   }
   TT_ASSIGN_OR_RETURN(
@@ -708,7 +710,8 @@ std::vector<at::Tensor> ExecuteCompiledModel(
 
 absl::StatusOr<at::Tensor> MakeConstantTensor(const at::Tensor& cpu_tensor) {
   TT_RET_CHECK(cpu_tensor.is_cpu(), error::kInvalidArgument)
-      << "the input to MakeConstantTensor must be a CPU tensor";
+      << "expected CPU tensor, got "
+      << GetDeviceTypeName(cpu_tensor.device().type());
   // Ensure that the input tensor is contiguous with zero offset. This requires
   // a copy if the tensor has an offset or is not contiguous.
   at::Tensor contiguous_cpu_bytes_tensor = cpu_tensor;
@@ -753,14 +756,20 @@ absl::StatusOr<at::Tensor> MakeConstantTensor(const at::Tensor& cpu_tensor) {
 absl::Status AssignConstantTensor(const at::Tensor& cpu_src_tensor,
                                   const at::Tensor& tpu_dst_tensor) {
   TT_RET_CHECK(cpu_src_tensor.is_cpu(), error::kInvalidArgument)
-      << "cpu_src_tensor must be a CPU tensor";
+      << "expected cpu_src_tensor to be on CPU, got "
+      << GetDeviceTypeName(cpu_src_tensor.device().type());
   TT_RET_CHECK(cpu_src_tensor.sizes() == tpu_dst_tensor.sizes(),
                error::kInvalidArgument)
-      << "cpu_src_tensor and tpu_dst_tensor must have the same shape";
+      << "expected cpu_src_tensor and tpu_dst_tensor to have the same shape, "
+         "got "
+      << ToString(cpu_src_tensor.sizes()) << " vs "
+      << ToString(tpu_dst_tensor.sizes());
   TT_RET_CHECK(cpu_src_tensor.scalar_type() == tpu_dst_tensor.scalar_type(),
                error::kInvalidArgument)
-      << "cpu_src_tensor and tpu_dst_tensor must have the same scalar "
-         "type";
+      << "expected cpu_src_tensor and tpu_dst_tensor to have the same dtype, "
+         "got "
+      << ToString(cpu_src_tensor.scalar_type()) << " vs "
+      << ToString(tpu_dst_tensor.scalar_type());
 
   // Make a temporary constant tensor on the CPU.
   TT_ASSIGN_OR_RETURN(at::Tensor constant_tensor,

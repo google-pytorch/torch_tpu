@@ -14,14 +14,10 @@
 
 r"""Checks the coverage of error macros in the torch_tpu codebase.
 
-This test fails if error_coverage_data.yaml doesn't match the coverage of the
-error macros in the C++ files, in a way that matters:
+This test fails if:
 
-- A file has more uncovered error macros than the baseline allows (a coverage
-  regression).
-- A file has fewer uncovered error macros than the baseline allows, or the
-  baseline has an entry for a file that no longer has error macros to cover. The
-  outdated baseline could hide a future regression.
+- A file has any uncovered feasible error macros (a coverage regression).
+- The baseline has an entry for a file that no longer has error macros to cover.
 - An error macro marked as ERROR_COV_INFEASIBLE is covered.
 
 google3 and OSS share the baseline, so the internal C++ files (under `google/`)
