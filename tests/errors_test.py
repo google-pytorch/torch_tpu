@@ -354,16 +354,23 @@ def _make_lu_unpack_outputs(
 
 
 def _run_native_layer_norm(
-    inp: torch.Tensor, normalized_shape: Sequence[int]
+    inp: torch.Tensor,
+    normalized_shape: Sequence[int],
+    weight: torch.Tensor | None = None,
+    bias: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
   """Runs `torch.native_layer_norm` with default arguments."""
   return torch.native_layer_norm(
-      inp, normalized_shape, weight=None, bias=None, eps=1e-5
+      inp, normalized_shape, weight=weight, bias=bias, eps=1e-5
   )
 
 
 def _run_native_layer_norm_backward(
-    inp: torch.Tensor, normalized_shape: Sequence[int]
+    inp: torch.Tensor,
+    normalized_shape: Sequence[int],
+    weight: torch.Tensor | None = None,
+    bias: torch.Tensor | None = None,
+    output_mask: tuple[bool, bool, bool] = (False, False, False),
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
   """Runs `torch.ops.aten.native_layer_norm_backward` with default arguments."""
 
@@ -378,10 +385,6 @@ def _run_native_layer_norm_backward(
 
   # torch.ops.aten.native_layer_norm_backward op does not take in kwargs.
   # Therefore, all of them must be passed as positional arguments.
-  weight = None
-  bias = None
-  output_mask = (False, False, False)
-
   return torch.ops.aten.native_layer_norm_backward(
       grad, inp, normalized_shape, mean, rstd, weight, bias, output_mask
   )
@@ -9351,6 +9354,58 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu=""""LayerNormBackwardKernelImpl" not implemented for 'Int'""",
     ):
       _run_native_layer_norm_backward(inp, normalized_shape)
+
+  def test_native_layer_norm_int_weight(self):
+    inp = torch.ones(5, 5, device=et.device())
+    normalized_shape = (5,)
+    weight = torch.ones(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""layer_norm(): expected the weight dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      _run_native_layer_norm(inp, normalized_shape, weight=weight)
+
+  def test_native_layer_norm_int_bias(self):
+    inp = torch.ones(5, 5, device=et.device())
+    normalized_shape = (5,)
+    bias = torch.ones(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""layer_norm(): expected the bias dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      _run_native_layer_norm(inp, normalized_shape, bias=bias)
+
+  def test_native_layer_norm_backward_int_weight(self):
+    inp = torch.ones(5, 5, device=et.device())
+    normalized_shape = (5,)
+    weight = torch.ones(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_layer_norm_backward(): expected the weight dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      _run_native_layer_norm_backward(
+          inp, normalized_shape, weight=weight, output_mask=(True, True, False)
+      )
+
+  def test_native_layer_norm_backward_int_bias(self):
+    inp = torch.ones(5, 5, device=et.device())
+    normalized_shape = (5,)
+    bias = torch.ones(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_layer_norm_backward(): expected the bias dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      _run_native_layer_norm_backward(
+          inp, normalized_shape, bias=bias, output_mask=(True, False, True)
+      )
 
   def test_native_layer_norm_normalized_shape_empty(self):
     inp = torch.ones(5, 5, device=et.device())
