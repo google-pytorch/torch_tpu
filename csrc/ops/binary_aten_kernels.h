@@ -20,11 +20,13 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/DeprecatedTypeProperties.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -32,6 +34,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -65,6 +68,18 @@ struct BinaryOpOptions {
   // (`float8_*` or `float4_e2m1fn_x2`), e.g. `eq` and `ne`.
   bool allow_low_precision_float = false;
 };
+
+// When PyTorch executes mixed-device operations (e.g., `tpu_tensor +
+// cpu_scalar`), the dispatcher bypasses the standard backend device guards. We
+// must manually move 0-D CPU scalar tensors to the TPU when paired with a TPU
+// tensor to avoid crashes when we later try to extract their TPU buffers.
+//
+// Returns `tensors` with every 0-D CPU tensor replaced by a TPU copy, provided
+// that one of the first two tensors is on TPU. A copied wrapped number takes
+// `wrapped_scalar_dtype` if given, and keeps its dtype otherwise.
+absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
+    absl::Span<const at::Tensor> tensors,
+    std::optional<at::ScalarType> wrapped_scalar_dtype = std::nullopt);
 
 namespace internal {
 

@@ -20,6 +20,7 @@
 #include <limits>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Scalar.h"
@@ -38,6 +39,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/binary_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -337,8 +339,14 @@ at::Tensor& AtenLogitBackwardGradInput(const at::Tensor& grad_output,
                                         out_dtype);
         };
 
+        // Like other pointwise binary ops, PyTorch lets a 0-D CPU tensor be
+        // paired with a device tensor here.
+        TT_ASSIGN_OR_THROW(const std::vector<at::Tensor> tpu_inputs,
+                           MoveCpuScalarsToTpu({grad_output, self}));
+
         TT_THROW_IF_ERROR(DispatchOpOut<3>(
-            std::move(op_builder), {grad_output, self, eps_tensor}, grad_input,
+            std::move(op_builder), {tpu_inputs[0], tpu_inputs[1], eps_tensor},
+            grad_input,
             {.out_dtype = out_dtype,
              .out_dims = out_dims,
              .op_param_cache_keys = std::move(param_keys)}));

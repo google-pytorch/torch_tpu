@@ -67,15 +67,9 @@ namespace torch_tpu {
 namespace stablehlo = mlir::stablehlo;
 namespace chlo = mlir::chlo;
 
-namespace internal {
-
-// When PyTorch executes mixed-device operations (e.g., `tpu_tensor +
-// cpu_scalar`), the dispatcher bypasses the standard backend device guards. We
-// must manually move 0-D CPU scalar tensors to the TPU when paired with a TPU
-// tensor to avoid crashes when we later try to extract their TPU buffers.
 absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
     absl::Span<const at::Tensor> tensors,
-    std::optional<at::ScalarType> wrapped_scalar_dtype = std::nullopt) {
+    std::optional<at::ScalarType> wrapped_scalar_dtype) {
   const bool has_tpu_input =
       tensors.size() >= 2 &&
       (IsPrivateUse1Device(tensors[0]) || IsPrivateUse1Device(tensors[1]));
@@ -99,6 +93,8 @@ absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
   }
   return tpu_tensors;
 }
+
+namespace internal {
 
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
                                                  const at::Scalar& other,
@@ -310,9 +306,9 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, expected_result_type, opts.allow_out_dtype_cast));
 
-  TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      internal::MoveCpuScalarsToTpu({self, other, third},
-                                                    promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      auto tpu_tensors,
+      MoveCpuScalarsToTpu({self, other, third}, promoted_scalar_type));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
   const at::Tensor& third_tpu = tpu_tensors[2];

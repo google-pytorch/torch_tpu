@@ -2243,6 +2243,24 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           )
           utils.assert_close(grad_tpu_f64, grad_expected_f64)
 
+  def test_logit_backward_cpu_scalar(self):
+    scalar_cpu = torch.tensor(0.25)
+    vector_cpu = torch.tensor([0.25, 0.5, 0.75])
+
+    def run(device):
+      return (
+          # 0-D CPU `grad_output`.
+          torch.ops.aten.logit_backward(
+              scalar_cpu, vector_cpu.to(device), 1e-6
+          ),
+          # 0-D CPU `self`.
+          torch.ops.aten.logit_backward(
+              vector_cpu.to(device), scalar_cpu, 1e-6
+          ),
+      )
+
+    self.assert_close_tpu_vs_cpu(run)
+
   def test_logit_backward_broadcast(self):
     device = torch.device("tpu")
     shape_pairs = [
