@@ -211,6 +211,7 @@
 #include "csrc/ops/segment_reduce/segment_reduce_aten_kernels.h"
 #include "csrc/ops/select_scatter/select_scatter_aten_kernels.h"
 #include "csrc/ops/set/set_aten_kernels.h"
+#include "csrc/ops/shrink/shrink_aten_kernels.h"
 #include "csrc/ops/sigmoid/sigmoid_aten_kernels.h"
 #include "csrc/ops/silu/silu_aten_kernels.h"
 #include "csrc/ops/slice_backward/slice_backward_aten_kernels.h"
@@ -756,6 +757,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kGruInput>(m, AtenGruInput);
   ImplStable<OpName::kGtScalarOut>(m, AtenGtScalarOut);
   ImplStable<OpName::kGtTensorOut>(m, AtenGtTensorOut);
+  ImplStable<OpName::kHardshrinkBackwardGradInput>(
+      m, AtenHardshrinkBackwardGradInput);
+  ImplStable<OpName::kHardshrinkOut>(m, AtenHardshrinkOut);
   ImplStable<OpName::kHardsigmoidBackwardGradInput>(
       m, AtenHardsigmoidBackwardGradInput);
   ImplStable<OpName::kHardsigmoidOut>(m, AtenHardsigmoidOut);
@@ -1069,6 +1073,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kSoftplusBackwardGradInput>(m,
                                                  AtenSoftplusBackwardGradInput);
   ImplStable<OpName::kSoftplusOut>(m, AtenSoftplusOut);
+  ImplStable<OpName::kSoftshrinkBackwardGradInput>(
+      m, AtenSoftshrinkBackwardGradInput);
+  ImplStable<OpName::kSoftshrinkOut>(m, AtenSoftshrinkOut);
   ImplStable<OpName::kSortValuesStable>(m, AtenSortValuesStable);
   ImplStable<OpName::kSplitWithSizesCopyOut>(m, AtenSplitWithSizesCopyOut);
   ImplStable<OpName::kSqrtOut>(m, AtenSqrtOut);

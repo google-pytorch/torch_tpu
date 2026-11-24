@@ -5468,7 +5468,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_gaussian_nll_loss(self):
     self.do_test_op("nn.functional.gaussian_nll_loss")
 
-  @op_testing.unimplemented_on_tpu
   def test_nn_functional_hardshrink(self):
     self.do_test_op("nn.functional.hardshrink")
 
@@ -5648,7 +5647,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_softmin_with_dtype(self):
     self.do_test_op("nn.functional.softmin", variant_test_name="with_dtype")
 
-  @op_testing.unimplemented_on_tpu
   def test_nn_functional_softshrink(self):
     self.do_test_op("nn.functional.softshrink")
 
