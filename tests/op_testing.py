@@ -24,6 +24,7 @@ import copy
 import dataclasses
 import enum
 import functools
+import gc
 import gzip
 import importlib
 import itertools
@@ -45,6 +46,7 @@ from etils import epath
 import safetensors.torch as st
 import sympy
 import torch
+from torch._inductor import utils as inductor_utils
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
 from torch.testing._internal import autograd_function_db
@@ -171,6 +173,15 @@ _USE_COMPILED: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
     "use_compiled",
     False,
     "Use compiled torch_tpu backend.",
+)
+
+_GOLDEN_PARTITION: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
+    "golden_partition",
+    "",
+    "Optional '<index>/<total>' partition selector (0-based index) used in"
+    " --test_mode=gen_gpu_golden to split golden generation across multiple"
+    " Blaze test targets (bypassing Blaze's 50-shard-per-target ceiling)."
+    " Ignored when a test filter (TESTBRIDGE_TEST_ONLY) is set.",
 )
 
 _IGNORE_ACCURACY_OVERRIDES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
@@ -5475,7 +5486,60 @@ def _gen_gpu_golden_mode() -> bool:
 
 def _records_unimplemented_ops() -> bool:
   """Returns True when @unimplemented_on_tpu tests should run to record goldens."""
-  return _gen_gpu_golden_mode() and not is_compiled_mode()
+  return _gen_gpu_golden_mode()
+
+
+def _parse_golden_partition(spec: str) -> tuple[int, int]:
+  """Parses a `<index>/<total>` golden partition spec into `(index, total)`."""
+  parts = spec.split("/")
+  if len(parts) != 2:
+    raise ValueError(
+        f"Invalid --golden_partition {spec!r}; expected '<index>/<total>'."
+    )
+  try:
+    index = int(parts[0])
+    total = int(parts[1])
+  except ValueError as e:
+    raise ValueError(
+        f"Invalid --golden_partition {spec!r}; index and total must be ints."
+    ) from e
+  if total < 1 or not (0 <= index < total):
+    raise ValueError(
+        f"Invalid --golden_partition {spec!r}; expected 0 <= index < total"
+        " with total >= 1."
+    )
+  return index, total
+
+
+@functools.lru_cache(maxsize=None)
+def _sorted_test_case_names(
+    test_case_cls: type[unittest.TestCase],  # UNITTEST_OK=type annotation
+) -> tuple[str, ...]:
+  """Returns lexicographically sorted test method names matching absltest."""
+  return tuple(unittest.TestLoader().getTestCaseNames(test_case_cls))
+
+
+def _in_golden_partition(
+    test_case_cls: type[unittest.TestCase],  # UNITTEST_OK=type annotation
+    method_name: str,
+    total_shards: int,
+    spec: str,
+) -> bool:
+  """Returns whether `method_name` belongs to the active `--golden_partition`.
+
+  absltest shards sorted method names round-robin via `idx % total_shards`.
+  Partitioning on `(idx // total_shards) % total_partitions` is orthogonal to
+  `idx % total_shards` for all `(total_shards, total_partitions)` pairs, so even
+  when `gcd(total_shards, total_partitions) > 1` (e.g. 50 shards x 4
+  partitions = 200 buckets), every bucket holds a nearly equal, disjoint subset.
+  """
+  part_idx, total_parts = _parse_golden_partition(spec)
+  names = _sorted_test_case_names(test_case_cls)
+  try:
+    idx = names.index(method_name)
+  except ValueError:
+    return True
+  return (idx // max(total_shards, 1)) % total_parts == part_idx
 
 
 def golden_target_gpu_arch() -> str:
@@ -5554,9 +5618,9 @@ def unimplemented_on_tpu(
   Tags the test method in-place without wrapping it so test-inspection tools
   (e.g. `DynamismDenyListsTest`) can check `_UNIMPLEMENTED_ON_TPU_ATTR` on the
   method directly. Skipping is enforced in `OpInfoTestBase.setUp()` before
-  `super().setUp()`: tagged tests run only during eager and backward GPU golden
-  generation (`GEN_GPU_GOLDEN` without `--use_compiled`), and are skipped in all
-  other modes including compiled golden generation and `DUMP_DTYPE_EXCLUSIONS`.
+  `super().setUp()`: tagged tests run during GPU golden generation
+  (`GEN_GPU_GOLDEN` across eager, backward, and compiled modes), and are
+  skipped in all other modes including `DUMP_DTYPE_EXCLUSIONS` and TPU replay.
   """
   if callable(arg):
     return unimplemented_on_tpu()(arg)
@@ -6449,6 +6513,54 @@ def _compiled_supports_op(
   return key not in _COMPILED_DENY_LIST
 
 
+_GOLDEN_COMPILER_EXCEPTION_TYPES: Final[frozenset[str]] = frozenset({
+    "BackendCompilerFailed",
+    "InductorError",
+    "InternalTorchDynamoError",
+})
+
+# (op_name -> dtypes) whose PyTorch Inductor CUDA lowering triggers a sticky
+# device-side assertion (`cudaErrorAssert`), permanently poisoning the CUDA
+# context for every subsequent test in the same shard. During compiled golden
+# generation on CUDA, these pairs record a synthetic `InductorError` instead of
+# running the kernel so the shard completes cleanly and replay explicitly skips
+# them via `_is_golden_compiler_failure()`.
+_COMPILED_GOLDEN_DEVICE_ASSERT_SKIP_DTYPES: Final[
+    Mapping[str, frozenset[torch.dtype]]
+] = {
+    # Inductor lowers `max_pool2d_with_indices` via
+    # `_low_memory_max_pool_with_offsets`, filling padded window slots with
+    # `False` for `torch.bool`. When every in-bounds pixel in a padded window is
+    # `False`, argmax selects the out-of-bounds padded slot (negative flattened
+    # index), tripping `ScatterGatherKernel.cu`'s index-bounds assert inside
+    # `aten.scatter_add`. Eager CUDA rejects `bool` with `NotImplementedError`.
+    "max_pool2d_with_indices_backward": frozenset({torch.bool}),
+}
+
+
+def _is_golden_compiler_failure(golden_result: Any) -> bool:
+  """Returns whether `golden_result` is a golden-device compiler error."""
+  return (
+      isinstance(golden_result, Exception)
+      and type(golden_result).__name__ in _GOLDEN_COMPILER_EXCEPTION_TYPES
+  )
+
+
+def _free_compiled_caches() -> None:
+  """Clears Dynamo/Inductor in-memory caches between compiled golden calls.
+
+  Inductor retains loaded code artifacts and Triton kernels in memory across
+  `torch.compiler.reset()`. Flushing Inductor's registered caches, forcing GC,
+  and clearing the CUDA caching allocator keeps host RAM and GPU VRAM bounded
+  during large compiled golden generation runs while keeping disk caches intact.
+  """
+  torch.compiler.reset()
+  inductor_utils.clear_caches()
+  gc.collect()
+  if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
+
 def _target_device(dtype: torch.dtype, device: torch.device) -> torch.device:
   """Returns the device to actually run an op with `dtype` inputs on.
 
@@ -7077,6 +7189,21 @@ class OpInfoTestBase(TorchTpuTestBase):
   """
 
   def setUp(self) -> None:
+    if (
+        _gen_gpu_golden_mode()
+        and _GOLDEN_PARTITION.value
+        and not os.environ.get("TESTBRIDGE_TEST_ONLY")
+    ):
+      total_shards = int(os.environ.get("TEST_TOTAL_SHARDS", "1"))
+      if not _in_golden_partition(
+          type(self),
+          self._testMethodName,
+          total_shards,
+          _GOLDEN_PARTITION.value,
+      ):
+        raise unittest.SkipTest(
+            f"Outside golden partition {_GOLDEN_PARTITION.value}."
+        )
     method = getattr(self, self._testMethodName, None)
     if not _records_unimplemented_ops():
       if reason := getattr(method, _UNIMPLEMENTED_ON_TPU_ATTR, None):
@@ -7085,6 +7212,12 @@ class OpInfoTestBase(TorchTpuTestBase):
         # op_dtype_exclusions.yaml across shared op_name variants.
         raise unittest.SkipTest(f"Unimplemented on TPU: {reason}")
     super().setUp()
+    if is_compiled_mode():
+      # Fail loudly if Dynamo's recompile limit is ever hit instead of silently
+      # falling back to eager execution (see b/568080282).
+      self.enterContext(
+          torch._dynamo.config.patch(fail_on_recompile_limit_hit=True)  # pylint: disable=protected-access
+      )
     # Each test records its goldens on one GPU: the one set by
     # @record_gpu_goldens_on, or the default GPU if untagged.
     if _gen_gpu_golden_mode():
@@ -7162,6 +7295,7 @@ class OpInfoTestBase(TorchTpuTestBase):
         max_samples,
         out_dtype_override,
         compute_grad=compute_grad,
+        use_compiled=use_compiled,
         check_op_failures=check_op_failures,
         skip_if=skip_if,
     )
@@ -7175,6 +7309,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       out_dtype_override: torch.dtype | None,
       *,
       compute_grad: bool = False,
+      use_compiled: bool = False,
       check_op_failures: bool = True,
       skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
   ) -> Sequence[tuple[OpInput, OpOutput]]:
@@ -7185,14 +7320,20 @@ class OpInfoTestBase(TorchTpuTestBase):
         dtype,
         out_dtype_override=out_dtype_override,
     )
-    # TODO(b/540887166): Enable this check for compiled mode too when the bug
-    # is fixed.
-    if not samples and not is_compiled_mode():
+    if not samples:
       self.fail(
           "No GPU golden samples found for"
           f" {_op_name_for_logging(op, variant)}() with dtype {dtype}. Please"
           " re-generate the GPU golden files to cover the new (op, dtype)."
       )
+    if use_compiled and samples and not _CHECK_DYNAMISM.value:
+      usable = [
+          pair
+          for pair in samples
+          if not _is_golden_compiler_failure(pair[1].output_value)
+      ]
+      if usable:
+        samples = usable
     if max_samples >= 0 and len(samples) > max_samples:
       print(
           f">>> Taking {max_samples} samples from "
@@ -7207,6 +7348,7 @@ class OpInfoTestBase(TorchTpuTestBase):
             samples,
             max_samples=max_samples,
             compute_grad=compute_grad,
+            use_compiled=use_compiled,
             check_op_failures=check_op_failures,
             skip_if=skip_if,
         )
@@ -7223,6 +7365,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       *,
       max_samples: int,
       compute_grad: bool,
+      use_compiled: bool = False,
       check_op_failures: bool = True,
       skip_if: Callable[[OpVariant, OpInput], bool] | None = None,
   ) -> Sequence[tuple[OpInput, OpOutput]]:
@@ -7241,11 +7384,25 @@ class OpInfoTestBase(TorchTpuTestBase):
     unskipped = [
         (inp, out)
         for inp, out in samples
-        if (check_op_failures or not isinstance(out.output_value, Exception))
-        and (skip_if is None or not skip_if(variant, inp))
+        if (skip_if is None or not skip_if(variant, inp))
+        and (
+            check_op_failures
+            or not isinstance(out.output_value, Exception)
+            or (use_compiled and _is_golden_compiler_failure(out.output_value))
+        )
     ]
     if not unskipped:
       return samples[:1]
+
+    if use_compiled:
+      usable = [
+          (inp, out)
+          for inp, out in unskipped
+          if not _is_golden_compiler_failure(out.output_value)
+      ]
+      if not usable:
+        return unskipped[:1]
+      unskipped = usable
 
     # Skip sample scanning if the dtype itself is unsupported for dynamism.
     if (
@@ -7307,30 +7464,60 @@ class OpInfoTestBase(TorchTpuTestBase):
       # Take at most max_samples from the generated samples.
       golden_samples = random.sample(golden_samples, max_samples)
 
-    pairs = []
-    for golden_sample in golden_samples:
-      # sample_inputs for scaled_dot_product_attention sometimes includes a
-      # non-zero dropout parameter, but we don't guarantee randomness matches
-      # and would need to compare distributions.
-      if op.name == "nn.functional.scaled_dot_product_attention":
-        golden_sample.kwargs.update({"dropout_p": 0.0})
-
-      golden_input = OpInput(golden_sample)
-      golden_result = self._run_op(
-          op=op,
-          variant=variant,
-          dtype=dtype,
-          op_input=golden_input,
-          device=self.golden_device,
-          subtest_name="golden",
-          # When generating golden results, we should trust the op's output
-          # to be correct and not check the device. E.g. even in the
-          # gen_gpu_golden mode, torch.arange(5) should return a tensor on
-          # CPU instead of GPU.
-          check_device=False,
-          **run_op_kwargs,
+    use_compiled = bool(run_op_kwargs.get("use_compiled"))
+    if (
+        use_compiled
+        and self.golden_device is not None
+        and self.golden_device.type == "cuda"
+        and dtype in _COMPILED_GOLDEN_DEVICE_ASSERT_SKIP_DTYPES.get(op.name, ())
+    ):
+      err_msg = (
+          f"Skipped compiled CUDA golden generation for {op.name} ({dtype}): "
+          "upstream PyTorch Inductor lowering triggers a sticky CUDA "
+          "device-side assert."
       )
-      pairs.append((golden_input, OpOutput(golden_result)))
+      print(f">>> {err_msg}", flush=True)
+      return [
+          (
+              OpInput(sample),
+              OpOutput(
+                  _deserialize_exception({
+                      "type": "InductorError",
+                      "message": err_msg,
+                  })
+              ),
+          )
+          for sample in golden_samples
+      ]
+
+    pairs = []
+    try:
+      for golden_sample in golden_samples:
+        # sample_inputs for scaled_dot_product_attention sometimes includes a
+        # non-zero dropout parameter, but we don't guarantee randomness matches
+        # and would need to compare distributions.
+        if op.name == "nn.functional.scaled_dot_product_attention":
+          golden_sample.kwargs.update({"dropout_p": 0.0})
+
+        golden_input = OpInput(golden_sample)
+        golden_result = self._run_op(
+            op=op,
+            variant=variant,
+            dtype=dtype,
+            op_input=golden_input,
+            device=self.golden_device,
+            subtest_name="golden",
+            # When generating golden results, we should trust the op's output
+            # to be correct and not check the device. E.g. even in the
+            # gen_gpu_golden mode, torch.arange(5) should return a tensor on
+            # CPU instead of GPU.
+            check_device=False,
+            **run_op_kwargs,
+        )
+        pairs.append((golden_input, OpOutput(golden_result)))
+    finally:
+      if use_compiled:
+        _free_compiled_caches()
     return pairs
 
   def _run_op(
@@ -8109,17 +8296,6 @@ class OpInfoTestBase(TorchTpuTestBase):
 
     for i, [golden_input, golden_output] in enumerate(golden_pairs):
       golden_result = golden_output.output_value
-      golden_thrown = isinstance(golden_result, Exception)
-      if golden_thrown and not check_op_failures:
-        print(
-            f"Skipping test sample for {op_name}() with dtype {dtype} on"
-            " TorchTPU as it failed on"
-            f" {self.golden_device_name()}.\n{golden_input}\n"
-            f"Error: {golden_result}\n",
-            flush=True,
-        )
-        continue
-
       if skip_if and skip_if(variant, golden_input):
         print(
             f"Skipping test sample for {op_name}() with dtype {dtype} on"
@@ -8134,6 +8310,33 @@ class OpInfoTestBase(TorchTpuTestBase):
       # Construct a meaningful and unique subtest name.
       subtest_name = f"{op_name}_{_dtype_str(dtype)}_"
       subtest_name += golden_input.name if golden_input.name else f"subtest{i}"
+
+      if use_compiled and _is_golden_compiler_failure(golden_result):
+        skip_reason = (
+            f"{self.golden_device_name()} failed to compile {op_name}() with"
+            f" dtype {dtype}: {type(golden_result).__name__}: {golden_result}"
+        )
+        print(
+            f"Skipping test sample {subtest_name}: {skip_reason}\n",
+            flush=True,
+        )
+        self._subtests_run += 1
+        with self.subTest(subtest_name=subtest_name, run_index=0):
+          _run_and_print_exception(
+              lambda reason=skip_reason: self.skipTest(reason)
+          )
+        continue
+
+      golden_thrown = isinstance(golden_result, Exception)
+      if golden_thrown and not check_op_failures:
+        print(
+            f"Skipping test sample for {op_name}() with dtype {dtype} on"
+            " TorchTPU as it failed on"
+            f" {self.golden_device_name()}.\n{golden_input}\n"
+            f"Error: {golden_result}\n",
+            flush=True,
+        )
+        continue
 
       if _perf_mode():
         test = functools.partial(self._run_on_tpu, measure_perf=True)
@@ -8570,7 +8773,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       )
 
     # We have available dtypes to check and not intentionally excluded, but every sample disappeared, which is not expected.
-    if _torch_tpu_vs_gpu_mode() and not is_compiled_mode():
+    if _torch_tpu_vs_gpu_mode():
       if self._subtests_run == 0:
         self.fail(
             f"do_test_op({op_name!r}) executed 0 subtests for "

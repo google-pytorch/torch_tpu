@@ -817,7 +817,7 @@ class OpTestingTest(op_testing.OpInfoTestBase):
           op_testing.TestMode.GEN_GPU_GOLDEN,
           True,
           False,
-          False,
+          True,
       ),
       (
           "torch_tpu_vs_gpu_eager",
@@ -952,6 +952,82 @@ class OpTestingTest(op_testing.OpInfoTestBase):
         self.assertEmpty(result.failures)
 
     self.assertEqual(ran, ["test_hopper_tagged"])
+
+  def test_golden_partition_is_disjoint_complete_over_ops_test(self):
+    all_names = op_testing._sorted_test_case_names(ops_test.TestOps)
+    total_shards = 50
+    num_parts = 4
+    seen: list[str] = []
+    bucket_sizes: list[int] = []
+    for part in range(num_parts):
+      spec = f"{part}/{num_parts}"
+      for shard in range(total_shards):
+        bucket = [
+            name
+            for idx, name in enumerate(all_names)
+            if idx % total_shards == shard
+            and op_testing._in_golden_partition(
+                ops_test.TestOps, name, total_shards, spec
+            )
+        ]
+        bucket_sizes.append(len(bucket))
+        foreach_count = sum(n.startswith("test_foreach_") for n in bucket)
+        self.assertLessEqual(foreach_count, 1)
+        seen.extend(bucket)
+    self.assertEqual(len(seen), len(all_names))
+    self.assertEqual(set(seen), set(all_names))
+    self.assertLessEqual(max(bucket_sizes) - min(bucket_sizes), 1)
+
+  def test_golden_partition_invalid_spec_raises(self):
+    for bad in ("0", "0/0", "4/4", "-1/4", "a/b", "1/2/3"):
+      with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=test harness check
+        op_testing._parse_golden_partition(bad)
+
+  def test_golden_partition_ignored_when_test_filter_set(self):
+    ran = []
+
+    class PartitionedTest(op_testing.OpInfoTestBase):
+
+      def test_a(self):
+        ran.append("test_a")
+
+      def test_b(self):
+        ran.append("test_b")
+
+    with (
+        flagsaver.flagsaver(
+            test_mode=op_testing.TestMode.GEN_GPU_GOLDEN,
+            golden_partition="0/2",
+        ),
+        mock.patch.dict(
+            os.environ, {"TEST_TOTAL_SHARDS": "1", "TESTBRIDGE_TEST_ONLY": "*"}
+        ),
+        mock.patch.object(
+            op_testing,
+            "golden_target_gpu_arch",
+            return_value=op_testing.GPU_SM100,
+        ),
+    ):
+      for method_name in ("test_a", "test_b"):
+        res = unittest.TestResult()
+        PartitionedTest(method_name).run(res)
+        self.assertEmpty(res.errors)
+        self.assertEmpty(res.skipped)
+    self.assertEqual(ran, ["test_a", "test_b"])
+
+  def test_is_golden_compiler_failure(self):
+    class InductorError(Exception):
+      pass
+
+    class BackendCompilerFailed(Exception):
+      pass
+
+    self.assertTrue(op_testing._is_golden_compiler_failure(InductorError("x")))
+    self.assertTrue(
+        op_testing._is_golden_compiler_failure(BackendCompilerFailed("x"))
+    )
+    self.assertFalse(op_testing._is_golden_compiler_failure(RuntimeError("x")))
+    self.assertFalse(op_testing._is_golden_compiler_failure(42))
 
   def test_get_op_variant_matching(self):
     # Omitting variant_test_name preserves first-match behavior (e.g.

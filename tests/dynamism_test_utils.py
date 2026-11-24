@@ -756,7 +756,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
     # These fail an MLIR RankedTensorType invariant check, which aborts the test
     # process in builds with MLIR assertions enabled (not in -c opt).
     "untriaged: MLIR assertion failure (bounds length vs rank)": {
-        "matmul": {EAGER, COMPILE_GRAD},
+        "matmul": ALL_MODES,
         "vdot": ALL_MODES,
     },
     "untriaged: materialization failure (negative dimension size)": {

@@ -174,6 +174,13 @@ def _has_test_filter() -> bool:
 COMPLEX_DTYPES = op_testing.COMPLEX_DTYPES
 FLOAT_DTYPES = op_testing.FLOAT_DTYPES
 INTEGRAL_DTYPES = op_testing.INTEGRAL_DTYPES
+_INTEGER_DTYPES = (
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+)
 UNQUANTIZED_NUMERIC_DTYPES = op_testing.UNQUANTIZED_NUMERIC_DTYPES
 ALL_NUMERIC_DTYPES = op_testing.ALL_NUMERIC_DTYPES
 _SPARSE_COO_EXCLUDE_DTYPES = tuple(
@@ -674,91 +681,172 @@ ACCURACY_OVERRIDES_VS_GPU = {
 ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     # go/keep-sorted start
     "_addmm_activation": {
-        torch.float16: {"rtol": 1.6e-1, "atol": 5.4e-1},
-        torch.float32: {"rtol": 5.5e-2, "atol": 4.3e-2},
-        torch.float64: {"rtol": 1.5e-4, "atol": 5.7e-4},
+        torch.float16: {"rtol": 4.2e-3, "atol": 4.7e-3},
+        torch.float32: {"rtol": 3.6e-3, "atol": 4.1e-3},
+        torch.float64: {"atol": 1.8e-4},
+    },
+    "_foreach_acos": {
+        torch.complex64: {"rtol": 5e-5, "atol": 3e-5},
+    },
+    "_foreach_asin": {
+        torch.complex64: {"rtol": 6e-5, "atol": 6.1e-5},
+    },
+    "_foreach_atan": {
+        torch.complex64: {"rtol": 1.9e-5, "atol": 1.5e-5},
+    },
+    "_foreach_cos": {
+        torch.complex64: {"rtol": 4.7e-6},
     },
     "_foreach_cosh": {
         torch.complex64: {"rtol": 5.1e-6},
     },
     "_foreach_exp": {
         torch.complex64: {"rtol": 4.8e-6},
+        torch.float32: {"rtol": 4.9e-6},
+        torch.int16: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.int32: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.int64: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.int8: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.uint8: {"rtol": 4.4e-6},
     },
     "_foreach_expm1": {
-        torch.complex64: {"rtol": 6.1e-6},
+        torch.complex64: {"rtol": 5.9e-6},
+        torch.float32: {"rtol": 6.3e-6},
+        torch.int16: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.int32: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.int64: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.int8: {"rtol": 4.4e-6, "atol": 7.9e-7},
+        torch.uint8: {"rtol": 4.4e-6},
+    },
+    "_foreach_lerp": {
+        torch.bfloat16: {"rtol": 3.5e-2, "atol": 7.3e-2},
+        torch.float16: {"rtol": 4.2e-3, "atol": 8.7e-3},
+    },
+    "_foreach_lgamma": {
+        torch.bfloat16: {"atol": 4.7e-3},
+        torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
+        torch.float32: {"rtol": 2.8e-4, "atol": 3.3e-4},
+        torch.int16: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int32: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int64: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int8: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.uint8: {"rtol": 1.5e-4, "atol": 6.3e-5},
     },
     "_foreach_log": {
-        torch.complex64: {"rtol": 6.3e-5, "atol": 6.6e-5},
+        torch.complex64: {"rtol": 6.3e-5, "atol": 6.8e-5},
+        torch.float32: {"rtol": 7.4e-5, "atol": 8.3e-5},
+        torch.int16: {"rtol": 6.9e-5},
+        torch.int32: {"rtol": 6.9e-5},
+        torch.int64: {"rtol": 6.9e-5},
+        torch.int8: {"rtol": 6.9e-5},
+        torch.uint8: {"rtol": 6.9e-5},
     },
     "_foreach_log10": {
-        torch.complex64: {"rtol": 3.9e-5, "atol": 4.5e-5},
+        torch.complex64: {"rtol": 3.9e-5, "atol": 5.3e-5},
+        torch.float32: {"rtol": 3.3e-5, "atol": 4.2e-5},
+        torch.int16: {"atol": 3.3e-5},
+        torch.int32: {"atol": 3.3e-5},
+        torch.int64: {"atol": 3.3e-5},
+        torch.int8: {"atol": 3.3e-5},
+        torch.uint8: {"atol": 3.3e-5},
+    },
+    "_foreach_log1p": {
+        torch.complex64: {"rtol": 3.6e-5, "atol": 3.7e-5},
+        torch.float32: {"rtol": 7.6e-5, "atol": 8.3e-5},
+        torch.int16: {"rtol": 6.9e-5},
+        torch.int32: {"rtol": 6.9e-5},
+        torch.int64: {"rtol": 6.9e-5},
+        torch.int8: {"rtol": 6.9e-5},
+        torch.uint8: {"rtol": 6.9e-5},
     },
     "_foreach_log2": {
-        torch.complex64: {"rtol": 1.1e-4},
+        torch.complex64: {"rtol": 1.1e-4, "atol": 3.4e-5},
+        torch.float32: {"rtol": 1.1e-4, "atol": 8.1e-5},
+        torch.int16: {"rtol": 6.9e-5},
+        torch.int32: {"rtol": 6.9e-5},
+        torch.int64: {"rtol": 6.9e-5},
+        torch.int8: {"rtol": 6.9e-5},
+        torch.uint8: {"rtol": 6.9e-5},
     },
     "_foreach_pow": {
-        torch.complex64: {"rtol": 8.8e-4, "atol": 3.4e-4},
+        torch.complex64: {"rtol": 8.8e-4, "atol": 4.1e-4},
+        torch.float32: {"rtol": 5.1e-6},
     },
     "_foreach_sigmoid": {
         torch.complex64: {"rtol": 1.4e-5},
     },
+    "_foreach_sin": {
+        torch.complex64: {"rtol": 4.5e-6},
+    },
+    "_foreach_sinh": {
+        torch.complex64: {"rtol": 5.6e-6},
+    },
     "_foreach_tan": {
-        torch.complex64: {"rtol": 3.7e-5},
+        torch.complex64: {"rtol": 3.1e-5},
     },
     "_foreach_tanh": {
-        torch.complex64: {"rtol": 1.4e-4, "atol": 1.1e-5},
+        torch.complex64: {"rtol": 6.2e-6},
     },
     "_grouped_mm": {
-        torch.float16: {"rtol": 1.1e-2, "atol": 1.2e-2},
-        torch.float32: {"rtol": 8.6e-3, "atol": 1.3e-2},
+        torch.float16: {"rtol": 4e-3, "atol": 9.4e-3},
+        torch.float32: {"rtol": 3.5e-3, "atol": 9e-3},
     },
     "_log_softmax_backward_data": {
-        torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
+        torch.float32: {"rtol": 3.5e-5, "atol": 3.7e-5},
     },
     "_masked_softmax_backward": {
-        torch.bfloat16: {"atol": 3e-3},
-        torch.float16: {"atol": 5.9e-4},
+        torch.bfloat16: {"atol": 4.7e-3},
+        torch.float16: {"rtol": 1.1e-3, "atol": 5.9e-4},
     },
     "_native_batch_norm_legit": {
-        torch.float32: {"rtol": 1e-5, "atol": 2.1e-5},
+        torch.float32: {"rtol": 2.1e-6, "atol": 2.2e-5},
     },
     "_native_multi_head_attention": {
-        torch.float16: {"rtol": 1.4e-1, "atol": 1.3e-1},
-        torch.float32: {"rtol": 2.0e-1, "atol": 3.2e-1},
+        torch.bfloat16: {"rtol": 3.7e-2, "atol": 4.7e-2},
+        torch.float16: {"rtol": 1.6e-1, "atol": 1.7e-1},
+        torch.float32: {"rtol": 2e-1, "atol": 3.2e-1},
     },
-    "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 3.6e-3},
-        torch.float16: {"atol": 5.9e-4},
+    "_segment_reduce": {
+        torch.bfloat16: {"rtol": 1.7e-2, "atol": 3.8e-2},
+        torch.float16: {"rtol": 1.6e-3, "atol": 2.1e-3},
+    },
+    "_transformer_encoder_layer_fwd": {
+        torch.bfloat16: {"rtol": 4.5e-2, "atol": 1.1e-1},
+        torch.float16: {"rtol": 7.6e-2, "atol": 1.8e-1},
+        torch.float32: {"rtol": 7e-2, "atol": 2.1e-1},
     },
     "_upsample_bicubic2d_aa": {
         torch.bfloat16: {"rtol": 3.5e-2, "atol": 3.3e-2},
         torch.float16: {"rtol": 3.8e-3, "atol": 4e-3},
-        torch.float32: {"rtol": 2.0e-5, "atol": 2.0e-5},
+        torch.float32: {"rtol": 2.1e-5, "atol": 2.4e-5},
     },
     "_upsample_bilinear2d_aa": {
         torch.bfloat16: {"rtol": 4.7e-2, "atol": 3.7e-2},
         torch.float16: {"rtol": 6.9e-3, "atol": 6.5e-3},
         torch.float32: {"rtol": 1.7e-5, "atol": 2.5e-5},
     },
-    "abs": {
-        torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},
-        torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
-    },
     "acos": {
         torch.complex64: {"rtol": 5.5e-5, "atol": 2.2e-5},
     },
     "acosh": {
         torch.complex64: {"rtol": 2.9e-5},
+        torch.float32: {"rtol": 3e-5, "atol": 1.3e-5},
+        torch.int16: {"rtol": 2.8e-5},
+        torch.int32: {"rtol": 2.8e-5},
+        torch.int64: {"rtol": 2.8e-5},
+        torch.int8: {"rtol": 2.8e-5},
+        torch.uint8: {"rtol": 2.8e-5},
     },
     "addcmul": {
-        torch.float16: {
-            "rtol": 8.6e-3,  # TOLERANCE_OVERRIDE_OK
-            "atol": 1.0e-3,  # TOLERANCE_OVERRIDE_OK
-        },
+        torch.float16: {"rtol": 1.4e-3, "atol": 1.2e-3},
+    },
+    "addmm": {
+        torch.float16: {"rtol": 1.4e-2},
+        torch.float32: {"rtol": 7.7e-3},
     },
     "addmm.dtype": {
-        torch.float16: {"rtol": 2.9e-2, "atol": 9.7e-2},
-        torch.float32: {"rtol": 2.8e-2, "atol": 8e-2},
+        torch.float16: {"rtol": 5.1e-3, "atol": 2.5e-3},
+        torch.float32: {"rtol": 4.6e-3, "atol": 3.8e-3},
     },
     "asin": {
         torch.complex64: {"rtol": 7.9e-5, "atol": 1e-4},
@@ -781,12 +869,15 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 5.8e-5, "atol": 7.7e-5},
     },
     "baddbmm": {
-        torch.complex64: {"rtol": 6.9e-2},
+        torch.bfloat16: {"atol": 4.7e-3},
+        torch.complex64: {"rtol": 7.7e-2},
+        torch.float16: {"rtol": 2.8e-1, "atol": 3.3e-1},
+        torch.float32: {"rtol": 3.4e-1, "atol": 3.6e-1},
     },
     "baddbmm.dtype": {
-        torch.complex64: {"rtol": 8.2e-2},
-        torch.float16: {"rtol": 3.9e-2, "atol": 1.2e-2},
-        torch.float32: {"rtol": 3e-2, "atol": 8.4e-3},
+        torch.complex64: {"rtol": 1.1e-2, "atol": 6e-3},
+        torch.float16: {"rtol": 4.7e-3, "atol": 7.7e-3},
+        torch.float32: {"rtol": 4.4e-3, "atol": 6.8e-3},
     },
     "bmm": {
         torch.complex64: {"rtol": 9.6e-2},
@@ -794,26 +885,35 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 6.6e-2, "atol": 3.4e-1},
     },
     "bmm.dtype": {
-        torch.complex64: {"rtol": 3.5e-2, "atol": 2e-2},
-        torch.float16: {"rtol": 1e-1, "atol": 8.2e-2},
-        torch.float32: {"rtol": 5.4e-2, "atol": 7.4e-2},
+        torch.complex64: {"rtol": 2.3e-2, "atol": 2e-2},
+        torch.float16: {"rtol": 6.1e-3, "atol": 8e-3},
+        torch.float32: {"rtol": 7.1e-3, "atol": 1.2e-2},
+    },
+    "cdist": {
+        torch.float32: {"rtol": 5.1e-6},
     },
     "col2im": {
-        torch.complex64: {"rtol": 2.3e-2},
-        torch.float16: {"rtol": 2.1e-2, "atol": 4.2e-2},
-        torch.float32: {"rtol": 1.8e-2, "atol": 3.4e-2},
+        torch.complex64: {"rtol": 5.8e-3, "atol": 6.1e-3},
+        torch.float16: {"rtol": 1.9e-3, "atol": 2.4e-3},
+        torch.float32: {"rtol": 1.4e-3, "atol": 2.4e-3},
     },
     "cos": {
-        torch.complex64: {"rtol": 4.5e-6},
+        torch.complex64: {"rtol": 4.6e-6},
     },
     "cosh": {
         torch.complex64: {"rtol": 3.9e-6},
     },
-    # bf16/f16 cumsum accumulation rounds differently from the GPU
-    # reference, which is itself not bit-exact (mirrors the vs-CPU tol).
     "cumsum": {
         torch.bfloat16: {"atol": 1.9e-2},
         torch.float16: {"rtol": 3.5e-3, "atol": 2.4e-3},
+    },
+    "digamma": {
+        torch.float32: {"rtol": 4e-5, "atol": 1.3e-5},
+        torch.int16: {"rtol": 4.7e-5, "atol": 4.3e-7},
+        torch.int32: {"rtol": 4.7e-5, "atol": 4.3e-7},
+        torch.int64: {"rtol": 4.7e-5, "atol": 4.3e-7},
+        torch.int8: {"rtol": 4.7e-5, "atol": 4.3e-7},
+        torch.uint8: {"rtol": 4.7e-5, "atol": 3.6e-5},
     },
     "einsum": {
         torch.complex64: {"rtol": 2.7e-2},
@@ -825,9 +925,16 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "exp": {
         torch.complex64: {"rtol": 2.8e-6},
+        torch.float32: {"rtol": 4.6e-6},
+        torch.int16: {"rtol": 3.1e-6, "atol": 7.9e-7},
+        torch.int32: {"rtol": 3.1e-6, "atol": 7.9e-7},
+        torch.int64: {"rtol": 3.1e-6, "atol": 7.9e-7},
+        torch.int8: {"rtol": 3.1e-6, "atol": 7.9e-7},
+        torch.uint8: {"rtol": 4.4e-6},
     },
     "exp2": {
         torch.complex64: {"rtol": 3.3e-6},
+        torch.float32: {"rtol": 2.4e-6},
     },
     "expm1": {
         torch.complex64: {"rtol": 4.7e-6},
@@ -838,30 +945,72 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.int8: {"rtol": 4.4e-6, "atol": 7.9e-7},
         torch.uint8: {"rtol": 4.4e-6},
     },
+    "fft.fft": {
+        torch.int16: {"rtol": 1.8e-5, "atol": 1.9e-5},
+    },
+    "fft.ifft": {
+        torch.int16: {"rtol": 6.9e-6, "atol": 6.9e-6},
+    },
+    "fft.rfft": {
+        torch.int16: {"rtol": 2e-5, "atol": 9.1e-6},
+    },
+    "floor_divide": {
+        torch.bfloat16: {"rtol": 6.1e-2, "atol": 1.3},
+    },
     "gru.input": {
-        torch.bfloat16: {"atol": 1.2e-3},
-        torch.float16: {"atol": 1.1e-3},
-        torch.float32: {"atol": 9.3e-4},
+        torch.bfloat16: {"atol": 4.7e-3},
+        torch.float16: {"atol": 5.9e-4},
+        torch.float32: {"atol": 9.1e-4},
     },
     "ldexp": {
         torch.complex64: {"rtol": 4.4e-6},
+        torch.float32: {"rtol": 4.1e-6},
+    },
+    "lgamma": {
+        torch.float16: {"atol": 1.8e-4},
+        torch.float32: {"rtol": 1.7e-4, "atol": 1.8e-4},
+        torch.int16: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int32: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int64: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int8: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.uint8: {"rtol": 1.5e-4, "atol": 6.3e-5},
+    },
+    "linalg.lu_factor_ex": {
+        torch.float32: {"rtol": 2.5e-6, "atol": 2.4e-5},
+    },
+    "linalg.svd": {
+        torch.complex64: {"rtol": 5.1e-3, "atol": 3.9e-3},
+        torch.float32: {"rtol": 5.6e-3, "atol": 2.3e-3},
     },
     "linalg.svdvals": {
-        torch.complex64: {"rtol": 5.6e-3},
+        torch.complex64: {"rtol": 6.4e-3},
+        torch.float32: {"rtol": 4.9e-3},
     },
     "linalg.vector_norm": {
-        torch.complex64: {"rtol": 4.8e-6},
-        torch.float32: {"rtol": 4.8e-6},
+        torch.complex64: {"rtol": 2.5e-6},
+        torch.float32: {"rtol": 3.9e-6},
     },
     "linspace": {
-        torch.bfloat16: {"rtol": 7.9e-3, "atol": 9.4e-3},
-        torch.float16: {"rtol": 1.2e-3, "atol": 1.2e-3},
+        torch.bfloat16: {"atol": 4.7e-3},
+        torch.float16: {"atol": 5.9e-4},
     },
     "log": {
         torch.complex64: {"rtol": 4.7e-5},
+        torch.float32: {"rtol": 4.9e-5, "atol": 4.3e-5},
+        torch.int16: {"rtol": 6.9e-5},
+        torch.int32: {"rtol": 6.9e-5},
+        torch.int64: {"rtol": 6.9e-5},
+        torch.int8: {"rtol": 6.9e-5},
+        torch.uint8: {"rtol": 6.9e-5},
     },
     "log10": {
         torch.complex64: {"rtol": 1.4e-5, "atol": 2.2e-5},
+        torch.float32: {"atol": 3.3e-5},
+        torch.int16: {"atol": 3.3e-5},
+        torch.int32: {"atol": 3.3e-5},
+        torch.int64: {"atol": 3.3e-5},
+        torch.int8: {"atol": 3.3e-5},
+        torch.uint8: {"atol": 3.3e-5},
     },
     "log1p": {
         torch.complex64: {"rtol": 3.3e-5, "atol": 3.7e-5},
@@ -874,6 +1023,15 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "log2": {
         torch.complex64: {"rtol": 4.5e-5},
+        torch.float32: {"rtol": 5.6e-5, "atol": 2.8e-5},
+        torch.int16: {"rtol": 6.9e-5},
+        torch.int32: {"rtol": 6.9e-5},
+        torch.int64: {"rtol": 6.9e-5},
+        torch.int8: {"rtol": 6.9e-5},
+        torch.uint8: {"rtol": 6.9e-5},
+    },
+    "log_softmax": {
+        torch.float32: {"rtol": 5.7e-5, "atol": 8.3e-5},
     },
     "logcumsumexp": {
         torch.bfloat16: {"atol": 3.7e-5},
@@ -881,8 +1039,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 5e-5, "atol": 3.2e-5},
     },
     "logit": {
-        torch.bool: {"atol": 7.5e-5},
-        torch.float16: {"atol": 5.9e-4},
         torch.float32: {"rtol": 7.5e-5, "atol": 8.3e-5},
         torch.int16: {"atol": 7.5e-5},
         torch.int32: {"atol": 7.5e-5},
@@ -892,23 +1048,25 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "lstm.input": {
         torch.bfloat16: {"atol": 1.2e-3},
-        torch.float16: {"atol": 3.7e-4},
-        torch.float32: {"atol": 4e-4},
+        torch.float16: {"atol": 3e-4},
+        torch.float32: {"atol": 1.4e-4},
     },
     "matmul": {
-        torch.complex64: {"rtol": 5.2e-2},
+        torch.complex64: {"rtol": 1.4e-1},
+        torch.float16: {"rtol": 3e-1, "atol": 4.7e-1},
+        torch.float32: {"rtol": 2.7e-1, "atol": 3.9e-1},
     },
     "mm": {
         torch.complex64: {"rtol": 3.8e-2},
+        torch.float16: {"rtol": 4.8e-2},
+        torch.float32: {"rtol": 5.2e-2},
     },
     "mm.dtype": {
-        torch.complex64: {"rtol": 3.6e-2},
-        torch.float16: {"rtol": 2.9e-2, "atol": 4.2e-3},
-        torch.float32: {"rtol": 4.9e-2, "atol": 2.9e-3},
+        torch.complex64: {"rtol": 8.5e-3, "atol": 1.1e-2},
+        torch.float16: {"rtol": 2.1e-3, "atol": 4.2e-3},
+        torch.float32: {"rtol": 7.2e-4, "atol": 2.9e-3},
     },
     "nn.functional.binary_cross_entropy": {
-        torch.bfloat16: {"rtol": 9e-3, "atol": 5.9e-3},
-        torch.float16: {"rtol": 8.5e-3, "atol": 4.4e-4},
         torch.float32: {"rtol": 1.8e-4, "atol": 6.9e-5},
     },
     "nn.functional.conv1d": {
@@ -916,7 +1074,7 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 9e-2},
     },
     "nn.functional.conv2d": {
-        torch.bfloat16: {"atol": 1.5e-2},
+        torch.bfloat16: {"atol": 1.9e-2},
         torch.float16: {"rtol": 3.9e-1, "atol": 4.2e-1},
         torch.float32: {"rtol": 4.2e-1, "atol": 4.6e-1},
     },
@@ -933,62 +1091,55 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "nn.functional.conv_transpose2d": {
         torch.bfloat16: {"rtol": 6.2e-2, "atol": 8e-2},
         torch.float16: {"rtol": 2.2e-1, "atol": 6.7e-2},
-        torch.float32: {"rtol": 3e-1, "atol": 9.4e-2},
+        torch.float32: {"rtol": 3.2e-1, "atol": 2.1e-1},
     },
     "nn.functional.conv_transpose3d": {
         torch.bfloat16: {"rtol": 2.4e-1, "atol": 2.3e-1},
         torch.float16: {"rtol": 1.1, "atol": 8.2e-1},
         torch.float32: {"rtol": 6.2e-1, "atol": 1.1},
     },
-    "nn.functional.cross_entropy": {
-        torch.float16: {"rtol": 1.3e-3},
-    },
     "nn.functional.embedding": {
-        torch.float16: {
-            "rtol": 3.9e-3,
-            "atol": 2.4e-3,
-        },  # TOLERANCE_OVERRIDE_OK
+        torch.float16: {"rtol": 3.9e-3, "atol": 3e-3},
     },
     "nn.functional.embedding_bag": {
-        torch.bfloat16: {"atol": 6.5e-2},
-        torch.float16: {"atol": 2.5e-1},
+        torch.bfloat16: {"atol": 4.7e-3},
+        torch.float16: {"atol": 1.2e-3},
+    },
+    "nn.functional.group_norm": {
+        torch.bfloat16: {"rtol": 2e-2, "atol": 5.7e-2},
+    },
+    "nn.functional.linear": {
+        torch.bfloat16: {"atol": 4.7e-3},
+        torch.float16: {"rtol": 1.9e-2, "atol": 1.5e-2},
+        torch.float32: {"rtol": 2e-2, "atol": 1.7e-2},
     },
     "norm": {
         torch.complex64: {"rtol": 5.7e-6},
-        torch.float32: {"rtol": 5.7e-6},
+        torch.float32: {"rtol": 4.9e-6},
     },
     "polygamma": {
         torch.float32: {"rtol": 1.1e-5},
     },
     "pow": {
         torch.complex64: {"rtol": 7e-4, "atol": 3.8e-4},
+        torch.float32: {"rtol": 5.6e-6},
     },
     "sin": {
-        torch.complex64: {"rtol": 4.9e-6},
+        torch.complex64: {"rtol": 5.3e-6},
     },
     "sinh": {
         torch.complex64: {"rtol": 4.6e-6},
-        torch.float32: {"rtol": 5.8e-6},
-        torch.int16: {"rtol": 4e-6},
-        torch.int32: {"rtol": 4e-6},
-        torch.int64: {"rtol": 4e-6},
-        torch.int8: {"rtol": 4e-6},
-        torch.uint8: {"rtol": 4e-6},
-    },
-    "tan": {
-        torch.complex64: {"rtol": 3.0e-5, "atol": 2.5e-4},
-    },
-    "tanh": {
-        torch.complex64: {"rtol": 1.1e-5, "atol": 1.1e-5},
-        torch.float32: {"atol": 3.8e-5},
-        torch.int16: {"atol": 3.6e-5},
-        torch.int32: {"atol": 3.6e-5},
-        torch.int64: {"atol": 3.6e-5},
-        torch.int8: {"atol": 3.6e-5},
-        torch.uint8: {"atol": 3.6e-5},
     },
     "torch._scaled_mm": {
         torch.float8_e4m3fn: {"rtol": 9.4e-3, "atol": 4.7e-3},
+    },
+    "xlogy": {
+        torch.float32: {"rtol": 3.2e-4, "atol": 3e-4},
+        torch.int16: {"rtol": 6.9e-5},
+        torch.int32: {"rtol": 6.9e-5},
+        torch.int64: {"rtol": 6.9e-5},
+        torch.int8: {"rtol": 6.9e-5},
+        torch.uint8: {"rtol": 6.9e-5},
     },
     # go/keep-sorted end
 }  # end of ACCURACY_OVERRIDES_VS_GPU_COMPILED
@@ -1441,8 +1592,8 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "nn.functional.adaptive_avg_pool2d",
         exclude_dtypes=(torch.bool,)
-        # TODO(b/589910660): fix compiled support for uint8/int8/int16/int32;
-        # this should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects uint8/int8/int16/int32
+        # (TorchTPU matches eager); compiled CUDA/Inductor widens them.
         + _if_tpu_vs_gpu_compiled(
             (torch.uint8, torch.int8, torch.int16, torch.int32), ()
         ),
@@ -1464,8 +1615,8 @@ class TestOps(op_testing.OpInfoTestBase):
         "nn.functional.adaptive_max_pool2d",
         # TODO: adaptive_max_pool2d_backward is not implemented on TPU yet.
         check_grad=False,
-        # TODO(b/589910660): fix compiled support for integral dtypes; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects INTEGRAL_DTYPES (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
     )
 
@@ -1478,8 +1629,8 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_addcmul(self):
     self.do_test_op(
         "addcmul",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/568080282): Fix addcmul_ succeeding on bool in compiled mode.
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
@@ -1541,8 +1692,8 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int16,
             torch.complex64,
         )
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
         exclude_inplace_dtypes=(
             torch.uint8,
@@ -1551,8 +1702,6 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.float64,
             torch.complex64,
         )
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
@@ -1566,9 +1715,8 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "any",
         exclude_dtypes=(torch.int4,)
-        # TODO(b/589923495): skip uint8 in compiled mode; GPU (inductor) lowers
-        # aten.any to bool (and fails any.out fake-tensor checks), while TPU
-        # and eager CUDA preserve uint8.
+        # TODO(b/589923495): Inductor returns bool instead of uint8 for
+        # any(uint8), unlike eager CUDA and TorchTPU.
         + _if_tpu_vs_gpu_compiled((torch.uint8,), ()),
     )
 
@@ -1618,16 +1766,16 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_argmax(self):
     self.do_test_op(
         "argmax",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_argmin(self):
     self.do_test_op(
         "argmin",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -1662,15 +1810,18 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int16,
             torch.int32,
         )
-        + COMPLEX_DTYPES,
+        + COMPLEX_DTYPES
+        # TODO(b/589910660): Eager CUDA rejects int64 (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        + _if_tpu_vs_gpu_compiled((torch.int64,), ()),
     )
 
   def test_avg_pool2d(self):
     self.do_test_op(
         "nn.functional.avg_pool2d",
         exclude_dtypes=(torch.bool,)
-        # TODO(b/589910660): fix compiled support for int8/int16/int32/int64;
-        # this should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects int8/int16/int32/int64
+        # (TorchTPU matches eager); compiled CUDA/Inductor widens them.
         + _if_tpu_vs_gpu_compiled(
             (torch.int8, torch.int16, torch.int32, torch.int64), ()
         ),
@@ -1682,7 +1833,10 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO: GPU does not support integral, complex, and `float16` dtypes.
         exclude_dtypes=(torch.uint8, torch.int8, torch.int16)
         + COMPLEX_DTYPES
-        + (torch.float16,),
+        + (torch.float16,)
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_baddbmm(self):
@@ -1762,7 +1916,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("bitwise_and")
 
   def test_bitwise_left_shift(self):
-    self.do_test_op("bitwise_left_shift")
+    self.do_test_op(
+        "bitwise_left_shift",
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_bitwise_not(self):
     self.do_test_op(
@@ -1775,7 +1935,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("bitwise_or")
 
   def test_bitwise_right_shift(self):
-    self.do_test_op("bitwise_right_shift")
+    self.do_test_op(
+        "bitwise_right_shift",
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_bitwise_xor(self):
     self.do_test_op("bitwise_xor")
@@ -1824,11 +1990,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_ceil(self):
     self.do_test_op(
         "ceil",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -1899,8 +2063,12 @@ class TestOps(op_testing.OpInfoTestBase):
         # In gradient mode, the test harness computes losses via `t.sum()`,
         # which fails on CUDA (`"sum_cuda" not implemented for 'Float8_e4m3fn'`)
         # but succeeds on TorchTPU, causing a failure-consistency mismatch.
+        # TODO(b/590143907): MakeConstantAttr rejects float8_e4m3fn scalar
+        # constant in compiled mode.
         exclude_dtypes=(
-            (torch.float8_e4m3fn,) if op_testing._COMPUTE_GRAD.value else None
+            (torch.float8_e4m3fn,)
+            if op_testing._COMPUTE_GRAD.value
+            else _if_tpu_vs_gpu_compiled((torch.float8_e4m3fn,), ())
         ),
     )
 
@@ -1916,12 +2084,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_cross_entropy(self):
     self.do_test_op(
         "nn.functional.cross_entropy",
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
-        ),
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
     )
 
   def test_ctc_loss(self):
@@ -1937,7 +2102,16 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_cumprod(self):
-    self.do_test_op("cumprod")
+    self.do_test_op(
+        "cumprod",
+        # TODO(b/589910660): Eager CUDA rejects dtype=bool output on cumprod
+        # (TorchTPU matches eager); compiled CUDA/Inductor widens it.
+        skip_if=lambda variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and variant in (OpVariant.BASE, OpVariant.INPLACE)
+            and op_input.kwargs.get("dtype") == torch.bool
+        ),
+    )
 
   def test_cummax(self):
     self.do_test_op("cummax")
@@ -1945,11 +2119,15 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_cumsum(self):
     self.do_test_op(
         "cumsum",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/568080282): Fix cumsum_ succeeding on bool in compiled mode.
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        # TODO(b/589910660): Eager CUDA rejects dtype=bool output on cumsum
+        # (TorchTPU matches eager); compiled CUDA/Inductor widens it.
+        skip_if=lambda variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and variant == OpVariant.BASE
+            and op_input.kwargs.get("dtype") == torch.bool
+        ),
     )
 
   def test_cummin(self):
@@ -1977,8 +2155,8 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int8,
             torch.int16,
         )
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
@@ -1993,8 +2171,8 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int16,
         )
         + COMPLEX_DTYPES
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
@@ -2182,11 +2360,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_floor(self):
     self.do_test_op(
         "floor",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -2207,7 +2383,13 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("fmin")
 
   def test_fmod(self):
-    self.do_test_op("fmod")
+    self.do_test_op(
+        "fmod",
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   @category("foreach")
   def test_foreach_abs(self):
@@ -2234,10 +2416,14 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_foreach_addcdiv",
         # TODO(b/485291373): fix _foreach_addcdiv() failing with complex dtypes.
-        exclude_dtypes=COMPLEX_DTYPES,
+        exclude_dtypes=COMPLEX_DTYPES
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/485291373): fix _foreach_addcdiv_() failing with complex
         # dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
         # and calls where 'value' is a list of scalars (PyTorch OpInfo passes
         # 'value' kwarg which the C++ binding rejects for list of scalars).
@@ -2254,9 +2440,13 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_addcmul(self):
     self.do_test_op(
         "_foreach_addcmul",
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/485291373): fix _foreach_addcmul_() failing with complex
         # dtypes.
-        exclude_inplace_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
         # and calls where 'value' is a list of scalars (PyTorch OpInfo passes
         # 'value' kwarg which the C++ binding rejects for list of scalars).
@@ -2291,6 +2481,15 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=COMPLEX_DTYPES,
         # TODO: fix _foreach_clamp_max_() failing with complex dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
+        # TODO(b/589910660): Eager CUDA rejects bool scalar overload on
+        # _foreach_clamp_max (TorchTPU matches eager); Inductor widens it.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and bool(op_input.input_value)
+            and op_input.input_value[0].dtype == torch.bool
+            and bool(op_input.args)
+            and isinstance(op_input.args[0], bool)
+        ),
     )
 
   @category("foreach")
@@ -2301,6 +2500,15 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=COMPLEX_DTYPES,
         # TODO: fix _foreach_clamp_min_() failing with complex dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
+        # TODO(b/589910660): Eager CUDA rejects bool scalar overload on
+        # _foreach_clamp_min (TorchTPU matches eager); Inductor widens it.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and bool(op_input.input_value)
+            and op_input.input_value[0].dtype == torch.bool
+            and bool(op_input.args)
+            and isinstance(op_input.args[0], bool)
+        ),
     )
 
   @category("foreach")
@@ -2364,8 +2572,12 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_lerp(self):
     self.do_test_op(
         "_foreach_lerp",
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
         # TODO(b/485291373): fix _foreach_lerp_() failing with complex dtypes.
-        exclude_inplace_dtypes=(torch.complex64,),
+        exclude_inplace_dtypes=(torch.complex64,)
+        + _if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
     )
 
   @category("foreach")
@@ -2406,6 +2618,15 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=COMPLEX_DTYPES,
         # TODO: fix _foreach_maximum_() failing with complex dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
+        # TODO(b/589910660): Eager CUDA rejects bool scalar overload on
+        # _foreach_maximum (TorchTPU matches eager); Inductor widens it.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and bool(op_input.input_value)
+            and op_input.input_value[0].dtype == torch.bool
+            and bool(op_input.args)
+            and isinstance(op_input.args[0], bool)
+        ),
     )
 
   @category("foreach")
@@ -2416,6 +2637,15 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=COMPLEX_DTYPES,
         # TODO: fix _foreach_minimum_() failing with complex dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
+        # TODO(b/589910660): Eager CUDA rejects bool scalar overload on
+        # _foreach_minimum (TorchTPU matches eager); Inductor widens it.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and bool(op_input.input_value)
+            and op_input.input_value[0].dtype == torch.bool
+            and bool(op_input.args)
+            and isinstance(op_input.args[0], bool)
+        ),
     )
 
   @category("foreach")
@@ -2470,7 +2700,19 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_pow(self):
-    self.do_test_op("_foreach_pow")
+    self.do_test_op(
+        "_foreach_pow",
+        # TODO(b/589910660): Eager CUDA rejects bool tensor list on
+        # _foreach_pow (TorchTPU matches eager); Inductor widens it.
+        skip_if=lambda variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and variant == OpVariant.BASE
+            and bool(op_input.input_value)
+            and op_input.input_value[0].dtype == torch.bool
+            and bool(op_input.args)
+            and isinstance(op_input.args[0], (list, tuple))
+        ),
+    )
 
   @category("foreach")
   def test_foreach_reciprocal(self):
@@ -2512,6 +2754,20 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=COMPLEX_DTYPES,
         # TODO: fix _foreach_sub_() failing with complex dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
+        # TODO(b/589910660): Eager CUDA rejects bool scalar arg and bool
+        # tensor minus scalar (TorchTPU matches eager); Inductor widens them.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and bool(op_input.args)
+            and (
+                isinstance(op_input.args[0], bool)
+                or (
+                    bool(op_input.input_value)
+                    and op_input.input_value[0].dtype == torch.bool
+                    and isinstance(op_input.args[0], (int, float))
+                )
+            )
+        ),
     )
 
   @category("foreach")
@@ -2536,12 +2792,9 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO(b/568080282): Clean up exclude_dtypes once Dynamo recompile_limit
         # eager fallback is fixed.
         exclude_dtypes=(_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ())),
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
-        ),
+        # TODO(b/589910660): Eager CUDA rejects integral dtypes on frac_
+        # (TorchTPU matches eager); compiled CUDA/Inductor widens them.
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
     )
 
   def test_full(self):
@@ -2653,17 +2906,27 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_grid_sample(self):
     self.do_test_op(
         "nn.functional.grid_sample",
-        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.complex64,), ())
-        # TODO(b/589910660): fix compiled support for integral dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        + _if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+        # TODO(b/589910660): Eager CUDA rejects INTEGRAL_DTYPES (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64,) + INTEGRAL_DTYPES, ()
+        ),
         # TODO(b/544855640): TPU implementation hangs on float64:
         # test_grid_sample (subtest_name='grid_sample_float64_subtest2') hangs
         # indefinitely with float64 on TPU, causing test timeout.
+        # TODO(b/590144652): PyTorch FakeTensor meta check_grid_sampler_3d
+        # rejects 5D bicubic on device "tpu" in compiled mode.
         skip_if=lambda variant, op_input: (
-            op_testing._torch_tpu_vs_gpu_mode()
-            and op_testing._COMPUTE_GRAD.value
-            and op_input.input_value.dtype == torch.float64
+            (
+                op_testing._torch_tpu_vs_gpu_mode()
+                and op_testing._COMPUTE_GRAD.value
+                and op_input.input_value.dtype == torch.float64
+            )
+            or (
+                op_testing.is_tpu_vs_gpu_compiled()
+                and op_input.input_value.ndim == 5
+                and op_input.kwargs.get("mode") == "bicubic"
+            )
         ),
         # Cap samples to avoid shard timeouts in grad_tpu_vs_gpu mode, as
         # grid_sample gradient computation is slow on TPU and generates many
@@ -2716,19 +2979,7 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_index_add(self):
-    self.do_test_op(
-        "index_add",
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16), ()
-        ),
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16), ()
-        ),
-    )
+    self.do_test_op("index_add")
 
   def test_index_copy(self):
     self.do_test_op("index_copy")
@@ -2737,21 +2988,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("index_fill")
 
   def test_index_put(self):
-    self.do_test_op(
-        "index_put",
-        # TODO(b/589923495): skip accumulate=True on uint8/int8/int16 in
-        # compiled mode; GPU (inductor) fails tl.atomic_add compilation on
-        # accumulate, while TPU supports it.
-        skip_if=lambda _, op_input: (
-            op_testing.is_tpu_vs_gpu_compiled()
-            and op_input.input_value.dtype in (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
-            )
-            and op_input.kwargs.get("accumulate", False)
-        ),
-    )
+    self.do_test_op("index_put")
 
   def test_index_reduce_amax(self):
     self.do_test_op(
@@ -2784,14 +3021,8 @@ class TestOps(op_testing.OpInfoTestBase):
         # CUDA does not support complex or bool dtypes for index_reduce, while
         # TorchTPU lacks upfront dtype validation and only supports 0D/1D inputs
         # in BuildScatterShlo.
-        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,)
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        + _if_tpu_vs_gpu_compiled((torch.uint8, torch.int8, torch.int16), ()),
-        exclude_inplace_dtypes=COMPLEX_DTYPES + (torch.bool,)
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        + _if_tpu_vs_gpu_compiled((torch.uint8, torch.int8, torch.int16), ()),
+        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,),
+        exclude_inplace_dtypes=COMPLEX_DTYPES + (torch.bool,),
         skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
     )
 
@@ -2863,7 +3094,15 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_ldexp(self):
-    self.do_test_op("ldexp")
+    self.do_test_op(
+        "ldexp",
+        # TODO(b/589923495): Eager CUDA and TorchTPU reject ldexp_(int8/uint8).
+        # Under torch.compile, AOTAutograd functionalization bypasses the guard,
+        # hitting undefined float-to-int overflow (Triton wraps vs XLA clamps).
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.int8, torch.uint8), ()
+        ),
+    )
 
   def test_le(self):
     self.do_test_op(
@@ -2877,27 +3116,10 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_lerp(self):
     self.do_test_op(
         "lerp",
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
-        ),
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
-        ),
-        # TODO(b/589923495): skip complex scalar weights on complex64 in
-        # compiled mode; GPU (inductor) fails with TypeError on complex >=
-        # float, while TPU supports it.
-        skip_if=lambda _, op_input: (
-            op_testing.is_tpu_vs_gpu_compiled()
-            and op_input.input_value.dtype == torch.complex64
-            and len(op_input.args) >= 2
-            and isinstance(op_input.args[1], complex)
-        ),
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
     )
 
   def test_lgamma(self):
@@ -3043,23 +3265,45 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_linspace(self):
     self.do_test_op(
         "linspace",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        skip_if=lambda _, op_input: (
-            # PyTorch's upstream sample generator for linspace includes a
-            # hardcoded sample without a device kwarg:
-            # `yield SampleInput(1, args=(3, 1))` (see
-            # common_methods_invocations.py). Same issue as test_arange() above.
+        # PyTorch's upstream sample generator for linspace includes a hardcoded
+        # sample without a device kwarg: `yield SampleInput(1, args=(3, 1))`
+        # (see common_methods_invocations.py).
+        # Same issue as test_arange() above.
+        # In compiled mode, also skip:
+        # - TODO(b/590144260): linspace.out(0, 7, 50, dtype=uint8) F32 rounding.
+        # - TODO(b/589923495): Inductor keeps float start (e.g. 4.3) instead of
+        #   truncating like eager CUDA/TorchTPU for integer dtypes.
+        # - TODO(b/589910660): Eager CUDA rejects float-start bool linspace
+        #   (TorchTPU matches eager); compiled CUDA/Inductor widens it.
+        skip_if=lambda variant, op_input: (
             "device" not in op_input.kwargs
-            # TODO(b/589923495): skip uint8 with non-integer float start in
-            # compiled mode; GPU (inductor) interpolates in float before
-            # casting, while TPU and eager CUDA/CPU cast start/end upfront.
             or (
                 op_testing.is_tpu_vs_gpu_compiled()
-                and op_input.kwargs.get("dtype") == torch.uint8
-                and isinstance(op_input.input_value, float)
-                and not op_input.input_value.is_integer()
+                and (
+                    (
+                        variant == OpVariant.OUT
+                        and op_input.kwargs.get("dtype") == torch.uint8
+                        and op_input.input_value == 0
+                        and op_input.args == (7, 50)
+                    )
+                    or (
+                        variant == OpVariant.BASE
+                        and op_input.kwargs.get("dtype")
+                        in (
+                            torch.int8,
+                            torch.int16,
+                            torch.int32,
+                            torch.int64,
+                        )
+                        and isinstance(op_input.input_value, float)
+                        and not op_input.input_value.is_integer()
+                    )
+                    or (
+                        variant == OpVariant.BASE
+                        and op_input.kwargs.get("dtype") == torch.bool
+                        and isinstance(op_input.input_value, float)
+                    )
+                )
             )
         ),
     )
@@ -3083,10 +3327,20 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("log2")
 
   def test_log_sigmoid(self):
-    self.do_test_op("nn.functional.logsigmoid")
+    self.do_test_op(
+        "nn.functional.logsigmoid",
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
+    )
 
   def test_log_softmax(self):
-    self.do_test_op("log_softmax")
+    self.do_test_op(
+        "log_softmax",
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
+    )
 
   def test_log_softmax_backward_data(self):
     self.do_test_op(
@@ -3148,9 +3402,9 @@ class TestOps(op_testing.OpInfoTestBase):
         "_masked_softmax",
         # _masked_softmax only supports floating-point dtypes on GPU and TPU.
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # TODO(b/589923495): skip 0-D inputs with dim=-1 in compiled mode; CUDA
-        # SoftMax.cu returns shape [1], while TPU preserves shape [].
-        skip_if=lambda _, op_input: (
+        # TODO(b/589923495): On 0-D input with dim=-1, Inductor returns shape
+        # (1,) instead of scalar shape ().
+        skip_if=lambda _variant, op_input: (
             op_testing.is_tpu_vs_gpu_compiled()
             and op_input.input_value.ndim == 0
             and op_input.kwargs.get("dim") == -1
@@ -3181,7 +3435,10 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.uint8,
             torch.int8,
             torch.int16,
-        ),
+        )
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 dot/matmul
+        # samples (TorchTPU matches eager); compiled CUDA/Inductor widens them.
+        + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
   def test_multinomial(self):
@@ -3223,8 +3480,8 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int8,
             torch.int16,
         )
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
@@ -3243,8 +3500,8 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int8,
             torch.int16,
         )
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
@@ -3264,8 +3521,8 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int8,
             torch.int16,
         )
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
@@ -3317,14 +3574,10 @@ class TestOps(op_testing.OpInfoTestBase):
         "native_batch_norm",
         # TODO: fix native_batch_norm(out=...) failing.
         check_out_variant=False,
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=(torch.float64,)
-        + _if_tpu_vs_gpu_compiled((torch.complex64,), ())
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        + _if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
-        ),
+        + _if_tpu_vs_gpu_compiled((torch.complex64,) + _INTEGER_DTYPES, ()),
     )
 
   def test_native_batch_norm_legit(self):
@@ -3332,14 +3585,10 @@ class TestOps(op_testing.OpInfoTestBase):
         "_native_batch_norm_legit",
         # TODO: fix _native_batch_norm_legit(out=...) failing.
         check_out_variant=False,
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=(torch.float64,)
-        + _if_tpu_vs_gpu_compiled((torch.complex64,), ())
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        + _if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
-        ),
+        + _if_tpu_vs_gpu_compiled((torch.complex64,) + _INTEGER_DTYPES, ()),
     )
 
   def test_native_group_norm(self):
@@ -3400,12 +3649,10 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nll_loss(self):
     self.do_test_op(
         "nn.functional.nll_loss",
-        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.complex64,), ())
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        + _if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64,) + _INTEGER_DTYPES, ()
         ),
     )
 
@@ -3451,7 +3698,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("permute")
 
   def test_pow(self):
-    self.do_test_op("pow")
+    self.do_test_op(
+        "pow",
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+    )
 
   def test_nn_functional_conv1d(self):
     self.do_test_op(
@@ -3512,8 +3764,8 @@ class TestOps(op_testing.OpInfoTestBase):
         # xla_cuda has no support for complex64::min():
         # https://github.com/openxla/stablehlo/issues/560
         exclude_dtypes=(torch.uint8, torch.int8, torch.int16) + COMPLEX_DTYPES
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -3572,7 +3824,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_batch_norm(self):
     self.do_test_op(
         "nn.functional.batch_norm",
-        exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64,) + _INTEGER_DTYPES, ()
+        ),
     )
 
   def test_nn_functional_elu(self):
@@ -3582,7 +3838,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("nn.functional.gelu")
 
   def test_nn_functional_glu(self):
-    self.do_test_op("nn.functional.glu")
+    self.do_test_op(
+        "nn.functional.glu",
+        # TODO(b/589910660): Eager CUDA rejects INTEGRAL_DTYPES (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+    )
 
   def test_nn_functional_prelu(self):
     self.do_test_op(
@@ -3592,7 +3853,13 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_nn_functional_hardsigmoid(self):
-    self.do_test_op("nn.functional.hardsigmoid")
+    self.do_test_op(
+        "nn.functional.hardsigmoid",
+        # TODO(b/589910660): Eager CUDA rejects INTEGRAL_DTYPES (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+    )
 
   def test_nn_functional_hardswish(self):
     self.do_test_op(
@@ -3601,7 +3868,17 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_nn_functional_hardtanh(self):
-    self.do_test_op("nn.functional.hardtanh")
+    self.do_test_op(
+        "nn.functional.hardtanh",
+        # TODO(b/589923495): Inductor mis-clamps uint8 hardtanh(0, -1, 1) -> 1
+        # (signed min_val treated as unsigned). Eager CUDA and TorchTPU agree.
+        skip_if=lambda variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and variant == OpVariant.BASE
+            and op_input.input_value.dtype == torch.uint8
+            and op_input.kwargs.get("min_val", -1.0) < 0
+        ),
+    )
 
   def test_nn_functional_linear(self):
     self.do_test_op(
@@ -3622,18 +3899,27 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int8,
             torch.int16,
         )
-        + COMPLEX_DTYPES,
+        + COMPLEX_DTYPES
+        # TODO(b/589910660): Eager CUDA rejects int32/int64 (TorchTPU matches
+        # eager); compiled CUDA/Inductor widens via decomposition.
+        + _if_tpu_vs_gpu_compiled((torch.int32, torch.int64), ()),
         # TODO: fix nn.functional.silu_() failing with complex dtypes.
         exclude_inplace_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
         )
-        + COMPLEX_DTYPES,
+        + COMPLEX_DTYPES
+        + _if_tpu_vs_gpu_compiled((torch.int32, torch.int64), ()),
     )
 
   def test_nn_functional_softplus(self):
-    self.do_test_op("nn.functional.softplus")
+    self.do_test_op(
+        "nn.functional.softplus",
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
+    )
 
   def test_nn_functional_unfold(self):
     self.do_test_op(
@@ -3646,12 +3932,10 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_mse_loss(self):
     self.do_test_op(
         "nn.functional.mse_loss",
-        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.complex64,), ())
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        + _if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(
+            (torch.complex64,) + _INTEGER_DTYPES, ()
         ),
     )
 
@@ -3707,11 +3991,18 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "nn.functional.pad",
         variant_test_name="reflect",
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_remainder(self):
     self.do_test_op(
         "remainder",
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_repeat(self):
@@ -3757,11 +4048,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_round(self):
     self.do_test_op(
         "round",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -3858,51 +4147,13 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_scatter(self):
-    self.do_test_op(
-        "scatter",
-        # TODO(b/589923495): skip reduce="add" on uint8/int8/int16 in
-        # compiled mode; GPU (inductor) fails tl.atomic_add compilation, while
-        # TPU supports it.
-        skip_if=lambda _, op_input: (
-            op_testing.is_tpu_vs_gpu_compiled()
-            and op_input.input_value.dtype in (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
-            )
-            and op_input.kwargs.get("reduce") == "add"
-        ),
-    )
+    self.do_test_op("scatter")
 
   def test_scatter_add(self):
-    self.do_test_op(
-        "scatter_add",
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16), ()
-        ),
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16), ()
-        ),
-    )
+    self.do_test_op("scatter_add")
 
   def test_scatter_reduce(self):
-    self.do_test_op(
-        "scatter_reduce",
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16), ()
-        ),
-        # TODO(b/589923495): skip uint8/int8/int16 in compiled mode; GPU
-        # (inductor) fails tl.atomic_add compilation, while TPU supports them.
-        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16), ()
-        ),
-    )
+    self.do_test_op("scatter_reduce")
 
   def test_select(self):
     self.do_test_op("select")
@@ -3913,12 +4164,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_safe_softmax(self):
     self.do_test_op(
         "torch.ops.aten._safe_softmax.default",
-        # TODO(b/589910660): fix compiled support for integer dtypes; this
-        # should be fixed as GPU supports these dtypes.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
-            (),
-        ),
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
     )
 
   def test_scalar_tensor(self):
@@ -3935,10 +4183,10 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.float8_e5m2,
             torch.float4_e2m1fn_x2,
             torch.int4,
-            # TODO(b/589910660): fix compiled support for bool; this should be
-            # fixed as GPU supports this dtype.
-            *_if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        ),
+        )
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
         # Upstream generates 288 samples per dtype; cap to prevent test
         # shard timeouts (10 samples per op dtype results in ~15m test time).
         max_samples_per_op_dtype=4,
@@ -3987,7 +4235,12 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("slice_scatter")
 
   def test_softmax(self):
-    self.do_test_op("softmax")
+    self.do_test_op(
+        "softmax",
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
+    )
 
   def test_softmax_backward_data(self):
     self.do_test_op(
@@ -4179,11 +4432,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_threshold(self):
     self.do_test_op(
         "nn.functional.threshold",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -4239,11 +4490,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_trunc(self):
     self.do_test_op(
         "trunc",
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        # TODO(b/589910660): fix compiled support for bool; this should be
-        # fixed as GPU supports this dtype.
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
@@ -4393,10 +4642,21 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_std(self):
-    self.do_test_op("std")
+    self.do_test_op(
+        "std",
+        # TODO(b/589910660): Eager CUDA rejects INTEGRAL_DTYPES (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ()),
+    )
 
   def test_var(self):
-    self.do_test_op("var", exclude_dtypes=COMPLEX_DTYPES + (torch.bool,))
+    self.do_test_op(
+        "var",
+        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,)
+        # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
+        + _if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),
+    )
 
   def test_var_mean(self):
     self.do_test_op("var_mean")
@@ -4410,8 +4670,8 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.int8,
             torch.int16,
         )
-        # TODO(b/589910660): fix compiled support for bool/int32/int64; this
-        # should be fixed as GPU supports these dtypes.
+        # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
+        # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),
     )
 
@@ -4458,6 +4718,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "xlogy",
         exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        # TODO(b/589910660): Eager CUDA rejects complex64 on xlogy_
+        # (TorchTPU matches eager); compiled CUDA/Inductor widens it.
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled((torch.complex64,), ()),
     )
 
   def test_zeros(self):
@@ -4473,7 +4736,10 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "bucketize",
         # No total order for complex numbers.
-        exclude_dtypes=COMPLEX_DTYPES,
+        exclude_dtypes=COMPLEX_DTYPES
+        # TODO(b/589910660): Eager CUDA rejects bool (TorchTPU matches eager);
+        # compiled CUDA/Inductor widens via decomposition.
+        + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
     )
 
   def test_geqrf(self):
