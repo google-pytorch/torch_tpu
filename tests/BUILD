@@ -123,6 +123,9 @@ _GPU_GOLDENS_COMPILED_BASE = [
     "ops_test_gpu_golden_compiled0.gz",
     "ops_test_gpu_golden_compiled1.gz",
     "ops_test_gpu_golden_compiled2.gz",
+    "ops_test_gpu_golden_compiled3.gz",
+    "ops_test_gpu_golden_compiled4.gz",
+    "ops_test_gpu_golden_compiled5.gz",
 ]
 
 _GPU_GOLDENS_COMPILED_HOPPER = [
@@ -1274,6 +1277,7 @@ torch_tpu_py_test(
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
     shard_count = len(_GPU_GOLDENS_COMPILED_BASE),
+    tags = ["requires-mem:16g"],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
