@@ -79,7 +79,9 @@ DeviceBufferList::Data::Data(NoDataType no_data_type)
     materialization_future_ = std::move(future);
   } else {
     materialization_future_ =
-        xla::Future<>(TT_ERROR(error::kFailedPrecondition)
+        xla::Future<>(TT_ERROR(  // ERROR_COV_INFEASIBLE=placeholder nodes are
+                                 // only created internally in compiled mode
+                          error::kFailedPrecondition)
                       << "placeholders cannot be materialized");
   }
 }
@@ -121,7 +123,9 @@ absl_nullable std::shared_ptr<DeferredOp> DeviceBufferList::Data::deferred_op()
 }
 
 absl::Status DeviceBufferList::Data::SetAsPendingMaterialization() {
-  TT_RET_CHECK(!is_placeholder(), error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=unreachable from Python; placeholders
+                 // are never materialized
+      !is_placeholder(), error::kFailedPrecondition)
       << "placeholders cannot be materialized";
   // Immediately mark the DeviceBufferList::Data as pending materialization, and
   // check if this was the first time this was called.
@@ -139,14 +143,17 @@ absl::Status DeviceBufferList::Data::SetAsPendingMaterialization() {
 
 absl::Status DeviceBufferList::Data::SetMaterializationError(
     absl::Status status) {
-  TT_RET_CHECK(!status.ok(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; only called with
+                 // failed status
+      !status.ok(), error::kInvalidArgument)
       << "expected non-OK status when setting a materialization error, got "
       << status;
 
   TT_RETURN_IF_ERROR(SetAsPendingMaterialization());
 
   const bool already_started = materialization_started_.exchange(true);
-  TT_RET_CHECK(!already_started, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal race/invariant guard
+      !already_started, error::kFailedPrecondition)
       << "attempted to set materialization error after materialization was "
          "already started";
 
@@ -192,7 +199,9 @@ void DeviceBufferList::Data::ValidateMaterializedBuffers(int64_t index) const {
 
 absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
 DeviceBufferList::Data::operator[](int64_t index) const {
-  TT_RET_CHECK(!is_placeholder(), error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=unreachable from Python; placeholders
+                 // have no buffers
+      !is_placeholder(), error::kFailedPrecondition)
       << "placeholders do not have buffers";
 
   if (!materialization_future_.IsKnownReady()) {
@@ -267,7 +276,9 @@ size_t DeviceBufferList::size_bytes(int64_t index) const {
 absl::StatusOr<size_t> DeviceBufferList::pjrt_buffer_size(int64_t index) const {
   TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const pjrt_buffer, AwaitBuffer(index));
 
-  TT_RET_CHECK(!pjrt_buffer->IsDeleted(), error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=pjrt_buffer_size has no callers
+                 // reachable from Python
+      !pjrt_buffer->IsDeleted(), error::kFailedPrecondition)
       << "DeviceBufferRef has a PjRtBuffer, but it is deleted";
   auto on_device_size_in_bytes = pjrt_buffer->GetOnDeviceSizeInBytes();
   if (on_device_size_in_bytes.ok()) {
@@ -693,8 +704,10 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferRef::Create(
     SharedDeviceBufferList device_buffer_list, int64_t index) {
   // Gracefully return an error on creation, but crash hard if the bounds check
   // is violated afterwards, as that would indicate this check was bypassed.
-  TT_RET_CHECK(index >= 0 && index < device_buffer_list->size(),
-               error::kPythonIndexError)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; callers pass valid
+                 // indices
+      index >= 0 && index < device_buffer_list->size(),
+      error::kPythonIndexError)
       << "index " << index << " is out of bounds for DeviceBufferList of size "
       << device_buffer_list->size();
   return DeviceBufferRef(std::move(device_buffer_list), index);

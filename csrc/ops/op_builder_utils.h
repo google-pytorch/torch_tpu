@@ -760,7 +760,9 @@ template <int kArity, int kNumOutputs>
     if constexpr (kArity == kDynamicSize) {
       TT_ASSIGN_OR_RETURN(outputs, op_builder(inputs, builder));
     } else {
-      TT_RET_CHECK(inputs.size() == kArity, error::kInternal)
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=op_dispatcher.h guarantees
+                     // inputs.size() == kArity
+          inputs.size() == kArity, error::kInternal)
           << "expected " << kArity << " inputs, got " << inputs.size();
       if constexpr (kArity == 0) {
         TT_ASSIGN_OR_RETURN(outputs, op_builder(builder));

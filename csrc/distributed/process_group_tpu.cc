@@ -199,7 +199,10 @@ class TpuWork : public c10d::Work {
                            results = results_](c10::ivalue::Future& future) {
         if (future.hasError()) {
           results_future->setError(std::make_exception_ptr(TtError(
-              TT_ERROR(error::kInternal) << future.tryRetrieveErrorMessage(),
+              TT_ERROR(  // ERROR_COV_INFEASIBLE=wraps inner future error whose
+                         // Exception raised from stops coverage parser
+                  error::kInternal)
+                  << future.tryRetrieveErrorMessage(),
               TT_SOURCE_LOCATION)));
         } else {
           results_future->markCompleted(c10::IValue(results));
@@ -277,7 +280,9 @@ class TpuWork : public c10d::Work {
   bool wait(std::chrono::milliseconds timeout) override {
     if (!issuing_stream_.has_value()) {
       results_future_->wait();
-      TT_CHECK_THROW(!results_future_->hasError(), error::kInternal)
+      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=wraps inner future error whose
+                       // Exception raised from stops coverage parser
+          !results_future_->hasError(), error::kInternal)
           << results_future_->tryRetrieveErrorMessage();
       return true;
     }
@@ -544,20 +549,20 @@ absl::Status ValidateAllToAllTensors(
     TT_RET_CHECK(input_tensors[i].scalar_type() == dtype,
                  error::kInvalidArgument)
         << "expected all input tensors to have the same dtype, got "
-        << ToString(input_tensors[i].scalar_type()) << " and "
+        << ToString(input_tensors[i].scalar_type()) << " vs "
         << ToString(dtype);
     TT_RET_CHECK(output_tensors[i].scalar_type() == dtype,
                  error::kInvalidArgument)
         << "expected all output tensors to have the same dtype, got "
-        << ToString(output_tensors[i].scalar_type()) << " and "
+        << ToString(output_tensors[i].scalar_type()) << " vs "
         << ToString(dtype);
 
     TT_RET_CHECK(input_tensors[i].dim() == dim, error::kInvalidArgument)
         << "expected all input tensors to have the same number of dimensions, "
-        << "got " << input_tensors[i].dim() << " and " << dim;
+        << "got " << input_tensors[i].dim() << " vs " << dim;
     TT_RET_CHECK(output_tensors[i].dim() == dim, error::kInvalidArgument)
         << "expected all output tensors to have the same number of "
-        << "dimensions, got " << output_tensors[i].dim() << " and " << dim;
+        << "dimensions, got " << output_tensors[i].dim() << " vs " << dim;
 
     if (dim > 0) {
       TT_RET_CHECK(input_tensors[i].sizes().slice(1) == trailing_dims,
@@ -975,7 +980,9 @@ void P2pSendQueue::ExecuteSendTask(PeerChannel* channel, PendingSend task) {
     descriptors = channel->store->multiGet(task.descriptor_keys);
   } catch (const std::exception& e) {
     fetch_error = std::current_exception();
-    fetch_error_msg = e.what();
+    const auto* c10_error = dynamic_cast<const c10::Error*>(&e);
+    fetch_error_msg =
+        c10_error != nullptr ? c10_error->what_without_backtrace() : e.what();
   }
 
   bool is_shutdown = false;
@@ -997,12 +1004,11 @@ void P2pSendQueue::ExecuteSendTask(PeerChannel* channel, PendingSend task) {
 
   if (fetch_error) {
     if (absl::StrContainsIgnoreCase(fetch_error_msg, "timeout")) {
-      std::move(task.on_error)(std::make_exception_ptr(TtError(
-          TT_ERROR(  // ERROR_COV_INFEASIBLE=background store wait timeout
-              error::kDeadlineExceeded)
-              << "p2p send timed out waiting for descriptors: "
-              << fetch_error_msg,
-          TT_SOURCE_LOCATION)));
+      std::move(task.on_error)(std::make_exception_ptr(
+          TtError(TT_ERROR(error::kDeadlineExceeded)
+                      << "p2p send timed out waiting for descriptors: "
+                      << fetch_error_msg,
+                  TT_SOURCE_LOCATION)));
     } else {
       std::move(task.on_error)(std::move(fetch_error));
     }
@@ -1025,7 +1031,9 @@ ProcessGroupTpu::CrossHostSendBuffers(
     int dst_rank, std::shared_ptr<std::vector<DeviceBufferRef>> held_buffers,
     std::vector<xla::PjRtBuffer*> buffers,
     absl::Span<const xla::CrossHostTransferKey> transfer_keys) {
-  TT_RET_CHECK(transfer_keys.size() == buffers.size(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=experimental_send builds matching-size
+                 // buffers and transfer_keys
+      transfer_keys.size() == buffers.size(), error::kInvalidArgument)
       << "expected transfer keys to be the same size as buffers, got "
       << transfer_keys.size() << " transfer keys and " << buffers.size()
       << " buffers";
@@ -1065,12 +1073,16 @@ ProcessGroupTpu::CrossHostSendBuffers(
             }
             if (!status.ok()) {
               all_sent_future->setErrorIfNeeded(std::make_exception_ptr(
-                  TtError(TT_ERROR(error::kInternal)
+                  TtError(TT_ERROR(  // ERROR_COV_INFEASIBLE=internal PJRT
+                                     // CopyToRemoteDevice failure
+                              error::kInternal)
                               << "PjRtBuffer::CopyToRemoteDevice: " << status,
                           TT_SOURCE_LOCATION)));
             } else if (!sends_were_enqueued) {
               all_sent_future->setErrorIfNeeded(std::make_exception_ptr(
-                  TtError(TT_ERROR(error::kInternal)
+                  TtError(TT_ERROR(  // ERROR_COV_INFEASIBLE=internal PJRT
+                                     // CopyToRemoteDevice failure
+                              error::kInternal)
                               << "PjRtBuffer::CopyToRemoteDevice: "
                                  "sends were not enqueued",
                           TT_SOURCE_LOCATION)));
@@ -1106,7 +1118,9 @@ ProcessGroupTpu::CrossHostReceiveBuffers(
           absl::StatusOr<xla::PjRtCrossHostRecvState> recv_state) -> void {
     if (!recv_state.ok()) {
       setup_future->setError(std::make_exception_ptr(TtError(
-          TT_ERROR(error::kInternal)
+          TT_ERROR(  // ERROR_COV_INFEASIBLE=internal PJRT
+                     // MakeCrossHostReceiveBuffers failure
+              error::kInternal)
               << "xla::PjRtClient::MakeCrossHostReceiveBuffers: invalid "
                  "recv_state: "
               << recv_state.status(),
@@ -1116,7 +1130,9 @@ ProcessGroupTpu::CrossHostReceiveBuffers(
 
     if (recv_state->descriptors.size() != transfer_keys.size()) {
       setup_future->setError(std::make_exception_ptr(TtError(
-          TT_ERROR(error::kInternal)
+          TT_ERROR(  // ERROR_COV_INFEASIBLE=internal PJRT
+                     // MakeCrossHostReceiveBuffers invariant
+              error::kInternal)
               << "xla::PjRtClient::MakeCrossHostReceiveBuffers: expected "
                  "descriptors to be the same size as transfer keys, got "
               << recv_state->descriptors.size() << " descriptors and "
@@ -2161,8 +2177,9 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   const int64_t world_size = pjrt_client->devices().size();
 
   // Addressable device "assigned" to this process/rank:
-  TT_CHECK_THROW(pjrt_client->addressable_devices().size() == 1,
-                 error::kInternal)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PjrtBackend always initializes with 1
+                   // addressable device per process
+      pjrt_client->addressable_devices().size() == 1, error::kInternal)
       << "expected exactly one TPU device per PyTorch process";
   addressable_device_id_ =
       pjrt_client->addressable_devices()[0]->global_device_id().value();
@@ -2171,8 +2188,8 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
   // the total number of devices.
   TT_CHECK_THROW(world_size % group_size == 0, error::kInternal)
-      << "TPU slice size (" << world_size << ") must be divisible by "
-      << "process group size (" << group_size << ")";
+      << "expected TPU slice size (" << world_size
+      << ") to be divisible by process group size, got " << group_size;
 
   const bool is_initial_world_pg = WorldTopology().rank_to_device_id.empty();
   if (is_initial_world_pg) {
@@ -2300,7 +2317,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
     // TODO(vladbelous): Implement support for multiple input/output
     // tensors:
     TT_CHECK_THROW(tensors.size() == 1, error::kPythonNotImplementedError)
-        << "does not yet support multiple tensors";
+        << "expected a single tensor, got " << tensors.size();
 
     at::Tensor& tensor = tensors[0];
 
@@ -2688,7 +2705,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather_into_tensor_coalesced(
         // NOTE: there's no such op in `torch.distributed` module, so it
         // is called indirectly.
         TT_CHECK_THROW(inputs.size() == outputs.size(), error::kInvalidArgument)
-            << "inputs and outputs must have the same size.";
+            << "expected inputs and outputs to have the same size, got "
+            << inputs.size() << " vs " << outputs.size();
 
         // Calls allgather once for each input. This is an acceptable
         // simplification for now as we are primarily focused on supporting
@@ -2871,10 +2889,12 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::reduce_scatter(
         // Same validation is done in NCCL backend.
         TT_CHECK_THROW(input_tensors.size() == 1,
                        error::kPythonNotImplementedError)
-            << "multiple input tensor lists not supported";
+            << "expected a single input tensor list, got "
+            << input_tensors.size();
         TT_CHECK_THROW(output_tensors.size() == 1,
                        error::kPythonNotImplementedError)
-            << "multiple output tensor lists not supported";
+            << "expected a single output tensor list, got "
+            << output_tensors.size();
 
         std::vector<at::Tensor>& inputs = input_tensors[0];
         at::Tensor& output = output_tensors[0];
@@ -2980,8 +3000,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::reduce_scatter_tensor_coalesced(
        IgnoreInCacheKey(opts, "Delegates to _reduce_scatter_base")),
       {
         TT_CHECK_THROW(inputs.size() == outputs.size(), error::kInvalidArgument)
-            << "inputs and outputs must have the same size, got "
-            << inputs.size() << " inputs and " << outputs.size() << " outputs";
+            << "expected inputs and outputs to have the same size, got "
+            << inputs.size() << " vs " << outputs.size();
 
         // Calls reduce_scatter once for each input. This is an acceptable
         // simplification for now as we are primarily focused on supporting
@@ -3055,7 +3075,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
   auto& maybe_materialized_input_tensor = input;
   TT_RET_CHECK(output.sizes() == input.sizes(), error::kInvalidArgument)
       << "expected shape of input and output to be the same for equal splits, "
-      << "got " << input.sizes() << " and " << output.sizes();
+      << "got " << input.sizes() << " vs " << output.sizes();
 
   TT_ASSIGN_OR_RETURN(auto param_keys,
                       TT_MAKE_OP_PARAM_CACHE_KEYS(replica_groups_));
@@ -3357,13 +3377,15 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::barrier(
     TT_CHECK_THROW(opts.device_ids.empty() ||
                        (opts.device_ids.size() == 1 && opts.device_ids[0] == 0),
                    error::kPythonNotImplementedError)
-        << "device_ids in barrier options is not supported, except "
-           "device_ids=[0] which names this process's own device";
+        << "expected device_ids in barrier options to be empty or [0], got "
+        << ToString(opts.device_ids);
     TT_CHECK_THROW(opts.timeout == c10d::kUnsetTimeout,
                    error::kPythonNotImplementedError)
-        << "timeout in barrier options is not supported";
+        << "expected timeout in barrier options to be unset, got "
+        << opts.timeout.count() << " ms";
     TT_CHECK_THROW(!opts.device.has_value(), error::kPythonNotImplementedError)
-        << "device in barrier options is not supported";
+        << "expected device in barrier options to be unset, got '"
+        << ToString(*opts.device) << "'";
 
     at::Tensor dummy_tensor =
         at::ones({1}, at::device(GetPrivateUse1DeviceType()).dtype(at::kLong));
