@@ -2114,6 +2114,86 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         torch.tensor([8.0, 24.0], dtype=torch.float64, device=device),
     )
 
+  def test_ldexp_cache_sharing(self):
+    device = torch.device("tpu")
+    # Use a distinct shape so prior tests do not pre-warm the cache.
+    shape = (7, 11)
+    x = torch.full(shape, 2.0, dtype=torch.float32, device=device)
+    exp = torch.full(shape, 3, dtype=torch.int32, device=device)
+    out = torch.empty(shape, dtype=torch.float32, device=device)
+    x_shared = torch.full(shape, 2.0, dtype=torch.float32, device=device)
+    x_donated_out = torch.full(shape, 2.0, dtype=torch.float32, device=device)
+    x_inplace = torch.full(shape, 2.0, dtype=torch.float32, device=device)
+    xi = torch.full(shape, 2, dtype=torch.int32, device=device)
+    torch.accelerator.synchronize()
+
+    # Warm the non-donated cache via torch.ldexp, then verify ldexp.out and
+    # non-donated ldexp_ (shared buffer via clone) hit the same cache entry.
+    misses = torch.tpu._get_cache_misses()
+    expected = torch.ldexp(x, exp)
+    torch.accelerator.synchronize()
+    self.assertGreaterEqual(torch.tpu._get_cache_misses() - misses, 1)
+
+    misses = torch.tpu._get_cache_misses()
+    torch.ldexp(x, exp, out=out)
+    torch.accelerator.synchronize()
+    self.assertEqual(torch.tpu._get_cache_misses() - misses, 0)
+    utils.assert_close(out.cpu(), expected.cpu())
+
+    _shared_clone = x_shared.clone()
+    misses = torch.tpu._get_cache_misses()
+    x_shared.ldexp_(exp)
+    torch.accelerator.synchronize()
+    self.assertEqual(torch.tpu._get_cache_misses() - misses, 0)
+    utils.assert_close(x_shared.cpu(), expected.cpu())
+
+    # Warm the donated cache via ldexp.out(..., out=self), then verify
+    # uniquely owned ldexp_ hits the same donated cache entry.
+    misses = torch.tpu._get_cache_misses()
+    torch.ldexp(x_donated_out, exp, out=x_donated_out)
+    torch.accelerator.synchronize()
+    self.assertGreaterEqual(torch.tpu._get_cache_misses() - misses, 1)
+
+    misses = torch.tpu._get_cache_misses()
+    x_inplace.ldexp_(exp)
+    torch.accelerator.synchronize()
+    self.assertEqual(torch.tpu._get_cache_misses() - misses, 0)
+    utils.assert_close(x_inplace.cpu(), expected.cpu())
+
+    # All-integral inputs also share the cache between ldexp and ldexp.out.
+    misses = torch.tpu._get_cache_misses()
+    expected_int = torch.ldexp(xi, exp)
+    torch.accelerator.synchronize()
+    self.assertGreaterEqual(torch.tpu._get_cache_misses() - misses, 1)
+
+    out_int = torch.empty(shape, dtype=expected_int.dtype, device=device)
+    torch.accelerator.synchronize()
+    misses = torch.tpu._get_cache_misses()
+    torch.ldexp(xi, exp, out=out_int)
+    torch.accelerator.synchronize()
+    self.assertEqual(torch.tpu._get_cache_misses() - misses, 0)
+    utils.assert_close(out_int.cpu(), expected_int.cpu())
+
+    # Mixed float/complex `other` dtypes promote via at::result_type.
+    f64_other = torch.tensor([1.0, 2.0], dtype=torch.float64, device=device)
+    f32_self = torch.tensor([2.0, 3.0], dtype=torch.float32, device=device)
+    res_f64 = torch.ldexp(f32_self, f64_other)
+    self.assertEqual(res_f64.dtype, torch.float64)
+    utils.assert_close(
+        res_f64.cpu(),
+        torch.tensor([4.0, 12.0], dtype=torch.float64),
+    )
+
+    c64_other = torch.tensor(
+        [1.0 + 0.0j, 2.0 + 0.0j], dtype=torch.complex64, device=device
+    )
+    res_c64 = torch.ldexp(f32_self, c64_other)
+    self.assertEqual(res_c64.dtype, torch.complex64)
+    utils.assert_close(
+        res_c64.cpu(),
+        torch.tensor([4.0 + 0.0j, 12.0 + 0.0j], dtype=torch.complex64),
+    )
+
   def test_sigmoid_out_upcast(self):
     device = torch.device("tpu")
     x = torch.tensor([0.0, 1.0], dtype=torch.float32, device=device)
