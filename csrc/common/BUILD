@@ -479,6 +479,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/types:span",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:maybe_owning_mlir_module",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_common",
         "@xla//xla/pjrt:pjrt_compiler",

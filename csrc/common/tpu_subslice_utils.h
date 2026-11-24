@@ -40,6 +40,11 @@ absl::StatusOr<std::optional<xla::PjRtDeviceDimensions>> GetSubsliceOrigin(
 // Compiles `module` and loads it. If the device assignment of `options` is one
 // replica over every core of a box of chips smaller than the slice, compiles it
 // for that subslice and loads it at the subslice origin.
+//
+// On single-slice TPU, compiles to an unloaded `PjRtExecutable`, serializes it,
+// drops the compile-time executable, and loads from serialized bytes so
+// compile-time compiler state is not retained in Host DRAM alongside the loaded
+// executable. Multi-slice (MegaScale) and non-TPU clients use `CompileAndLoad`.
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 CompileAndLoadMaybeSubslice(xla::PjRtClient& client,
                             xla::MaybeOwningMlirModule module,
