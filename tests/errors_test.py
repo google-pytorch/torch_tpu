@@ -9406,6 +9406,125 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       t.random_(20, 10)
 
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' to be < 'to', got 0 vs 0""",
+        gpu="""random_ expects 'from' to be less than 'to', but got from=0 >= to=0""",
+    ):
+      t.random_(0)
+
+    empty = torch.empty(0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' to be < 'to', got 20 vs 10""",
+        gpu="""random_ expects 'from' to be less than 'to', but got from=20 >= to=10""",
+    ):
+      empty.random_(20, 10)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' to be < 'to', got 0 vs 0""",
+        gpu="""random_ expects 'from' to be less than 'to', but got from=0 >= to=0""",
+    ):
+      empty.random_(0)
+
+    bf16 = torch.ones(5, dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' casted to dtype to be less than 'to' casted to dtype, got from=258 >= to=258""",
+        gpu="""random_ expects 'from' casted to dtype to be less than 'to' casted to dtype, but got from=258 >= to=258""",
+    ):
+      bf16.random_(258, 260)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' casted to dtype to be less than or equal to 'to_inc' casted to dtype, got from=256 > to_inc=256""",
+        gpu="""random_ expects 'from' casted to dtype to be less than or equal to 'to_inc' casted to dtype, but got from=256 > to_inc=256""",
+    ):
+      bf16.random_(256, None)
+
+    i8 = torch.zeros(5, dtype=torch.int8, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""from is out of bounds for signed char""",
+        gpu="""from is out of bounds for signed char""",
+    ):
+      i8.random_(-200, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""to - 1 is out of bounds for signed char""",
+        gpu="""to - 1 is out of bounds for signed char""",
+    ):
+      i8.random_(0, 200)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""to - 1 is out of bounds for signed char""",
+        gpu="""to - 1 is out of bounds for signed char""",
+    ):
+      i8.random_(200)
+
+  @parameterized.named_parameters(
+      ("to_overflow", 0, 100000, """to - 1 is out of bounds for c10::Half"""),
+      (
+          "from_and_to_overflow",
+          70000,
+          100000,
+          """from is out of bounds for c10::Half""",
+      ),
+      (
+          "from_underflow_default_to",
+          -100000,
+          None,
+          """from is out of bounds for c10::Half""",
+      ),
+  )
+  @et.gpu_crashes_or_raises(
+      "GPU hits float-to-int64 overflow UB in update_from/update_to on"
+      " out-of-range Half bounds."
+  )
+  def test_random_float16_out_of_bounds(self, low, high, expected_msg):
+    f16 = torch.zeros(5, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_msg,
+        gpu=expected_msg,
+    ):
+      f16.random_(low, high)
+
+  def test_random_unsupported_dtype(self):
+    c64 = torch.zeros(5, dtype=torch.complex64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected the input dtype to be integral, floating point, or bool, got complex64""",
+        gpu=""""random_kernel_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      c64.random_()
+
+    c64_empty = torch.empty(0, dtype=torch.complex64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""check_random_bounds handles only integral, floating-point and boolean types""",
+        gpu="""check_random_bounds handles only integral, floating-point and boolean types""",
+    ):
+      c64_empty.random_(0, 10)
+
+    fp8 = torch.empty(2, dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected the float type to be one of float64, float32, bfloat16, or float16, got float8_e4m3fn""",
+        gpu=""""random_kernel_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      fp8.random_()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected the float type to be one of float64, float32, bfloat16, or float16, got float8_e4m3fn""",
+        gpu=""""random_update_from_to" not implemented for 'Float8_e4m3fn'""",
+    ):
+      fp8.random_(0, 10)
+
   def test_randn_unsupported_dtype(self):
     with et.assert_raises_message(
         RuntimeError,

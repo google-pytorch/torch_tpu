@@ -5447,6 +5447,44 @@ module {
     ):
       fn(t, repeats)
 
+  @et.why_tpu_only(
+      "TPU guards update_from against INT64_MAX overflow and validates dtype on"
+      " empty tensors in random_()."
+  )
+  def test_random_from_overflow_and_empty_unsupported_dtype(self):
+    t = torch.ones(5, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' casted to dtype to be less than or equal to 'to_inc' casted to dtype, got from=9223372036854775807 > to_inc=16777216""",
+    ):
+      t.random_(2**63 - 1, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' casted to dtype to be less than or equal to 'to_inc' casted to dtype, got from=9223372036854775308 > to_inc=16777216""",
+    ):
+      t.random_(2**63 - 500, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' casted to dtype to be less than 'to' casted to dtype, got from=9223372036854775807 >= to=9223371487098961920""",
+    ):
+      t.random_(2**63 - 1000, 2**63 - 1)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected 'from' casted to dtype to be less than 'to' casted to dtype, got from=9223372036854775807 >= to=9223371761976868864""",
+    ):
+      t.random_(2**63 - 2**39 + 1, 2**63 - 2**38)
+
+    empty_complex = torch.empty(0, dtype=torch.complex64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""random_(): expected the input dtype to be integral, floating point, or bool, got complex64""",
+    ):
+      empty_complex.random_()
+
+
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
   @et.why_tpu_only("Testing PyBind error translation on TPU.")

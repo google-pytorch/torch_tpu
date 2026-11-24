@@ -7279,6 +7279,73 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         golden_result=t.to("cpu"), torch_tpu_result=t_again.to("cpu")
     )
 
+  def test_random_bounds(self):
+    tpu_device = torch.device("tpu")
+    torch.manual_seed(0)
+
+    def sample(n, dtype, *args):
+      return torch.zeros(n, dtype=dtype, device=tpu_device).random_(*args).cpu()
+
+    # 1. Bool default, explicit, and single-arg (aten::random_.to) bounds.
+    b = sample(256, torch.bool)
+    self.assertTrue(b.any() and not b.all())
+    self.assertFalse(sample(64, torch.bool, 1).any())
+    self.assertTrue(sample(64, torch.bool, 1, None).all())
+    b_02 = sample(256, torch.bool, 2)
+    self.assertTrue(b_02.any() and not b_02.all())
+
+    # 2. Integral default inclusive upper bound (max of dtype) and full 2^64
+    # range.
+    self.assertTrue((sample(64, torch.int8, 127, None) == 127).all())
+    self.assertTrue((sample(64, torch.uint8, 255, None) == 255).all())
+    self.assertTrue(
+        (sample(64, torch.int64, 2**63 - 1, None) == 2**63 - 1).all()
+    )
+    i64_full = sample(256, torch.int64, -(2**63), None)
+    self.assertTrue((i64_full < 0).any() and (i64_full > 0).any())
+
+    # 3. Floating-point default inclusive upper bound (2^digits) and rounding
+    # adjustments.
+    bf16_top = sample(256, torch.bfloat16, 254, None)
+    self.assertTrue((bf16_top == 254.0).any() and (bf16_top == 256.0).any())
+    f16_top = sample(256, torch.float16, 2046, None)
+    self.assertTrue((f16_top == 2046.0).any() and (f16_top == 2048.0).any())
+    f32_top = sample(256, torch.float32, 2**24 - 1, None)
+    self.assertTrue((f32_top >= 2**24 - 1).all() and (f32_top <= 2**24).all())
+    self.assertTrue(
+        (f32_top == float(2**24 - 1)).any() and (f32_top == float(2**24)).any()
+    )
+
+    bf16_to = sample(256, torch.bfloat16, 256, 260)
+    self.assertTrue(256.0 <= bf16_to.min().item() < 260.0)
+    self.assertLess(bf16_to.max().item(), 260.0)
+
+    bf16_from = sample(256, torch.bfloat16, 513, 521)
+    self.assertGreaterEqual(bf16_from.min().item(), 516.0)
+    self.assertLess(bf16_from.max().item(), 521.0)
+    f16_from = sample(256, torch.float16, 4097, 4105)
+    self.assertGreaterEqual(f16_from.min().item(), 4100.0)
+    self.assertLess(f16_from.max().item(), 4105.0)
+    f32_near_max = sample(256, torch.float32, 2**63 - 2**40, 2**63 - 1)
+    self.assertGreaterEqual(f32_near_max.min().item(), float(2**63 - 2**40))
+    self.assertLess(f32_near_max.max().item(), float(2**63))
+
+    # 4. Signed int64 range overflow when to - from > INT64_MAX, empty tensor,
+    # DEFER_AND_FUSE, and torch.compile.
+    low, high = -5_000_000_000_000_000_000, 5_000_000_000_000_000_000
+    i64_large = sample(1024, torch.int64, low, high)
+    self.assertTrue((i64_large >= low).all() and (i64_large < high).all())
+    self.assertTrue((i64_large < 0).any() and (i64_large > 0).any())
+    self.assertEqual(sample(0, torch.int32).numel(), 0)
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      self.assertTrue((sample(64, torch.bfloat16, 256) < 256.0).all())
+    compiled_fn = torch.compile(lambda x: x.random_(10), backend="tpu")
+    c_out = compiled_fn(
+        torch.zeros(64, dtype=torch.int32, device=tpu_device)
+    ).cpu()
+    self.assertTrue((c_out >= 0).all() and (c_out < 10).all())
+
   def test_round(self):
     # TODO(b/489136147): Fix test case & disable allow_failure
     self.assert_close_tpu_vs_cpu(

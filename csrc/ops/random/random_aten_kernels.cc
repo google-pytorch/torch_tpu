@@ -19,13 +19,10 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "ATen/Context.h"
-#include "ATen/Dispatch.h"
-#include "ATen/Dispatch_v2.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "ATen/native/DistributionTemplates.h"
@@ -35,7 +32,6 @@
 #include "c10/core/ScalarType.h"
 #include "c10/core/ScalarTypeToTypeMeta.h"
 #include "c10/util/Optional.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -56,8 +52,9 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/Dispatch_v2.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch/headeronly/util/BFloat16.h"
+#include "torch/headeronly/util/Half.h"
 
 namespace torch_tpu {
 
@@ -134,24 +131,22 @@ absl::StatusOr<mlir::MlirOp> AddLowerBound(
 absl::StatusOr<MlirOpResults<1>> BuildRandomShlo(mlir::MlirOp state,
                                                  Dimensions dims,
                                                  mlir::ElementType output_dtype,
-                                                 int64_t from, int64_t to) {
-  ABSL_VLOG(3) << "BuildRandomShlo: from=" << from << ", to=" << to;
+                                                 int64_t from, uint64_t range) {
+  ABSL_VLOG(3) << "BuildRandomShlo: from=" << from << ", range=" << range;
   const auto rng_input_state_type = GetTensorTypeOrDie(state);
   auto& ctx = state.getContext();
   auto& builder = state.getBuilder();
   auto& op_builder = builder.getOpBuilder();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Error already caught in caller.
-      to > from, error::kInvalidArgument)
-      << "to must be greater than from, got to=" << to << ", from=" << from;
-  // Cast _before_ computing the difference to avoid overflow.
-  // Note that computations in uint64 are done (mod 2^64), so
-  // after casting we get (x - y) % 2^64, but the unrestricted value is already
-  // in [0, 2^64).
-  const uint64_t range =
-      static_cast<uint64_t>(to) - static_cast<uint64_t>(from);
+      range > 0 || from == std::numeric_limits<int64_t>::lowest(),
+      error::kInvalidArgument)
+      << "expected range to be positive (or 0 mod 2^64 when from is "
+         "INT64_MIN), got range="
+      << range << ", from=" << from;
   // We will have to mod by `range`, which is slow in the 64-bit case, so if we
   // can, we do this in 32 bits.
-  bool range_fits_in_u32 = range <= std::numeric_limits<uint32_t>::max();
+  bool range_fits_in_u32 =
+      range > 0 && range <= std::numeric_limits<uint32_t>::max();
   bool range_is_power_of_2 = false;
   // We know range > 0.
   if ((range & (range - 1)) == 0) {
@@ -161,7 +156,8 @@ absl::StatusOr<MlirOpResults<1>> BuildRandomShlo(mlir::MlirOp state,
   int target_bit_width = range_fits_in_u32 ? 32 : 64;
   mlir::IntegerType diff_type =
       op_builder.getIntegerType(target_bit_width, /*isSigned=*/false);
-  auto diff_op = MakeScalarConstant(builder, to - from, diff_type);
+  auto diff_op =
+      MakeScalarConstant(builder, static_cast<int64_t>(range), diff_type);
 
   // Call rng bit generator
   auto input_shape_with_diff_type = mlir::makeTensorType(ctx, dims, diff_type);
@@ -193,71 +189,185 @@ absl::StatusOr<MlirOpResults<1>> BuildRandomShlo(mlir::MlirOp state,
   return result;
 }
 
+struct RandomRange {
+  int64_t from;
+  uint64_t range;
+};
+
 NAryMlirOpBuilder<1, 1> GetRandomFunctional(Dimensions dims,
                                             mlir::ElementType output_dtype,
-                                            int64_t from, int64_t to) {
+                                            int64_t from, uint64_t range) {
   return [dims, output_dtype, from,
-          to](mlir::MlirOp rng_state) -> absl::StatusOr<MlirOpResults<1>> {
-    return BuildRandomShlo(rng_state, dims, output_dtype, from, to);
+          range](mlir::MlirOp rng_state) -> absl::StatusOr<MlirOpResults<1>> {
+    return BuildRandomShlo(rng_state, dims, output_dtype, from, range);
   };
+}
+
+absl::Status UnsupportedFloatDtypeError(const at::ScalarType dtype) {
+  return TT_ERROR(error::kInvalidArgument)
+         << "expected the float type to be one of float64, float32, "
+            "bfloat16, or float16, got "
+         << ToString(dtype);
+}
+
+absl::Status ValidateFloatDtype(const at::ScalarType dtype) {
+  switch (dtype) {
+    case at::ScalarType::Double:
+    case at::ScalarType::Float:
+    case at::ScalarType::Half:
+    case at::ScalarType::BFloat16:
+      return absl::OkStatus();
+    default:
+      return UnsupportedFloatDtypeError(dtype);
+  }
+}
+
+template <typename T>
+void ApplyFloatBoundUpdates(int64_t& from, c10::optional<int64_t>& to) {
+  if constexpr (std::numeric_limits<T>::max_exponent > 63) {
+    // Largest value of type T strictly below 2^63 (and thus representable in
+    // signed int64_t). Above this value, the next representable T is 2^63,
+    // which overflows int64_t inside update_from / update_to.
+    constexpr double kTwoPow63 = static_cast<double>(uint64_t{1} << 63);
+    constexpr int64_t kMaxBelowTwoPow63 = static_cast<int64_t>(
+        (uint64_t{1} << 63) -
+        (uint64_t{1} << (63 - std::numeric_limits<T>::digits)));
+    if (from > kMaxBelowTwoPow63) {
+      from = std::numeric_limits<int64_t>::max();
+    } else {
+      from = at::native::templates::update_from<T>(from);
+    }
+    if (to.has_value()) {
+      if (static_cast<double>(static_cast<T>(*to - 1)) >= kTwoPow63) {
+        *to = kMaxBelowTwoPow63;
+      } else {
+        *to = at::native::templates::update_to<T>(*to);
+      }
+    }
+    return;
+  }
+  from = at::native::templates::update_from<T>(from);
+  if (to.has_value()) {
+    *to = at::native::templates::update_to<T>(*to);
+  }
+}
+
+absl::Status UpdateFloatBounds(const at::ScalarType dtype, int64_t& from,
+                               c10::optional<int64_t>& to) {
+  switch (dtype) {
+    case at::ScalarType::Double:
+      ApplyFloatBoundUpdates<double>(from, to);
+      return absl::OkStatus();
+    case at::ScalarType::Float:
+      ApplyFloatBoundUpdates<float>(from, to);
+      return absl::OkStatus();
+    case at::ScalarType::Half:
+      ApplyFloatBoundUpdates<c10::Half>(from, to);
+      return absl::OkStatus();
+    case at::ScalarType::BFloat16:
+      ApplyFloatBoundUpdates<c10::BFloat16>(from, to);
+      return absl::OkStatus();
+    default:
+      return UnsupportedFloatDtypeError(dtype);
+  }
 }
 
 // See https://docs.pytorch.org/docs/stable/generated/torch.Tensor.random_.html
 // for the logic behind this.
 // Reusing logic from
 // torch/aten/src/ATen/native/DistributionTemplates.h
-absl::StatusOr<int64_t> ComputeToValue(at::ScalarType dtype) {
-  ABSL_VLOG(3) << "ComputeToValue: " << dtype;
-  absl::StatusOr<int64_t> maybe_to = TT_ERROR(error::kInvalidArgument)
-                                     << "Unsupported dtype for random: "
-                                     << ToString(dtype);
-  if (at::isFloatingType(dtype)) {
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-        at::ScalarType::Half, at::ScalarType::BFloat16, dtype,
-        "random_float_to_value_calc",
-        [&] {  // REF_CAPTURE_OK=called synchronously
-          constexpr int64_t scalar_t_max =
-              static_cast<int64_t>(1) << std::numeric_limits<scalar_t>::digits;
-          maybe_to = scalar_t_max > std::numeric_limits<int64_t>::max()
-                         ? std::numeric_limits<int64_t>::max()
-                         : static_cast<int64_t>(scalar_t_max);
-        });
-  } else if (IsIntegral(dtype)) {
-    AT_DISPATCH_V2(dtype, "random_integral_to_value_calc",
-                   AT_WRAP([&] {  // REF_CAPTURE_OK=called locally
-                     if constexpr (std::is_same_v<scalar_t, bool>) {
-                       maybe_to = static_cast<int64_t>(true);
-                     } else {
-                       maybe_to = static_cast<int64_t>(
-                           std::numeric_limits<scalar_t>::max());
-                     }
-                   }),
-                   AT_EXPAND(AT_INTEGRAL_TYPES_V2), at::kBool);
+absl::StatusOr<int64_t> ComputeToIncValue(const at::ScalarType dtype) {
+  ABSL_VLOG(3) << "ComputeToIncValue: " << dtype;
+  switch (dtype) {
+    case at::ScalarType::Double:
+      return int64_t{1} << std::numeric_limits<double>::digits;
+    case at::ScalarType::Float:
+      return int64_t{1} << std::numeric_limits<float>::digits;
+    case at::ScalarType::Half:
+      return int64_t{1} << std::numeric_limits<c10::Half>::digits;
+    case at::ScalarType::BFloat16:
+      return int64_t{1} << std::numeric_limits<c10::BFloat16>::digits;
+    case at::ScalarType::Bool:
+      return static_cast<int64_t>(true);
+    case at::ScalarType::Byte:
+      return static_cast<int64_t>(std::numeric_limits<uint8_t>::max());
+    case at::ScalarType::Char:
+      return static_cast<int64_t>(std::numeric_limits<int8_t>::max());
+    case at::ScalarType::Short:
+      return static_cast<int64_t>(std::numeric_limits<int16_t>::max());
+    case at::ScalarType::Int:
+      return static_cast<int64_t>(std::numeric_limits<int32_t>::max());
+    case at::ScalarType::Long:
+      return std::numeric_limits<int64_t>::max();
+    case at::ScalarType::UInt16:
+      return static_cast<int64_t>(std::numeric_limits<uint16_t>::max());
+    case at::ScalarType::UInt32:
+      return static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+    case at::ScalarType::UInt64:
+      return static_cast<int64_t>(std::numeric_limits<uint64_t>::max());
+    default:
+      if (at::isFloatingType(dtype)) {
+        return UnsupportedFloatDtypeError(dtype);
+      }
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected the input dtype to be integral, floating point, or "
+                "bool, got "
+             << ToString(dtype);
   }
-  return maybe_to;
 }
 
-absl::Status FromToInRange(int64_t from, int64_t to, at::ScalarType dtype) {
-  TT_RET_CHECK(from < to, error::kInvalidArgument)
-      << "expected 'from' to be < 'to', got " << from << " vs " << to;
+absl::StatusOr<RandomRange> ComputeRandomRange(int64_t from,
+                                               c10::optional<int64_t> to_opt,
+                                               at::ScalarType dtype) {
+  if (to_opt.has_value()) {
+    TT_RET_CHECK(from < *to_opt, error::kInvalidArgument)
+        << "expected 'from' to be < 'to', got " << from << " vs " << *to_opt;
+    if (at::isFloatingType(dtype)) {
+      TT_RETURN_IF_ERROR(ValidateFloatDtype(dtype));
+    }
+    at::native::templates::check_from_to_in_range(
+        from, *to_opt - 1, c10::scalarTypeToTypeMeta(dtype));
+    if (at::isFloatingType(dtype)) {
+      TT_RETURN_IF_ERROR(UpdateFloatBounds(dtype, from, to_opt));
+      TT_RET_CHECK(from < *to_opt, error::kInvalidArgument)
+          << "expected 'from' casted to dtype to be less than 'to' casted to "
+             "dtype, got from="
+          << from << " >= to=" << *to_opt;
+    }
+    const int64_t to = *to_opt;
+    const uint64_t range =
+        static_cast<uint64_t>(to) - static_cast<uint64_t>(from);
+    return RandomRange{from, range};
+  }
+  TT_ASSIGN_OR_RETURN(const int64_t to_inc, ComputeToIncValue(dtype));
   at::native::templates::check_from_to_in_range(
-      from, to - 1, c10::scalarTypeToTypeMeta(dtype));
-  return absl::OkStatus();
+      from, to_inc, c10::scalarTypeToTypeMeta(dtype));
+  if (from != std::numeric_limits<int64_t>::lowest() &&
+      at::isFloatingType(dtype)) {
+    if (from < to_inc) {
+      TT_RETURN_IF_ERROR(UpdateFloatBounds(dtype, from, to_opt));
+    }
+    TT_RET_CHECK(from < to_inc, error::kInvalidArgument)
+        << "expected 'from' casted to dtype to be less than or equal to "
+           "'to_inc' casted to dtype, got from="
+        << from << " > to_inc=" << to_inc;
+  }
+  if (from == std::numeric_limits<int64_t>::lowest()) {
+    return RandomRange{from, 0};
+  }
+  const uint64_t range =
+      static_cast<uint64_t>(to_inc) - static_cast<uint64_t>(from) + 1;
+  return RandomRange{from, range};
 }
 
 absl::Status Random(at::Tensor& self, c10::optional<at::Generator> generator,
                     int64_t from, c10::optional<int64_t> to_opt,
                     OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(const RandomRange random_range,
+                      ComputeRandomRange(from, to_opt, self.scalar_type()));
   if (self.numel() == 0) {
     return absl::OkStatus();
   }
-  int64_t to;
-  if (to_opt.has_value()) {
-    to = to_opt.value();
-  } else {
-    TT_ASSIGN_OR_RETURN(to, ComputeToValue(self.scalar_type()));
-  }
-  TT_RETURN_IF_ERROR(FromToInRange(from, to, self.scalar_type()));
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   auto dims = CopyIntVector(self.sizes());
@@ -268,11 +378,13 @@ absl::Status Random(at::Tensor& self, c10::optional<at::Generator> generator,
       -> absl::StatusOr<std::vector<DeviceBufferRef>> {
         TT_ASSIGN_OR_RETURN(
             auto buf,
-            (DispatchOp<1, 1>(GetRandomFunctional(dims, output_dtype, from, to),
-                              {rng_input_state},
-                              {.out_dtype = output_dtype,
-                               .out_dims = self.sizes(),
-                               .op_param_cache_keys = std::move(param_keys)})));
+            (DispatchOp<1, 1>(
+                GetRandomFunctional(dims, output_dtype, random_range.from,
+                                    random_range.range),
+                {rng_input_state},
+                {.out_dtype = output_dtype,
+                 .out_dims = self.sizes(),
+                 .op_param_cache_keys = std::move(param_keys)})));
         return std::vector<DeviceBufferRef>{std::move(buf)};
       });
 }
