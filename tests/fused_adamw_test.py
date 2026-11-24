@@ -509,6 +509,87 @@ class FusedAdamWTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_fn)
 
+  @parameterized.product(
+      amsgrad=[False, True],
+      use_grad_scale=[False, True],
+  )
+  def test_fused_adamw_multi_step_0_element_tensors(
+      self, amsgrad, use_grad_scale
+  ):
+    """Tests multi-step fused AdamW with empty tensors and FSDP-like empty views."""
+
+    def run_fn(device):
+      # Standalone empty parameter (materialized before step 1) and FSDP2-style
+      # zero-length view of a non-empty padded buffer, alongside a non-empty
+      # parameter.
+      p_empty = torch.zeros((0, 5), dtype=torch.float32, device=device)
+      padded = torch.ones((4, 5), dtype=torch.float32, device=device)
+      p_empty_view = padded[:0]
+      p = torch.tensor([1.0, 2.0, -1.0], dtype=torch.float32, device=device)
+
+      g_empty = torch.zeros((0, 5), dtype=torch.float32, device=device)
+      g_empty_view = torch.zeros((0, 5), dtype=torch.float32, device=device)
+      ea_empty = torch.zeros_like(p_empty)
+      ea_empty_view = torch.zeros_like(p_empty_view)
+      ea = torch.zeros_like(p)
+      eas_empty = torch.zeros_like(p_empty)
+      eas_empty_view = torch.zeros_like(p_empty_view)
+      eas = torch.zeros_like(p)
+      meas = (
+          [
+              torch.zeros_like(p_empty),
+              torch.zeros_like(p_empty_view),
+              torch.zeros_like(p),
+          ]
+          if amsgrad
+          else []
+      )
+      grad_scale = (
+          torch.tensor(2.0, dtype=torch.float32, device=device)
+          if use_grad_scale
+          else None
+      )
+
+      for step_val in range(1, 4):
+        g = torch.tensor(
+            [0.1, -0.2, 0.3], dtype=torch.float32, device=device
+        ) * float(step_val)
+        steps = [
+            torch.tensor(float(step_val), dtype=torch.float32, device=device)
+            for _ in range(3)
+        ]
+        torch.ops.aten._fused_adamw_.default(
+            [p_empty, p_empty_view, p],
+            [g_empty, g_empty_view, g],
+            [ea_empty, ea_empty_view, ea],
+            [eas_empty, eas_empty_view, eas],
+            meas,
+            steps,
+            lr=0.01,
+            beta1=0.9,
+            beta2=0.999,
+            weight_decay=0.01,
+            eps=1e-8,
+            amsgrad=amsgrad,
+            maximize=False,
+            grad_scale=grad_scale,
+        )
+      return (
+          p_empty,
+          p_empty_view,
+          padded,
+          p,
+          ea_empty,
+          ea_empty_view,
+          ea,
+          eas_empty,
+          eas_empty_view,
+          eas,
+          meas,
+      )
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
   @parameterized.parameters(torch.float16, torch.float64)
   def test_fused_adamw_precision_dtypes(self, dtype):
     """Tests _fused_adamw_ on float16 and float64 dtypes."""
