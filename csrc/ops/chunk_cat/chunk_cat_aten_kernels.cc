@@ -27,8 +27,10 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/ArrayRef.h"
 #include "c10/util/accumulate.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -41,6 +43,8 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
@@ -56,6 +60,11 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
         const int64_t wrapped_dim =
             at::native::preprocess_chunk_cat_inputs(tensors, dim, num_chunks);
         TT_THROW_IF_ERROR(param_keys.SetParam("wrapped_dim", wrapped_dim));
+        // preprocess_chunk_cat_inputs checks the inputs' devices, not out's.
+        TT_CHECK_THROW(out.device() == tensors[0].device(),
+                       error::kInvalidArgument)
+            << "expected out to be on " << tensors[0].device().str() << ", got "
+            << out.device().str();
         TT_THROW_IF_ERROR(ValidateOutDtype(out, tensors[0].scalar_type()));
         // TPU stores float4_e2m1fn_x2 with its last dimension unpacked, which
         // the element counts below do not account for.
@@ -65,9 +74,13 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
                          error::kPythonNotImplementedError)
               << "not implemented for " << ToString(dtype);
         }
-        // The program below is built for static shapes.
+        // The program below is built for static shapes. The base buffer
+        // carries a marked tensor's dynamic dimensions without recording a
+        // view op; inputs whose dynamic dimensions are only known when the
+        // program is built (deferred ops) are checked in op_builder.
         for (const at::Tensor& tensor : tensors) {
-          TT_ASSIGN_OR_THROW(const DeviceBufferRef buffer, GetBuffer(tensor));
+          TT_ASSIGN_OR_THROW(const DeviceBufferRef buffer,
+                             GetBaseBuffer(tensor));
           TT_CHECK_THROW(buffer.dynamic_dimensions().empty() &&
                              !buffer.on_device_shape_is_dynamic(),
                          error::kPythonNotImplementedError)
@@ -95,9 +108,14 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
         for (const at::Tensor& tensor : tensors) {
           const int64_t size = tensor.size(wrapped_dim);
           const int64_t inner_numel = tensor.numel() / (num_rows * size);
-          // ceil(size / num_chunks), without overflowing for a huge num_chunks
-          chunk_numels.push_back(((size - 1) / num_chunks + 1) * inner_numel);
-          chunk_row_numel += chunk_numels.back();
+          // ceil(size / num_chunks) rows, without overflowing for a huge
+          // num_chunks
+          TT_ASSIGN_OR_THROW(
+              const int64_t chunk_numel,
+              SafeMultiply((size - 1) / num_chunks + 1, inner_numel));
+          chunk_numels.push_back(chunk_numel);
+          TT_ASSIGN_OR_THROW(chunk_row_numel,
+                             SafeAdd(chunk_row_numel, chunk_numel));
         }
         Dimensions out_shape =
             CopyIntVector(tensors[0].sizes().slice(0, wrapped_dim));
@@ -107,7 +125,7 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
         // contiguously (FSDP2's flat buffer), the flat result becomes its
         // storage directly. Otherwise the result takes out's shape, so that it
         // can be written through out's view.
-        const int64_t out_numel = c10::multiply_integers(out_shape);
+        TT_ASSIGN_OR_THROW(const int64_t out_numel, NumElements(out_shape));
         const bool flat_result =
             out.sizes() ==
                 c10::IntArrayRef(out_shape.data(), out_shape.size()) &&
@@ -117,6 +135,10 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
             flat_result ? Dimensions{out_numel} : out_shape;
         TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_THROW_IF_ERROR(
+            ValidateTensorByteSize(
+                c10::IntArrayRef(out_shape.data(), out_shape.size()), out_dtype)
+                .status());
         // XLA rejects a direct real-to-complex convert, which the dispatcher's
         // cast to out_dtype would emit.
         const bool real_to_complex =
@@ -140,6 +162,9 @@ at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
           rows.reserve(inputs.size());
           for (size_t i = 0; i < inputs.size(); ++i) {
             const mlir::RankedTensorType type = GetTensorTypeOrDie(inputs[i]);
+            TT_RET_CHECK(type.hasStaticShape(),
+                         error::kPythonNotImplementedError)
+                << "not implemented for inputs with dynamic dimensions";
             const int64_t row_numel = type.getNumElements() / num_rows;
             mlir::MlirOp row =
                 mlir::stablehlo::Reshape(inputs[i], row_shape(row_numel));
