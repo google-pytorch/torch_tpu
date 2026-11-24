@@ -136,9 +136,13 @@ torch_tpu_cc_test(
         "//shims/torch",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )

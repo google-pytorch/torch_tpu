@@ -28,9 +28,14 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/synchronization/notification.h"
+#include "absl/time/time.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/distributed/types.h"
@@ -40,6 +45,7 @@
 #include "torch/csrc/distributed/c10d/HashStore.hpp"
 #include "torch/csrc/distributed/c10d/PrefixStore.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
+#include "torch/csrc/distributed/c10d/TCPStore.hpp"
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
@@ -939,6 +945,311 @@ TEST(ProcessGroupTpuTest,
   EXPECT_THAT(status.message(),
               testing::HasSubstr("process group is shut down"));
   EXPECT_FALSE(store->check({"missing_key"}));
+}
+
+// Counts store reads that have acquired their connection lock and lets tests
+// wait for a target count without sleep-polling.
+class ReadCounter {
+ public:
+  void RecordReadStarted() ABSL_LOCKS_EXCLUDED(mu_) {
+    absl::MutexLock lock(mu_);
+    ++started_;
+  }
+
+  bool WaitForCount(int target, absl::Duration timeout)
+      ABSL_LOCKS_EXCLUDED(mu_) {
+    auto reached = [this, target]() {
+      mu_.AssertReaderHeld();
+      return started_ >= target;
+    };
+    absl::MutexLock lock(mu_);
+    return mu_.AwaitWithTimeout(absl::Condition(&reached), timeout);
+  }
+
+ private:
+  absl::Mutex mu_;
+  int started_ ABSL_GUARDED_BY(mu_) = 0;
+};
+
+// Models TCPStore's per-connection serialization: every operation holds this
+// object's connection lock, and get/multiGet hold it while waiting for a
+// missing key. Clones share the backing store but get their own connection
+// lock, as TCPStore clones open their own connection. `reads_started` counts
+// reads that hold their connection lock, so a test can wait until a read is
+// blocked in it.
+class SerializedStore : public c10d::Store {
+ public:
+  SerializedStore(c10::intrusive_ptr<c10d::HashStore> backing_store,
+                  std::shared_ptr<ReadCounter> reads_started)
+      : backing_store_(std::move(backing_store)),
+        reads_started_(std::move(reads_started)) {}
+
+  c10::intrusive_ptr<c10d::Store> clone() override {
+    return c10::make_intrusive<SerializedStore>(backing_store_, reads_started_);
+  }
+
+  using c10d::Store::compareSet;
+  using c10d::Store::set;
+
+  void set(const std::string& key, const std::vector<uint8_t>& value) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    backing_store_->set(key, value);
+  }
+
+  std::vector<uint8_t> compareSet(
+      const std::string& key, const std::vector<uint8_t>& expected_value,
+      const std::vector<uint8_t>& desired_value) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    return backing_store_->compareSet(key, expected_value, desired_value);
+  }
+
+  std::vector<uint8_t> get(const std::string& key) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    reads_started_->RecordReadStarted();
+    return backing_store_->get(key);
+  }
+
+  int64_t add(const std::string& key, int64_t value) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    return backing_store_->add(key, value);
+  }
+
+  bool deleteKey(const std::string& key) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    return backing_store_->deleteKey(key);
+  }
+
+  bool check(const std::vector<std::string>& keys) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    return backing_store_->check(keys);
+  }
+
+  int64_t getNumKeys() override ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    return backing_store_->getNumKeys();
+  }
+
+  void wait(const std::vector<std::string>& keys) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    backing_store_->wait(keys);
+  }
+
+  void wait(const std::vector<std::string>& keys,
+            const std::chrono::milliseconds& timeout) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    backing_store_->wait(keys, timeout);
+  }
+
+  void append(const std::string& key,
+              const std::vector<uint8_t>& value) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    backing_store_->append(key, value);
+  }
+
+  std::vector<std::vector<uint8_t>> multiGet(
+      const std::vector<std::string>& keys) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    reads_started_->RecordReadStarted();
+    return backing_store_->multiGet(keys);
+  }
+
+  void multiSet(const std::vector<std::string>& keys,
+                const std::vector<std::vector<uint8_t>>& values) override
+      ABSL_LOCKS_EXCLUDED(connection_) {
+    absl::MutexLock lock(connection_);
+    backing_store_->multiSet(keys, values);
+  }
+
+  std::chrono::milliseconds getTimeout() const noexcept override {
+    return backing_store_->getTimeout();
+  }
+
+  void setTimeout(const std::chrono::milliseconds& timeout) override {
+    backing_store_->setTimeout(timeout);
+  }
+
+  bool hasExtendedApi() const override {
+    return backing_store_->hasExtendedApi();
+  }
+
+ private:
+  c10::intrusive_ptr<c10d::HashStore> backing_store_;
+  std::shared_ptr<ReadCounter> reads_started_;
+  absl::Mutex connection_;
+};
+
+// Wraps `store` in `depth` PrefixStore layers named "pg" and returns the key
+// prefix they add.
+std::string WrapInPrefixStores(c10::intrusive_ptr<c10d::Store>& store,
+                               int depth) {
+  std::string prefix;
+  for (int i = 0; i < depth; ++i) {
+    store = c10::make_intrusive<c10d::PrefixStore>("pg", store);
+    absl::StrAppend(&prefix, "pg/");
+  }
+  return prefix;
+}
+
+class P2pSendQueueSerializedStoreTest : public testing::TestWithParam<int> {};
+
+// A send waits on the next stage while this rank publishes its own receive to
+// the previous stage. The blocked descriptor read must not hold up the
+// publication. Never fail fatally before the read is released: a broken
+// isolation would leave the worker blocked in multiGet.
+TEST_P(P2pSendQueueSerializedStoreTest, PublishesWhileSendWaitsForDescriptor) {
+  auto backing_store = c10::make_intrusive<c10d::HashStore>();
+  auto reads_started = std::make_shared<ReadCounter>();
+  c10::intrusive_ptr<c10d::Store> store =
+      c10::make_intrusive<SerializedStore>(backing_store, reads_started);
+  store->setTimeout(kTestStoreTimeout);
+  const std::string prefix = WrapInPrefixStores(store, GetParam());
+  P2pSendQueue queue(store);
+
+  auto waiter = std::make_shared<AsyncSendWaiter>();
+  auto received = std::make_shared<std::vector<std::vector<uint8_t>>>();
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/1, {"downstream"},
+                      [waiter, received](
+                          std::vector<std::vector<uint8_t>> descriptors) {
+                        *received = std::move(descriptors);
+                        waiter->MarkDone();
+                      },
+                      [waiter](std::exception_ptr eptr) {
+                        waiter->SetError(std::move(eptr));
+                      })
+                  .ok());
+  const bool read_started = reads_started->WaitForCount(1, absl::Seconds(5));
+
+  absl::Notification published_notification;
+  std::thread publish_thread([&] {
+    store->multiSet({"upstream"}, {{1, 2, 3}});
+    published_notification.Notify();
+  });
+  const bool published =
+      published_notification.WaitForNotificationWithTimeout(absl::Seconds(2));
+  const bool send_waiting = !waiter->done.load(std::memory_order_acquire);
+
+  // An independent peer releases the read even when the isolation is broken.
+  backing_store->multiSet({absl::StrCat(prefix, "downstream")}, {{4, 5, 6}});
+  publish_thread.join();
+  waiter->WaitAndThrow();
+
+  EXPECT_TRUE(read_started);
+  EXPECT_TRUE(published)
+      << "publishing must not wait for a pending send's descriptor read";
+  EXPECT_TRUE(send_waiting);
+  EXPECT_EQ(*received, (std::vector<std::vector<uint8_t>>{{4, 5, 6}}));
+  EXPECT_EQ(backing_store->multiGet({absl::StrCat(prefix, "upstream")}),
+            (std::vector<std::vector<uint8_t>>{{1, 2, 3}}));
+  queue.Shutdown();
+  EXPECT_FALSE(backing_store->check({absl::StrCat(prefix, "downstream")}));
+}
+
+// Sends to different peers read their descriptors on their own connections,
+// so a send whose receiver has not posted yet does not block a send to a
+// receiver that has.
+TEST_P(P2pSendQueueSerializedStoreTest, KeepsPeerReadsOnSeparateConnections) {
+  auto backing_store = c10::make_intrusive<c10d::HashStore>();
+  auto reads_started = std::make_shared<ReadCounter>();
+  c10::intrusive_ptr<c10d::Store> store =
+      c10::make_intrusive<SerializedStore>(backing_store, reads_started);
+  store->setTimeout(kTestStoreTimeout);
+  const std::string prefix = WrapInPrefixStores(store, GetParam());
+  P2pSendQueue queue(store);
+
+  auto enqueue = [&queue](
+                     int dst_rank, const std::string& key,
+                     std::shared_ptr<AsyncSendWaiter> waiter,
+                     std::shared_ptr<absl::Notification> done_notification =
+                         nullptr) {
+    return queue.Enqueue(
+        dst_rank, {key},
+        [waiter, done_notification](std::vector<std::vector<uint8_t>>) {
+          waiter->MarkDone();
+          if (done_notification != nullptr) {
+            done_notification->Notify();
+          }
+        },
+        [waiter, done_notification](std::exception_ptr eptr) {
+          waiter->SetError(std::move(eptr));
+          if (done_notification != nullptr) {
+            done_notification->Notify();
+          }
+        });
+  };
+  auto waiter_a = std::make_shared<AsyncSendWaiter>();
+  auto waiter_b = std::make_shared<AsyncSendWaiter>();
+  auto b_done_notification = std::make_shared<absl::Notification>();
+  ASSERT_TRUE(enqueue(/*dst_rank=*/1, "key_a", waiter_a).ok());
+  ASSERT_TRUE(
+      enqueue(/*dst_rank=*/2, "key_b", waiter_b, b_done_notification).ok());
+  const bool both_reading = reads_started->WaitForCount(2, absl::Seconds(5));
+
+  // Rank 2's receiver posts first; rank 1's send keeps waiting.
+  backing_store->set(absl::StrCat(prefix, "key_b"), {'b'});
+  const bool b_done =
+      b_done_notification->WaitForNotificationWithTimeout(absl::Seconds(2));
+  const bool a_waiting = !waiter_a->done.load(std::memory_order_acquire);
+
+  backing_store->set(absl::StrCat(prefix, "key_a"), {'a'});
+  waiter_a->WaitAndThrow();
+  waiter_b->WaitAndThrow();
+
+  EXPECT_TRUE(both_reading) << "each peer's read needs its own connection";
+  EXPECT_TRUE(b_done) << "a send must not wait behind another peer's read";
+  EXPECT_TRUE(a_waiting);
+  queue.Shutdown();
+}
+
+INSTANTIATE_TEST_SUITE_P(PrefixDepth, P2pSendQueueSerializedStoreTest,
+                         testing::Values(0, 2));
+
+// Through a real TCPStore and nested PrefixStores, descriptors published on
+// the original store reach the send intact, and the consumed keys are deleted
+// under the same prefixed names.
+TEST(ProcessGroupTpuTest, P2pSendQueueTCPStorePreservesDescriptorNamespace) {
+  c10d::TCPStoreOptions options;
+  options.port = 0;
+  options.isServer = true;
+  options.waitWorkers = false;
+  options.timeout = kTestStoreTimeout;
+  auto root = c10::make_intrusive<c10d::TCPStore>("127.0.0.1", options);
+  c10::intrusive_ptr<c10d::Store> store = root;
+  const std::string prefix = WrapInPrefixStores(store, /*depth=*/2);
+  P2pSendQueue queue(store);
+
+  auto waiter = std::make_shared<AsyncSendWaiter>();
+  auto received = std::make_shared<std::vector<std::vector<uint8_t>>>();
+  ASSERT_TRUE(queue
+                  .Enqueue(
+                      /*dst_rank=*/1, {"second", "first"},
+                      [waiter, received](
+                          std::vector<std::vector<uint8_t>> descriptors) {
+                        *received = std::move(descriptors);
+                        waiter->MarkDone();
+                      },
+                      [waiter](std::exception_ptr eptr) {
+                        waiter->SetError(std::move(eptr));
+                      })
+                  .ok());
+  store->multiSet({"first", "second"}, {{0, 255}, {3, 4}});
+  waiter->WaitAndThrow();
+  queue.Shutdown();
+
+  EXPECT_EQ(*received, (std::vector<std::vector<uint8_t>>{{3, 4}, {0, 255}}));
+  EXPECT_FALSE(root->check({absl::StrCat(prefix, "first")}));
+  EXPECT_FALSE(root->check({absl::StrCat(prefix, "second")}));
 }
 
 }  // namespace
