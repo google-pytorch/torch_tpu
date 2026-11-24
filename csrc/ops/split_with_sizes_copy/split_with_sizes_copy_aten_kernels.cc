@@ -24,6 +24,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -33,6 +35,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -71,8 +74,9 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
         // slices and concatenations in the 2-d case. The performance
         // benefits might generalize to other dimensionalities, but for
         // simplicity we choose for now to only target the known use case.
-        // Each output is one op on the flattened input, so that the host
-        // work doesn't grow with fsdp_world_size.
+        // All outputs are produced by one program on the flattened input, so
+        // that the host work grows neither with fsdp_world_size nor with the
+        // number of outputs.
         if (normalized_dim == 1 && self.dim() == 2) {
           const int64_t num_rows = self.size(0);
           const int64_t num_cols = self.size(1);
@@ -86,6 +90,7 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
           if (num_rows == 0) {
             return;
           }
+          // The flat views below need contiguous tensors.
           const bool can_flatten =
               self.is_contiguous() &&
               std::all_of(out.begin(), out.end(), [](const at::Tensor& t) {
@@ -96,36 +101,64 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
                 const mlir::ElementType dtype,
                 ConvertTo<mlir::ElementType>(self.scalar_type()));
             const at::Tensor flat_self = self.view(-1);
+            std::vector<at::Tensor> flat_outs;
+            std::vector<int64_t> starts;
+            std::vector<int64_t> sizes;
             int64_t start = 0;
             for (int64_t i = 0; i < out.size(); ++i) {
               const int64_t size = split_sizes[i];
               if (size > 0) {
-                auto op_builder = [num_rows, num_cols, start,
-                                   size](mlir::MlirOp flat) {
-                  const Indices stride = {1};
-                  std::vector<mlir::MlirOp> rows;
-                  rows.reserve(num_rows);
-                  for (int64_t row = 0; row < num_rows; ++row) {
-                    const Indices begin = {row * num_cols + start};
-                    const Indices limit = {row * num_cols + start + size};
-                    rows.push_back(
-                        mlir::stablehlo::Slice(flat, begin, limit, stride));
-                  }
-                  return mlir::stablehlo::Concatenate(flat.getBuilder(), rows,
-                                                      0);
-                };
-                OpParamCacheKeys param_keys = OpParamCacheKeys::Empty();
-                TT_THROW_IF_ERROR(param_keys.SetParam("num_rows", num_rows));
-                TT_THROW_IF_ERROR(param_keys.SetParam("start", start));
-                const int64_t out_dims[] = {num_rows * size};
-                TT_THROW_IF_ERROR(DispatchOpOut<1>(
-                    std::move(op_builder), flat_self, out[i].view(-1),
-                    {.out_dtype = dtype,
-                     .out_dims = out_dims,
-                     .op_param_cache_keys = std::move(param_keys)}));
+                flat_outs.push_back(out[i].view(-1));
+                starts.push_back(start);
+                sizes.push_back(size);
               }
               start += size;
             }
+            if (flat_outs.empty()) {
+              return;
+            }
+            auto op_builder =
+                [num_rows, num_cols, starts, sizes](
+                    mlir::MlirOp flat) -> absl::StatusOr<DynamicMlirOpResults> {
+              const Indices stride = {1};
+              DynamicMlirOpResults results;
+              results.reserve(starts.size());
+              for (size_t i = 0; i < starts.size(); ++i) {
+                std::vector<mlir::MlirOp> rows;
+                rows.reserve(num_rows);
+                for (int64_t row = 0; row < num_rows; ++row) {
+                  const Indices begin = {row * num_cols + starts[i]};
+                  const Indices limit = {row * num_cols + starts[i] + sizes[i]};
+                  rows.push_back(
+                      mlir::stablehlo::Slice(flat, begin, limit, stride));
+                }
+                results.push_back(
+                    mlir::stablehlo::Concatenate(flat.getBuilder(), rows, 0));
+              }
+              return results;
+            };
+            OpParamCacheKeys param_keys = OpParamCacheKeys::Empty();
+            TT_THROW_IF_ERROR(param_keys.SetParam("num_rows", num_rows));
+            TT_THROW_IF_ERROR(param_keys.SetParam("starts", starts));
+            TT_THROW_IF_ERROR(param_keys.SetParam("sizes", sizes));
+            std::vector<std::vector<int64_t>> out_dims(sizes.size());
+            std::vector<absl::Span<const int64_t>> out_dims_spans;
+            out_dims_spans.reserve(sizes.size());
+            for (size_t i = 0; i < sizes.size(); ++i) {
+              out_dims[i] = {num_rows * sizes[i]};
+              out_dims_spans.push_back(out_dims[i]);
+            }
+            const std::vector<mlir::ElementType> out_dtypes(sizes.size(),
+                                                            dtype);
+            const absl::Span<const mlir::ElementType> out_dtypes_span(
+                out_dtypes);
+            const absl::Span<const absl::Span<const int64_t>> out_dims_list(
+                out_dims_spans);
+            TT_THROW_IF_ERROR((DispatchOpOut<1, kDynamicSize>(
+                std::move(op_builder), flat_self, flat_outs,
+                {.out_dtypes = out_dtypes_span,
+                 .out_dims_list = out_dims_list,
+                 .op_param_cache_keys = std::move(param_keys)})));
             return;
           }
         }

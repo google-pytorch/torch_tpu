@@ -3028,11 +3028,123 @@ void AtenForeachClampMin_ScalarList(at::TensorList self,
   });
 }
 
+namespace {
+
+// If `self` are contiguous views that tile one contiguous range of a single
+// TPU storage, in order, and each `src[i]` is a TPU tensor of the same shape
+// that doesn't alias that storage, returns a 1-D view of the range. Otherwise
+// returns std::nullopt.
+//
+// FSDP2 copies its sharded parameters into split views of one flat buffer this
+// way (its all-gather copy-in and mixed-precision cast). Copied one at a time,
+// each partial write to the flat buffer is a separate program that rebuilds
+// the whole buffer.
+std::optional<at::Tensor> TiledDestinationRange(at::TensorList self,
+                                                at::TensorList src) {
+  if (self.size() < 2) {
+    return std::nullopt;
+  }
+  const at::Tensor& first = self[0];
+  if (first.scalar_type() == at::ScalarType::Bool) {
+    return std::nullopt;
+  }
+  int64_t offset = first.storage_offset();
+  for (size_t i = 0; i < self.size(); ++i) {
+    const at::Tensor& dst = self[i];
+    const at::Tensor& s = src[i];
+    if (!IsPrivateUse1Device(dst) || !IsPrivateUse1Device(s) ||
+        !dst.is_contiguous() || dst.is_conj() || dst.is_neg() || s.is_conj() ||
+        s.is_neg() || dst.scalar_type() != first.scalar_type() ||
+        !dst.storage().is_alias_of(first.storage()) ||
+        dst.storage_offset() != offset || dst.sizes() != s.sizes() ||
+        s.is_alias_of(first)) {
+      return std::nullopt;
+    }
+    offset += dst.numel();
+  }
+  const int64_t numel = offset - first.storage_offset();
+  if (numel == 0) {
+    return std::nullopt;
+  }
+  return first.as_strided({numel}, {1}, first.storage_offset());
+}
+
+// Builds the flattened, cast and concatenated sources. With `skip_first`, the
+// first input is the destination range (passed only so that the write counts
+// as in-place and donates the storage's buffer) and is not read.
+auto MakeConcatSourcesOpBuilder(mlir::ElementType out_dtype, bool skip_first) {
+  return [out_dtype, skip_first](
+             absl::Span<mlir::MlirOp> inputs,
+             mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
+    std::vector<mlir::MlirOp> pieces;
+    pieces.reserve(inputs.size());
+    for (size_t i = skip_first ? 1 : 0; i < inputs.size(); ++i) {
+      const int64_t numel = GetTensorTypeOrDie(inputs[i]).getNumElements();
+      if (numel == 0) {
+        continue;
+      }
+      TT_ASSIGN_OR_RETURN(
+          mlir::MlirOp piece,
+          CastIfNeeded(mlir::stablehlo::Reshape(inputs[i], {numel}), out_dtype));
+      pieces.push_back(piece);
+    }
+    return mlir::stablehlo::Concatenate(builder, pieces, 0);
+  };
+}
+
+}  // namespace
+
 void AtenForeachCopy_(at::TensorList self, at::TensorList src,
                       bool non_blocking) {
   TT_KERNEL(
-      OpName::kForeachCopy_, _,
+      OpName::kForeachCopy_, param_keys,
       (self, src, IgnoreInCacheKey(non_blocking, "Delegates to AtenCopy_")), {
+        if (std::optional<at::Tensor> range = TiledDestinationRange(self, src)) {
+          // One program writes every source into the range.
+          TT_ASSIGN_OR_THROW(
+              const mlir::ElementType out_dtype,
+              ConvertTo<mlir::ElementType>(range->scalar_type()));
+          const int64_t out_dims[] = {range->numel()};
+          const bool full_overwrite =
+              range->storage_offset() == 0 &&
+              range->nbytes() == range->storage().nbytes();
+          TT_THROW_IF_ERROR(
+              param_keys.SetParam("full_overwrite", full_overwrite));
+          if (full_overwrite) {
+            // The range replaces the storage's buffer entirely.
+            TT_ASSIGN_OR_THROW(
+                DeviceBufferRef result,
+                DispatchOp<kDynamicSize>(
+                    MakeConcatSourcesOpBuilder(out_dtype, /*skip_first=*/false),
+                    src.vec(),  // VEC_OK
+                    {.out_dtype = out_dtype,
+                     .out_dims = out_dims,
+                     .op_param_cache_keys = std::move(param_keys)}));
+            TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), *range));
+          } else {
+            // Passing the range as an input makes this an in-place write of
+            // it, so DispatchOpOut can donate the storage's buffer and update
+            // the range in place instead of rebuilding the whole buffer.
+            std::vector<at::Tensor> inputs;
+            inputs.reserve(src.size() + 1);
+            inputs.push_back(*range);
+            inputs.insert(inputs.end(), src.begin(), src.end());
+            TT_THROW_IF_ERROR(DispatchOpOut<kDynamicSize>(
+                MakeConcatSourcesOpBuilder(out_dtype, /*skip_first=*/true),
+                inputs, *range,
+                {.out_dtype = out_dtype,
+                 .out_dims = out_dims,
+                 .op_param_cache_keys = std::move(param_keys)}));
+          }
+          // The write bumped range's version counter, which as a view of
+          // self[0] is self[0]'s. Bump the rest as per-tensor copy_ would:
+          // destinations sharing the storage can still have their own
+          // counters (e.g. .data views), and autograd checks them.
+          for (size_t i = 1; i < self.size(); ++i) {
+            self[i].unsafeGetTensorImpl()->bump_version();
+          }
+          return;
+        }
         for (size_t i = 0; i < self.size(); ++i) {
           AtenCopy_(const_cast<at::Tensor&>(self[i]), src[i], non_blocking);
         }
