@@ -80,6 +80,7 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/sync",
     "//src/torch_tpu/_internal/tracing",
     "//src/torch_tpu/_internal/utils",
+    "//src/torch_tpu/_internal/utils:fx_utils",
     "//src/torch_tpu/_internal/utils:hardware",
     "//src/torch_tpu/_internal/utils:init",
     "//src/torch_tpu/_internal/utils:log_utils",

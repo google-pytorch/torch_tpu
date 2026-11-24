@@ -265,4 +265,25 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "fx_utils",
+    srcs = ["fx_utils.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "fx_utils_test",
+    srcs = ["fx_utils_test.py"],
+    strict = True,
+    deps = [
+        ":fx_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()

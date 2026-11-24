@@ -21,6 +21,7 @@ from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.export.unflatten import _assign_attr
 from torch.export.unflatten import _AttrKind
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.utils import fx_utils
 
 
 def apply(
@@ -40,54 +41,20 @@ def apply(
       consumed on CPU.
   """
   # pylint: disable=protected-access
-  modules: list[torch.fx.GraphModule] = []
-  if isinstance(gm_or_graph, torch.fx.GraphModule):
-    modules = [
-        m for m in gm_or_graph.modules() if isinstance(m, torch.fx.GraphModule)
-    ]
-  elif gm_or_graph.owning_module is not None and isinstance(
-      gm_or_graph.owning_module, torch.fx.GraphModule
-  ):
-    modules = [
-        m
-        for m in gm_or_graph.owning_module.modules()
-        if isinstance(m, torch.fx.GraphModule)
-    ]
-
-  if not modules and isinstance(gm_or_graph, torch.fx.Graph):
-    # Standalone graph without owning GraphModule
-    pass
-
-  for gm in modules:
-    graph = gm.graph
-    if not hasattr(gm, "_processed_constant_attrs"):
-      gm._processed_constant_attrs = set()  # pyrefly: ignore[missing-attribute]
-
-    # Exit Fake mode since we're creating new tensors.
-    with unset_fake_temporarily():
-      unique_attr_targets = {
-          node.target for node in graph.find_nodes(op="get_attr")
-      }
-
-      for attr_target in unique_attr_targets:
-        if (
-            attr_target in skip_targets
-            or attr_target in gm._processed_constant_attrs  # pyrefly: ignore[missing-attribute]
-        ):
-          continue
-
-        # pylint: disable-next=protected-access
-        target = torch.fx.graph_module._get_attr(gm, attr_target)  # pyrefly: ignore[bad-argument-type]
-        if not isinstance(target, torch.Tensor):
-          continue
-
-        if tpu_torch_compile.is_constant_tensor(target):
-          gm._processed_constant_attrs.add(attr_target)  # pyrefly: ignore[missing-attribute]
-          continue
-
-        # The target will be placed on the device by AOT Autograd automatically,
-        # transfer it back to CPU so that we can access the data.
-        new_target = tpu_torch_compile.make_constant_tensor(target.to("cpu"))
-        # pylint: disable-next=protected-access
-        _assign_attr(new_target, gm, attr_target, _AttrKind.CONSTANT)  # pyrefly: ignore[bad-argument-type]
+  with unset_fake_temporarily():
+    for gm, attr_target, target in fx_utils.iter_tensor_get_attrs(
+        gm_or_graph, skip_targets=skip_targets
+    ):
+      if not hasattr(gm, "_processed_constant_attrs"):
+        gm._processed_constant_attrs = set()  # pyrefly: ignore[missing-attribute]
+      if attr_target in gm._processed_constant_attrs:  # pyrefly: ignore[missing-attribute]
+        continue
+      if tpu_torch_compile.is_constant_tensor(target):
         gm._processed_constant_attrs.add(attr_target)  # pyrefly: ignore[missing-attribute]
+        continue
+
+      # The target will be placed on the device by AOT Autograd automatically,
+      # transfer it back to CPU so that we can access the data.
+      new_target = tpu_torch_compile.make_constant_tensor(target.to("cpu"))
+      _assign_attr(new_target, gm, attr_target, _AttrKind.CONSTANT)
+      gm._processed_constant_attrs.add(attr_target)  # pyrefly: ignore[missing-attribute]
