@@ -26,6 +26,7 @@
 #include "ATen/ops/empty.h"
 #include "ATen/ops/full.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -148,32 +149,46 @@ absl::StatusOr<mlir::MlirOp> BuildConstantPadNdShlo(mlir::MlirOp input,
   return result;
 }
 
-}  // namespace
+struct ConstantPadPlan {
+  Dimensions out_dims;
+  bool has_non_zero_pad = false;
+};
 
-at::Tensor AtenConstantPadNd(const at::Tensor& self, at::IntArrayRef pad,
-                             const at::Scalar& value) {
-  TT_CHECK_THROW(pad.size() % 2 == 0, error::kInvalidArgument)
+absl::StatusOr<ConstantPadPlan> ComputeConstantPadOutDims(
+    const at::Tensor& self, const at::IntArrayRef pad) {
+  TT_RET_CHECK(pad.size() % 2 == 0, error::kInvalidArgument)
       << "length of pad must be even but instead it equals " << pad.size();
   const int64_t num_pad_dims = pad.size() / 2;
-  TT_CHECK_THROW(num_pad_dims <= self.dim(), error::kInvalidArgument)
+  TT_RET_CHECK(num_pad_dims <= self.dim(), error::kInvalidArgument)
       << "pad length must be at most twice the input dimension";
 
-  Dimensions out_dims = CopyIntVector(self.sizes());
-  bool has_non_zero_pad = false;
+  ConstantPadPlan plan{.out_dims = CopyIntVector(self.sizes())};
   for (int64_t i = 0; i < num_pad_dims; ++i) {
     const int64_t dim = self.dim() - 1 - i;
     const int64_t left_pad = pad[2 * i];
     const int64_t right_pad = pad[2 * i + 1];
     if (left_pad != 0 || right_pad != 0) {
-      has_non_zero_pad = true;
+      plan.has_non_zero_pad = true;
     }
     const int64_t cropped_size = self.size(dim) +
                                  std::min<int64_t>(0, left_pad) +
                                  std::min<int64_t>(0, right_pad);
-    TT_CHECK_THROW(cropped_size >= 0, error::kInvalidArgument)
+    TT_RET_CHECK(cropped_size >= 0, error::kInvalidArgument)
         << "expected length to be >= 0, got " << cropped_size;
-    out_dims[dim] += left_pad + right_pad;
+    plan.out_dims[dim] += left_pad + right_pad;
   }
+  return plan;
+}
+
+}  // namespace
+
+at::Tensor AtenConstantPadNd(const at::Tensor& self, at::IntArrayRef pad,
+                             const at::Scalar& value) {
+  auto [out_dims, has_non_zero_pad] = RunWithApiErrorHandling(
+      "constant_pad_nd", [&self, pad]() -> ConstantPadPlan {
+        TT_ASSIGN_OR_THROW(auto result, ComputeConstantPadOutDims(self, pad));
+        return result;
+      });
 
   // Fast-path no-op padding to a simple clone.
   if (!has_non_zero_pad) {

@@ -38,6 +38,7 @@
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/intrusive_ptr.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -140,9 +141,8 @@ static absl::StatusOr<DeviceBufferRef> RaggedAllToAllCommon(
 // Transposes a `[pg_size * K]` offset vector across `group_name` via
 // `_c10d_functional::all_to_all_single` + `wait_tensor` (`callBoxed` handles
 // both 4-arg and 5-arg PyTorch schemas).
-[[nodiscard]] at::Tensor TransposeOffsetsAllToAll(const at::Tensor& offsets,
-                                                  int64_t pg_size,
-                                                  std::string_view group_name) {
+absl::StatusOr<at::Tensor> TransposeOffsetsAllToAll(
+    const at::Tensor& offsets, int64_t pg_size, std::string_view group_name) {
   static const absl::NoDestructor all_to_all_single_op(
       at::Dispatcher::singleton().findSchemaOrThrow(
           "_c10d_functional::all_to_all_single", ""));
@@ -151,10 +151,10 @@ static absl::StatusOr<DeviceBufferRef> RaggedAllToAllCommon(
           .findSchemaOrThrow("_c10d_functional::wait_tensor", "")
           .typed<at::Tensor(const at::Tensor&)>());
 
-  TT_CHECK_THROW(offsets.dim() == 1, error::kInvalidArgument)
+  TT_RET_CHECK(offsets.dim() == 1, error::kInvalidArgument)
       << "expected 1D offsets, got " << offsets.dim() << "D";
   const c10::SymInt num_offsets = offsets.sym_size(0);
-  TT_CHECK_THROW(num_offsets % pg_size == 0, error::kInvalidArgument)
+  TT_RET_CHECK(num_offsets % pg_size == 0, error::kInvalidArgument)
       << "expected the size of offsets to be divisible by process group size "
       << pg_size << ", got " << num_offsets;
 
@@ -244,12 +244,29 @@ struct RaggedAllToAllAutogradNode
                             const at::Tensor& recv_sizes,
                             std::string_view process_group_name);
 
+  static at::Tensor ForwardImpl(
+      torch::autograd::AutogradContext* ctx, const at::Tensor& operand,
+      const at::Tensor& output, const at::Tensor& input_offsets,
+      const at::Tensor& send_sizes, const at::Tensor& output_offsets,
+      const at::Tensor& recv_sizes, std::string_view process_group_name);
+
   static torch::autograd::variable_list backward(
       torch::autograd::AutogradContext* ctx,
       torch::autograd::variable_list grad_outputs);
 };
 
 at::Tensor RaggedAllToAllAutogradNode::forward(
+    torch::autograd::AutogradContext* ctx, const at::Tensor& operand,
+    const at::Tensor& output, const at::Tensor& input_offsets,
+    const at::Tensor& send_sizes, const at::Tensor& output_offsets,
+    const at::Tensor& recv_sizes, std::string_view process_group_name) {
+  return RunWithApiErrorHandling(
+      "ragged_all_to_all", &RaggedAllToAllAutogradNode::ForwardImpl, ctx,
+      operand, output, input_offsets, send_sizes, output_offsets, recv_sizes,
+      process_group_name);
+}
+
+at::Tensor RaggedAllToAllAutogradNode::ForwardImpl(
     torch::autograd::AutogradContext* ctx, const at::Tensor& operand,
     const at::Tensor& output, const at::Tensor& input_offsets,
     const at::Tensor& send_sizes, const at::Tensor& output_offsets,
@@ -272,14 +289,18 @@ at::Tensor RaggedAllToAllAutogradNode::forward(
   // `K >= 1` updates per peer). Multi-rank groups transpose these `K`-element
   // blocks across ranks via `_c10d_functional::all_to_all_single` +
   // `wait_tensor` so `torch.compile` traces and orders the collectives.
-  const at::Tensor bwd_input_offsets =
-      pg_size <= 1
-          ? dev_output_offsets.clone()
-          : TransposeOffsetsAllToAll(dev_output_offsets, pg_size, group_name);
-  const at::Tensor bwd_output_offsets =
-      pg_size <= 1
-          ? dev_input_offsets.clone()
-          : TransposeOffsetsAllToAll(dev_input_offsets, pg_size, group_name);
+  auto get_bwd_offsets =
+      [pg_size,
+       &group_name](const at::Tensor& offsets) -> absl::StatusOr<at::Tensor> {
+    if (pg_size <= 1) {
+      return offsets.clone();
+    }
+    return TransposeOffsetsAllToAll(offsets, pg_size, group_name);
+  };
+  TT_ASSIGN_OR_THROW(at::Tensor bwd_input_offsets,
+                     get_bwd_offsets(dev_output_offsets));
+  TT_ASSIGN_OR_THROW(at::Tensor bwd_output_offsets,
+                     get_bwd_offsets(dev_input_offsets));
 
   ctx->save_for_backward(
       {bwd_input_offsets, send_sizes, bwd_output_offsets, recv_sizes});

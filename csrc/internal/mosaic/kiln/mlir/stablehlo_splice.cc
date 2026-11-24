@@ -137,7 +137,9 @@ absl::StatusOr<DType> DTypeOf(mlir::Type element_type) {
   if (element_type.isInteger(8)) return i8;
   if (element_type.isInteger(16)) return i16;
   if (element_type.isInteger(32)) return i32;
-  return TT_ERROR(error::kInvalidArgument)
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=mod_to_mlir enforces float32 or bool
+                    // return dtype.
+             error::kInvalidArgument)
          << "unsupported StableHLO result element type";
 }
 
@@ -149,7 +151,8 @@ absl::StatusOr<Tile> SpliceStablehlo(std::string_view mlir_text,
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(
           llvm::StringRef(mlir_text.data(), mlir_text.size()), b.getContext());
-  TT_RET_CHECK(module, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir always produces valid MLIR.
+      module, error::kInvalidArgument)
       << "failed to parse the StableHLO module";
   // Add CHLO pass (needed for some ops like integer floor division)
   mlir::PassManager pm(b.getContext());
@@ -160,16 +163,26 @@ absl::StatusOr<Tile> SpliceStablehlo(std::string_view mlir_text,
   TT_RET_CHECK(legalized, error::kInternal)  // ERROR_COV_INFEASIBLE=not by mods
       << "failed to legalize the module to StableHLO";
   auto main = module->lookupSymbol<mlir::func::FuncOp>("main");
-  TT_RET_CHECK(main, error::kInvalidArgument) << "module has no @main";
-  TT_RET_CHECK(main.getNumArguments() == args.size(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir always emits @main.
+      main, error::kInvalidArgument)
+      << "module has no @main";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir matches ApplyMods argument
+                 // count.
+      main.getNumArguments() == args.size(), error::kInvalidArgument)
       << "@main takes " << main.getNumArguments() << " arguments, got "
       << args.size();
-  TT_RET_CHECK(main.getNumResults() == 1, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir always returns a single
+                 // tensor.
+      main.getNumResults() == 1, error::kInvalidArgument)
       << "@main must return exactly one tensor";
-  TT_RET_CHECK(main.getBody().hasOneBlock(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir always emits a single-block
+                 // @main.
+      main.getBody().hasOneBlock(), error::kInvalidArgument)
       << "@main must have exactly one block";
   auto ret = mlir::dyn_cast<mlir::func::ReturnOp>(main.front().getTerminator());
-  TT_RET_CHECK(ret, error::kInvalidArgument) << "@main must end in func.return";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir always ends in func.return.
+      ret, error::kInvalidArgument)
+      << "@main must end in func.return";
   TT_RET_CHECK(!main.front().without_terminator().empty(),
                error::kInvalidArgument)
       << "@main computes nothing; skip the splice instead";
@@ -180,7 +193,8 @@ absl::StatusOr<Tile> SpliceStablehlo(std::string_view mlir_text,
   for (int64_t i = 0; i < args.size(); ++i) {
     vectors.push_back(mlir::cast<VectorValue>(internal::unwrap(args[i])));
     mlir::VectorType vty = vectors.back().getType();
-    TT_RET_CHECK(
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir traces args at the exact
+                   // tile shape and dtypes.
         mlir::RankedTensorType::get(vty.getShape(), vty.getElementType()) ==
             main.getArgument(i).getType(),
         error::kInvalidArgument)
@@ -188,7 +202,9 @@ absl::StatusOr<Tile> SpliceStablehlo(std::string_view mlir_text,
   }
   auto result_type =
       mlir::dyn_cast<mlir::RankedTensorType>(main.getResultTypes().front());
-  TT_RET_CHECK(result_type, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=mod_to_mlir always returns a ranked
+                 // tensor.
+      result_type, error::kInvalidArgument)
       << "@main must return a ranked tensor";
   TT_ASSIGN_OR_RETURN(const DType dtype, DTypeOf(result_type.getElementType()));
 

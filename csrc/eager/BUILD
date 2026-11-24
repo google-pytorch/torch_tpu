@@ -367,6 +367,7 @@ torch_tpu_cc_library(
     srcs = ["host_allocator.cc"],
     hdrs = ["host_allocator.h"],
     deps = [
+        "//csrc/common:api_error_utils",
         "//csrc/common:error_utils",
         "//csrc/common:warnings",
         "//csrc/pjrt:pjrt_state",
@@ -425,6 +426,7 @@ torch_tpu_cc_library(
         ":tensor_to_buffer",
         "//csrc/common:api_error_utils",
         "//csrc/common:cache_key",
+        "//csrc/common:device_type",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
@@ -753,6 +755,7 @@ torch_tpu_cc_library(
         "//shims/torch/c10/util:base_headers",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "//csrc/common:api_error_utils",
         "//csrc/common:error_utils",
         "//csrc/common:warnings",
         # Ensure that both TORCH_LIBRARY_IMPL values get built together always.

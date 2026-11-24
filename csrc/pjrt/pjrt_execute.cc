@@ -83,7 +83,10 @@ CreateRuntimeShapeMetadataBuffer(
   s32_dims.reserve(dimensions.size());
   for (const int64_t d : dimensions) {
     if (static_cast<int32_t>(d) != d) {
-      return TT_ERROR(error::kInvalidArgument)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=Requires an unbounded-dynamic
+                        // kernel with an on-device dimension > INT32_MAX,
+                        // exceeding TPU HBM or precompiled kernel limits.
+                 error::kInvalidArgument)
              << "Dimension " << d << " exceeds the maximum value for int32_t";
     }
     s32_dims.push_back(d);

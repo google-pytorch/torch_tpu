@@ -321,6 +321,7 @@ torch_tpu_cc_library(
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:status_builder",
         "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",

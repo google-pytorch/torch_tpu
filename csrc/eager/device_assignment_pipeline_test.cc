@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -257,7 +258,8 @@ TEST(DeviceAssignmentPipelineTest,
     EXPECT_THAT(e.what(), testing::HasSubstr(kExpectedMessage));
   } catch (const torch_tpu::TtError& e) {
     caught = true;
-    EXPECT_THAT(e.what(), testing::HasSubstr(kExpectedMessage));
+    EXPECT_THAT(e.std::runtime_error::what(),
+                testing::HasSubstr(kExpectedMessage));
   }
   EXPECT_TRUE(caught);
 }
@@ -1207,7 +1209,8 @@ TEST(DeviceAssignmentPipelineTest,
     EXPECT_THAT(e.what(), testing::HasSubstr(kExpectedMessage));
   } catch (const torch_tpu::TtError& e) {
     caught = true;
-    EXPECT_THAT(e.what(), testing::HasSubstr(kExpectedMessage));
+    EXPECT_THAT(e.std::runtime_error::what(),
+                testing::HasSubstr(kExpectedMessage));
   }
   EXPECT_TRUE(caught);
 }

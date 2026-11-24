@@ -43,6 +43,7 @@
 #include "absl/log/log.h"
 #include "c10/core/ScalarType.h"
 #include "c10/core/SymInt.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/warnings.h"
@@ -252,28 +253,6 @@ namespace torch_tpu {
 namespace {
 
 // Registers the kernel function for the given op name in the given library.
-// Use this on the following cases:
-// 1. an aten op,
-// 2. an op for the Meta backend, and
-// 3. a TPU-specific op that has graduated from "experimental" to "stable".
-template <OpName op_name, typename KernelFn>
-void ImplStable(torch::Library& m, KernelFn kernel_fn) {
-  m.impl(  // M_IMPL_OK=implementing ImplStable().
-      std::string(ToString(op_name)).c_str(), std::move(kernel_fn));
-}
-
-// Registers the kernel function for the given TPU-specific internal op name in
-// the given library. Internal ops are implementation details of TorchTPU (e.g.
-// ones inserted by TorchTPU's own passes) and are not part of the public API,
-// so no stage warning is emitted. Their names must start with `_`.
-template <OpName op_name, typename KernelFn>
-void ImplInternal(torch::Library& m, KernelFn kernel_fn) {
-  static_assert(ToString(op_name).starts_with('_'),
-                "The name of an internal op must start with `_`.");
-  m.impl(  // M_IMPL_OK=implementing ImplInternal().
-      std::string(ToString(op_name)).c_str(), std::move(kernel_fn));
-}
-
 // Helper to extract the concrete signature of the kernel function.
 // This is necessary because torch::Library::impl() needs to inspect the
 // signature of the registered callable at compile-time to verify it against
@@ -306,15 +285,45 @@ struct ImplWrapperHelper<Ret (*)(Args...)> {
   static void RegisterOp(torch::Library& m, Ret (*func)(Args...),
                          OnEntryFn on_entry_fn) {
     const std::string_view name = ToString(op_name);
+    // Call TranslateTtErrorToC10Error without ScopedPythonContextCapturer:
+    // TT_KERNEL already captures the op name, and ops like `std.correction`
+    // must not overwrite the user-facing `std()` context. As a consequence,
+    // ops on `meta` devices (which don't use TT_KERNEL) don't prepend an
+    // "op(): " prefix — this is OK as users typically don't use `meta` devices
+    // directly.
     m.impl(  // M_IMPL_OK=implementing Impl*().
         std::string(name).c_str(),
         [func = std::move(func),
          on_entry_fn = std::move(on_entry_fn)](Args... args) -> Ret {
           on_entry_fn();
-          return func(std::forward<Args>(args)...);
+          return TranslateTtErrorToC10Error(func, std::forward<Args>(args)...);
         });
   }
 };
+
+// Registers the kernel function for the given op name in the given library.
+//
+// Use this on the following cases:
+// 1. an aten op,
+// 2. an op for the Meta backend, and
+// 3. a TPU-specific op that has graduated from "experimental" to "stable".
+template <OpName op_name, typename KernelFn>
+void ImplStable(torch::Library& m, KernelFn kernel_fn) {
+  ImplWrapperHelper<KernelFn>::template RegisterOp<op_name>(
+      m, std::move(kernel_fn), []() {});
+}
+
+// Registers the kernel function for the given TPU-specific internal op name in
+// the given library. Internal ops are implementation details of TorchTPU (e.g.
+// ones inserted by TorchTPU's own passes) and are not part of the public API,
+// so no stage warning is emitted. Their names must start with `_`.
+template <OpName op_name, typename KernelFn>
+void ImplInternal(torch::Library& m, KernelFn kernel_fn) {
+  static_assert(ToString(op_name).starts_with('_'),
+                "The name of an internal op must start with `_`.");
+  ImplWrapperHelper<KernelFn>::template RegisterOp<op_name>(
+      m, std::move(kernel_fn), []() {});
+}
 
 // Registers the kernel function for the given op name in the given library,
 // and injects a user-visible warning that the operator is experimental.
@@ -1167,8 +1176,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
 // To change fallback mode the intended way, use python context manager:
 // `with fallback_mode(FallbackMode.ALLOW_FALLBACK):`
 //
-void TpuMissingOpFallback(const c10::OperatorHandle& op,
-                          torch::jit::Stack* const stack) {
+void TpuMissingOpFallbackImpl(const c10::OperatorHandle& op,
+                              torch::jit::Stack* const stack) {
   const auto& op_name = op.schema().operator_name();
   if (!IsCpuFallbackEnabled()) {
     TT_CHECK_THROW(false, error::kPythonNotImplementedError)
@@ -1181,17 +1190,25 @@ void TpuMissingOpFallback(const c10::OperatorHandle& op,
   }
 }
 
+void TpuMissingOpFallback(const c10::OperatorHandle& op,
+                          torch::jit::Stack* const stack) {
+  TranslateTtErrorToC10Error(TpuMissingOpFallbackImpl, op, stack);
+}
+
 // Registers a CPU-fallback for ops not supported on TPU.
 TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
   m.fallback(
       torch::CppFunction::makeFromBoxedFunction<&TpuMissingOpFallback>());
 }
 
+void TpuSparseOpFallbackImpl() {
+  TT_CHECK_THROW(false, error::kPythonNotImplementedError)
+      << "sparse operators are not supported on TPU yet";
+}
+
 void TpuSparseOpFallback(const c10::OperatorHandle& op,
                          torch::jit::Stack* const stack) {
-  const auto& op_name = op.schema().operator_name();
-  TT_CHECK_THROW(false, error::kPythonNotImplementedError)
-      << op_name << "(): sparse operators are not supported on TPU yet";
+  RunWithApiErrorHandling(op.schema().name(), TpuSparseOpFallbackImpl);
 }
 
 // Register a fallback for SparsePrivateUse1 operators. SparsePrivateUse1 is
@@ -1587,11 +1604,12 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
   // just meta implementations.
   // The actual stages of the ops are marked in TORCH_LIBRARY_IMPL(tpu,
   // PrivateUse1, m).
+  // Decay lambdas to function pointers for ImplWrapperHelper<Ret (*)(Args...)>.
   ImplInternal<OpName::kMaxPool1d>(
       m,
-      [](const at::Tensor& self, at::IntArrayRef kernel_size,
-         at::IntArrayRef stride, at::IntArrayRef padding,
-         at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
+      +[](const at::Tensor& self, at::IntArrayRef kernel_size,
+          at::IntArrayRef stride, at::IntArrayRef padding,
+          at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
         TT_ASSIGN_OR_THROW(
             auto output_size,
             GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
@@ -1599,16 +1617,16 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return at::empty(output_size, self.options());
       });
   ImplInternal<OpName::kMaxPool1dBackward>(
-      m, [](const at::Tensor& grad_output, const at::Tensor& self,
-            at::IntArrayRef kernel_size, at::IntArrayRef stride,
-            at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-        return at::empty(self.sizes(), self.options());
-      });
+      m,
+      +[](const at::Tensor& grad_output, const at::Tensor& self,
+          at::IntArrayRef kernel_size, at::IntArrayRef stride,
+          at::IntArrayRef padding, at::IntArrayRef dilation,
+          bool ceil_mode) { return at::empty(self.sizes(), self.options()); });
   ImplInternal<OpName::kMaxPool2d>(
       m,
-      [](const at::Tensor& self, at::IntArrayRef kernel_size,
-         at::IntArrayRef stride, at::IntArrayRef padding,
-         at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
+      +[](const at::Tensor& self, at::IntArrayRef kernel_size,
+          at::IntArrayRef stride, at::IntArrayRef padding,
+          at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
         TT_ASSIGN_OR_THROW(
             auto output_size,
             GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
@@ -1616,16 +1634,16 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return at::empty(output_size, self.options());
       });
   ImplInternal<OpName::kMaxPool2dBackward>(
-      m, [](const at::Tensor& grad_output, const at::Tensor& self,
-            at::IntArrayRef kernel_size, at::IntArrayRef stride,
-            at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-        return at::empty(self.sizes(), self.options());
-      });
+      m,
+      +[](const at::Tensor& grad_output, const at::Tensor& self,
+          at::IntArrayRef kernel_size, at::IntArrayRef stride,
+          at::IntArrayRef padding, at::IntArrayRef dilation,
+          bool ceil_mode) { return at::empty(self.sizes(), self.options()); });
   ImplInternal<OpName::kMaxPool3d>(
       m,
-      [](const at::Tensor& self, at::IntArrayRef kernel_size,
-         at::IntArrayRef stride, at::IntArrayRef padding,
-         at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
+      +[](const at::Tensor& self, at::IntArrayRef kernel_size,
+          at::IntArrayRef stride, at::IntArrayRef padding,
+          at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
         TT_ASSIGN_OR_THROW(
             auto output_size,
             GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
@@ -1633,11 +1651,11 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return at::empty(output_size, self.options());
       });
   ImplInternal<OpName::kMaxPool3dBackward>(
-      m, [](const at::Tensor& grad_output, const at::Tensor& self,
-            at::IntArrayRef kernel_size, at::IntArrayRef stride,
-            at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-        return at::empty(self.sizes(), self.options());
-      });
+      m,
+      +[](const at::Tensor& grad_output, const at::Tensor& self,
+          at::IntArrayRef kernel_size, at::IntArrayRef stride,
+          at::IntArrayRef padding, at::IntArrayRef dilation,
+          bool ceil_mode) { return at::empty(self.sizes(), self.options()); });
   ImplInternal<OpName::kSparseDenseMatmul>(
       m,
       +[](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,

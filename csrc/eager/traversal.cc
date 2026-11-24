@@ -157,7 +157,9 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
     }
 
     const auto deferred_op = node->deferred_op();
-    TT_RET_CHECK(deferred_op, error::kFailedPrecondition)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; nodes on
+                   // traversal stack always have deferred_op
+        deferred_op, error::kFailedPrecondition)
         << "Expected a deferred op";
 
     size_t prev_stack_size = stack.size();
@@ -437,7 +439,9 @@ absl::Status Traversal::ValidateAndReorderArguments(
   // Checks that all provided arguments are non-deferred, are non-duplicates,
   // and marks them as used.
   for (const DeviceBufferRef& input : arguments) {
-    TT_RET_CHECK(!input.is_deferred(), error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=compiled_mode never passes deferred
+                   // arguments to ValidateAndReorderArguments
+        !input.is_deferred(), error::kInvalidArgument)
         << "found a deferred argument, which is not allowed: "
         << ToString(input.shape());
     if (auto it = prev_arguments.find(input); it != prev_arguments.end()) {
@@ -475,7 +479,8 @@ absl::StatusOr<mlir::MlirOp> Traversal::GetMlirOpForProcessedBuffer(
     const absl::flat_hash_map<DeviceBufferRef, mlir::MlirOp>& ref_to_op_map,
     const DeviceBufferRef& buffer_ref) const {
   auto it = ref_to_op_map.find(buffer_ref);
-  TT_RET_CHECK(it != ref_to_op_map.end(), error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant of BuildMlirModule
+      it != ref_to_op_map.end(), error::kInternal)
       << "DeviceBufferRef not found in ref_to_op_map: "
       << buffer_ref.DebugString();
   return it->second;
@@ -635,7 +640,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   for (const SharedDeviceBufferList& node : execution_order) {
     // Get the deferred op we need to build.
     const auto maybe_deferred_op = node->deferred_op();
-    TT_RET_CHECK(maybe_deferred_op, error::kInternal)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; execution_order
+                   // nodes have deferred_op
+        maybe_deferred_op, error::kInternal)
         << "in execution_order, a DeviceBufferList has no deferred op";
     const DeferredOp& deferred_op = *maybe_deferred_op;
 
@@ -676,7 +683,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     TT_ASSIGN_OR_RETURN(
         DynamicMlirOpResults results,
         deferred_op.op_builder()(fb, absl::MakeSpan(deferred_inputs)));
-    TT_RET_CHECK(results.size() == node->size(), error::kInternal)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; op_builder
+                   // returns node->size() results
+        results.size() == node->size(), error::kInternal)
         << "deferred op " << deferred_op.op_name() << " returned "
         << results.size() << " results, expected " << node->size();
 
@@ -717,7 +726,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   DynamicMlirOpResults results;
   results.reserve(outputs.size());
   for (const DeviceBufferRef& output : outputs) {
-    TT_RET_CHECK(ref_to_op_map.contains(output), error::kInternal)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant; outputs are built
+                   // in BuildMlirModule
+        ref_to_op_map.contains(output), error::kInternal)
         << "output DeviceBufferRef was not found in ref_to_op map: "
         << output.DebugString();
     results.push_back(ref_to_op_map.at(output));
@@ -976,8 +987,9 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   TT_ASSIGN_OR_RETURN(const DeviceAssignment resolved_da,
                       ResolveDeviceAssignment());
   if (!argument_layouts.empty()) {
-    TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
-                 error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant;
+                   // ExtractArgumentLayouts returns empty or arguments_.size()
+        arguments_.size() == argument_layouts.size(), error::kInvalidArgument)
         << "expected the size of argument layouts to be equal to "
         << arguments_.size() << " (number of arguments), got "
         << argument_layouts.size();
@@ -1412,13 +1424,17 @@ absl::Status Traversal::Validate() const {
     // using either buffer inputs or outputs from previously encountered
     // deferred ops.
     const auto deferred_op = node->deferred_op();
-    TT_RET_CHECK(deferred_op, error::kFailedPrecondition)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Traversal::Validate is unused outside
+                   // C++ tests
+        deferred_op, error::kFailedPrecondition)
         << "Missing deferred op at line " << i;
     const auto num_inputs = deferred_op->inputs().size();
     for (auto input_idx = 0; input_idx < num_inputs; ++input_idx) {
       const DeviceBufferRef& input = deferred_op->inputs()[input_idx];
-      TT_RET_CHECK(buffer_to_index.find(input) != buffer_to_index.end(),
-                   error::kFailedPrecondition)
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Traversal::Validate is unused
+                     // outside C++ tests
+          buffer_to_index.find(input) != buffer_to_index.end(),
+          error::kFailedPrecondition)
           << "Unexpected buffer at execution order index " << i
           << ", input index " << input_idx;
     }
@@ -1433,8 +1449,10 @@ absl::Status Traversal::Validate() const {
   // Validate traversal outputs.
   for (auto i = 0; i < outputs_.size(); ++i) {
     const DeviceBufferRef& output = outputs_[i];
-    TT_RET_CHECK(buffer_to_index.find(output) != buffer_to_index.end(),
-                 error::kFailedPrecondition)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Traversal::Validate is unused outside
+                   // C++ tests
+        buffer_to_index.find(output) != buffer_to_index.end(),
+        error::kFailedPrecondition)
         << "Unexpected buffer at line " << i;
   }
 

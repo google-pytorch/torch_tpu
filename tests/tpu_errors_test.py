@@ -42,7 +42,8 @@ import contextlib
 import os
 import re
 import tempfile
-from typing import Any, TypeAlias
+import types
+from typing import Any, Final, TypeAlias
 from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -1412,7 +1413,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       with et.assert_raises_message(
           NotImplementedError,
-          tpu="""convolution_backward(): expected the convolution result shape inferred at the upper bounds of the lhs operand of type tensor<1x?x8xf32, #stablehlo.bounds<?, 6, ?>> and the rhs operand of type tensor<1x3x6xf32> to be [3, 2, 3], got [3, 6, 3]; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
+          tpu="""convolution_backward(): expected the convolution result shape inferred at the upper bounds of the lhs operand of a float32 tensor with shape [1, 6, 8] and the rhs operand of a float32 tensor with shape [1, 3, 6] to be [3, 2, 3], got [3, 6, 3]; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
       ):
         _, grad_weight, _ = torch.ops.aten.convolution_backward(
             grad_output,
@@ -1541,7 +1542,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""linalg_solve_triangular(): cannot mix bounded and static dimensions in broadcast""",
+          tpu="""linalg_solve_triangular(): cannot mix bounded and static dimensions in broadcast at output dimension 0: lhs dimension 0 is static (size 6) and rhs dimension 0 is bounded (size 6)""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.linalg.solve_triangular(a, b, upper=True).cpu()
@@ -1589,13 +1590,15 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           torch._C.DispatchKeySet(dk), "ij->ij", []
       )
 
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
+  @et.why_tpu_only(
+      "GPU grid_sampler does not validate interpolation_mode on host."
+  )
   def test_grid_sampler_2d_invalid_interpolation_mode(self):
     inp = torch.ones(1, 1, 2, 2, device=et.device())
     grid = torch.zeros(1, 2, 2, 2, device=et.device())
 
     with et.assert_raises_message(
-        RuntimeError,
+        NotImplementedError,
         tpu="""grid_sampler_2d(): expected the interpolation mode to be 0 (bilinear), 1 (nearest), or 2 (bicubic), got 3""",
     ):
       interpolation_mode = 3
@@ -2127,13 +2130,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Dynamic compilation is TPU-only.")
   def test_get_dynamic_pad_module_empty_shapes(self):
-    expected = re.compile(
-        r".*get_dynamic_pad_module\(\): dynamic_pad_module requires at least"
-        r" one shape\..*"
-    )
     with et.assert_raises_message(
         RuntimeError,
-        tpu=expected,
+        tpu="""get_dynamic_pad_module(): failed to build MLIR module: expected at least one shape, got 0""",
     ):
       tpu_torch_compile.get_dynamic_pad_module([], [])
 
@@ -2143,7 +2142,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test_get_default_layout_0d_fp4(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""get_default_layout(): tensors of float4_e2m1fn_x2 dtype must be at least 1D""",
+        tpu="""get_default_layout(): expected tensors of float4_e2m1fn_x2 dtype to have at least 1 dimension, got 0""",
     ):
       tpu_torch_compile.get_default_layout(torch.float4_e2m1fn_x2, [])
 
@@ -3738,6 +3737,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_gather(): " prefix because the device is "meta".
         tpu="""expected row_pointers to be a 1D tensor, got a 2D tensor of shape [1, 2]""",
     ):
       torch.tpu.ops.sparse_gather(row_pointers_2d, indices, operand, 8)
@@ -3750,6 +3750,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_gather(): " prefix because the device is "meta".
         tpu="""expected indices to be a 1D tensor, got a 2D tensor of shape [1, 8]""",
     ):
       torch.tpu.ops.sparse_gather(row_pointers, indices_2d, operand, 8)
@@ -3762,6 +3763,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_gather(): " prefix because the device is "meta".
         tpu="""expected operand to be a 2D tensor, got a 1D tensor of shape [10]""",
     ):
       torch.tpu.ops.sparse_gather(row_pointers, indices, operand_1d, 8)
@@ -3774,6 +3776,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_gather(): " prefix because the device is "meta".
         tpu="""expected indices length to match the maximum number of non-zeroes, i.e. row_pointers length * maximum number of non-zeroes per row (2 * 8 = 16), got 7""",
     ):
       torch.tpu.ops.sparse_gather(row_pointers, indices_wrong_len, operand, 8)
@@ -3783,6 +3786,7 @@ module {
     row_pointers_2d = torch.tensor([[0, 8]], dtype=torch.int32, device="meta")
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_iota(): " prefix because the device is "meta".
         tpu="""expected row_pointers to be a 1D tensor, got a 2D tensor of shape [1, 2]""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers_2d, 2048, 256)
@@ -3794,6 +3798,7 @@ module {
     )
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_iota(): " prefix because the device is "meta".
         tpu="""expected row_pointers dtype to be int32, got float32""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers_float, 2048, 256)
@@ -3803,6 +3808,7 @@ module {
     row_pointers = torch.tensor([0, 8], dtype=torch.int32, device="meta")
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_iota(): " prefix because the device is "meta".
         tpu="""expected max_non_zeroes to be positive, got 0""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers, 0, 256)
@@ -3812,6 +3818,7 @@ module {
     row_pointers = torch.tensor([0, 8], dtype=torch.int32, device="meta")
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_iota(): " prefix because the device is "meta".
         tpu="""expected max_non_zeroes_per_row to be positive, got 0""",
     ):
       torch.tpu.ops.sparse_iota(row_pointers, 2048, 0)
@@ -3823,6 +3830,7 @@ module {
     stacked_1d = torch.empty(64, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
         tpu="""expected stacked_activations to be a 2D tensor, got a 1D tensor of shape [64]""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
@@ -3836,6 +3844,7 @@ module {
     stacked_int = torch.empty(64, 32, device="meta", dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
         tpu="""expected stacked_activations to have float32 dtype, got int32""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
@@ -3849,7 +3858,8 @@ module {
     stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected at least one feature, but per_feature_batch_sizes is empty""",
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
+        tpu="""expected at least one feature in per_feature_batch_sizes, got 0""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(stacked_2d, [], [])
 
@@ -3862,6 +3872,7 @@ module {
     stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
         tpu="""expected per_feature_batch_sizes and per_feature_dims to have the same size, got 1 and 2""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
@@ -3877,6 +3888,7 @@ module {
     stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
         tpu="""expected per_feature_batch_sizes[1] to be positive, got 0""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
@@ -3890,6 +3902,7 @@ module {
     stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
         tpu="""expected per_feature_dims[0] to be positive, got 0""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
@@ -3905,7 +3918,8 @@ module {
     stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected stacked_activations dim 0 (64) to match total stacked batch size (48)""",
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
+        tpu="""expected stacked_activations dim 0 to match total stacked batch size (48), got 64""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 16], [16, 32]
@@ -3920,7 +3934,8 @@ module {
     stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected per_feature_dims[1] (48) to be at most stacked_embedding_dim (32)""",
+        # No "sparse_dense_matmul_activation_unstack(): " prefix because the device is "meta".
+        tpu="""expected per_feature_dims[1] to be at most stacked_embedding_dim (32), got 48""",
     ):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 32], [16, 48]
@@ -3931,6 +3946,7 @@ module {
     g_1d = torch.empty(32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_gradient_stack(): " prefix because the device is "meta".
         tpu="""expected unstacked_gradients[0] to be a 2D tensor, got a 1D tensor of shape [32]""",
     ):
       torch.tpu.ops.sparse_dense_matmul_gradient_stack([g_1d], 32, 32)
@@ -3941,6 +3957,7 @@ module {
     g2_int = torch.empty(32, 32, device="meta", dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_gradient_stack(): " prefix because the device is "meta".
         tpu="""expected unstacked_gradients[1] to have float32 dtype, got int32""",
     ):
       torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2_int], 64, 32)
@@ -3951,6 +3968,7 @@ module {
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_gradient_stack(): " prefix because the device is "meta".
         tpu="""expected stacked_batch_size to be positive, got 0""",
     ):
       torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 0, 32)
@@ -3963,6 +3981,7 @@ module {
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
+        # No "sparse_dense_matmul_gradient_stack(): " prefix because the device is "meta".
         tpu="""expected stacked_feature_dim to be positive, got 0""",
     ):
       torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 0)
@@ -3973,7 +3992,8 @@ module {
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected sum of unstacked gradient batch sizes (64) to match stacked_batch_size (60)""",
+        # No "sparse_dense_matmul_gradient_stack(): " prefix because the device is "meta".
+        tpu="""expected sum of unstacked gradient batch sizes to match stacked_batch_size (60), got 64""",
     ):
       torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 60, 32)
 
@@ -3983,7 +4003,8 @@ module {
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected unstacked_gradients[1] dim 1 (32) to be at most stacked_feature_dim (24)""",
+        # No "sparse_dense_matmul_gradient_stack(): " prefix because the device is "meta".
+        tpu="""expected unstacked_gradients[1] dim 1 to be at most stacked_feature_dim (24), got 32""",
     ):
       torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
 
@@ -4988,6 +5009,7 @@ module {
     embedding_table = torch.empty(16, dtype=torch.float32, device="meta")
     with et.assert_raises_message(
         RuntimeError,
+        # No "_sparse_dense_matmul(): " prefix because the device is "meta".
         tpu="""expected embedding_table to be a 2D tensor, got a 1D tensor of shape [16]""",
     ):
       torch.ops.tpu._sparse_dense_matmul(
@@ -6126,6 +6148,30 @@ class CompilationCacheErrorsTest(et.TpuOnlyErrorTestBase):
       for loc in re.findall(r"cpp_error_trace='([/\w\.]+:\d+)", stderr.read()):
         print(f"\nCovered {loc}")
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="unknown_effort_level",
+          options={"xla_optimization_level": "bogus"},
+          expected_msg="unknown XLA compiler effort level: bogus",
+      ),
+      dict(
+          testcase_name="empty_option_name",
+          options={"": "bogus"},
+          expected_msg="XLA compiler option name must not be empty",
+      ),
+  )
+  @et.why_tpu_only(
+      "torch.tpu.compiler.custom_compiler_options is a TPU-specific API."
+  )
+  def test_custom_compiler_options_invalid(
+      self, options: dict[str, str], expected_msg: str
+  ):
+    with et.assert_raises_message(
+        RuntimeError, tpu=f"push_compiler_options(): {expected_msg}"
+    ):
+      with torch.tpu.compiler.custom_compiler_options(options):
+        pass
+
 
 class ForkErrorsTest(et.TpuOnlyErrorTestBase):
 
@@ -6302,6 +6348,24 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           self._causal_mask(),
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
       )
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_identity_score_mod_computes_nothing(self):
+    q, k, v = self._inputs(1024)
+    block_mask = self._causal_mask()
+    block_mask.mask_mod = flex_attention.noop_mask
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): @main computes nothing; skip the splice instead""",
+    ):
+      out, _ = tpu_flex_attention.flex_attention_fwd(
+          q,
+          k,
+          v,
+          block_mask,
+          score_mod=lambda score, b, h, q_idx, kv_idx: score,
+      )
+      out.cpu()
 
   def _bwd_dkv(self, **overrides):
     """Calls the dK / dV op directly with valid arguments except `overrides`."""
@@ -6599,7 +6663,7 @@ class DimensionalCollectivesErrorTest(et.TpuOnlyErrorTestBase):
       torch.ops.tpu._reduce_scatter_dim(x, "sum", 0, 2, "0")
 
 
-class MaxPoolErrorsTest(et.ErrorTestBase):
+class MaxPoolErrorsTest(et.TpuOnlyErrorTestBase):
 
   @et.why_tpu_only("torch.tpu.ops.max_pool2d_backward is a TPU-specific API.")
   def test_max_pool2d_backward_non_trivial_dilation(self):
@@ -6629,7 +6693,7 @@ class ProfilerErrorsTest(et.TpuOnlyErrorTestBase):
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected the config item to be in the 'key:value' format, got 'invalid_option_missing_colon'""",
+        tpu="""configure(): expected the config item to be in the 'key:value' format, got 'invalid_option_missing_colon'""",
     ):
       with torch.profiler.profile(
           activities=activities, experimental_config=bad_config
@@ -6649,6 +6713,376 @@ class ProfilerErrorsTest(et.TpuOnlyErrorTestBase):
             (16, 16), device="tpu"
         )
         sync.synchronize(c)
+
+
+class InternalApiTpuErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests TPU-only error handling for internal compile, dynamism, and profiler APIs."""
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_mark_dynamic_non_tpu_tensor(self):
+    x = torch.ones(2)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mark_dynamic(): expected tensor to be on TPU, got CPU""",
+    ):
+      dynamism.mark_dynamic(x, 0, 2, 4)
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_get_dynamism_info_non_tpu_tensor(self):
+    x = torch.ones(2)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_dynamism_info(): expected tensor to be on TPU, got CPU""",
+    ):
+      dynamism.get_dynamism_info(x)
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_get_or_compile_pad_module_empty_shapes(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_or_compile_pad_module(): expected at least one shape, got 0""",
+    ):
+      tpu_torch_compile.get_or_compile_pad_module([], [])
+
+  @et.why_tpu_only("tpu_torch_compile.placeholder is a TPU-only compile API.")
+  def test_placeholder_0d_fp4(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""placeholder(): failed to create placeholder tensor: expected tensors of float4_e2m1fn_x2 dtype to have at least 1 dimension, got 0""",
+    ):
+      tpu_torch_compile.placeholder([], torch.float4_e2m1fn_x2, False)
+
+  @et.why_tpu_only("tpu_torch_compile.build_mlir is a TPU-only compile API.")
+  def test_build_mlir_empty_results(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): no result tensors provided""",
+    ):
+      tpu_torch_compile.build_mlir([], [])
+
+  @et.why_tpu_only("tpu_torch_compile.build_mlir is a TPU-only compile API.")
+  def test_build_mlir_deferred_argument(self):
+    x = tpu_torch_compile.placeholder([2], torch.float32, False)
+    with execution_mode.set_eager_mode(
+        EagerMode._INTERNAL_COMPILE_FX_GRAPH  # pylint: disable=protected-access
+    ):
+      y = x + 1
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""build_mlir(): argument tensor has deferred ops: shape=[2], strides=[1], numel=2, dtype=float32, device=tpu:0, is_contiguous=1, is_cpu=0, is_cuda=0, is_meta=0, has_storage=1, storage_offset=0""",
+      ):
+        tpu_torch_compile.build_mlir([y], [y])
+
+  @et.why_tpu_only("tpu_torch_compile.build_mlir is a TPU-only compile API.")
+  def test_build_mlir_materializing_result(self):
+    x = torch.ones(2, device=et.device())
+    _ = x.cpu()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): result tensor is already materializing: shape=[2], strides=[1], numel=2, dtype=float32, device=tpu:0, is_contiguous=1, is_cpu=0, is_cuda=0, is_meta=0, has_storage=1, storage_offset=0""",
+    ):
+      tpu_torch_compile.build_mlir([x], [x])
+
+  @et.why_tpu_only("tpu_torch_compile.make_constant_tensor is a TPU-only API.")
+  def test_make_constant_tensor_non_cpu(self):
+    x = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""make_constant_tensor(): expected CPU tensor, got TPU""",
+    ):
+      tpu_torch_compile.make_constant_tensor(x)
+
+  @et.why_tpu_only(
+      "tpu_torch_compile.assign_constant_tensor is a TPU-only API."
+  )
+  def test_assign_constant_tensor_non_cpu_src(self):
+    src = torch.ones(2, device=et.device())
+    dst = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""assign_constant_tensor(): expected cpu_src_tensor to be on CPU, got TPU""",
+    ):
+      tpu_torch_compile.assign_constant_tensor(src, dst)
+
+  @et.why_tpu_only(
+      "tpu_torch_compile.assign_constant_tensor is a TPU-only API."
+  )
+  def test_assign_constant_tensor_shape_mismatch(self):
+    src = torch.ones(2)
+    dst = torch.ones(3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""assign_constant_tensor(): expected cpu_src_tensor and tpu_dst_tensor to have the same shape, got [2] vs [3]""",
+    ):
+      tpu_torch_compile.assign_constant_tensor(src, dst)
+
+  @et.why_tpu_only(
+      "tpu_torch_compile.assign_constant_tensor is a TPU-only API."
+  )
+  def test_assign_constant_tensor_dtype_mismatch(self):
+    src = torch.ones(2, dtype=torch.float32)
+    dst = torch.ones(2, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""assign_constant_tensor(): expected cpu_src_tensor and tpu_dst_tensor to have the same dtype, got float32 vs int32""",
+    ):
+      tpu_torch_compile.assign_constant_tensor(src, dst)
+
+  @et.why_tpu_only("tpu_torch_compile.force_strides is a TPU-only API.")
+  def test_force_strides_rank_mismatch(self):
+    x = torch.ones(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""force_strides(): expected target strides to have the same number of dimensions as the tensor, got 1 vs 2""",
+    ):
+      tpu_torch_compile.force_strides(x, [1], 0)
+
+  @et.why_tpu_only("tpu_torch_compile.force_strides is a TPU-only API.")
+  def test_force_strides_negative_offset(self):
+    x = torch.ones(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""force_strides(): expected target_storage_offset to be >= 0, got -1""",
+    ):
+      tpu_torch_compile.force_strides(x, [3, 1], -1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="non_int_tracer_level",
+          custom_config="host_tracer_level:abc",
+          expected_msg=(
+              "configure(): expected the value of parameter host_tracer_level"
+              " to be an integer, got 'abc'"
+          ),
+      ),
+      dict(
+          testcase_name="invalid_escape_sequence",
+          custom_config='foo:"\\a"',
+          expected_msg=(
+              r"configure(): invalid escape sequence: \a (only \\ and \" are"
+              r" supported)"
+          ),
+      ),
+      dict(
+          testcase_name="trailing_backslash",
+          custom_config='foo:"abc\\"',
+          expected_msg="configure(): trailing backslash in string",
+      ),
+      dict(
+          testcase_name="invalid_advanced_option",
+          custom_config="foo:bar",
+          expected_msg=(
+              "configure(): expected the advanced option 'foo' to be a quoted"
+              " string, Boolean (true/false), or integer, got 'bar'"
+          ),
+      ),
+      dict(
+          testcase_name="non_ascii_config",
+          custom_config="foo:ü",
+          expected_msg=(
+              "configure(): expected custom_config to contain only ASCII"
+              " characters, got 'foo:ü' where 'ü' is not ASCII"
+          ),
+      ),
+  )
+  @et.why_tpu_only("TPU Kineto profiler plugin only runs for TPU activity.")
+  def test_tpu_profiler_plugin_invalid_custom_config(
+      self, custom_config, expected_msg
+  ):
+    config = torch.profiler._ExperimentalConfig(  # pylint: disable=protected-access
+        custom_profiler_config=custom_config
+    )
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      with torch.profiler.profile(
+          activities=[
+              torch.profiler.ProfilerActivity.CPU,
+              torch.profiler.ProfilerActivity.TPU,  # pytype: disable=attribute-error
+          ],
+          experimental_config=config,
+      ):
+        pass
+
+
+class OpsTpuOnlyErrorCoverageTest(et.TpuOnlyErrorTestBase):
+  """Tests TPU-only error messages for ops."""
+
+  @et.why_tpu_only("torch.ops.tpu._send is a TPU-specific distributed op.")
+  def test_experimental_send_fake_tpu_backend(self):
+    x = torch.ones((2, 2), device=et.device())
+    dist.init_process_group(
+        f"{et.device().type}:fake",
+        store=fake_pg.FakeStore(),
+        rank=0,
+        world_size=2,
+    )
+    try:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""send(): expected default process group TPU backend to be a TPU process group, got a non-TPU backend""",
+      ):
+        torch.ops.tpu._send([x], 0, 0)
+    finally:
+      dist.destroy_process_group()
+
+  @et.why_tpu_only("GPU grid_sampler does not validate padding_mode on host.")
+  def test_grid_sampler_2d_invalid_padding_mode(self):
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 2), device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""grid_sampler_2d(): expected the padding mode to be 0 (zeros), 1 (border), or 2 (reflection), got 3""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 0, 3, False)
+
+  @et.why_tpu_only(
+      "GPU supports 3D bicubic interpolation (interpolation_mode=2), whereas"
+      " TPU grid_sampler_3d only supports bilinear and nearest."
+  )
+  def test_grid_sampler_3d_invalid_interpolation_mode(self):
+    inp = torch.ones((1, 1, 2, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 2, 3), device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""grid_sampler_3d(): expected the interpolation mode to be 0 (bilinear) or 1 (nearest), got 2""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp, grid, 2, 0, False)
+
+  @et.why_tpu_only("float8_e4m3fn scalar constant error in MakeConstantAttr.")
+  def test_einsum_zero_dim_float8_unsupported_scalar(self):
+    a = torch.empty((2, 0), dtype=torch.float8_e4m3fn, device=et.device())
+    b = torch.empty((0, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""einsum(): unsupported scalar constant dtype float8_e4m3fn""",
+    ):
+      torch.einsum("ij,jk->ik", a, b).cpu()
+
+  @et.why_tpu_only(
+      "SDPA custom kernel on TPU does not support causal mask with attn_bias;"
+      " GPU supports it."
+  )
+  def test_sdpa_cudnn_causal_and_attn_bias_mutually_exclusive(self):
+    q = torch.ones((1, 2, 4, 8), dtype=torch.bfloat16, device=et.device())
+    k = torch.ones((1, 2, 4, 8), dtype=torch.bfloat16, device=et.device())
+    v = torch.ones((1, 2, 4, 8), dtype=torch.bfloat16, device=et.device())
+    bias = torch.zeros((1, 2, 4, 4), dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_dot_product_cudnn_attention(): causal mask and attention bias are mutually exclusive""",
+    ):
+      torch.ops.aten._scaled_dot_product_cudnn_attention(
+          q, k, v, bias, False, 0.0, True, False, scale=None
+      )[0].cpu()
+
+  @et.why_tpu_only("Bounded dynamic reshape checks are TPU-specific.")
+  def test_dynamic_reshape_expand_ambiguous(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones((6, 4), device=et.device())
+      dynamism.mark_dynamic(x, 0, 2, 8)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): cannot infer which output dimension should be bounded dynamic when reshaping from [6, 4] to [2, 3, 4]: bounded input dimension 0 splits into multiple non-unit output dimensions [0, 1]""",
+      ):
+        (x.reshape(2, 3, 4) + 1.0).cpu()
+
+  @et.why_tpu_only("Bounded dynamic reshape checks are TPU-specific.")
+  def test_dynamic_reshape_same_rank_mismatch(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones((2, 6), device=et.device())
+      dynamism.mark_dynamic(x, 1, 2, 8)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): reshape reassociation not supported for same sized reshapes: from [2, 6] to [3, 4]""",
+      ):
+        (x.reshape(3, 4) + 1.0).cpu()
+
+  @et.why_tpu_only("Bounded dynamic reshape checks are TPU-specific.")
+  def test_dynamic_reshape_no_reassociation(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones((2, 3, 4), device=et.device())
+      dynamism.mark_dynamic(x, 1, 2, 8)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): unable to determine reassociation indices from [2, 3, 4] to [4, 6]""",
+      ):
+        (x.reshape(4, 6) + 1.0).cpu()
+
+
+def _trigger_discovery_in_fresh_process(
+    local_rank: int, env_overrides: Mapping[str, str | None]
+) -> None:
+  """Worker that configures distributed env vars and initializes the TPU."""
+  del local_rank  # Unused.
+  for key, val in env_overrides.items():
+    if val is None:
+      os.environ.pop(key, None)
+    else:
+      os.environ[key] = val
+  torch.ones(1, device="tpu")
+
+
+class SlicebuilderDiscoveryErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests distributed worker discovery environment validation errors."""
+
+  _BASE_ENV: Final[Mapping[str, str | None]] = types.MappingProxyType({
+      "RANK": "0",
+      "LOCAL_RANK": "0",
+      "WORLD_SIZE": "2",
+      "MASTER_ADDR": "localhost",
+      "MASTER_PORT": "12345",
+      "TORCH_TPU_SLICEBUILDER_ADDRESSES": "localhost:54321,localhost:54322",
+      "TORCH_TPU_TOPOLOGY": "1x1x1",
+  })
+
+  def _assert_discovery_error(
+      self, overrides: Mapping[str, str | None], expected_msg: str
+  ) -> None:
+    env_overrides = dict(self._BASE_ENV)
+    env_overrides.update(overrides)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*" + re.escape(expected_msg) + r".*", re.DOTALL),
+    ):
+      try:
+        mp.spawn(
+            _trigger_discovery_in_fresh_process,
+            args=(env_overrides,),
+            nprocs=1,
+            join=True,
+        )
+      except mp.ProcessRaisedException as e:
+        raise RuntimeError(str(e)) from e
+
+  @parameterized.named_parameters(
+      (
+          "missing_required_distributed_env_vars",
+          {
+              "TORCH_TPU_SLICEBUILDER_ADDRESSES": None,
+              "TORCH_TPU_TOPOLOGY": None,
+          },
+          """missing or invalid required environment variables for distributed training: TORCH_TPU_SLICEBUILDER_ADDRESSES, TORCH_TPU_TOPOLOGY; please call torch.tpu.distributed.set_tpu_launch_env() before spawning workers or export eval "$(python3 -m torch.tpu.distributed)" before launching""",
+      ),
+      (
+          "empty_slicebuilder_addresses",
+          {"TORCH_TPU_SLICEBUILDER_ADDRESSES": ""},
+          """the TORCH_TPU_SLICEBUILDER_ADDRESSES environment variable must not be empty""",
+      ),
+      (
+          "negative_rank",
+          {"RANK": "-1"},
+          """expected environment variable RANK to be >= 0, got -1""",
+      ),
+      (
+          "invalid_slicebuilder_address_format",
+          {"TORCH_TPU_SLICEBUILDER_ADDRESSES": "invalid_address"},
+          """expected the TORCH_TPU_SLICEBUILDER_ADDRESSES environment variable to be in the '<host>:<port>' format for rank 0, got 'invalid_address'""",
+      ),
+  )
+  @et.why_tpu_only("Slicebuilder distributed worker discovery is TPU-specific.")
+  def test_discovery_error(
+      self, overrides: Mapping[str, str | None], expected_msg: str
+  ):
+    self._assert_discovery_error(overrides, expected_msg)
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ torch_tpu_cc_library(
     hdrs = ["ragged_all_to_all_aten_kernels.h"],
     deps = [
         ":ragged_all_to_all_builder",
+        "//csrc/common:api_error_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

@@ -52,6 +52,7 @@
 #include "absl/time/time.h"
 #include "c10/core/Device.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
@@ -146,7 +147,7 @@ absl::StatusOr<std::string> UnescapeString(std::string_view s) {
     if (escaped) {
       if (c != '\\' && c != '"') {
         return TT_ERROR(error::kInvalidArgument)
-               << "Invalid escape sequence: \\" << std::string(1, c)
+               << "invalid escape sequence: \\" << std::string(1, c)
                << " (only \\\\ and \\\" are supported)";
       }
       result.push_back(c);
@@ -158,7 +159,7 @@ absl::StatusOr<std::string> UnescapeString(std::string_view s) {
     }
   }
   if (escaped) {
-    return TT_ERROR(error::kInvalidArgument) << "Trailing backslash in string";
+    return TT_ERROR(error::kInvalidArgument) << "trailing backslash in string";
   }
   return result;
 }
@@ -190,7 +191,7 @@ absl::Status SetAdvancedConfigValue(tensorflow::ProfileOptions& opts,
     } else {
       return TT_ERROR(error::kInvalidArgument)
              << "expected the advanced option '" << key
-             << "' to be a quoted string, boolean (true/false), or integer, "
+             << "' to be a quoted string, Boolean (true/false), or integer, "
              << "got '" << val << "'";
     }
   }
@@ -272,6 +273,33 @@ absl::StatusOr<ProfilerOption> SplitConfigItem(std::string_view item) {
   return ProfilerOption{key, val};
 }
 
+namespace {
+
+absl::Status ValidateAsciiConfig(std::string_view custom_config) {
+  const auto non_ascii_it =
+      std::find_if(custom_config.begin(), custom_config.end(), [](char c) {
+        return !absl::ascii_isascii(static_cast<unsigned char>(c));
+      });
+  if (non_ascii_it != custom_config.end()) {
+    const size_t pos =
+        static_cast<size_t>(non_ascii_it - custom_config.begin());
+    size_t end = pos + 1;
+    while (end < custom_config.size() &&
+           (static_cast<unsigned char>(custom_config[end]) & 0xC0) == 0x80) {
+      ++end;
+    }
+    const std::string_view first_non_ascii =
+        custom_config.substr(pos, end - pos);
+    return TT_ERROR(error::kInvalidArgument)
+           << "expected custom_config to contain only ASCII characters, got '"
+           << custom_config << "' where '" << first_non_ascii
+           << "' is not ASCII";
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
 // Parses the custom configuration string from Kineto. Leading and trailing
 // whitespace is ignored around keys and values. The configuration string is
 // expected to be a comma-separated list of key-value pairs, where keys and
@@ -285,14 +313,7 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   bool& out_python_tracer_level_set) {
   out_worker_rank = std::nullopt;
   out_python_tracer_level_set = false;
-  if (!std::all_of(custom_config.begin(), custom_config.end(), [](char c) {
-        return absl::ascii_isascii(static_cast<unsigned char>(c));
-      })) {
-    return TT_ERROR(error::kInvalidArgument)
-           << "custom_config contains non-ASCII characters (this is a known "
-              "limitation): "
-           << custom_config;
-  }
+  TT_RETURN_IF_ERROR(ValidateAsciiConfig(custom_config));
   for (std::string_view item : SplitConfig(custom_config, ',')) {
     absl::StatusOr<ProfilerOption> profiler_option = SplitConfigItem(item);
     if (!profiler_option.ok()) {
@@ -417,6 +438,10 @@ TpuKinetoProfilerSession::TpuKinetoProfilerSession(
       activities_log_file_(config.activitiesLogFile()) {}
 
 void TpuKinetoProfilerSession::start() {
+  RunWithApiErrorHandling("start", &TpuKinetoProfilerSession::StartImpl, this);
+}
+
+void TpuKinetoProfilerSession::StartImpl() {
   absl::MutexLock lock(mutex_);
   if (session_ != nullptr) {
     ABSL_LOG(WARNING) << "TpuKinetoProfilerSession already started";
@@ -790,14 +815,17 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
 
 TpuKinetoProfilerSession::ParsedCustomConfig
 TpuKinetoProfilerSession::ParseCustomConfig(std::string_view custom_config) {
-  ParsedCustomConfig parsed;
-  parsed.opts = tsl::ProfilerSession::DefaultOptions();
-  parsed.opts.set_device_type(tensorflow::ProfileOptions::TPU);
-  parsed.opts.set_raise_error_on_start_failure(true);
-  TT_THROW_IF_ERROR(UpdateProfileOptions(custom_config, parsed.opts,
-                                         parsed.run_dir, parsed.worker_rank,
-                                         parsed.python_tracer_level_set));
-  return parsed;
+  return RunWithApiErrorHandling(
+      "configure", [custom_config]() -> ParsedCustomConfig {
+        ParsedCustomConfig parsed;
+        parsed.opts = tsl::ProfilerSession::DefaultOptions();
+        parsed.opts.set_device_type(tensorflow::ProfileOptions::TPU);
+        parsed.opts.set_raise_error_on_start_failure(true);
+        TT_THROW_IF_ERROR(UpdateProfileOptions(
+            custom_config, parsed.opts, parsed.run_dir, parsed.worker_rank,
+            parsed.python_tracer_level_set));
+        return parsed;
+      });
 }
 
 namespace {

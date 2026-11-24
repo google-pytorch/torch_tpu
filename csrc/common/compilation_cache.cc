@@ -662,7 +662,9 @@ CompilationCache::GetOrCreateCacheEntry(
 
   ABSL_VLOG(2) << "Compilation cache DYNAMIC MISS for key: " << key;
 
-  TT_RET_CHECK(!cache_only_mode_, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable via internal
+                 // _set_cache_only() API.
+      !cache_only_mode_, error::kFailedPrecondition)
       << "The user has asserted that no more compilation should happen; yet "
          "compilation is needed for key: "
       << key;

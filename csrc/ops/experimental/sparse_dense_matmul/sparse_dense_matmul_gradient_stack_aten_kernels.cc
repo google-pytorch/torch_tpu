@@ -138,9 +138,9 @@ absl::Status ValidateSparseDenseMatmulGradientStackInputs(
                      .sym_le(stacked_feature_dim)
                      .guard_bool(__FILE__, __LINE__),
                  error::kInvalidArgument)
-        << "expected unstacked_gradients[" << i << "] dim 1 (" << grad_sizes[1]
-        << ") to be at most stacked_feature_dim (" << stacked_feature_dim
-        << ")";
+        << "expected unstacked_gradients[" << i
+        << "] dim 1 to be at most stacked_feature_dim (" << stacked_feature_dim
+        << "), got " << grad_sizes[1];
 
     total_batch_size += grad_sizes[0];
   }
@@ -148,8 +148,9 @@ absl::Status ValidateSparseDenseMatmulGradientStackInputs(
   TT_RET_CHECK(total_batch_size.sym_eq(stacked_batch_size)
                    .guard_bool(__FILE__, __LINE__),
                error::kInvalidArgument)
-      << "expected sum of unstacked gradient batch sizes (" << total_batch_size
-      << ") to match stacked_batch_size (" << stacked_batch_size << ")";
+      << "expected sum of unstacked gradient batch sizes to match "
+         "stacked_batch_size ("
+      << stacked_batch_size << "), got " << total_batch_size;
 
   return absl::OkStatus();
 }

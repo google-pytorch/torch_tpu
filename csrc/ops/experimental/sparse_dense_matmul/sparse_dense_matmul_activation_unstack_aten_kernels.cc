@@ -138,7 +138,7 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
       << ToString(stacked_activations.scalar_type());
 
   TT_RET_CHECK(!per_feature_batch_sizes.empty(), error::kInvalidArgument)
-      << "expected at least one feature, but per_feature_batch_sizes is empty";
+      << "expected at least one feature in per_feature_batch_sizes, got 0";
 
   TT_RET_CHECK(per_feature_batch_sizes.size() == per_feature_dims.size(),
                error::kInvalidArgument)
@@ -161,9 +161,9 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
     TT_RET_CHECK(stacked_embedding_dim.sym_ge(per_feature_dims[i])
                      .guard_bool(__FILE__, __LINE__),
                  error::kInvalidArgument)
-        << "expected per_feature_dims[" << i << "] (" << per_feature_dims[i]
-        << ") to be at most stacked_embedding_dim (" << stacked_embedding_dim
-        << ")";
+        << "expected per_feature_dims[" << i
+        << "] to be at most stacked_embedding_dim (" << stacked_embedding_dim
+        << "), got " << per_feature_dims[i];
     total_batch_size += per_feature_batch_sizes[i];
   }
 
@@ -171,8 +171,9 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
   TT_RET_CHECK(stacked_batch_size.sym_eq(total_batch_size)
                    .guard_bool(__FILE__, __LINE__),
                error::kInvalidArgument)
-      << "expected stacked_activations dim 0 (" << stacked_batch_size
-      << ") to match total stacked batch size (" << total_batch_size << ")";
+      << "expected stacked_activations dim 0 to match total stacked batch size "
+         "("
+      << total_batch_size << "), got " << stacked_batch_size;
 
   return absl::OkStatus();
 }

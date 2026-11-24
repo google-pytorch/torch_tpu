@@ -65,14 +65,13 @@ class WorkTpu : public c10d::Work {
     return future_.IsReady() && future_.Await().ok();
   }
 
-  bool wait(std::chrono::milliseconds timeout) override {
-    TT_THROW_IF_ERROR(future_.Await()) << "TPU Window DMA Work failed: ";
-    return true;
-  }
+  bool wait(std::chrono::milliseconds timeout) override;
 
-  void synchronize() override { wait(kNoTimeout); }
+  void synchronize() override;
 
  private:
+  bool WaitImpl(std::chrono::milliseconds timeout);
+
   xla::Future<> future_;
 };
 
@@ -107,7 +106,7 @@ class CompositeWorkTpu : public c10d::Work {
   bool wait(std::chrono::milliseconds timeout) override;
 
   // Blocks indefinitely until all sub-stream transfers complete.
-  void synchronize() override { wait(kNoTimeout); }
+  void synchronize() override;
 
   // Returns the first non-null exception reported by any sub-work, or nullptr
   // if all transfers completed without error.
@@ -121,6 +120,8 @@ class CompositeWorkTpu : public c10d::Work {
   }
 
  private:
+  bool WaitImpl(std::chrono::milliseconds timeout);
+
   std::vector<c10::intrusive_ptr<c10d::Work>> sub_works_;
 };
 
@@ -193,6 +194,18 @@ class WindowTpu : public c10d::Window {
   c10d::WindowAttr get_attr(int64_t peerRank) override;
 
  private:
+  void TensorRegisterImpl(const at::Tensor& tensor, bool owning);
+  c10::intrusive_ptr<c10d::Work> PutImpl(const at::Tensor& tensor,
+                                         int64_t dstRank,
+                                         int64_t targetOffsetNelems,
+                                         bool asyncOp,
+                                         const c10d::PutOptions& opts);
+  c10::intrusive_ptr<c10d::Work> SignalImpl(int64_t peerRank, bool asyncOp,
+                                            const c10d::SignalOptions& opts);
+  c10::intrusive_ptr<c10d::Work> WaitSignalImpl(
+      int64_t peerRank, bool asyncOp, const c10d::WaitSignalOptions& opts);
+  at::Tensor MapRemoteTensorImpl(int64_t rank);
+
   // Internal helper methods for the 3 distinct Put transfer modalities.
   c10::intrusive_ptr<c10d::Work> PutDeviceToHostDma(const at::Tensor& tensor,
                                                     int64_t targetOffsetNelems,
