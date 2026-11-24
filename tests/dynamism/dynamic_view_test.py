@@ -18,6 +18,7 @@ from collections.abc import Callable
 
 from absl.testing import absltest
 import torch
+from torch._dynamo import testing as dynamo_testing
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile.dynamic import view_decomposition
 from torch_tpu._internal.utils import test_utils as utils
@@ -369,6 +370,214 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
     self._check_dynamic_multi_op_view_input(
         (2, 20, 8), 1, lambda x: x[:, 1:3, 2:6], ["slice", "slice"]
     )
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_broadcast_view_input_2d_and_4d_no_recompile(self):
+    """Tests 2D and 4D broadcast views (`expand`) as compiled graph inputs."""
+    cases = [
+        ("2d_expand", lambda b, n: b.expand(n, 8), (1, 8)),
+        ("4d_expand", lambda b, n: b.expand(2, 4, n, 8), (2, 1, None, 8)),
+    ]
+    for name, view_fn, template in cases:
+      with self.subTest(case=name):
+        torch._dynamo.reset()
+        counter = dynamo_testing.CompileCounterWithBackend("tpu")
+        fn_tpu = torch.compile(lambda v: v + 1.0, backend=counter, dynamic=None)
+        compilations: list[int] = []
+        with torch.no_grad():
+          for n in (10, 15, 20, 25):
+            base_shape = [n if d is None else d for d in template]
+            base_cpu = torch.randn(base_shape)
+            view_cpu = view_fn(base_cpu, n)
+            view_tpu = view_fn(base_cpu.to(self.device), n)
+            before = counter.frame_count
+            out_tpu = fn_tpu(view_tpu)
+            compilations.append(counter.frame_count - before)
+            utils.assert_close(out_tpu.cpu(), view_cpu + 1.0)
+        self.assertEqual(compilations, [1, 1, 0, 0])
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_unaligned_flat_buffer_view_input_no_recompile(self):
+    """Tests unaligned 1D buffer slices reshaped into compiled graph inputs."""
+    flat_cpu = torch.arange(20000, dtype=torch.float32)
+    flat_tpu = flat_cpu.to(self.device)
+    cases = [
+        ("unaligned_2d", lambda buf, s: buf[4103 : 4103 + s * 64].view(s, 64)),
+        (
+            "unaligned_2d_t",
+            lambda buf, s: buf[4103 : 4103 + s * 64].view(s, 64).t(),
+        ),
+    ]
+    for name, view_fn in cases:
+      with self.subTest(case=name):
+        torch._dynamo.reset()
+        counter = dynamo_testing.CompileCounterWithBackend("tpu")
+        fn_tpu = torch.compile(lambda w: w + 1.0, backend=counter, dynamic=None)
+        compilations: list[int] = []
+        with torch.no_grad():
+          for s in (8, 12, 16, 20):
+            w_cpu = view_fn(flat_cpu, s)
+            w_tpu = view_fn(flat_tpu, s)
+            before = counter.frame_count
+            out_tpu = fn_tpu(w_tpu)
+            compilations.append(counter.frame_count - before)
+            utils.assert_close(out_tpu.cpu(), w_cpu + 1.0)
+        self.assertEqual(compilations, [1, 1, 0, 0])
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_rope_cache_select_and_scalar_view_input_no_recompile(self):
+    """Tests innermost stride != 1 select and offset 0-d scalar inputs."""
+    torch._dynamo.reset()
+    counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fn_tpu = torch.compile(
+        lambda r, scalar: r + scalar, backend=counter, dynamic=None
+    )
+    compilations: list[int] = []
+    scalar_buf_cpu = torch.arange(20, dtype=torch.float32)
+    scalar_buf_tpu = scalar_buf_cpu.to(self.device)
+    scalar_cpu = scalar_buf_cpu[17]
+    scalar_tpu = scalar_buf_tpu[17]
+    with torch.no_grad():
+      for seq_len in (10, 11, 15, 20):
+        rope_cpu = torch.arange(seq_len * 32 * 2, dtype=torch.float32).reshape(
+            seq_len, 32, 2
+        )
+        rope_tpu = rope_cpu.to(self.device)
+        view_cpu = rope_cpu[..., 1]
+        view_tpu = rope_tpu[..., 1]
+        before = counter.frame_count
+        out_tpu = fn_tpu(view_tpu, scalar_tpu)
+        compilations.append(counter.frame_count - before)
+        utils.assert_close(out_tpu.cpu(), view_cpu + scalar_cpu)
+    self.assertEqual(compilations, [1, 1, 0, 0])
+
+  @absltest.skip("TODO(b/582377587): Enable with strided dynamic view support.")
+  def test_inplace_mutation_on_dynamic_view_input_no_recompile(self):
+    """Tests in-place mutation write-back on dynamic non-contiguous views."""
+
+    def mutate_view(v: torch.Tensor) -> torch.Tensor:
+      v.add_(1.0)
+      return v * 2.0
+
+    cases = [
+        (
+            "prefix_slice",
+            lambda n: (2, 64, 4),
+            lambda base, n: base[:, :n, :],
+        ),
+        (
+            "transposed",
+            lambda n: (2, 4, n),
+            lambda base, n: base.transpose(1, 2),
+        ),
+        (
+            "strided_slice",
+            lambda n: (2, n, 4),
+            lambda base, n: base[:, ::2, :],
+        ),
+    ]
+    for name, shape_fn, view_fn in cases:
+      with self.subTest(case=name):
+        torch._dynamo.reset()
+        counter = dynamo_testing.CompileCounterWithBackend("tpu")
+        fn_tpu = torch.compile(mutate_view, backend=counter, dynamic=None)
+        compilations: list[int] = []
+        with torch.no_grad():
+          for n in (20, 30, 40, 50):
+            base_cpu = torch.arange(
+                torch.Size(shape_fn(n)).numel(), dtype=torch.float32
+            ).reshape(shape_fn(n))
+            base_tpu = base_cpu.clone().to(self.device)
+            view_cpu = view_fn(base_cpu, n)
+            view_tpu = view_fn(base_tpu, n)
+            before = counter.frame_count
+            out_tpu = fn_tpu(view_tpu)
+            compilations.append(counter.frame_count - before)
+            out_cpu = mutate_view(view_cpu)
+            utils.assert_close(out_tpu.cpu(), out_cpu)
+            utils.assert_close(view_tpu.cpu(), view_cpu)
+            utils.assert_close(base_tpu.cpu(), base_cpu)
+        self.assertEqual(compilations, [1, 1, 0, 0])
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_dynamic_storage_offset_views_no_recompile(self):
+    """Tests dynamic storage_offset views across split and sliding windows."""
+    # 1. q, k, v = qkv.split(s, dim=1) passed together as 3 aliased views.
+    torch._dynamo.reset()
+    qkv_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fn_qkv = torch.compile(
+        lambda q, k, v: q + k * 2.0 + v * 3.0, backend=qkv_counter, dynamic=None
+    )
+    qkv_compiles: list[int] = []
+    with torch.no_grad():
+      for s in (8, 12, 14, 16):
+        qkv_cpu = torch.arange(2 * 3 * s * 4, dtype=torch.float32).reshape(
+            2, 3 * s, 4
+        )
+        qkv_tpu = qkv_cpu.to(self.device)
+        q_cpu, k_cpu, v_cpu = qkv_cpu.split(s, dim=1)
+        q_tpu, k_tpu, v_tpu = qkv_tpu.split(s, dim=1)
+        before = qkv_counter.frame_count
+        out_tpu = fn_qkv(q_tpu, k_tpu, v_tpu)
+        qkv_compiles.append(qkv_counter.frame_count - before)
+        utils.assert_close(out_tpu.cpu(), q_cpu + k_cpu * 2.0 + v_cpu * 3.0)
+    self.assertEqual(qkv_compiles, [1, 1, 0, 0])
+
+    # 2. Single split slice with symbolic storage_offset = s * D.
+    torch._dynamo.reset()
+    k_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fn_k = torch.compile(lambda k: k + 1.0, backend=k_counter, dynamic=None)
+    k_compiles: list[int] = []
+    with torch.no_grad():
+      for s in (8, 12, 16, 20):
+        qkv_cpu = torch.arange(2 * 3 * s * 4, dtype=torch.float32).reshape(
+            2, 3 * s, 4
+        )
+        _, k_cpu, _ = qkv_cpu.split(s, dim=1)
+        _, k_tpu, _ = qkv_cpu.to(self.device).split(s, dim=1)
+        before = k_counter.frame_count
+        out_tpu = fn_k(k_tpu)
+        k_compiles.append(k_counter.frame_count - before)
+        utils.assert_close(out_tpu.cpu(), k_cpu + 1.0)
+    self.assertEqual(k_compiles, [1, 1, 0, 0])
+
+    # 3. Sliding window suffix cache[:, -4:, :] with growing storage_offset
+    # and dynamic batch (so Dynamo tracks storage_offset symbolically instead of
+    # forcing DimDynamic.STATIC when all view dimensions are static).
+    torch._dynamo.reset()
+    win_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fn_win = torch.compile(lambda w: w + 1.0, backend=win_counter, dynamic=None)
+    win_compiles: list[int] = []
+    with torch.no_grad():
+      for b, s in ((2, 18), (3, 22), (4, 26), (5, 30)):
+        cache_cpu = torch.arange(b * s * 8, dtype=torch.float32).reshape(
+            b, s, 8
+        )
+        win_cpu = cache_cpu[:, -4:, :]
+        win_tpu = cache_cpu.to(self.device)[:, -4:, :]
+        before = win_counter.frame_count
+        out_tpu = fn_win(win_tpu)
+        win_compiles.append(win_counter.frame_count - before)
+        utils.assert_close(out_tpu.cpu(), win_cpu + 1.0)
+    self.assertEqual(win_compiles, [1, 1, 0, 0])
+
+    # When every dim of the view is static (2, 4, 8), Dynamo forces a static
+    # storage_offset; _guard_input_storage_offsets must recompile rather than
+    # silently reading the stale trace-time offset.
+    torch._dynamo.reset()
+    static_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fn_static_win = torch.compile(
+        lambda w: w + 1.0, backend=static_counter, dynamic=None
+    )
+    with torch.no_grad():
+      for s in (18, 22, 26):
+        cache_cpu = torch.arange(2 * s * 8, dtype=torch.float32).reshape(
+            2, s, 8
+        )
+        win_cpu = cache_cpu[:, -4:, :]
+        win_tpu = cache_cpu.to(self.device)[:, -4:, :]
+        utils.assert_close(fn_static_win(win_tpu).cpu(), win_cpu + 1.0)
+    self.assertGreaterEqual(static_counter.frame_count, 2)
 
 
 def _storage_numel(tensor: torch.Tensor) -> int:
