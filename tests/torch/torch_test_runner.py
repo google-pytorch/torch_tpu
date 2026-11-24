@@ -32,7 +32,7 @@ It takes no command-line arguments and requires following environment variables:
 The test runner exits with 0 on success, and non-zero on failure.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 import os
 import pathlib
 import runpy
@@ -57,6 +57,14 @@ _TORCH_TEST_MODULE_ENV_VAR: Final = "TORCH_TPU_INTERNAL_TORCH_TEST_MODULE"
 # newly introduced accelerator testing APIs.
 _MINIMAL_TORCH_VERSION: Final = "2.14"
 
+# Capabilities declared on TPU for `@requires_capabilities(...)` tests:
+# True runs the test, False skips it. Untriaged capabilities are omitted so
+# new tests fail loudly until triaged.
+_TPU_CAPABILITIES: Final[Mapping[str, Callable[[], bool]]] = {
+    "attention.flex_attention": lambda: True,
+    "attention.mem_efficient_attention": lambda: False,
+}
+
 
 def _set_private_use1_test_configs(test_module: str) -> None:
   """Declares TorchTPU configuration on PrivateUse1TestBase per test module."""
@@ -73,6 +81,7 @@ def _set_private_use1_test_configs(test_module: str) -> None:
   # Resolve the base's device type ("tpu") up front so every generated class
   # has "TPU" suffix.
   base.setUpClass()
+  base._capabilities = classmethod(lambda cls: dict(_TPU_CAPABILITIES))  # pylint: disable=protected-access  # pyrefly: ignore[bad-assignment]
   base.set_test_configs(
       op_overrides=torch_test_configs.OP_OVERRIDES.get(test_module),
       test_exclusions=torch_test_configs.TEST_EXCLUSIONS.get(test_module),
@@ -209,6 +218,12 @@ def main(argv: Sequence[str]) -> None:
   # patches `run_tests()` to run with pytest.
   _use_absltest_main()
   runpy.run_path(str(test_module_path), run_name="__main__")
+  # absltest.main() always raises SystemExit; reaching here means the module's
+  # `__main__` block skipped run_tests() (e.g. a RUN_CPU/HAS_GPU guard).
+  sys.exit(
+      f"ERROR: {test_module} did not call run_tests() under TorchTPU; add it to"
+      " _ACCELERATOR_SPECIFIC_TEST_MODULES or fix the upstream guard."
+  )
 
 
 if __name__ == "__main__":

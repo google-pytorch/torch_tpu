@@ -15,14 +15,29 @@
 """Unit tests for in-place buffer donation in eager modes."""
 
 import gc
+import math
+import time
 
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import sync
 from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 EagerMode = execution_mode.EagerMode
+
+
+def _eventually_materialized(
+    tensor: torch.Tensor, timeout_s: float = 30.0
+) -> bool:
+  """Returns whether `tensor` gets materialized without being read."""
+  deadline = time.monotonic() + timeout_s
+  while time.monotonic() < deadline:
+    if sync.is_materialized(tensor):
+      return True
+    time.sleep(0.01)
+  return False
 
 
 class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
@@ -213,6 +228,38 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
         self.assertGreaterEqual(extra_mem, 12 * 1024 * 1024)
       finally:
         execution_mode.disable_inplace_buffer_donation = False
+
+  def test_batch_norm_training_donates_running_stats_in_defer_never(self):
+    """Verifies training-mode batch norm updates the running stats in place."""
+    # 16 MB per running stat (4M float32 features).
+    num_features = 4 * 1024 * 1024
+
+    def training_step_extra_memory():
+      bn = torch.nn.BatchNorm1d(num_features, affine=False).to(self.device)
+      x = torch.randn(2, num_features, device=self.device)
+      # Warmup to compile and initialize runtime buffers
+      bn(x)
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      torch.accelerator.reset_peak_memory_stats()
+      base_mem = torch.accelerator.memory_allocated()
+      bn(x)
+      torch.accelerator.synchronize()
+      return torch.accelerator.max_memory_allocated() - base_mem
+
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      execution_mode.disable_inplace_buffer_donation = True
+      try:
+        extra_mem_without_donation = training_step_extra_memory()
+      finally:
+        execution_mode.disable_inplace_buffer_donation = False
+      extra_mem = training_step_extra_memory()
+
+    # Without donation, both 16 MB running stats are allocated again.
+    self.assertLessEqual(
+        extra_mem, extra_mem_without_donation - 24 * 1024 * 1024
+    )
 
   def test_fused_inplace_chain_donates_buffer_in_defer_and_fuse(self):
     """Verifies a deferred chain of in-place ops fuses and donates in DeferAndFuse."""
@@ -2319,6 +2366,220 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(x.cpu(), expected))
       self.assertTrue(torch.equal(res.cpu(), expected))
       self.assertTrue(torch.equal(v.cpu(), expected))
+
+  def test_fill_with_view_of_self_in_defer_never(self):
+    """Verifies fill_ with a fill value that is a view of the donated self."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      x.fill_(x[1])
+      self.assertTrue(torch.equal(x.cpu(), torch.tensor([2.0, 2.0, 2.0])))
+
+      y = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      y[0].fill_(y[2])
+      self.assertTrue(torch.equal(y.cpu(), torch.tensor([3.0, 2.0, 3.0])))
+
+  # 16 MiB float32 base and a 4 MiB float32 slice view into it, for the
+  # partial-view output donation tests below.
+  _COPY_BASE_NUMEL = 4 * 1024 * 1024
+  _COPY_SLICE_NUMEL = 1024 * 1024
+
+  def _make_base_and_slice_view(self) -> tuple[torch.Tensor, torch.Tensor]:
+    """Returns a materialized 16 MiB base and a 4 MiB slice view into it."""
+    base = torch.zeros(
+        self._COPY_BASE_NUMEL, dtype=torch.float32, device=self.device
+    )
+    _ = base.cpu()
+    view = base[self._COPY_SLICE_NUMEL : 2 * self._COPY_SLICE_NUMEL]
+    return base, view
+
+  def _peak_extra_bytes_for_copy(
+      self, view: torch.Tensor, src: torch.Tensor
+  ) -> int:
+    """Returns the peak extra device memory of a steady-state view.copy_(src)."""
+    view.copy_(src)
+    torch.accelerator.synchronize()
+    gc.collect()
+
+    torch.accelerator.reset_peak_memory_stats()
+    base_mem = torch.accelerator.memory_allocated()
+    view.copy_(src)
+    torch.accelerator.synchronize()
+    return torch.accelerator.max_memory_allocated() - base_mem
+
+  def test_same_dtype_copy_to_view_donates_base_buffer_in_defer_never(self):
+    """Verifies that same-dtype TPU-to-TPU copy_ into a view donates the base."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base, view = self._make_base_and_slice_view()
+      src = torch.ones(
+          self._COPY_SLICE_NUMEL, dtype=torch.float32, device=self.device
+      )
+      _ = src.cpu()
+
+      self.assertEqual(self._peak_extra_bytes_for_copy(view, src), 0)
+      self.assertTrue(torch.all(view.cpu() == 1.0))
+      self.assertTrue(torch.all(base[: self._COPY_SLICE_NUMEL].cpu() == 0.0))
+
+  def test_cross_dtype_copy_to_view_donates_base_buffer_in_defer_never(self):
+    """Verifies that cross-dtype TPU-to-TPU copy_ into a view donates the base."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base, view = self._make_base_and_slice_view()
+      src_bf16 = torch.full(
+          (self._COPY_SLICE_NUMEL,),
+          2.0,
+          dtype=torch.bfloat16,
+          device=self.device,
+      )
+      _ = src_bf16.cpu()
+
+      self.assertEqual(self._peak_extra_bytes_for_copy(view, src_bf16), 0)
+      self.assertTrue(torch.all(view.cpu() == 2.0))
+      self.assertTrue(torch.all(base[: self._COPY_SLICE_NUMEL].cpu() == 0.0))
+
+  def test_out_op_to_view_donates_base_buffer_in_defer_never(self):
+    """Verifies that out= ops writing into a non-aliasing view donate the base."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base, view = self._make_base_and_slice_view()
+      lhs = torch.ones(
+          self._COPY_SLICE_NUMEL, dtype=torch.float32, device=self.device
+      )
+      rhs = torch.full(
+          (self._COPY_SLICE_NUMEL,),
+          3.0,
+          dtype=torch.float32,
+          device=self.device,
+      )
+      _ = lhs.cpu(), rhs.cpu()
+
+      torch.add(lhs, rhs, out=view)
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      torch.accelerator.reset_peak_memory_stats()
+      base_mem = torch.accelerator.memory_allocated()
+      torch.add(lhs, rhs, out=view)
+      torch.accelerator.synchronize()
+      extra_mem = torch.accelerator.max_memory_allocated() - base_mem
+
+      self.assertEqual(extra_mem, 0)
+      self.assertTrue(torch.all(view.cpu() == 4.0))
+      self.assertTrue(torch.all(base[: self._COPY_SLICE_NUMEL].cpu() == 0.0))
+
+  def test_batch_norm_out_into_view_runs_write_back_in_defer_never(self):
+    """Verifies that a batch norm out= write into a view runs in DeferNever.
+
+    The running stats are shared with clones, so they can't be donated, and
+    only the base buffer of the output view is donated (to its write-back).
+    """
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base = torch.zeros(2, 1, 2, 2, dtype=torch.float32, device=self.device)
+      _ = base.cpu()
+      out = base[1:]
+      inp = torch.tensor(
+          [[[[1.0, 2.0], [3.0, 4.0]]]], dtype=torch.float32, device=self.device
+      )
+      running_mean = torch.zeros(1, dtype=torch.float32, device=self.device)
+      running_var = torch.ones(1, dtype=torch.float32, device=self.device)
+      # Clones share the buffers of the running stats.
+      stats_clones = (running_mean.clone(), running_var.clone())
+      save_mean = torch.empty(1, dtype=torch.float32, device=self.device)
+      save_invstd = torch.empty(1, dtype=torch.float32, device=self.device)
+
+      torch.ops.aten.native_batch_norm.out(
+          inp,
+          None,
+          None,
+          running_mean,
+          running_var,
+          True,
+          0.1,
+          1e-5,
+          out=out,
+          save_mean=save_mean,
+          save_invstd=save_invstd,
+      )
+
+      # DeferNever executes the write-back in the background; it must get
+      # there without anything reading `base`.
+      self.assertTrue(_eventually_materialized(base))
+      expected = torch.nn.functional.batch_norm(
+          inp.cpu(),
+          torch.zeros(1),
+          torch.ones(1),
+          training=True,
+          momentum=0.1,
+          eps=1e-5,
+      )
+      test_utils.assert_close(out.cpu(), expected)
+      self.assertTrue(torch.equal(base[:1].cpu(), torch.zeros(1, 1, 2, 2)))
+      del stats_clones
+
+  def test_aliased_copy_to_view_preserves_source_in_defer_never(self):
+    """Verifies that copy_ between overlapping views of one storage is correct."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base = torch.arange(16, dtype=torch.float32, device=self.device)
+      base[4:12].copy_(base[0:8])
+
+      expected = torch.arange(16, dtype=torch.float32)
+      expected[4:12] = expected[0:8].clone()
+      self.assertTrue(torch.equal(base.cpu(), expected))
+
+  def test_copy_to_view_preserves_shallow_clone_in_defer_never(self):
+    """Verifies that copy_ into a view does not corrupt a clone of its base."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base = torch.arange(16, dtype=torch.float32, device=self.device)
+      cloned_base = base.clone()
+
+      base[0:4].copy_(
+          torch.full((4,), 99.0, dtype=torch.float32, device=self.device)
+      )
+
+      expected_base = torch.arange(16, dtype=torch.float32)
+      expected_base[0:4] = 99.0
+      self.assertTrue(torch.equal(base.cpu(), expected_base))
+      self.assertTrue(
+          torch.equal(cloned_base.cpu(), torch.arange(16, dtype=torch.float32))
+      )
+
+  def _make_complex128(self, *shape: int) -> torch.Tensor:
+    """Returns a complex128 TPU tensor with distinct elements."""
+    numel = math.prod(shape)
+    real = torch.arange(numel, dtype=torch.float64).reshape(shape)
+    return torch.complex(real, -real).to(self.device)
+
+  def test_same_dtype_full_copy_compiles_nothing_in_launch_blocking(self):
+    """Verifies that same-dtype copy_ into a whole tensor compiles nothing.
+
+    There is no base to donate, so dest reuses src's buffer instead of
+    compiling a standalone copy (which XLA TPU doesn't support for some
+    transposed 128-bit dtypes, e.g. complex128). DeferNeverAndLaunchBlocking
+    compiles any dispatched op before copy_ returns.
+    """
+    with execution_mode.set_eager_mode(
+        EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    ):
+      # An unusual shape, so that a copy program wouldn't already be cached.
+      base = torch.ones(2, 7, 13, dtype=torch.float32, device=self.device)
+      _ = base.cpu()
+      src = base[1]
+      dst = torch.empty(7, 13, dtype=torch.float32, device=self.device)
+
+      start_misses = torch.tpu._get_cache_misses()
+      dst.copy_(src)
+      self.assertEqual(torch.tpu._get_cache_misses() - start_misses, 0)
+      self.assertTrue(torch.all(dst.cpu() == 1.0))
+
+  def test_copy_transposed_complex128_into_view_in_defer_never(self):
+    """Verifies copies of transposed complex128 views into a slice view."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      base = torch.zeros(5, 2, dtype=torch.complex128, device=self.device)
+      _ = base.cpu()
+      a = self._make_complex128(2, 3)
+
+      base[1:4].copy_(a.T)
+
+      expected = torch.zeros(5, 2, dtype=torch.complex128)
+      expected[1:4] = a.cpu().T
+      self.assertTrue(torch.equal(base.cpu(), expected))
 
 
 if __name__ == "__main__":

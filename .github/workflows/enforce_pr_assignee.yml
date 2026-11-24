@@ -1,0 +1,63 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Enforce PR Assignee
+
+"on":
+  # `pull_request_target` grants a write token for forked PRs and is safe
+  # because it checks out `main`, never PR code.
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - assigned
+      - unassigned
+      - labeled
+
+permissions: {}
+
+concurrency:
+  group: enforce-pr-assignee-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  enforce_assignee:
+    name: Enforce Quality Champion Assignee
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.user.login != 'copybara-service[bot]'
+    permissions:
+      contents: read       # Check out tools/enforce_pr_assignee.py and config.
+      pull-requests: write # Unassign non-champions and post an explanation.
+      statuses: write      # Set assignee-is-quality-champion on head SHA.
+    steps:
+      - name: Checkout enforcement script and champion list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+          sparse-checkout: |
+            .github
+            tools
+          persist-credentials: false
+      - name: Enforce PR assignee
+        env:
+          PYTHONPATH: .
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: |
+          python3 ./tools/enforce_pr_assignee.py

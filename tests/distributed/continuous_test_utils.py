@@ -26,11 +26,12 @@ keeps them, and their process group, alive across the class's tests:
 - If a test fails on any rank, the remaining tests in the class are skipped,
   because the process group may be left in a bad state.
 
-`TpuMultiProcContinuousTest` plugs TorchTPU's launch environment into that
-harness.
+`TpuMultiProcContinuousTest` and `GlooMultiProcContinuousTest` plug TorchTPU's
+TPU and CPU/gloo launch environments into that harness.
 """
 
 from collections.abc import Callable
+import datetime
 import functools
 import os
 import types
@@ -82,22 +83,14 @@ class _ReportSkipsQueue:
     return getattr(self._queue, name)
 
 
-class TpuMultiProcContinuousTest(
+class MultiProcContinuousTest(
     common_distributed.MultiProcContinuousTest,
     seed_test_utils.MultiProcessRepeatableTest,
 ):
-  """Runs each test on `world_size` TPU workers that persist across tests.
+  """Base class for persistent worker pools running tests across ranks.
 
-  Subclasses must set `world_size`.
+  Subclasses must set `world_size` and define `device_type` and `backend_str`.
   """
-
-  @classmethod
-  def device_type(cls) -> str:
-    return "tpu"
-
-  @classmethod
-  def backend_str(cls) -> str:
-    return "tpu_dist"
 
   @classmethod
   def setUpClass(cls) -> None:
@@ -131,8 +124,13 @@ class TpuMultiProcContinuousTest(
       super().setUp()
 
   @classmethod
+  def _prepare_launch_env(cls, world_size: int) -> None:
+    del world_size
+    multiprocessing.init_spawn()
+
+  @classmethod
   def _spawn_processes(cls, world_size: int) -> None:
-    distributed_utils.set_launch_env(nproc_per_node=world_size)
+    cls._prepare_launch_env(world_size)
     # The TorchTPU runtime requires MASTER_ADDR and MASTER_PORT, and all ranks
     # must agree on them, so they are picked here and inherited by the workers.
     launch_env = {
@@ -166,6 +164,11 @@ class TpuMultiProcContinuousTest(
     cls.pg = dist.distributed_c10d._get_default_group()
 
   @classmethod
+  def _fence_between_tests(cls) -> None:
+    if dist.is_initialized():
+      dist.barrier()
+
+  @classmethod
   def _run_test_given_id(cls, test_id: str, **kwargs: Any) -> None:
     # Upstream `MultiProcContinuousTest` seeds every rank identically. Seed per
     # rank instead, like `dist_run()`.
@@ -191,21 +194,13 @@ class TpuMultiProcContinuousTest(
       # next test, or exits after the last one) while another rank may still
       # have collectives from this test in flight. This also runs when the test
       # fails, so that the other ranks don't block here waiting for this one.
-      # Note: On `tpu_dist`, `dist.barrier()` executes an `allreduce` on a 1-element
-      # `int64` tensor (`ProcessGroupTpu::barrier`). Running `dist.barrier()` in
-      # `finally:` only avoids a hang if a rank fails *after* all collectives in
-      # the test (as in `_FailsOnOneRank`). If a test runs multiple collectives and
-      # one rank fails an assertion after the first collective while other ranks
-      # proceed to the second collective, the failing rank will block in
-      # `finally: dist.barrier()` before `_worker_loop` can catch the exception
-      # and put it onto `completion_queue`.
-      if dist.is_initialized():
-        # Synchronize before and after the barrier to ensure any deferred work
-        # or collectives don't fuse across test boundaries.
-        torch.accelerator.synchronize()
-        dist.barrier()
-        torch.accelerator.synchronize()
-      torch.tpu._clear_cache()
+      # Note: Running `dist.barrier()` in `finally:` only avoids a hang if a rank
+      # fails *after* all collectives in the test (as in `_FailsOnOneRank`). If a
+      # test runs multiple collectives and one rank fails an assertion after the
+      # first collective while other ranks proceed to the second collective, the
+      # failing rank will block in `finally: dist.barrier()` before `_worker_loop`
+      # can catch the exception and put it onto `completion_queue`.
+      cls._fence_between_tests()
 
   @classmethod
   def _worker_loop(
@@ -257,3 +252,89 @@ class TpuMultiProcContinuousTest(
       for process in cls.processes:
         process.kill()
     super().tearDownClass()
+
+
+class TpuMultiProcContinuousTest(MultiProcContinuousTest):
+  """Runs each test on `world_size` TPU workers that persist across tests.
+
+  Subclasses must set `world_size`.
+  """
+
+  @classmethod
+  def device_type(cls) -> str:
+    return "tpu"
+
+  @classmethod
+  def backend_str(cls) -> str:
+    return "tpu_dist"
+
+  @classmethod
+  def _prepare_launch_env(cls, world_size: int) -> None:
+    if cls.device_type() == "tpu":
+      distributed_utils.set_launch_env(nproc_per_node=world_size)
+    else:
+      super()._prepare_launch_env(world_size)
+
+  @classmethod
+  def _fence_between_tests(cls) -> None:
+    if cls.device_type() != "tpu":
+      super()._fence_between_tests()
+      return
+    # On `tpu_dist`, `dist.barrier()` executes an `allreduce` on a 1-element
+    # `int64` tensor (`ProcessGroupTpu::barrier`).
+    if dist.is_initialized():
+      # Synchronize before and after the barrier to ensure any deferred work
+      # or collectives don't fuse across test boundaries.
+      torch.accelerator.synchronize()
+      dist.barrier()
+      torch.accelerator.synchronize()
+    torch.tpu._clear_cache()
+
+
+class GlooMultiProcContinuousTest(MultiProcContinuousTest):
+  """Runs each test on `world_size` CPU gloo workers that persist across tests.
+
+  Subclasses must set `world_size`.
+  """
+
+  # Match c10d.default_pg_timeout so slow sanitizer builds don't time out during
+  # initial gloo full-mesh rendezvous or teardown barriers.
+  timeout = datetime.timedelta(minutes=30)
+
+  @classmethod
+  def device_type(cls) -> str:
+    return "cpu"
+
+  @classmethod
+  def backend_str(cls) -> str:
+    return "gloo"
+
+  @classmethod
+  def _gloo_barrier(cls) -> None:
+    # Call `pg.barrier()` directly instead of `dist.barrier()`: `dist.barrier()`
+    # queries `torch._C._get_accelerator()`, which on TPU hosts triggers PJRT
+    # initialization and fails without TPU launch env vars.
+    if dist.is_initialized() and cls.pg is not None:
+      opts = dist.BarrierOptions()
+      opts.device = torch.device("cpu")
+      work = cls.pg.barrier(opts=opts)
+      if work is not None:
+        work.wait()
+
+  @classmethod
+  def _init_pg(cls, rank: int, world_size: int, rdvz_file: str | None) -> None:
+    super()._init_pg(rank, world_size, rdvz_file)
+    # Wait for all ranks to finish gloo's async connectFullMesh before any test
+    # starts (or before workers shut down if all tests skip).
+    cls._gloo_barrier()
+
+  @classmethod
+  def _fence_between_tests(cls) -> None:
+    cls._gloo_barrier()
+
+  @classmethod
+  def _cleanup_worker(cls) -> None:
+    # Wait for every rank to reach shutdown before any rank closes its gloo
+    # sockets in `destroy_process_group()`. On failure, `tearDownClass` kills
+    # the workers instead of running `_cleanup_worker`.
+    cls._gloo_barrier()

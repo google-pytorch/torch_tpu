@@ -14,6 +14,7 @@
 
 """Tests for measure()."""
 
+import contextlib
 import gc
 import threading
 import unittest
@@ -1585,6 +1586,187 @@ class MeasurePostWarmupXprofTest(_XprofTestCase):
     hooks_after_xprof = events[xprof_end_idx:].count("post_warmup_hook")
     self.assertEqual(hooks_inside_xprof, 1)
     self.assertEqual(hooks_after_xprof, 1)
+
+
+class _ThreadLocalClock:
+  """Per-thread `time.perf_counter` fake for independent rank clocks."""
+
+  def __init__(self):
+    self._local = threading.local()
+    self._lock = threading.Lock()
+    self._clocks = []
+
+  def _clock(self) -> fakes.FakeClock:
+    if not hasattr(self._local, "clock"):
+      clock = fakes.FakeClock()
+      self._local.clock = clock
+      with self._lock:
+        self._clocks.append(clock)
+    return self._local.clock
+
+  def __call__(self) -> float:
+    return self._clock()()
+
+  def advance(self, seconds: float) -> None:
+    self._clock().advance(seconds)
+
+  def sync_all(self) -> None:
+    """Advances every registered rank clock to the latest rank's timestamp."""
+    with self._lock:
+      if not self._clocks:
+        return
+      latest = max(c.now for c in self._clocks)
+      for c in self._clocks:
+        c.now = latest
+
+
+class _CollectiveStep(fakes.CountingStep):
+  """Simulated distributed step blocking at a collective each call."""
+
+  def __init__(
+      self,
+      clock: _ThreadLocalClock,
+      barrier: threading.Barrier,
+      exit_barrier: threading.Barrier,
+      step_seconds=(1.0,),
+  ):
+    super().__init__(clock=clock, step_seconds=step_seconds)
+    self._barrier = barrier
+    self._exit_barrier = exit_barrier
+
+  def __call__(self):
+    self._barrier.wait()
+    out = super().__call__()
+    # Wait for all ranks to advance their own clocks before syncing to the
+    # slowest rank's timestamp.
+    if self._exit_barrier.wait() == 0:
+      self.clock.sync_all()
+    self._exit_barrier.wait()
+    return out
+
+
+class MeasureDistributedXprofTest(seed_test_utils.RepeatableTest):
+  """Tests `measure()` across threaded ranks when only rank 0 captures xprof."""
+
+  def setUp(self):
+    super().setUp()
+    self.addCleanup(gc.enable)
+    self.addCleanup(gc.unfreeze)
+    self.clock = _ThreadLocalClock()
+    self.xprof_sessions = fakes.FakeXprofSessionFactory(
+        clock=self.clock,
+        overhead_seconds=5.0,
+        xspace=fakes.make_xspace({"/device:TPU:0": [1]}),
+    )
+    self.traceme_threads = []
+
+    def _recording_traceme(name, step_num=None):
+      del name, step_num
+      self.traceme_threads.append(threading.current_thread().name)
+      return contextlib.nullcontext()
+
+    self.enter_context(
+        mock.patch.object(measure_lib.time, "perf_counter", new=self.clock)
+    )
+    self.enter_context(
+        mock.patch.object(
+            measure_lib.xprof_adapter, "XprofSession", self.xprof_sessions
+        )
+    )
+    self.enter_context(
+        mock.patch.object(
+            measure_lib.xprof_adapter, "TraceMe", _recording_traceme
+        )
+    )
+
+  def _run_ranks(self, world_size: int, rank_fn):
+    results = [None] * world_size
+    errors = []
+    errors_lock = threading.Lock()
+
+    def _worker(rank: int):
+      try:
+        results[rank] = rank_fn(rank)
+      except BaseException as exc:  # pylint: disable=broad-exception-caught
+        with errors_lock:
+          errors.append((rank, exc))
+
+    threads = [
+        threading.Thread(target=_worker, args=(r,), name=f"rank-{r}")
+        for r in range(world_size)
+    ]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=10.0)
+      self.assertFalse(t.is_alive(), f"{t.name} hung during measure()")
+    if errors:
+      rank, exc = errors[0]
+      raise AssertionError(f"Rank {rank} failed: {exc}") from exc
+    return results
+
+  def test_all_ranks_run_xprof_steps_when_only_rank_0_captures(self):
+    class _XspaceDeviceOps(fakes.RecordingOps):
+
+      def get_device_time_from_xspace(self, xspace, expected_steps=None):
+        del xspace
+        return 0.4 * (expected_steps or 1)
+
+    min_warmup_steps = 2
+    post_warmup_steps = 2
+    xprof_steps = 2
+    # RecordingOps never recompiles, so warmup stops after min_warmup_steps.
+    num_steps = min_warmup_steps + post_warmup_steps + xprof_steps
+    collective_barrier = threading.Barrier(2, timeout=5.0)
+    exit_barrier = threading.Barrier(2, timeout=5.0)
+    steps_by_rank = [
+        _CollectiveStep(
+            self.clock, collective_barrier, exit_barrier, step_seconds=[1.0]
+        )
+        for _ in range(2)
+    ]
+    ops_by_rank = [_XspaceDeviceOps(), _XspaceDeviceOps()]
+
+    with flagsaver.flagsaver(
+        min_warmup_steps=min_warmup_steps,
+        max_warmup_steps=5,
+        post_warmup_steps=post_warmup_steps,
+        xprof_steps=xprof_steps,
+    ):
+      metrics_by_rank = self._run_ranks(
+          2,
+          lambda r: measure_lib.measure(
+              steps_by_rank[r],
+              ops_by_rank[r],
+              name="dist_xprof",
+              enable_xprof=True,
+              capture_xprof=(r == 0),
+              clock=self.clock,
+          ),
+      )
+
+    # Both ranks run the warmup, post-warmup and xprof steps, so their
+    # collectives match.
+    self.assertEqual(steps_by_rank[0].calls, num_steps)
+    self.assertEqual(steps_by_rank[1].calls, num_steps)
+    # Only rank 0 starts XprofSessions (warmup + post_warmup) and emits TraceMe;
+    # rank 1 never opens a session.
+    self.assertLen(self.xprof_sessions.started, 2)
+    self.assertEqual(self.traceme_threads, ["rank-0", "rank-0"])
+    self.assertEqual(
+        metrics_by_rank[0].post_warmup_run_session_xprof_url,
+        "http://xprof/?session_id=fake_session",
+    )
+    self.assertAlmostEqual(
+        metrics_by_rank[0].average_post_warmup_device_time_seconds, 0.4
+    )
+    self.assertIsNone(metrics_by_rank[1].post_warmup_run_session_xprof_url)
+    self.assertEqual(
+        metrics_by_rank[1].average_post_warmup_device_time_seconds, -1.0
+    )
+    # 2 warmup + 2 timed steps of 1.0s = 4.0s; rank 0's xprof startup/teardown
+    # and profiled steps are excluded.
+    self.assertAlmostEqual(metrics_by_rank[0].e2e_wall_time_seconds, 4.0)
 
 
 if __name__ == "__main__":

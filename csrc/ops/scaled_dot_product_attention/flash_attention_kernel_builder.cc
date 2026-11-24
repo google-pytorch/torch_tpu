@@ -51,6 +51,7 @@
 #include "csrc/internal/device/vmem_capacity.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/internal/mosaic/kiln_custom_call.h"
+#include "csrc/internal/mosaic/kiln_utils.h"
 #include "csrc/ops/binary.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/precision_context.h"
@@ -65,8 +66,11 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/TypeRange.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -444,29 +448,6 @@ mlir::MlirOp PackPhiloxSeedAndOffsetTo4xI32(mlir::MlirOp philox_seed,
       /*dimension=*/0));
 }
 
-kiln::DType ToKilnDType(mlir::ElementType element_type) {
-  switch (element_type) {
-    case mlir::ElementType::PRED:
-      return kiln::bool_;
-    case mlir::ElementType::I8:
-      return kiln::i8;
-    case mlir::ElementType::I16:
-      return kiln::i16;
-    case mlir::ElementType::I32:
-      return kiln::i32;
-    case mlir::ElementType::I64:
-      return kiln::i64;
-    case mlir::ElementType::F16:
-      return kiln::f16;
-    case mlir::ElementType::BF16:
-      return kiln::bf16;
-    case mlir::ElementType::F32:
-      return kiln::f32;
-    default:
-      ABSL_CHECK(false) << "Unsupported element type for Kiln";  // CRASH_OK
-  }
-}
-
 absl::StatusOr<FlashAttnConfig> CreateFlashAttnConfig(
     mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
     const std::optional<mlir::MlirOp>& attn_bias, bool is_causal,
@@ -506,7 +487,7 @@ absl::StatusOr<FlashAttnConfig> CreateFlashAttnConfig(
   config.return_lse = return_lse;
   TT_ASSIGN_OR_RETURN(const mlir::ElementType element_type,
                       GetElementType(query));
-  config.element_type = ToKilnDType(element_type);
+  TT_ASSIGN_OR_RETURN(config.element_type, ToKilnDType(element_type));
   if (config.element_type == kiln::f32) {
     if (precision ==
         mlir::stablehlo::Precision::HIGHEST) {  // EXPLICIT_PRECISION_OK=sdpa
@@ -563,6 +544,44 @@ mlir::MlirOp ReshapeMask(mlir::MlirOp mask_mlir, int batch_size) {
     return mlir::stablehlo::Reshape(mask_mlir, new_dims);
   }
   return mask_mlir;
+}
+
+// Inserts a sequence-minor (`{2, 3, 1, 0}`) `@LayoutConstraint` barrier before
+// forward FlashAttention when `head_dim < kLanes` and `seq_len >= kLanes`.
+//
+// Otherwise XLA LayoutAssignment propagates the kernel's `head_dim`-minor
+// `{3, 2, 1, 0}` layout backward into fused QKV/RoPE ops, wasting TPU lanes
+// and HBM padding. Mosaic `tpu_custom_call` only supports C-order layouts, so
+// avoiding the boundary relayout copy altogether would require a separate
+// `[B, H, D, S]` kernel variant (still needing `[B, H, S, D]` for short
+// sequences). Backward keeps the native `{3, 2, 1, 0}` layout.
+[[nodiscard]] mlir::MlirOp MaybeConstrainSmallHeadDimLayout(
+    mlir::MlirBuilder& builder, mlir::MlirOp tensor_4d) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(tensor_4d);
+  ABSL_DCHECK_EQ(type.getRank(), 4);
+  const int64_t seq_len = type.getDimSize(2);
+  const int64_t head_dim = type.getDimSize(3);
+  if (head_dim <= 0 || head_dim >= kLanes || seq_len < kLanes) {
+    return tensor_4d;
+  }
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  const mlir::DenseIntElementsAttr seq_minor_layout =
+      op_builder.getIndexTensorAttr({2, 3, 1, 0});
+  auto custom_call = mlir::stablehlo::CustomCallOp::create(
+      op_builder, builder.getLoc(), mlir::TypeRange{type},
+      mlir::ValueRange{tensor_4d.getValue()},
+      op_builder.getStringAttr("LayoutConstraint"),
+      /*has_side_effect=*/op_builder.getBoolAttr(false),
+      /*backend_config=*/op_builder.getStringAttr(""),
+      mlir::stablehlo::CustomCallApiVersionAttr::get(
+          op_builder.getContext(),
+          mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL),
+      /*called_computations=*/op_builder.getArrayAttr({}),
+      /*operand_layouts=*/op_builder.getArrayAttr({seq_minor_layout}),
+      /*result_layouts=*/op_builder.getArrayAttr({seq_minor_layout}),
+      /*output_operand_aliases=*/nullptr,
+      /*result_tilings=*/nullptr);
+  return mlir::MlirOp(builder, custom_call.getResult(0));
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>>
@@ -630,12 +649,12 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
 
     // The sequences are not padded to a multiple of the tile sizes: the kernel
     // handles the out-of-bounds tail of the last tile itself.
-    mlir::MlirOp query_4d =
-        flatten_batch_dims(query_mlir, config.batch_size, rank - 3);
-    mlir::MlirOp key_4d =
-        flatten_batch_dims(key_mlir, config.batch_size, rank - 3);
-    mlir::MlirOp value_4d =
-        flatten_batch_dims(value_mlir, config.batch_size, rank - 3);
+    mlir::MlirOp query_4d = MaybeConstrainSmallHeadDimLayout(
+        builder, flatten_batch_dims(query_mlir, config.batch_size, rank - 3));
+    mlir::MlirOp key_4d = MaybeConstrainSmallHeadDimLayout(
+        builder, flatten_batch_dims(key_mlir, config.batch_size, rank - 3));
+    mlir::MlirOp value_4d = MaybeConstrainSmallHeadDimLayout(
+        builder, flatten_batch_dims(value_mlir, config.batch_size, rank - 3));
 
     Dimensions out_dims_4d = {config.batch_size, config.num_heads,
                               config.q_sequence_length, config.vo_head_dim};

@@ -13,9 +13,9 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# cbasile-g
 # lukeboyer
-# ghpvnist
+# cbasile-g
+# gjh8
 
 load(
     "//build_files:build_defs.bzl",

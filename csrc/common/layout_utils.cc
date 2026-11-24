@@ -36,7 +36,6 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/layout.h"
-#include "xla/pjrt/pjrt_client.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
 
@@ -142,17 +141,15 @@ absl::StatusOr<std::vector<xla::Layout>> ResolveXlaLayouts(
   if (shapes.empty()) {
     return std::vector<xla::Layout>{};
   }
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
-                      PjrtBackend::GetInstance().GetClient());
   std::vector<xla::Layout> layouts;
   layouts.reserve(shapes.size());
   for (const Shape& shape : shapes) {
     TT_ASSIGN_OR_RETURN(
         xla::Layout layout,
-        AdaptXlaError(client->GetDefaultLayout(
-                          ConvertTo<xla::PrimitiveType>(shape.dtype()),
-                          shape.dimensions()),
-                      /*context=*/"failed to get default layout"));
+        WrapXlaError(PjrtBackend::GetInstance().GetDefaultLayout(
+                         ConvertTo<xla::PrimitiveType>(shape.dtype()),
+                         shape.dimensions()),
+                     /*context=*/"failed to get default layout"));
     ApplyCustomLayout(shape, layout);
     layouts.push_back(std::move(layout));
   }
@@ -164,13 +161,11 @@ ExtractCustomLayoutIfDifferentFromDefault(const Shape& shape) {
   if (!shape.layout().has_value()) {
     return std::nullopt;
   }
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
-                      PjrtBackend::GetInstance().GetClient());
   TT_ASSIGN_OR_RETURN(
       const xla::Layout default_layout,
-      AdaptXlaError(
-          client->GetDefaultLayout(ConvertTo<xla::PrimitiveType>(shape.dtype()),
-                                   shape.dimensions()),
+      WrapXlaError(
+          PjrtBackend::GetInstance().GetDefaultLayout(
+              ConvertTo<xla::PrimitiveType>(shape.dtype()), shape.dimensions()),
           /*context=*/"failed to get default layout"));
   xla::Layout resolved_layout = default_layout;
   ApplyCustomLayout(shape, resolved_layout);

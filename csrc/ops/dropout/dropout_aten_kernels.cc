@@ -27,6 +27,7 @@
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/Optional.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -171,6 +172,32 @@ NAryMlirOpBuilder<2, 1> GetDropoutBackwardFunctional(double scale) {
   };
 }
 
+at::Tensor AtenDropoutBackwardCommonImpl(const at::Tensor& grad_output,
+                                         const at::Tensor& mask, double scale,
+                                         at::ScalarType expected_mask_dtype,
+                                         OpParamCacheKeys param_keys) {
+  TT_CHECK_THROW(mask.scalar_type() == expected_mask_dtype,
+                 error::kInvalidArgument)
+      << "expected mask dtype to be " << ToString(expected_mask_dtype)
+      << ", got " << ToString(mask.scalar_type());
+  TT_ASSIGN_OR_THROW(const auto out_dims, InferSize(grad_output, mask));
+  at::ScalarType output_scalar_type = grad_output.scalar_type();
+  if (!c10::isFloatingType(output_scalar_type) &&
+      !c10::isComplexType(output_scalar_type)) {
+    output_scalar_type = at::kFloat;
+  }
+  TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
+                     ConvertTo<mlir::ElementType>(output_scalar_type));
+  TT_ASSIGN_OR_THROW(
+      auto output_buf,
+      (DispatchOp<2, 1>(GetDropoutBackwardFunctional(scale),
+                        {grad_output, mask},
+                        {.out_dtype = output_dtype,
+                         .out_dims = out_dims,
+                         .op_param_cache_keys = std::move(param_keys)})));
+  return MakeTensor(std::move(output_buf));
+}
+
 }  // namespace
 
 at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
@@ -179,28 +206,27 @@ at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
       OpName::kNativeDropoutBackward, param_keys, (grad_output, mask, scale), {
         TT_CHECK_THROW(grad_output.scalar_type() != at::kBool &&
                            grad_output.scalar_type() != at::kInt &&
-                           grad_output.scalar_type() != at::kLong,
+                           grad_output.scalar_type() != at::kLong &&
+                           !IsLowPrecisionFloat(grad_output) &&
+                           grad_output.scalar_type() != at::kComplexHalf,
                        error::kPythonNotImplementedError)
             << "not implemented for " << ToString(grad_output.scalar_type());
-        TT_CHECK_THROW(mask.scalar_type() == at::kBool, error::kInvalidArgument)
-            << "expected mask dtype to be bool, got "
-            << ToString(mask.scalar_type());
-        at::ScalarType output_scalar_type = grad_output.scalar_type();
-        if (!c10::isFloatingType(output_scalar_type) &&
-            !c10::isComplexType(output_scalar_type)) {
-          output_scalar_type = at::kFloat;
-        }
-        TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
-                           ConvertTo<mlir::ElementType>(output_scalar_type));
-        TT_ASSIGN_OR_THROW(
-            auto output_buf,
-            (DispatchOp<2, 1>(GetDropoutBackwardFunctional(scale),
-                              {grad_output, mask},
-                              {.out_dtype = output_dtype,
-                               .out_dims = grad_output.sizes(),
-                               .op_param_cache_keys = std::move(param_keys)})));
-        return MakeTensor(std::move(output_buf));
+        return AtenDropoutBackwardCommonImpl(grad_output, mask, scale,
+                                             at::kBool, std::move(param_keys));
       });
+}
+
+at::Tensor AtenMaskedScale(const at::Tensor& self, const at::Tensor& mask,
+                           double scale) {
+  TT_KERNEL(OpName::kMaskedScale, param_keys, (self, mask, scale), {
+    TT_CHECK_THROW(
+        (self.is_floating_point() && !IsLowPrecisionFloat(self)) ||
+            (self.is_complex() && self.scalar_type() != at::kComplexHalf),
+        error::kPythonNotImplementedError)
+        << "not implemented for " << ToString(self.scalar_type());
+    return AtenDropoutBackwardCommonImpl(self, mask, scale, at::kByte,
+                                         std::move(param_keys));
+  });
 }
 
 }  // namespace torch_tpu

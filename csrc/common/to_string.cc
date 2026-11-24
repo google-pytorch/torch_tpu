@@ -161,7 +161,11 @@ std::string ToString(const at::Scalar& scalar, const std::string_view name) {
   if (scalar.isFloatingPoint()) {
     absl::StrAppend(&result, scalar.toDouble());
   } else if (scalar.isIntegral(/*include_bool=*/false)) {
-    absl::StrAppend(&result, scalar.toLong());
+    if (scalar.type() == at::ScalarType::UInt64) {
+      absl::StrAppend(&result, scalar.toUInt64());
+    } else {
+      absl::StrAppend(&result, scalar.toLong());
+    }
   } else if (scalar.isBoolean()) {
     absl::StrAppend(&result, scalar.toBool() ? "true" : "false");
   } else if (scalar.isComplex()) {

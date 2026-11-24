@@ -284,6 +284,36 @@ ValueHandle RefBase::AtImpl(llvm::ArrayRef<Indexer> indexers) const {
   return SliceMemRefImpl(handle(), dims);
 }
 
+ValueHandle RefBase::BitcastImpl(DType dtype) const {
+  for (const DType checked_dtype : {dtype_, dtype}) {
+    ABSL_CHECK(!checked_dtype.IsBool() &&  // CRASH_OK
+               checked_dtype.GetIntOrFloatBitWidth() <= 32u)
+        << "Bitcast() does not support bool (i1) or 64-bit element types";
+  }
+  const mlir::MemRefType type = MemRefTypeOf(*this);
+  llvm::SmallVector<int64_t> shape(type.getShape());
+  const int64_t bits = dtype_.GetIntOrFloatBitWidth();
+  const int64_t new_bits = dtype.GetIntOrFloatBitWidth();
+  if (bits != new_bits) {
+    ABSL_CHECK_GE(rank(), 2)  // CRASH_OK
+        << "Bitcast() to another bitwidth requires a ref of rank 2 or more";
+    const int64_t axis = rank() - 2;
+    ABSL_CHECK(!IsDynamicDim(axis))  // CRASH_OK
+        << "Bitcast() to another bitwidth requires a static second-minor "
+           "dimension";
+    ABSL_CHECK_EQ(shape[axis] * bits % new_bits, 0)  // CRASH_OK
+        << "Bitcast() requires the second-minor dimension to hold a whole "
+           "number of "
+        << dtype.ToString() << " rows";
+    shape[axis] = shape[axis] * bits / new_bits;
+  }
+  return ValueHandle(tpu::MemRefBitcastOp::create(
+      CurrentBuilder(),
+      mlir::MemRefType::get(shape, ToMlirType(dtype), nullptr,
+                            type.getMemorySpace()),
+      unwrap(*this)));
+}
+
 ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims) {
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
   mlir::Value current = base.value();

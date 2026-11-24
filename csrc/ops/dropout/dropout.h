@@ -32,7 +32,12 @@ namespace torch_tpu {
 absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
     mlir::MlirOp rng_input_state, mlir::MlirOp input, double p);
 
-// Builds the SHLO for dropout backward.
+// Builds the SHLO for dropout backward (`native_dropout_backward` and
+// `_masked_scale`). Intentional divergences from CUDA `masked_scale_kernel`:
+// non-boolean (`uint8`) masks are treated as binary (`mask != 0`) rather than
+// integer multipliers, and masked-out elements select `0.0` even when `scale`
+// is `inf` (e.g. `fused_dropout` backward at `p=0.0`) or `grad_output` is
+// `inf`/`nan`.
 absl::StatusOr<MlirOpResults<1>> BuildDropoutBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp mask, double scale);
 

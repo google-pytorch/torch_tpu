@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import os
 
 from absl.testing import absltest
@@ -23,6 +24,20 @@ from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
+
+
+def _make_local_tensor(
+    tensor_size: int,
+    ndims: int,
+    rank: int,
+    world_size: int,
+    trailing_dim_size: int = 4,
+) -> torch.Tensor:
+  chunk_size = (tensor_size + world_size - 1) // world_size
+  start = min(rank * chunk_size, tensor_size)
+  end = min((rank + 1) * chunk_size, tensor_size)
+  local_shape = [end - start] + [trailing_dim_size] * (ndims - 1)
+  return torch.ones(*local_shape, dtype=torch.float32, device="tpu")
 
 
 def _replicate_tensor(
@@ -59,12 +74,9 @@ def _replicate_tensor(
     )
     return dtensor.redistribute(device_mesh, [dt.Replicate()]).to_local()
 
-  chunk_size = (tensor_size + world_size - 1) // world_size
-  start = min(rank * chunk_size, tensor_size)
-  end = min((rank + 1) * chunk_size, tensor_size)
-  local_size = end - start
-  local_shape = [local_size] + trailing_dims
-  local_tensor = torch.ones(*local_shape, dtype=torch.float32, device="tpu")
+  local_tensor = _make_local_tensor(
+      tensor_size, ndims, rank, world_size, trailing_dim_size
+  )
 
   if compiled:
     func = torch.compile(
@@ -109,6 +121,31 @@ class UnevenShardingTest(continuous_test_utils.TpuMultiProcContinuousTest):
         ndims=ndims,
         pass_shape_stride=True,
     )
+
+  @parameterized.named_parameters(
+      ("1d_small", 1, _small_size),
+      ("1d_uneven", 1, _uneven_size),
+      ("2d_small", 2, _small_size),
+      ("2d_uneven", 2, _uneven_size),
+  )
+  def test_from_local_eager_without_shape(self, ndims, tensor_size):
+    device_mesh = dt.init_device_mesh("tpu", (self.world_size,))
+    local_tensor = _make_local_tensor(
+        tensor_size, ndims, self.rank, self.world_size
+    )
+    expected_error = contextlib.nullcontext()
+    if os.environ.get("TORCH_TPU_ENABLE_DEBUG_CHECKS") == "1":
+      expected_error = self.assertRaisesRegex(  # ASSERT_RAISES_OK=PyTorch error
+          ValueError, "Inconsistent tensor metadata"
+      )
+    with (
+        self.assertWarnsRegex(
+            UserWarning,
+            "`DTensor.from_local` called without `shape` and `stride`",
+        ),
+        expected_error,
+    ):
+      dt.DTensor.from_local(local_tensor, device_mesh, [dt.Shard(0)])
 
 
 if __name__ == "__main__":

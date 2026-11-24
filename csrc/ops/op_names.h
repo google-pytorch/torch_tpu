@@ -93,7 +93,9 @@ enum class OpName {
   kBaddbmmDtype,
   kBaddbmmDtypeOut,
   kBaddbmmOut,
+  kBernoulli,
   kBernoulliOut,
+  kBernoulliP,
   kBernoulli_Float,
   kBernoulli_Tensor,
   kBinCount,
@@ -242,6 +244,7 @@ enum class OpName {
   kFill_Scalar,
   kFill_Tensor,
   kFlatten,
+  kFlexAttentionBwdDkv,
   kFlexAttentionFwd,
   kFlip,
   kFloorDivide,
@@ -481,6 +484,8 @@ enum class OpName {
   kIndexTensorOut,
   kIndices,
   kIndicesInternal,
+  kIntMm,
+  kIntMmOut,
   kIrshiftScalar,
   kIrshiftTensor,
   kIsCoalesced,
@@ -557,6 +562,7 @@ enum class OpName {
   kMaskedFillTensor,
   kMaskedFill_Scalar,
   kMaskedFill_Tensor,
+  kMaskedScale,
   kMaskedScatter_,
   kMaskedSelect,
   kMaskedSelectOut,
@@ -592,6 +598,7 @@ enum class OpName {
   kMmDtypeOut,
   kMmOut,
   kMseLossBackward,
+  kMseLossBackwardGradInput,
   kMseLossOut,
   kMul,
   kMulOut,
@@ -833,6 +840,12 @@ enum class OpName {
   kTorchTpuInternalZeroSize,
   kTorchTpuOptimizationBarrier,
   kTorchTpuStorageAllocate,
+  kTpuGruInput,
+  kTpuGruInputBackward,
+  kTpuGruInputForwardCached,
+  kTpuLstmInput,
+  kTpuLstmInputBackward,
+  kTpuLstmInputForwardCached,
   kTransformerEncoderLayerFwd,
   kTrilIndices,
   kTrilOut,
@@ -843,8 +856,11 @@ enum class OpName {
   kUniform_,
   kUnique2,
   kUniqueConsecutive,
+  kUniqueCountsFromSorted,
   kUniqueDim,
   kUniqueDimConsecutive,
+  kUniqueSortAndCount,
+  kUniqueValuesFromSorted,
   kUnsqueeze,
   kUnsqueezeCopy,
   kUnsqueezeCopyOut,
@@ -1039,8 +1055,12 @@ ToString(  // NOLINT(google-readability-function-size)
       return "baddbmm.dtype_out";
     case OpName::kBaddbmmOut:
       return "baddbmm.out";
+    case OpName::kBernoulli:
+      return "bernoulli";
     case OpName::kBernoulliOut:
       return "bernoulli.out";
+    case OpName::kBernoulliP:
+      return "bernoulli.p";
     case OpName::kBernoulli_Float:
       return "bernoulli_.float";
     case OpName::kBernoulli_Tensor:
@@ -1337,6 +1357,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "fill_.Tensor";
     case OpName::kFlatten:
       return "flatten";
+    case OpName::kFlexAttentionBwdDkv:
+      return "_flex_attention_bwd_dkv";
     case OpName::kFlexAttentionFwd:
       return "_flex_attention_fwd";
     case OpName::kFlip:
@@ -1815,6 +1837,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "indices";
     case OpName::kIndicesInternal:
       return "_indices";
+    case OpName::kIntMm:
+      return "_int_mm";
+    case OpName::kIntMmOut:
+      return "_int_mm.out";
     case OpName::kIrshiftScalar:
       return "__irshift__.Scalar";
     case OpName::kIrshiftTensor:
@@ -1967,6 +1993,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "masked_fill_.Scalar";
     case OpName::kMaskedFill_Tensor:
       return "masked_fill_.Tensor";
+    case OpName::kMaskedScale:
+      return "_masked_scale";
     case OpName::kMaskedScatter_:
       return "masked_scatter_";
     case OpName::kMaskedSelect:
@@ -2037,6 +2065,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "mm.out";
     case OpName::kMseLossBackward:
       return "mse_loss_backward";
+    case OpName::kMseLossBackwardGradInput:
+      return "mse_loss_backward.grad_input";
     case OpName::kMseLossOut:
       return "mse_loss.out";
     case OpName::kMul:
@@ -2523,6 +2553,18 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_optimization_barrier";
     case OpName::kTorchTpuStorageAllocate:
       return "storage.allocate";
+    case OpName::kTpuGruInput:
+      return "_gru_input";
+    case OpName::kTpuGruInputBackward:
+      return "_gru_input_backward";
+    case OpName::kTpuGruInputForwardCached:
+      return "_gru_input_forward_cached";
+    case OpName::kTpuLstmInput:
+      return "_lstm_input";
+    case OpName::kTpuLstmInputBackward:
+      return "_lstm_input_backward";
+    case OpName::kTpuLstmInputForwardCached:
+      return "_lstm_input_forward_cached";
     case OpName::kTransformerEncoderLayerFwd:
       return "_transformer_encoder_layer_fwd";
     case OpName::kTrilIndices:
@@ -2543,10 +2585,16 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_unique2";
     case OpName::kUniqueConsecutive:
       return "unique_consecutive";
+    case OpName::kUniqueCountsFromSorted:
+      return "unique_counts_from_sorted";
     case OpName::kUniqueDim:
       return "unique_dim";
     case OpName::kUniqueDimConsecutive:
       return "unique_dim_consecutive";
+    case OpName::kUniqueSortAndCount:
+      return "unique_sort_and_count";
+    case OpName::kUniqueValuesFromSorted:
+      return "unique_values_from_sorted";
     case OpName::kUnsqueeze:
       return "unsqueeze";
     case OpName::kUnsqueezeCopy:

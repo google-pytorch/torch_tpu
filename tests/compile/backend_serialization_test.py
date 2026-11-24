@@ -113,6 +113,40 @@ class BackendSerializationTest(seed_test_utils.RepeatableTest):
         second_run = self._compile_simple_with_registered_backend()
         self.assertEqual(second_run.get("autograd_cache_hit"), 1)
 
+  def test_float4_e2m1fn_x2_uses_aot_autograd_cache(self):
+    # Packed shape [100, 64] corresponds to unpacked XLA shape [100, 128];
+    # without unpacking in PyGetDefaultLayout, this default-layout FP4 input is
+    # misclassified as non-default and AOTAutogradCache is disabled.
+    def add_one_bytes(x):
+      return x.view(torch.uint8) + 1
+
+    def run_once():
+      torch._dynamo.reset()
+      counters.clear()
+      fp4_x = (
+          torch.zeros(100, 64, dtype=torch.uint8)
+          .view(torch.float4_e2m1fn_x2)
+          .to(torch.device("tpu"))
+      )
+      compiled_fn = torch.compile(
+          add_one_bytes,
+          backend="tpu",
+          fullgraph=True,
+          dynamic=False,
+      )
+      result = compiled_fn(fp4_x).cpu()
+      utils.assert_close(result, torch.ones(100, 64, dtype=torch.uint8))
+      return dict(counters["aot_autograd"])
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+      with temporary_cache_dir(cache_dir):
+        first_run = run_once()
+        self.assertEqual(first_run.get("autograd_cache_miss"), 1)
+        self.assertEqual(first_run.get("autograd_cache_saved"), 1)
+
+        second_run = run_once()
+        self.assertEqual(second_run.get("autograd_cache_hit"), 1)
+
   def test_fallback_key_entry_stays_in_memory(self):
     # With no torch cache key (autograd cache disabled) the backend builds the
     # bundled entry under its own `torchtpu_` key, which torch never looks up:

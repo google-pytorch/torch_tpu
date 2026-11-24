@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# ghpvnist
 # gjh8
+# vladbelous
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
@@ -44,6 +44,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],

@@ -43,6 +43,7 @@
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
+#include "c10/core/ScalarType.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
@@ -233,6 +234,28 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
   if (!is_pinned_host) {
     is_pinned_host = PyIsPinnedHost(arg_tensor);
   }
+  // Placeholder DeviceBufferRefs are always contiguous. When arg_tensor already
+  // has a trivial layout (contiguous, offset 0, non-empty), its own shape is
+  // the base shape and no view needs to be reconstructed, matching the fast
+  // path in PrepareCompiledModeArgumentsImpl (compiled_mode.cc). Non-trivial
+  // tensors (non-contiguous views, non-zero offset, or empty) fall through
+  // below to compute the minimal contiguous base shape and wrap the
+  // placeholder with as_strided.
+  if (TensorHasTrivialLayout(arg_tensor)) {
+    TT_ASSIGN_OR_THROW(
+        at::Tensor placeholder,
+        MakePlaceholder(arg_tensor.sizes(), arg_tensor.scalar_type(),
+                        arg_tensor.requires_grad(), is_pinned_host),
+        _.SetPrepend() << "failed to create placeholder tensor: ");
+    // If given, traced ops see the on-device layout of the argument.
+    if (!layout.is_none()) {
+      TT_ASSIGN_OR_THROW(const DeviceBufferRef buffer_ref,
+                         GetBuffer(placeholder));
+      buffer_ref.set_layout(
+          ParseCustomLayout(layout, placeholder, /*arg_index=*/0));
+    }
+    return placeholder;
+  }
 
   // arg_tensor may be a view, but placeholder DeviceBufferRefs are always
   // interpreted as contiguous.
@@ -271,18 +294,10 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
         ParseCustomLayout(layout, base_tensor, /*arg_index=*/0));
   }
 
-  // NOTE: This logic must match the logic from PrepareCompiledModeArguments in
-  // compiled_mode.cc
-  at::Tensor view_tensor;  // UNINITIALIZED_TENSOR_OK
-  if (TensorHasTrivialLayout(arg_tensor)) {
-    view_tensor = base_tensor;
-  } else {
-    // Finally, we create a view of the base tensor with the same striding as
-    // the original view, and preserve the requires_grad property.
-    view_tensor =
-        base_tensor.as_strided(arg_tensor.sizes(), arg_tensor.strides(),
-                               /*storage_offset=*/0);
-  }
+  // Finally, we create a view of the base tensor with the same striding as
+  // the original view, and preserve the requires_grad property.
+  at::Tensor view_tensor = base_tensor.as_strided(
+      arg_tensor.sizes(), arg_tensor.strides(), /*storage_offset=*/0);
 
   if (arg_tensor.requires_grad()) {
     view_tensor.requires_grad_(true);
@@ -320,11 +335,14 @@ std::vector<std::optional<PyLayout>> ToPyLayouts(
 
 std::optional<PyLayout> PyGetDeviceLayoutIfMaterialized(
     const at::Tensor& tensor) {
-  auto buffer_ref_or = GetBuffer(tensor);
+  auto buffer_ref_or = GetBufferWithoutCreatingView(tensor);
   if (!buffer_ref_or.ok()) {
     TT_THROW_TT_ERROR_(buffer_ref_or.status(), TT_SOURCE_LOCATION);
   }
-  DeviceBufferRef buffer_ref = std::move(buffer_ref_or).value();
+  if (!buffer_ref_or->has_value()) {
+    return std::nullopt;
+  }
+  DeviceBufferRef buffer_ref = std::move(*buffer_ref_or).value();
   if (!buffer_ref.is_materializing()) {
     return std::nullopt;
   }
@@ -352,17 +370,77 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
         << client_or.status();
     return PyLayout();
   }
-  xla::PjRtClient& checked_client = **client_or;
-  TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<xla::PrimitiveType>(dtype));
+  TT_ASSIGN_OR_THROW(const xla::PrimitiveType element_type,
+                     ConvertTo<xla::PrimitiveType>(dtype));
+  // PyTorch packs two FP4 values per byte in the last dimension, whereas PJRT
+  // expects unpacked F4E2M1FN dimensions (matching MakePlaceholder).
+  absl::Span<const int64_t> xla_shape = shape;
+  std::optional<SmallInt64Vector> unpacked_shape;
+  if (dtype == at::kFloat4_e2m1fn_x2) {
+    TT_CHECK_THROW(!shape.empty(), error::kInvalidArgument)
+        << "tensors of float4_e2m1fn_x2 dtype must be at least 1D";
+    unpacked_shape = CopyIntVector(shape);
+    unpacked_shape->back() *= 2;
+    xla_shape = *unpacked_shape;
+  }
 
-  TT_ASSIGN_OR_THROW(const auto& layout,
-                     checked_client.GetDefaultLayout(element_type, shape));
+  TT_ASSIGN_OR_THROW(
+      const xla::Layout layout,
+      PjrtBackend::GetInstance().GetDefaultLayout(element_type, xla_shape));
+  return ToPyLayout(layout);
+}
+
+// Returns the on-device layout of `tensor` if it differs from the default
+// layout for `tensor`'s dtype and shape, or `std::nullopt` if `tensor` uses the
+// default layout or does not have a materialized, static-shaped buffer in
+// device memory.
+std::optional<PyLayout> PyGetNonDefaultDeviceLayout(const at::Tensor& tensor) {
+  if (!tensor.has_storage()) {
+    return std::nullopt;
+  }
+  absl::StatusOr<std::optional<DeviceBufferRef>> existing_buffer =
+      GetBufferWithoutCreatingView(tensor);
+  if (!existing_buffer.ok() || !existing_buffer->has_value()) {
+    return std::nullopt;
+  }
+  const DeviceBufferRef buffer_ref = std::move(**existing_buffer);
+  // Check non-waiting flags (`is_pinned_host`, `is_materializing`, and
+  // `on_device_shape_is_dynamic`) before `AwaitBuffer()`, which waits for
+  // in-flight buffers.
+  if (buffer_ref.is_pinned_host() || !buffer_ref.is_materializing() ||
+      buffer_ref.on_device_shape_is_dynamic()) {
+    return std::nullopt;
+  }
+  const absl::StatusOr<xla::PjRtBuffer* absl_nonnull> pjrt_buffer =
+      buffer_ref.AwaitBuffer();
+  if (!pjrt_buffer.ok()) {
+    return std::nullopt;
+  }
+  const std::shared_ptr<const xla::PjRtLayout> pjrt_layout =
+      (*pjrt_buffer)->layout();
+  if (pjrt_layout == nullptr) {
+    return std::nullopt;
+  }
+  const absl::StatusOr<xla::Layout> default_layout =
+      PjrtBackend::GetInstance().GetDefaultLayout(
+          (*pjrt_buffer)->element_type(), (*pjrt_buffer)->dimensions());
+  if (!default_layout.ok()) {
+    return std::nullopt;
+  }
+  const xla::Layout& layout = pjrt_layout->xla_layout();
+  // Like eager execution (`IsDefaultDeviceLayout` in pjrt_utils.h), compares
+  // only minor_to_major and tiles.
+  if (layout.minor_to_major() == default_layout->minor_to_major() &&
+      layout.tiles() == default_layout->tiles()) {
+    return std::nullopt;
+  }
   return ToPyLayout(layout);
 }
 
 bool PyIsDeviceShapeDynamic(const at::Tensor& tensor) {
-  TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBuffer(tensor));
-  return buffer_ref.on_device_shape_is_dynamic();
+  TT_ASSIGN_OR_THROW(std::optional<DeviceBufferRef> buffer_ref,
+                     GetBufferWithoutCreatingView(tensor));
+  return buffer_ref.has_value() && buffer_ref->on_device_shape_is_dynamic();
 }
 
 std::vector<std::optional<PyLayout>> PyGetParameterLayouts(
@@ -1243,8 +1321,8 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
   }
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
-      AdaptXlaError(LoadSerializedExecutableAtOrigin(*client, data, origin),
-                    /* context= */ "failed to load serialized executable"));
+      WrapXlaError(LoadSerializedExecutableAtOrigin(*client, data, origin),
+                   /* context= */ "failed to load serialized executable"));
   return LoadedExecutableWithMetadata::MakeShared(
       std::move(pjrt_executable), /*argument_indices=*/{},
       /*unbounded_dynamic_execution_metadata=*/std::nullopt, std::move(origin));
@@ -1275,11 +1353,11 @@ bool PyIsConstantTensor(const at::Tensor& tensor) {
       tensor.device().type() != GetPrivateUse1DeviceType()) {
     return false;
   }
-  auto buffer_ref_or = GetBuffer(tensor);
-  if (!buffer_ref_or.ok()) {
+  auto buffer_ref_or = GetBufferWithoutCreatingView(tensor);
+  if (!buffer_ref_or.ok() || !buffer_ref_or->has_value()) {
     return false;
   }
-  auto deferred_op = buffer_ref_or->deferred_op();
+  auto deferred_op = (*buffer_ref_or)->deferred_op();
   return deferred_op != nullptr &&
          deferred_op->op_name() == OpName::kTorchTpuInternalConstant;
 }
@@ -2250,6 +2328,8 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("is_pinned_host", &PyIsPinnedHost, py::arg("tensor"),
         "Returns whether the given tensor is host offloaded.");
   m.def("get_device_layout_if_materialized", &PyGetDeviceLayoutIfMaterialized,
+        py::arg("tensor"));
+  m.def("get_non_default_device_layout", &PyGetNonDefaultDeviceLayout,
         py::arg("tensor"));
   m.def("get_default_layout", &PyGetDefaultLayout, py::arg("dtype"),
         py::arg("shape"));

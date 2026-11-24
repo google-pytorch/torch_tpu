@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -28,7 +29,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/ArrayRef.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -44,11 +44,13 @@
 #include "csrc/ops/reductions/reductions.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
 
@@ -77,9 +79,9 @@ absl::StatusOr<int64_t> ValidateFusedMovingAvgObsFqInputs(
 }
 
 // Builds the StableHLO graph for updating running min and max using exponential
-// moving average when observer_on is true.
+// moving average when the scalar predicate is_observer_on is true.
 absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildMinMaxObservationShlo(
-    mlir::MlirOp self_op, mlir::MlirOp observer_on_op,
+    mlir::MlirOp self_op, mlir::MlirOp is_observer_on,
     mlir::MlirOp running_min_op, mlir::MlirOp running_max_op,
     double averaging_const, int64_t norm_ch_axis, bool per_row_fake_quant,
     bool is_uninitialized_observer) {
@@ -103,10 +105,8 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildMinMaxObservationShlo(
 
   if (GetTensorTypeOrDie(curr_min).getRank() !=
       GetTensorTypeOrDie(running_min_op).getRank()) {
-    curr_min = mlir::stablehlo::BroadcastInDim(
-        GetTensorTypeOrDie(running_min_op), curr_min, {});
-    curr_max = mlir::stablehlo::BroadcastInDim(
-        GetTensorTypeOrDie(running_max_op), curr_max, {});
+    TT_ASSIGN_OR_RETURN(curr_min, BroadcastIfNeeded(curr_min, running_min_op));
+    TT_ASSIGN_OR_RETURN(curr_max, BroadcastIfNeeded(curr_max, running_max_op));
   }
 
   const mlir::ElementType running_elem_type =
@@ -117,12 +117,14 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildMinMaxObservationShlo(
   mlir::MlirOp rmin_input = running_min_op;
   mlir::MlirOp rmax_input = running_max_op;
   // Initialize running statistics if this is the first execution
-  // (uninitialized state).
+  // (uninitialized state). Shape them like `curr_min`/`curr_max`, which keep
+  // the bounded channel dimension of `self`, rather than like the static
+  // placeholder buffers.
   if (is_uninitialized_observer) {
-    rmin_input = MakeConstantLike(running_min_op,
-                                  std::numeric_limits<double>::infinity());
-    rmax_input = MakeConstantLike(running_max_op,
-                                  -std::numeric_limits<double>::infinity());
+    rmin_input =
+        MakeConstantLike(curr_min, std::numeric_limits<double>::infinity());
+    rmax_input =
+        MakeConstantLike(curr_max, -std::numeric_limits<double>::infinity());
   }
 
   // Compute the exponential moving average update.
@@ -143,34 +145,31 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildMinMaxObservationShlo(
   auto updated_max = mlir::stablehlo::Select(is_inf_max, curr_max, ema_max);
 
   // Select updated running statistics only if observer_on is true.
-  auto zero_obs = MakeConstantLike(observer_on_op, 0);
-  auto is_observer_on = mlir::stablehlo::Compare(
-      observer_on_op, zero_obs, mlir::stablehlo::ComparisonDirection::NE);
-  auto is_obs_on_bcast = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get(
-          GetTensorTypeOrDie(rmin_input).getShape(),
-          GetTensorTypeOrDie(is_observer_on).getElementType()),
-      is_observer_on, {});
   auto final_min =
-      mlir::stablehlo::Select(is_obs_on_bcast, updated_min, rmin_input);
+      mlir::stablehlo::Select(is_observer_on, updated_min, rmin_input);
   auto final_max =
-      mlir::stablehlo::Select(is_obs_on_bcast, updated_max, rmax_input);
+      mlir::stablehlo::Select(is_observer_on, updated_max, rmax_input);
 
   return std::array<mlir::MlirOp, 2>{final_min, final_max};
 }
 
 // Builds the StableHLO graph for computing quantization scale and zero point
-// from observed minimum and maximum values when fake_quant_on is true.
+// from observed minimum and maximum values when the scalar predicate
+// is_fake_quant_on is true.
 absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildChooseQParamsShlo(
     mlir::MlirOp min_op, mlir::MlirOp max_op, mlir::MlirOp scale_op,
-    mlir::MlirOp zero_point_op, mlir::MlirOp fake_quant_on_op,
+    mlir::MlirOp zero_point_op, mlir::MlirOp is_fake_quant_on,
     int64_t quant_min, int64_t quant_max, bool symmetric_quant,
     bool is_uninitialized_observer) {
   mlir::MlirOp scale_input = scale_op;
   mlir::MlirOp zp_input = zero_point_op;
+  // Shape the initial qparams like `min_op`, which keeps the bounded channel
+  // dimension of `self`, rather than like the static placeholder buffers.
   if (is_uninitialized_observer) {
-    scale_input = MakeConstantLike(scale_op, 1.0);
-    zp_input = MakeConstantLike(zero_point_op, 0);
+    scale_input = MakeConstantLike(
+        min_op, 1.0, GetTensorTypeOrDie(scale_op).getElementType());
+    zp_input = MakeConstantLike(
+        min_op, 0, GetTensorTypeOrDie(zero_point_op).getElementType());
   }
 
   auto min_f64 =
@@ -272,33 +271,26 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildChooseQParamsShlo(
 
   // Round the zero point to nearest integer and clamp to quantization range.
   auto rounded_zp = mlir::stablehlo::RoundNearestEven(initial_zp);
-  auto clamped_zp_f64 = mlir::stablehlo::Clamp(qmin_f64, rounded_zp, qmax_f64);
+  auto clamped_zp_f64 = ClampLike(qmin_f64, rounded_zp, qmax_f64);
   const mlir::Type zp_elem_type =
       GetTensorTypeOrDie(zero_point_op).getElementType();
   auto zp_computed =
       mlir::stablehlo::ConvertElementType(clamped_zp_f64, zp_elem_type);
 
   // Select calculated qparams only if fake_quant_on is true.
-  auto zero_fq_on = MakeConstantLike(fake_quant_on_op, 0);
-  auto is_fake_quant_on = mlir::stablehlo::Compare(
-      fake_quant_on_op, zero_fq_on, mlir::stablehlo::ComparisonDirection::NE);
-  auto is_fq_on_bcast = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get(
-          GetTensorTypeOrDie(scale_input).getShape(),
-          GetTensorTypeOrDie(is_fake_quant_on).getElementType()),
-      is_fake_quant_on, {});
   auto final_scale =
-      mlir::stablehlo::Select(is_fq_on_bcast, scale_computed, scale_input);
+      mlir::stablehlo::Select(is_fake_quant_on, scale_computed, scale_input);
   auto final_zp =
-      mlir::stablehlo::Select(is_fq_on_bcast, zp_computed, zp_input);
+      mlir::stablehlo::Select(is_fake_quant_on, zp_computed, zp_input);
 
   return std::array<mlir::MlirOp, 2>{final_scale, final_zp};
 }
 
-// Builds the StableHLO graph for fake quantization and boolean mask generation.
+// Builds the StableHLO graph for fake quantization and boolean mask generation
+// when the scalar predicate is_fake_quant_on is true.
 absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildFakeQuantizeAndMaskShlo(
     mlir::MlirOp self_op, mlir::MlirOp scale_op, mlir::MlirOp zero_point_op,
-    mlir::MlirOp fake_quant_on_op, int64_t quant_min, int64_t quant_max,
+    mlir::MlirOp is_fake_quant_on, int64_t quant_min, int64_t quant_max,
     int64_t norm_ch_axis, bool per_row_fake_quant) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
   const mlir::ElementType self_elem_type = GetElementTypeOrDie(self_op);
@@ -307,16 +299,10 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildFakeQuantizeAndMaskShlo(
   mlir::MlirOp scale_bcast = scale_op;
   mlir::MlirOp zp_bcast = zero_point_op;
   if (per_row_fake_quant && self_type.getRank() > 0) {
-    mlir::RankedTensorType scale_type = GetTensorTypeOrDie(scale_op);
-    mlir::RankedTensorType scale_bcast_type =
-        scale_type.clone(self_type.getShape());
-    scale_bcast = mlir::stablehlo::BroadcastInDim(
-        scale_bcast_type, scale_op, c10::IntArrayRef{norm_ch_axis});
-
-    mlir::RankedTensorType zp_type = GetTensorTypeOrDie(zero_point_op);
-    mlir::RankedTensorType zp_bcast_type = zp_type.clone(self_type.getShape());
-    zp_bcast = mlir::stablehlo::BroadcastInDim(zp_bcast_type, zero_point_op,
-                                               c10::IntArrayRef{norm_ch_axis});
+    TT_ASSIGN_OR_RETURN(scale_bcast,
+                        BroadcastIfNeeded(scale_op, self_op, {norm_ch_axis}));
+    TT_ASSIGN_OR_RETURN(
+        zp_bcast, BroadcastIfNeeded(zero_point_op, self_op, {norm_ch_axis}));
   } else {
     mlir::MlirOp scale_scalar = scale_op;
     if (GetTensorTypeOrDie(scale_op).getRank() > 0) {
@@ -325,9 +311,7 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildFakeQuantizeAndMaskShlo(
               {}, GetTensorTypeOrDie(scale_op).getElementType()),
           scale_op);
     }
-    scale_bcast = mlir::stablehlo::BroadcastInDim(
-        GetTensorTypeOrDie(scale_op).clone(self_type.getShape()), scale_scalar,
-        {});
+    TT_ASSIGN_OR_RETURN(scale_bcast, BroadcastIfNeeded(scale_scalar, self_op));
 
     mlir::MlirOp zp_scalar = zero_point_op;
     if (GetTensorTypeOrDie(zero_point_op).getRank() > 0) {
@@ -336,9 +320,7 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildFakeQuantizeAndMaskShlo(
               {}, GetTensorTypeOrDie(zero_point_op).getElementType()),
           zero_point_op);
     }
-    zp_bcast = mlir::stablehlo::BroadcastInDim(
-        GetTensorTypeOrDie(zero_point_op).clone(self_type.getShape()),
-        zp_scalar, {});
+    TT_ASSIGN_OR_RETURN(zp_bcast, BroadcastIfNeeded(zp_scalar, self_op));
   }
 
   TT_ASSIGN_OR_RETURN(scale_bcast, CastIfNeeded(scale_bcast, self_elem_type));
@@ -351,7 +333,7 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildFakeQuantizeAndMaskShlo(
 
   auto qmin_cst = MakeConstantLike(self_op, static_cast<double>(quant_min));
   auto qmax_cst = MakeConstantLike(self_op, static_cast<double>(quant_max));
-  auto x_clamped = mlir::stablehlo::Clamp(qmin_cst, x_zp, qmax_cst);
+  auto x_clamped = ClampLike(qmin_cst, x_zp, qmax_cst);
 
   auto x_unscaled = mlir::stablehlo::Subtract(x_clamped, zp_bcast);
   auto x_fq = mlir::stablehlo::Mul(x_unscaled, scale_bcast);
@@ -366,18 +348,10 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildFakeQuantizeAndMaskShlo(
 
   // Select fake quantized output and computed mask only if
   // fake_quant_on is true.
-  auto zero_fq_on = MakeConstantLike(fake_quant_on_op, 0);
-  auto is_fake_quant_on = mlir::stablehlo::Compare(
-      fake_quant_on_op, zero_fq_on, mlir::stablehlo::ComparisonDirection::NE);
-  auto is_fq_on_bcast = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get(
-          self_type.getShape(),
-          GetTensorTypeOrDie(is_fake_quant_on).getElementType()),
-      is_fake_quant_on, {});
-
   auto true_mask = MakeConstantLike(self_op, true, mlir::ElementType::PRED);
-  auto final_output = mlir::stablehlo::Select(is_fq_on_bcast, x_fq, self_op);
-  auto final_mask = mlir::stablehlo::Select(is_fq_on_bcast, fq_mask, true_mask);
+  auto final_output = mlir::stablehlo::Select(is_fake_quant_on, x_fq, self_op);
+  auto final_mask =
+      mlir::stablehlo::Select(is_fake_quant_on, fq_mask, true_mask);
 
   return std::array<mlir::MlirOp, 2>{final_output, final_mask};
 }
@@ -392,6 +366,40 @@ absl::StatusOr<MlirOpResults<6>> BuildFusedMovingAvgObsFqHelperShlo(
   auto& [self_op, observer_on_op, fake_quant_on_op, running_min_op,
          running_max_op, scale_op, zero_point_op] = inputs;
 
+  // The per-channel buffers must match the channel dimension of `self`,
+  // including its bounded dynamism, since they are combined elementwise with
+  // per-channel statistics of `self`.
+  if (per_row_fake_quant && !is_uninitialized_observer &&
+      GetTensorTypeOrDie(self_op).getRank() > 0) {
+    const mlir::stablehlo::DimensionInfo ch_dim =
+        GetDimensions(self_op)[norm_ch_axis];
+    struct NamedBuffer {
+      std::string_view name;
+      mlir::MlirOp op;
+    };
+    for (const NamedBuffer& buffer :
+         {NamedBuffer{"running_min", running_min_op},
+          NamedBuffer{"running_max", running_max_op},
+          NamedBuffer{"scale", scale_op},
+          NamedBuffer{"zero_point", zero_point_op}}) {
+      if (GetTensorTypeOrDie(buffer.op).getRank() != 1) {
+        continue;
+      }
+      const mlir::stablehlo::DimensionInfo buffer_dim =
+          GetDimensions(buffer.op)[0];
+      TT_RET_CHECK(
+          buffer_dim.size == ch_dim.size &&
+              buffer_dim.boundOp.has_value() == ch_dim.boundOp.has_value(),
+          error::kPythonNotImplementedError)
+          << "expected " << buffer.name
+          << " to have the size and bounded dynamism of dimension "
+          << norm_ch_axis << " of self, got self type "
+          << mlir::debugString(GetTensorTypeOrDie(self_op)) << " and "
+          << buffer.name << " type "
+          << mlir::debugString(GetTensorTypeOrDie(buffer.op));
+    }
+  }
+
   if (GetTensorTypeOrDie(observer_on_op).getRank() > 0) {
     observer_on_op = mlir::stablehlo::Reshape(
         mlir::RankedTensorType::get(
@@ -404,10 +412,12 @@ absl::StatusOr<MlirOpResults<6>> BuildFusedMovingAvgObsFqHelperShlo(
             {}, GetTensorTypeOrDie(fake_quant_on_op).getElementType()),
         fake_quant_on_op);
   }
+  mlir::MlirOp is_observer_on = GetNonzeroMask(observer_on_op);
+  mlir::MlirOp is_fake_quant_on = GetNonzeroMask(fake_quant_on_op);
 
   TT_ASSIGN_OR_RETURN(auto min_max_res,
                       BuildMinMaxObservationShlo(
-                          self_op, observer_on_op, running_min_op,
+                          self_op, is_observer_on, running_min_op,
                           running_max_op, averaging_const, norm_ch_axis,
                           per_row_fake_quant, is_uninitialized_observer));
   mlir::MlirOp new_running_min = min_max_res[0];
@@ -416,14 +426,14 @@ absl::StatusOr<MlirOpResults<6>> BuildFusedMovingAvgObsFqHelperShlo(
   TT_ASSIGN_OR_RETURN(auto qparams_res,
                       BuildChooseQParamsShlo(
                           new_running_min, new_running_max, scale_op,
-                          zero_point_op, fake_quant_on_op, quant_min, quant_max,
+                          zero_point_op, is_fake_quant_on, quant_min, quant_max,
                           symmetric_quant, is_uninitialized_observer));
   mlir::MlirOp new_scale = qparams_res[0];
   mlir::MlirOp new_zero_point = qparams_res[1];
 
   TT_ASSIGN_OR_RETURN(
       auto fq_res, BuildFakeQuantizeAndMaskShlo(
-                       self_op, new_scale, new_zero_point, fake_quant_on_op,
+                       self_op, new_scale, new_zero_point, is_fake_quant_on,
                        quant_min, quant_max, norm_ch_axis, per_row_fake_quant));
   mlir::MlirOp output = fq_res[0];
   mlir::MlirOp mask = fq_res[1];

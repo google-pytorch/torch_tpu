@@ -17,6 +17,7 @@
 from collections.abc import Callable, Mapping
 import os
 import re
+import time
 from typing import Any
 
 from absl import logging
@@ -28,6 +29,7 @@ from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
+from tests.distributed import worker_supervisor
 
 _SLICEBUILDER_ADDRESSES_ENV = "TORCH_TPU_SLICEBUILDER_ADDRESSES"
 _TOPOLOGY_ENV = "TORCH_TPU_TOPOLOGY"
@@ -202,6 +204,7 @@ def dist_run(
     *args: Any,
     base_seed: int | None = None,
     max_retries: int = 3,
+    timeout_seconds: float | None = None,
     **kwargs: Any,
 ) -> None:
   """Runs the given function in a distributed environment using mp.spawn.
@@ -230,8 +233,14 @@ def dist_run(
     max_retries: Maximum number of attempts if a transient failure occurs: a
       port collision (EADDRINUSE) when auto-selecting a port, or the TPU runtime
       failing to come up before the workers rendezvoused.
+    timeout_seconds: Time limit for all attempts together, or None for no limit.
+      Past it, the workers still running are killed and
+      `worker_supervisor.WorkerTimeoutError` is raised.
     **kwargs: Keyword arguments to pass to the function.
   """
+  deadline = (
+      None if timeout_seconds is None else time.monotonic() + timeout_seconds
+  )
   repick_slicebuilder_ports = set_launch_env(nproc_per_node)
 
   if base_seed is None:
@@ -246,7 +255,7 @@ def dist_run(
         else portpicker.pick_unused_port()
     )
     try:
-      mp.spawn(
+      worker_supervisor.spawn_and_join(
           _worker_fn,
           args=(
               nproc_per_node,
@@ -257,7 +266,7 @@ def dist_run(
               kwargs,
           ),
           nprocs=nproc_per_node,
-          join=True,
+          deadline=deadline,
       )
       return
     except mp.ProcessRaisedException as e:
@@ -362,10 +371,19 @@ def _gloo_worker_fn(
 ) -> None:
   """Runs `fn` inside a gloo default process group, then tears it down."""
   torch_dist.init_process_group(backend="gloo", init_method="env://")
+  # Wait for every rank to initialize before running `fn`, and wait for every
+  # rank to finish `fn` before tearing down the group. If `fn` raises on any
+  # rank, skip `destroy_process_group()` so the failing rank does not close its
+  # sockets on peers; if a peer failed in `fn` and exited, ignore the resulting
+  # socket-close error during teardown so `mp.spawn` reports the peer's
+  # exception from `fn`.
+  torch_dist.barrier()
+  fn(*args, **kwargs)
   try:
-    fn(*args, **kwargs)
-  finally:
+    torch_dist.barrier()
     torch_dist.destroy_process_group()
+  except RuntimeError as e:
+    logging.debug("Ignoring gloo teardown error: %s", e)
 
 
 def gloo_run(

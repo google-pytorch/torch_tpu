@@ -68,6 +68,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/eager_mode.h"
 #include "re2/re2.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -691,8 +692,12 @@ struct ContextPrefixSplit {
 class ErrorFormatChecker {
  public:
   // Checks that the message of `error` follows the guidelines. Crashes with an
-  // explanation of all violations if it doesn't.
+  // explanation of all violations if it doesn't. A message that holds text
+  // written by the user is reported as written, so it isn't checked.
   void Check(const TtError& error) {
+    if (internal::IsUserMessage(error.status())) {
+      return;
+    }
     violations_.clear();
     CheckMessage(error.status().message());
     if (!violations_.empty()) {
@@ -1042,15 +1047,14 @@ absl::Status TranslateXlaTensorOomError(absl::Status status,
   return status;
 }
 
-absl::Status AdaptXlaError(const absl::Status& status,
-                           const std::string_view context) {
+absl::Status WrapXlaError(const absl::Status& status,
+                          const std::string_view context) {
   if (status.ok()) {
     return status;
   }
 
-  const std::string adapted = AdaptExternalErrorMessage(status.message());
-  return StatusBuilder(std::move(status)).SetOverride()
-         << absl::StrCat(context, kXlaCompilerFailedWith, adapted);
+  return StatusBuilder(status).SetPrepend()
+         << context << kXlaCompilerFailedWith;
 }
 
 namespace {

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# yilingyuan
+# pganssle-google
+
 # model_registry: data-driven replacement for
 # //tests:module_registry.
 # Named model_registry during the migration so that the package does not shadow

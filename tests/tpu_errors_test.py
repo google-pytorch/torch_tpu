@@ -545,6 +545,19 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         fn()
 
+  @et.why_tpu_only(
+      "TPU stores each float4_e2m1fn_x2 element as two unpacked values along"
+      " a packed dimension, so it needs at least one dimension; GPU stores the"
+      " packed bytes."
+  )
+  def test_empty_float4_0d(self):
+    """Tests that creating a 0D float4_e2m1fn_x2 tensor fails."""
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""empty(): expected float4_e2m1fn_x2 tensors to be at least 1D, got 0D""",
+    ):
+      torch.empty((), dtype=torch.float4_e2m1fn_x2, device=et.device())
+
   @parameterized.named_parameters(
       {"testcase_name": "eq", "op_name": "eq", "op": torch.eq},
       {"testcase_name": "ne", "op_name": "ne", "op": torch.ne},
@@ -918,6 +931,59 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       (tensor + 1).cpu()
 
+  @et.why_tpu_only(
+      "CUDA set_.source_Tensor resizes shared untyped byte storage when sizes"
+      " change instead of checking dtype"
+  )
+  def test_set_source_tensor_different_dtype_empty_self(self):
+    dst = torch.empty(0, device=et.device(), dtype=torch.float32)
+    source = torch.ones(4, device=et.device(), dtype=torch.int8)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_(): expected self and source to have the same dtype, got float32 and int8""",
+    ):
+      torch.ops.aten.set_.source_Tensor(dst, source)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float32",
+          shape=(4,),
+          dtype=torch.float32,
+          required_bytes=16,
+      ),
+      dict(
+          testcase_name="float4_e2m1fn_x2",
+          shape=(3, 4),
+          dtype=torch.float4_e2m1fn_x2,
+          required_bytes=12,
+      ),
+  )
+  @et.why_tpu_only(
+      "CUDA set_.source_Tensor omits storage bounds validation when setting"
+      " from a Tensor"
+  )
+  def test_set_tensor_storage_out_of_bounds(
+      self,
+      shape: tuple[int, ...],
+      dtype: torch.dtype,
+      required_bytes: int,
+  ):
+    dst_shape = (1, 2) if len(shape) == 2 else (2,)
+    dst = torch.empty(dst_shape, device=et.device(), dtype=dtype)
+    orig_stride = dst.stride()
+    orig_ptr = dst.data_ptr()
+    source = torch.empty(shape, device=et.device(), dtype=dtype)
+    source.untyped_storage().resize_(0)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""set_(): expected the number of bytes required by the given arguments to be <= 0 (actual storage size), got {required_bytes}""",
+    ):
+      dst.set_(source)
+    self.assertEqual(dst.size(), dst_shape)
+    self.assertEqual(dst.stride(), orig_stride)
+    self.assertEqual(dst.dtype, dtype)
+    self.assertEqual(dst.data_ptr(), orig_ptr)
+
   # Confirmed this test does NOT fail on cpu.
   @et.why_tpu_only("TODO: support complex dtypes in addmm on TPU.")
   def test_addmm_on_complex_input(self):
@@ -1167,6 +1233,49 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       outputs[0].cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_bounded_p_not_broadcastable_to_static_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((3, 3), device=et.device())
+      dynamism.mark_dynamic(p, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): expected p to be broadcastable to self shape, got [3, 3] vs [4, 3]""",
+      ):
+        t.bernoulli_(p)
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_bounded_p_static_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((4, 3), device=et.device())
+      dynamism.mark_dynamic(p, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<?x3xf32, #stablehlo.bounds<8, ?>>' to target shape tensor<4x3>""",
+      ):
+        t.bernoulli_(p)
+        # cpu() is needed because the error is triggered inside the op builder.
+        t.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_bernoulli_static_p_bounded_self(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      t = torch.zeros((4, 3), device=et.device())
+      p = torch.ones((4, 3), device=et.device())
+      dynamism.mark_dynamic(t, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<4x3xf32>' to target shape tensor<b8x3>""",
+      ):
+        t.bernoulli_(p)
+        # cpu() is needed because the error is triggered inside the op builder.
+        t.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_dynamic_kernel(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       inp = torch.ones(1, 2, 8, device=et.device())
@@ -1197,6 +1306,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.conv1d(inp, weight).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_fused_moving_avg_obs_fq_helper_dynamic_channels_static_buffers(
+      self,
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.ones(3, 4, device=et.device())
+      observer_on = torch.ones(1, dtype=torch.int64, device=et.device())
+      fake_quant_on = torch.ones(1, dtype=torch.int64, device=et.device())
+      running_min = torch.zeros(3, device=et.device())
+      running_max = torch.ones(3, device=et.device())
+      scale = torch.ones(3, device=et.device())
+      zero_point = torch.zeros(3, dtype=torch.int32, device=et.device())
+
+      # Mark the channel dimension of `inp` as dynamic, but not the buffers.
+      dynamism.mark_dynamic(inp, 0, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""fused_moving_avg_obs_fq_helper(): expected running_min to have the size and bounded dynamism of dimension 0 of self, got self type tensor<?x4xf32, #stablehlo.bounds<6, ?>> and running_min type tensor<3xf32>""",
+      ):
+        out, _ = torch._fused_moving_avg_obs_fq_helper(
+            inp,
+            observer_on,
+            fake_quant_on,
+            running_min,
+            running_max,
+            scale,
+            zero_point,
+            0.01,
+            0,
+            255,
+            0,
+            True,
+            False,
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        out.cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_backward_dynamic_channel_dimension(self):
@@ -1407,6 +1554,66 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.glu(x, dim=dim).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_linalg_solve_triangular_mismatched_square_upper_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.eye(4, device=et.device())
+      b = torch.ones(4, 2, device=et.device())
+      # Bounding only the rows of `a` makes its upper-bound matrix 8x4.
+      dynamism.mark_dynamic(a, 0, 2, 8)
+      dynamism.mark_dynamic(b, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected square upper-bound matrix in triangular solve, got 8 and 4""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.linalg.solve_triangular(a, b, upper=True).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_linalg_solve_triangular_mismatched_shared_matrix_upper_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.eye(4, device=et.device())
+      b = torch.ones(4, 2, device=et.device())
+      # `a` stays static (4x4) while the rows of `b` are bounded by 8.
+      dynamism.mark_dynamic(b, 0, 2, 8)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the upper bounds of the shared matrix dimension in triangular solve to match, got 4 and 8""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.linalg.solve_triangular(a, b, upper=True).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_linalg_solve_triangular_mismatched_batch_upper_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(4, 4, 4, device=et.device())
+      b = torch.ones(4, 4, 2, device=et.device())
+      dynamism.mark_dynamic(a, 0, 2, 8)
+      dynamism.mark_dynamic(b, 0, 2, 6)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected compatible shapes for broadcasting, got 8 and 6""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.linalg.solve_triangular(a, b, upper=True).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_linalg_solve_triangular_mixed_static_and_bounded_batch_dims(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      a = torch.ones(6, 4, 4, device=et.device())
+      b = torch.ones(6, 4, 2, device=et.device())
+      dynamism.mark_dynamic(b, 0, 2, 6)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): cannot mix bounded and static dimensions in broadcast""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.linalg.solve_triangular(a, b, upper=True).cpu()
 
   @et.why_tpu_only(
       "aten.linear_backward is only registered for TPU (PrivateUse1), not"
@@ -2022,6 +2229,16 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.get_dynamic_pad_module([], [])
 
+  @et.why_tpu_only(
+      "tpu_torch_compile.get_default_layout is a TPU-specific compile API."
+  )
+  def test_get_default_layout_0d_fp4(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_default_layout(): tensors of float4_e2m1fn_x2 dtype must be at least 1D""",
+    ):
+      tpu_torch_compile.get_default_layout(torch.float4_e2m1fn_x2, [])
+
   @parameterized.named_parameters(
       dict(
           testcase_name="mismatched_padded_shapes_size",
@@ -2352,6 +2569,41 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
     ):
       torch.accelerator.synchronize()
+
+  @parameterized.named_parameters(
+      ("host_read", lambda cond: cond.cpu()),
+      (
+          "stream_synchronize",
+          lambda cond: torch.tpu.default_stream().synchronize(),
+      ),
+      ("device_synchronize", lambda cond: torch.accelerator.synchronize()),
+  )
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
+  def test_async_assertion_message_is_raised_as_written(self, surface: Any):
+    false_cond = torch.tensor(False, device=et.device())
+    torch.ops.aten._assert_async.msg(false_cond, "Value must be positive.")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Value must be positive.""",
+    ):
+      surface(false_cond)
+
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
+  def test_launch_blocking_op_raises_async_assertion_message_as_written(self):
+    x = torch.ones(2, device=et.device())
+    false_cond = torch.tensor(False, device=et.device())
+    with execution_mode.set_eager_mode(
+        EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    ):
+      torch.ops.aten._assert_async.msg(false_cond, "Value must be positive.")
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*Value must be positive\.", re.DOTALL),
+      ):
+        # In launch-blocking mode the next op reports the failure.
+        x.to(torch.int32)
 
   @et.why_tpu_only("Sync materialization status checks are TPU-specific.")
   def test_is_materializing_tensor_not_on_tpu(self):
@@ -2854,6 +3106,237 @@ module {
           weight_decay=0.01,
           eps=1e-8,
           amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adamw_mismatched_exp_avgs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adamw_(): expected exp_avgs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1],
+          [eas1, eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adamw_mismatched_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adamw_(): expected exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adamw_mismatched_max_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adamw_(): expected max_exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adamw_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1, eas1],
+          [eas1],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=True,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_grads_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected grads to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1],
+          [ea1, ea1],
+          [eas1, eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_exp_avgs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected exp_avgs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1],
+          [eas1, eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1],
+          [],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+  @et.why_tpu_only(
+      "GPU missing check: undefined behavior (out-of-bounds read) does not"
+      " consistently crash and leads to flakiness."
+  )
+  def test_fused_adam_mismatched_max_exp_avg_sqs_size(self):
+    device = et.device()
+    p1 = torch.tensor([1.0], dtype=torch.float32, device=device)
+    p2 = torch.tensor([2.0], dtype=torch.float32, device=device)
+    g1 = torch.tensor([0.1], dtype=torch.float32, device=device)
+    ea1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    eas1 = torch.tensor([0.0], dtype=torch.float32, device=device)
+    step1 = torch.tensor(1.0, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adam_(): expected max_exp_avg_sqs to have the same number of tensors as self, got 1""",
+    ):
+      torch.ops.aten._fused_adam_.default(
+          [p1, p2],
+          [g1, g1],
+          [ea1, ea1],
+          [eas1, eas1],
+          [eas1],
+          [step1, step1],
+          lr=0.001,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=True,
           maximize=False,
       )
 
@@ -4457,94 +4940,6 @@ module {
     ):
       torch.tpu.ops.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
 
-  @parameterized.named_parameters(
-      dict(
-          testcase_name="all_gather_dim_scalar",
-          op="_all_gather_dim",
-          shape=(),
-          args=(0, 2),
-          expected_error="""all_gather_dim(): expected input to have at least 1 dimension, got 0""",
-      ),
-      dict(
-          testcase_name="all_gather_dim_out_of_range",
-          op="_all_gather_dim",
-          shape=(2, 4),
-          args=(2, 2),
-          exception=IndexError,
-          expected_error="""all_gather_dim(): expected dimension to be in range [-2, 1], got 2""",
-      ),
-      dict(
-          testcase_name="all_gather_dim_nonpositive_group_size",
-          op="_all_gather_dim",
-          shape=(2, 4),
-          args=(0, 0),
-          expected_error="""all_gather_dim(): expected group_size to be > 0, got 0""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_not_divisible",
-          op="_reduce_scatter_dim",
-          shape=(2, 3),
-          args=("sum", -1, 2),
-          expected_error="""reduce_scatter_dim(): expected the size of dim 1 to be divisible by group_size 2, got 3""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_unknown_reduce_op",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("premul_sum", 0, 2),
-          expected_error="""reduce_scatter_dim(): expected reduce_op to be one of sum, avg, product, min, max, band, bor, bxor, got premul_sum""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_bitwise_float",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("band", 0, 2),
-          expected_error="""reduce_scatter_dim(): expected the tensors dtype to be integer on bitwise reduction ops (BAND, BOR, BXOR), got float32""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_64bit_non_sum",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("min", 0, 2),
-          dtype=torch.int64,
-          exception=NotImplementedError,
-          expected_error="""reduce_scatter_dim(): reduce op min is not supported for int64 tensors; only sum and avg are supported for 64-bit dtypes""",
-      ),
-      dict(
-          testcase_name="all_gather_dim_group_size_mismatch",
-          op="_all_gather_dim",
-          shape=(2, 4),
-          args=(0, 3),
-          expected_error="""all_gather_dim(): expected group_size to match process group size, got 3 vs 2""",
-      ),
-      dict(
-          testcase_name="reduce_scatter_dim_non_tpu_backend",
-          op="_reduce_scatter_dim",
-          shape=(2, 4),
-          args=("sum", 0, 2),
-          expected_error="""reduce_scatter_dim(): expected the TPU backend of process group 0 to be an unwrapped ProcessGroupTpu, got a wrapped or non-TPU backend""",
-      ),
-  )
-  @et.why_tpu_only("torch.ops.tpu dimensional collectives are TPU-specific ops")
-  def test_dimensional_collectives(
-      self,
-      op,
-      shape,
-      args,
-      expected_error,
-      exception=RuntimeError,
-      dtype=torch.float32,
-  ):
-    # The default group is named "0", and its TPU backend is a
-    # FakeProcessGroup rather than a ProcessGroupTpu.
-    dist.init_process_group(
-        "tpu:fake", store=fake_pg.FakeStore(), rank=0, world_size=2
-    )
-    self.addCleanup(dist.destroy_process_group)
-    x = torch.ones(shape, dtype=dtype, device=et.device())
-    with et.assert_raises_message(exception, tpu=expected_error):
-      getattr(torch.ops.tpu, op)(x, *args, "0")
-
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_cpu_tensor(self):
     _ensure_ao_ops_registered()
@@ -4880,6 +5275,26 @@ module {
           expected_msg="gelu(): not implemented for float8_e4m3fn",
       ),
       dict(
+          testcase_name="float8_e4m3fn_gelu_backward_mixed_input",
+          op_fn=lambda t: torch.ops.aten.gelu_backward.grad_input(
+              t,
+              torch.ones_like(t, dtype=torch.float32),
+              grad_input=torch.empty_like(t, dtype=torch.float32),
+          ),
+          dtype=torch.float8_e4m3fn,
+          expected_msg="gelu_backward(): not implemented for float8_e4m3fn",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn_gelu_backward_grad_input",
+          op_fn=lambda t: torch.ops.aten.gelu_backward.grad_input(
+              torch.ones_like(t, dtype=torch.float32),
+              torch.ones_like(t, dtype=torch.float32),
+              grad_input=t,
+          ),
+          dtype=torch.float8_e4m3fn,
+          expected_msg="gelu_backward(): not implemented for float8_e4m3fn",
+      ),
+      dict(
           testcase_name="float8_e4m3fn_silu",
           op_fn=lambda t: torch.nn.functional.silu(t),
           dtype=torch.float8_e4m3fn,
@@ -4954,6 +5369,28 @@ module {
       torch.nonzero_static(t, size=2, out=t)
 
   @et.why_tpu_only(
+      "CUDA masked_select.out expands broadcast inputs before index_out,"
+      " missing overlap on broadcasted self or mask, whereas CPU and TPU"
+      " check before broadcasting."
+  )
+  def test_masked_select_out_broadcast_memory_overlap(self):
+    t = torch.tensor([2.0], device=et.device())
+    mask = torch.tensor([True, False, True, False], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t, mask, out=t)
+
+    t_bool = torch.tensor([True, False, True, True], device=et.device())
+    mask_scalar = torch.tensor([True], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.masked_select(t_bool, mask_scalar, out=mask_scalar)
+
+  @et.why_tpu_only(
       "Tensor repeats validates output_size against the host-synchronized sum"
       " of repeats synchronously on TPU."
   )
@@ -5009,7 +5446,6 @@ module {
         ),
     ):
       fn(t, repeats)
-
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
@@ -5151,6 +5587,98 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         tpu="""rms_norm(): expected the weight dtype to be floating point, got int32""",
     ):
       torch.nn.functional.rms_norm(x_empty, (8,), weight=w_int, eps=1e-5)
+
+
+def _tensor_too_large_for_the_device() -> torch.Tensor:
+  """Returns a tensor that runs out of memory when it is materialized."""
+  return torch.ones(1024, 1024, 1024, 1024, 1024, device=et.device())
+
+
+def _glu_with_dynamic_split_dimension() -> torch.Tensor:
+  """Returns an op result whose lowering fails when materialized."""
+  x = torch.ones(2, 4, device=et.device())
+  dynamism.mark_dynamic(x, 1, 2, 8)
+  return torch.nn.functional.glu(x, dim=1)
+
+
+class DeviceGuardErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests the error types raised through torch.accelerator, Stream and Event.
+
+  PyTorch calls the TPU device guard directly for these APIs.
+  """
+
+  @et.why_tpu_only("CUDA runs out of memory when the tensor is allocated.")
+  def test_failed_event_raises_out_of_memory_error(self):
+    # Deferred, so that the events are recorded before the failure is known.
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      too_large = _tensor_too_large_for_the_device()
+      start = torch.Event(device=et.device(), enable_timing=True)
+      start.record()
+      end = torch.Event(device=et.device(), enable_timing=True)
+      end.record()
+
+    # Synchronizing goes first: it waits until the failure is known.
+    with self.subTest("synchronize"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.synchronize()
+    with self.subTest("query"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.query()
+    with self.subTest("elapsed_time"):
+      with et.assert_raises_message(
+          torch.OutOfMemoryError,
+          tpu="""the TPU ran out of memory while allocating tensor float32[1024, 1024, 1024, 1024, 1024]""",
+      ):
+        start.elapsed_time(end)
+    del too_large
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_accelerator_synchronize_raises_not_implemented_error(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      unsupported = _glu_with_dynamic_split_dimension()
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        torch.accelerator.synchronize()
+    del unsupported
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_event_record_raises_not_implemented_error(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      unsupported = _glu_with_dynamic_split_dimension()
+      event = torch.Event(device=et.device())
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        # Recording materializes the deferred ops of the stream.
+        event.record()
+    del unsupported
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_set_stream_raises_not_implemented_error(self):
+    default_stream = torch.accelerator.current_stream()
+    self.addCleanup(torch.accelerator.set_stream, default_stream)
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      torch.accelerator.set_stream(torch.tpu.Stream())
+      unsupported = _glu_with_dynamic_split_dimension()
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""glu(): expected dimension 1 of input to have a static size, got dynamic size""",
+      ):
+        # Leaving a stream materializes its deferred ops.
+        torch.accelerator.set_stream(default_stream)
+    del unsupported
 
 
 # Environment variables that `distributed.set_tpu_launch_env` reads or writes,
@@ -5704,6 +6232,36 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
       )
 
+  def _bwd_dkv(self, **overrides):
+    """Calls the dK / dV op directly with valid arguments except `overrides`."""
+    shape = (1, 1, 256, 128)
+    args = dict(
+        q=torch.randn(shape, device=et.device()),
+        k=torch.randn(shape, device=et.device()),
+        v=torch.randn(shape, device=et.device()),
+        grad_out=torch.randn(shape, device=et.device()),
+        lse=torch.zeros(1, 1, 1, 256, device=et.device()),
+        di=torch.zeros(1, 1, 1, 256, device=et.device()),
+        q_num_blocks=torch.ones(2, dtype=torch.int32, device=et.device()),
+        q_indices=torch.zeros(4, dtype=torch.int32, device=et.device()),
+        mask_batch=1,
+        mask_heads=1,
+        q_block=128,
+        kv_block=128,
+        scale=1.0,
+        mask_mod_mlir="",
+    )
+    args.update(overrides)
+    return torch.ops.tpu._flex_attention_bwd_dkv(*args.values())
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_bwd_grad_out_must_match_the_output(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_bwd_dkv(): expected grad_out of shape [1, 1, 256, 128] and dtype float32, got [1, 1, 256, 64] and float32""",
+    ):
+      self._bwd_dkv(grad_out=torch.randn(1, 1, 256, 64, device=et.device()))
+
 
 class SpmdSafeCompileErrorsTest(et.TpuOnlyErrorTestBase):
   """Tests error messages for partially `spmd_safe` compiled graphs."""
@@ -5833,6 +6391,141 @@ class SpmdSafeCompileErrorsTest(et.TpuOnlyErrorTestBase):
         ),
     ):
       compiled_fn(x)
+
+
+class DimensionalCollectivesErrorTest(et.TpuOnlyErrorTestBase):
+  """Tests dimensional collective error handling on TPU."""
+
+  def setUp(self):
+    super().setUp()
+    dist.init_process_group(
+        f"{et.device().type}:fake",
+        store=fake_pg.FakeStore(),
+        rank=0,
+        world_size=2,
+    )
+
+  def tearDown(self):
+    if dist.is_initialized():
+      dist.destroy_process_group()
+    super().tearDown()
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_scalar(self):
+    x = torch.ones((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""all_gather_dim(): expected input to have at least 1 dimension, got 0""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_out_of_range(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""all_gather_dim(): expected dimension to be in range [-2, 1], got 2""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 2, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_nonpositive_group_size(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""all_gather_dim(): expected group_size to be > 0, got 0""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 0, 0, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_all_gather_dim_group_size_mismatch(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""all_gather_dim(): expected group_size to match process group size, got 3 vs 2""",
+    ):
+      torch.ops.tpu._all_gather_dim(x, 0, 3, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_not_divisible(self):
+    x = torch.ones((2, 3), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected the size of dim 1 to be divisible by group_size 2, got 3""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "sum", -1, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_unknown_reduce_op(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected reduce_op to be one of sum, avg, product, min, max, band, bor, bxor, got premul_sum""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "premul_sum", 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_bitwise_float(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected the tensors dtype to be integer on bitwise reduction ops (BAND, BOR, BXOR), got float32""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "band", 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_64bit_non_sum(self):
+    x = torch.ones((2, 4), dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""reduce_scatter_dim(): reduce op min is not supported for int64 tensors; only sum and avg are supported for 64-bit dtypes""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "min", 0, 2, "0")
+
+  @et.why_tpu_only(
+      "GPU collective kernels can't be invoked without the ProcessGroup API;"
+      " using FakeProcessGroup does not execute actual GPU kernel"
+      " implementation."
+  )
+  def test_reduce_scatter_dim_non_tpu_backend(self):
+    x = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reduce_scatter_dim(): expected the TPU backend of process group 0 to be an unwrapped ProcessGroupTpu, got a wrapped or non-TPU backend""",
+    ):
+      torch.ops.tpu._reduce_scatter_dim(x, "sum", 0, 2, "0")
 
 
 if __name__ == "__main__":

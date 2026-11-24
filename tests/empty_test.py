@@ -80,6 +80,21 @@ class EmptyTest(seed_test_utils.RepeatableTest):
     # Check it returns only a single result, i.e. not the empty tensor.
     self.assertRegex(mlir_str, "return %[a-zA-Z0-9_]+ : tensor<128xf32>")
 
+  def test_copy_into_slice_has_single_result(self):
+    """Tests that copy_ into a slice of an empty tensor has a single result.
+
+    Upstream PyTorch lowers `empty[0:64] = 1` to `copy_`, which goes through
+    out-variant buffer donation. The empty base must not be donated, since that
+    would materialize it.
+    """
+    with execution_mode.set_eager_mode(self.blocking_mode):
+      empty = torch.empty(128, device="tpu")
+      empty[0:64].copy_(torch.tensor(1.0, device="tpu"))
+    self.assertFalse(is_materialized_or_materializing(empty))
+    mlir_str = sync.computation_mlir([empty])
+    # Check it returns only a single result, i.e. not the empty tensor.
+    self.assertRegex(mlir_str, "return %[a-zA-Z0-9_]+ : tensor<128xf32>")
+
 
 if __name__ == "__main__":
   absltest.main()

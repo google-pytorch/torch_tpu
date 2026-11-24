@@ -16,6 +16,7 @@
 
 import os
 import pathlib
+import traceback
 from unittest import mock
 
 from absl.testing import absltest
@@ -24,6 +25,7 @@ import torch
 from torch_tpu._internal import profiler
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.distributed import multiprocessing
 from torch_tpu._internal.profiler import _api
 from torch_tpu._internal.profiler import _impl as profiler_impl
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
@@ -45,6 +47,48 @@ def _custom_profiler_config(config: TpuProfilerConfig) -> str:
   if hasattr(config, 'custom_profiler_config'):
     return config.custom_profiler_config  # pytype: disable=attribute-error
   return next(v for v in config.__getstate__() if isinstance(v, str))
+
+
+def _count_host_events(xspace: xplane_pb2.XSpace, event_name: str) -> int:
+  """Counts events matching `event_name` on `/host:CPU` XPlanes."""
+  total = 0
+  for plane in xspace.planes:
+    if plane.name == '/host:CPU':
+      matching_ids = {
+          meta_id
+          for meta_id, metadata in plane.event_metadata.items()
+          if metadata.name == event_name
+      }
+      for line in plane.lines:
+        for event in line.events:
+          if event.metadata_id in matching_ids:
+            total += 1
+  return total
+
+
+def _fresh_process_profile_worker(output_dir: str, result_queue) -> None:
+  """Runs `torch_tpu._internal.profiler.profile` in a fresh process."""
+  try:
+    multiprocessing.parse_absl_flags()
+    marker = 'profile_fresh_process_unique_op'
+    # Use CPU-only activities so the spawned worker does not contend for TPU
+    # device nodes held by the parent test process.
+    with profiler.profile(
+        activities=[profiler.ProfilerActivity.CPU],
+        on_trace_ready=profiler.xprof_trace_handler(dir_name=output_dir),
+    ):
+      with torch.autograd.profiler.record_function(marker):
+        _ = torch.randn(4, 4) + torch.randn(4, 4)
+
+    plugins_dir = pathlib.Path(output_dir) / 'plugins' / 'profile'
+    xplane_files = list(plugins_dir.glob('**/*.xplane.pb'))
+    if len(xplane_files) != 1:
+      result_queue.put(f'Expected 1 xplane file, got {xplane_files}')
+      return
+    xspace = xplane_pb2.XSpace.FromString(xplane_files[0].read_bytes())
+    result_queue.put(('OK', _count_host_events(xspace, marker)))
+  except Exception:  # pylint: disable=broad-exception-caught
+    result_queue.put(traceback.format_exc())
 
 
 class ProfilerApiTest(seed_test_utils.RepeatableTest):
@@ -252,10 +296,10 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
     self.assertEqual(server_port, port)
     profiler.stop_server()
 
-  def test_start_server_registers_xprof_callback_handler(self):
-    """Tests that starting server registers XProfCallbackHandler."""
-    # 1. Start profiler server, which should trigger
-    # XProfCallbackHandler::Register().
+  def test_start_trace_with_server_captures_exact_single_event(self):
+    """Tests that active trace sessions capture exact single host events."""
+    # 1. Start profiler server; callback registration is scoped to active
+    # ProfilerSessions rather than server startup.
     port = portpicker.pick_unused_port()
     profiler.start_server(port)
     try:
@@ -287,29 +331,37 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
       self.assertNotEmpty(xplane_files)
       xplane_file_path = os.path.join(trace_dir, xplane_files[0])
 
-      # 4. Parse XSpace protobuf and verify the PyTorch op event was captured.
+      # 4. Parse XSpace protobuf and verify exact count == 1 (no duplicates).
       with open(xplane_file_path, 'rb') as f:
         xspace = xplane_pb2.XSpace.FromString(f.read())
 
-      found = False
-      for plane in xspace.planes:
-        for metadata in plane.event_metadata.values():
-          if 'test_server_registered_pytorch_op' in metadata.name:
-            found = True
-            break
-        if found:
-          break
-      self.assertTrue(
-          found,
-          msg=(
-              'Did not find test_server_registered_pytorch_op in XSpace'
-              ' metadata'
-          ),
+      self.assertEqual(
+          _count_host_events(xspace, 'test_server_registered_pytorch_op'),
+          1,
       )
     finally:
       # 5. Clean up by stopping the profiler server.
       profiler.stop_server()
 
+  def test_profile_api_fresh_process_captures_exact_single_event(self):
+    """Verifies `profile` captures RecordFunction in a fresh process."""
+    output_dir = self.create_tempdir('profile_fresh_process').full_path
+    ctx = multiprocessing.get_context('spawn')
+    result_queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_fresh_process_profile_worker,
+        args=(output_dir, result_queue),
+    )
+    proc.start()
+    proc.join()
+    res = result_queue.get() if not result_queue.empty() else 'NO RESULT'
+    self.assertEqual(
+        proc.exitcode,
+        0,
+        f'Worker process exited with {proc.exitcode}:\n{res}',
+    )
+    self.assertEqual(res, ('OK', 1), f'Unexpected worker result:\n{res}')
+
 
 if __name__ == '__main__':
-  absltest.main()
+  multiprocessing.handle_test_main(absltest.main)

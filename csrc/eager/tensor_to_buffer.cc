@@ -124,6 +124,29 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
   *old_ref_ptr = std::move(buffer_ref);
 }
 
+absl::StatusOr<std::optional<DeviceBufferRef>> GetBufferImpl(
+    const at::Tensor& tensor, std::optional<DonateBase> donate_base) {
+  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
+      << "tensor is undefined";
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
+  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
+
+  if (!tensor.is_conj() && tensor.is_contiguous() &&
+      tensor.storage_offset() == 0 &&
+      tpu_layout.sizes == base_buffer_ref.dimensions() &&
+      tpu_layout.element_type == base_buffer_ref.element_type()) {
+    ABSL_VLOG(1) << "[GetBuffer] Tensor is a contiguous base, "
+                    "returning base buffer.";
+    return base_buffer_ref;
+  }
+
+  if (!donate_base.has_value()) {
+    return std::nullopt;
+  }
+  return CreateViewDeviceBufferRef(base_buffer_ref, tpu_layout,
+                                   tensor.is_conj(), *donate_base);
+}
+
 }  // namespace
 
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
@@ -346,24 +369,16 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
   return *base_buffer_ref;
 }
 
+absl::StatusOr<std::optional<DeviceBufferRef>> GetBufferWithoutCreatingView(
+    const at::Tensor& tensor) {
+  return GetBufferImpl(tensor, /*donate_base=*/std::nullopt);
+}
+
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor,
                                           DonateBase donate_base) {
-  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
-      << "tensor is undefined";
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
-  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
-
-  if (!tensor.is_conj() && tensor.is_contiguous() &&
-      tensor.storage_offset() == 0 &&
-      tpu_layout.sizes == base_buffer_ref.dimensions() &&
-      tpu_layout.element_type == base_buffer_ref.element_type()) {
-    ABSL_VLOG(1) << "[GetBuffer] Tensor is a contiguous base, "
-                    "returning base buffer.";
-    return base_buffer_ref;
-  }
-
-  return CreateViewDeviceBufferRef(base_buffer_ref, tpu_layout,
-                                   tensor.is_conj(), donate_base);
+  TT_ASSIGN_OR_RETURN(std::optional<DeviceBufferRef> buffer,
+                      GetBufferImpl(tensor, donate_base));
+  return std::move(*buffer);
 }
 
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
@@ -500,7 +515,12 @@ class TpuAllocator final : public c10::DeviceAllocator {
     return DeleteDeviceBufferRef;
   }
 
-  bool initialized() override { return true; }
+  // `torch.accelerator.memory_stats()` and `reset_peak_memory_stats()` skip
+  // the allocator until it's initialized, so that, like CUDA's, querying memory
+  // before the TPU runtime is initialized doesn't initialize it.
+  bool initialized() override {
+    return PjrtBackend::GetInstance().IsInitialized();
+  }
 
   void emptyCache(c10::MempoolId_t mempool_id) override {
     // No-op for now as PjRt handles memory management.
@@ -535,11 +555,12 @@ class TpuAllocator final : public c10::DeviceAllocator {
     stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
         pjrt_stats.peak_bytes_in_use;
 
-    // bytes_reserved -> reserved_bytes[all].current
-    stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
-        pjrt_stats.bytes_reserved;
-    stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
-        pjrt_stats.peak_bytes_reserved;
+    // The reserved memory is the memory that the allocator holds. Unlike
+    // PyTorch's caching allocators, PJRT doesn't hold on to freed memory, so
+    // it's the allocated memory, which includes the memory that the runtime
+    // reserves, e.g. for the temporaries of programs.
+    stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)] =
+        stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)];
 
     // num_allocs -> allocation[all].current
     stats.allocation[static_cast<size_t>(StatType::AGGREGATE)].current =
@@ -557,6 +578,14 @@ class TpuAllocator final : public c10::DeviceAllocator {
   }
 
   void resetPeakStats(c10::DeviceIndex device) override {
+    // Like `initialized()`, so that resetting the peak stats before the TPU
+    // runtime is initialized doesn't initialize it (`ValidateDevice()` would).
+    // PyTorch 2.13+ already skips this call until `initialized()`; older
+    // PyTorch doesn't.
+    // TODO: b/585211199 - Remove once the minimum PyTorch version is >= 2.13.
+    if (!initialized()) {
+      return;
+    }
     ValidateDevice(device);
     auto status = PjrtBackend::GetInstance().ClearAllocatorStats();
     if (!status.ok()) {
@@ -574,10 +603,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
               "Failed to get allocator stats: ", pjrt_stats_or.status());
       return {0, 0};
     }
-    const auto& pjrt_stats = pjrt_stats_or.value();
-    size_t limit = pjrt_stats.bytes_limit.value_or(0);
-    size_t used = pjrt_stats.bytes_in_use;
-    return {limit - used, limit};
+    return internal::GetFreeAndTotalMemory(pjrt_stats_or.value());
   }
 
  private:
@@ -599,6 +625,17 @@ void RegisterTpuAllocator() {
   c10::SetAllocator(GetPrivateUse1DeviceType(), GetTpuAllocator());
   at::setHostAllocator(GetPrivateUse1DeviceType(), GetTpuPinnedAllocator());
 }
+
+namespace internal {
+
+std::pair<size_t, size_t>  // STD_PAIR_OK=dictated by PyTorch.
+GetFreeAndTotalMemory(const tsl::AllocatorStats& stats) {
+  const size_t limit = stats.bytes_limit.value_or(0);
+  const size_t used = stats.bytes_in_use + stats.bytes_reserved;
+  return {used < limit ? limit - used : 0, limit};
+}
+
+}  // namespace internal
 
 c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref,
                          const c10::DeviceIndex device_idx) {

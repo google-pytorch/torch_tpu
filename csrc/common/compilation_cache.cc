@@ -16,8 +16,6 @@
 
 #include "csrc/common/compilation_cache.h"
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -27,7 +25,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -75,6 +72,7 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "tsl/platform/cpu_info.h"
 #include "tsl/platform/numbers.h"
 #include "xla/hlo/utils/concurrency/concurrency_utils.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -84,7 +82,8 @@
 
 ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
           "The number of threads to use for compilation. If 0, use the default "
-          "number of threads based on the number of logical CPUs.");
+          "number of threads based on the number of logical CPUs the process "
+          "may run on.");
 
 namespace torch_tpu {
 
@@ -105,8 +104,6 @@ bool IsFutureReady(const SharedLoadedExecutableWithMetadataFuture& future) {
   }();
   return num_procs;
 }
-
-int GetNumCpus() { return sysconf(_SC_NPROCESSORS_ONLN); }
 
 // Reads TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS, treating an unset
 // value as "default". Returns an error for any other value, which is likely a
@@ -161,12 +158,13 @@ int GetNumCompilationThreads(const int num_procs) {
     num_hyperthreads_per_cpu = 4;
     method = "NPROC";
   } else {
-    // NPROC is not set; use the hardware concurrency, which already accounts
-    // for num_hyper-threading.
-    num_cpus = GetNumCpus();
-    num_hyperthreads_per_cpu =
-        std::thread::hardware_concurrency() / GetNumCpus();
-    method = "HW concurrency";
+    // NPROC is not set; use one thread per logical CPU that this process may
+    // run on (its CPU affinity mask), as XLA's default executor does. Unlike
+    // the number of online CPUs, this respects `taskset`, cpuset cgroups and
+    // per-rank CPU pinning.
+    num_cpus = tsl::port::MaxParallelism();
+    num_hyperthreads_per_cpu = 1;
+    method = "CPU affinity";
   }
 
   // Take out one entire CPU core so as to not interfere with the PyTorch main
@@ -472,12 +470,13 @@ CompilationCache::GetCacheEntry(const CompilationCacheKey& key,
       .executable_future = cache_entry->executable_future(),
       .needs_compilation = false,
       .dump_on_cache_miss = false,
+      .unbounded_dynamic_kernel = cache_entry->unbounded_dynamic_kernel(),
   };
 }
 
 std::optional<CompilationCache::BoundedDynamicCache::iterator>
-CompilationCache::GetBoundedDynamicCacheEntries(ShapelessKey shapeless_key) {
-  if (auto it = bounded_dynamic_cache_.find(shapeless_key);
+CompilationCache::GetBoundedDynamicCacheEntries(ExtentlessKey extentless_key) {
+  if (auto it = bounded_dynamic_cache_.find(extentless_key);
       it != bounded_dynamic_cache_.end()) {
     return it;
   }
@@ -485,44 +484,49 @@ CompilationCache::GetBoundedDynamicCacheEntries(ShapelessKey shapeless_key) {
 }
 
 CompilationCache::CacheLookupInternal CompilationCache::AddCacheEntry(
-    const CompilationCacheKey& key, const CacheEntryKind kind) {
+    const CompilationCacheKey& key,
+    const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel) {
   // Bind by reference: both operands are lvalues of the same type, so the
   // conditional is an lvalue and no map copy happens.
-  auto& cache = kind == CacheEntryKind::kStatic ? executable_cache_
-                                                : unbounded_dynamic_cache_;
-  const auto [entry, inserted] = cache.insert({key, CacheEntry()});
+  auto& cache = unbounded_dynamic_kernel == nullptr ? executable_cache_
+                                                    : unbounded_dynamic_cache_;
+  const auto [entry, inserted] =
+      cache.insert({key, CacheEntry(unbounded_dynamic_kernel)});
   ABSL_CHECK(inserted)  // CRASH_OK
-      << "Key already exists in " << kind << " cache: " << key;
+      << "Key already exists in "
+      << (unbounded_dynamic_kernel == nullptr ? "static" : "unbounded dynamic")
+      << " cache: " << key;
   return CacheLookupInternal{
       .executable_promise = entry->second.executable_promise(),
       .executable_future = entry->second.executable_future(),
       .needs_compilation = true,
       .dump_on_cache_miss = false,
+      .unbounded_dynamic_kernel = unbounded_dynamic_kernel,
   };
 }
 
 CompilationCache::CacheLookupInternal
 CompilationCache::AddBoundedDynamicCacheEntry(
-    ShapelessKey shapeless_key, CompileOptionsKey compile_options_key,
+    ExtentlessKey extentless_key, CompileOptionsKey compile_options_key,
     ShapeDynamismMetadata shape_dynamism_metadata,
     std::optional<CompilationCache::BoundedDynamicCache::iterator> dynamic_it) {
   std::vector<BoundedDynamicCacheEntry>* entries;
   if (dynamic_it.has_value()) {
-    ABSL_CHECK(shapeless_key == (*dynamic_it)->first)  // CRASH_OK
-        << "Shapeless key does not match dynamic iterator"
-        << ToString(shapeless_key)
+    ABSL_CHECK(extentless_key == (*dynamic_it)->first)  // CRASH_OK
+        << "Extentless key does not match dynamic iterator"
+        << ToString(extentless_key)
         << ", dynamic iterator key: " << ToString((*dynamic_it)->first);
     entries = &(*dynamic_it)->second;
   } else {
     auto [entry, inserted] = bounded_dynamic_cache_.insert(
-        {shapeless_key, std::vector<BoundedDynamicCacheEntry>()});
+        {extentless_key, std::vector<BoundedDynamicCacheEntry>()});
     ABSL_CHECK(inserted)  // CRASH_OK
         << "Key already exists in bounded dynamic cache: "
-        << ToString(shapeless_key);
+        << ToString(extentless_key);
     entries = &entry->second;
   }
 
-  const GraphKey graph_key(shapeless_key,
+  const GraphKey graph_key(extentless_key,
                            DimensionsKey(shape_dynamism_metadata));
   CompilationCacheKey middle_executable_key(graph_key, compile_options_key);
   entries->push_back(BoundedDynamicCacheEntry{
@@ -530,8 +534,7 @@ CompilationCache::AddBoundedDynamicCacheEntry(
       .shape_dynamism_metadata = shape_dynamism_metadata,
   });
 
-  auto cache_lookup =
-      AddCacheEntry(middle_executable_key, CacheEntryKind::kStatic);
+  auto cache_lookup = AddCacheEntry(middle_executable_key);
   cache_lookup.shape_dynamism_metadata = shape_dynamism_metadata;
   return cache_lookup;
 }
@@ -545,7 +548,7 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
   }
   const UnboundedDynamicKernel* dynamic_kernel =
       UnboundedDynamicKernelRegistry::GetInstance().FindUnboundedDynamicKernel(
-          key.graph_key().shapeless_key(), input_shapes, output_shapes);
+          key.graph_key().extentless_key(), input_shapes, output_shapes);
   if (dynamic_kernel == nullptr) {
     return std::nullopt;
   }
@@ -564,9 +567,7 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
     }
     ABSL_VLOG(2) << "Creating an unbounded dynamic cache entry for key: "
                  << dynamic_key;
-    cache_lookup =
-        AddCacheEntry(dynamic_key, CacheEntryKind::kUnboundedDynamic);
-    cache_lookup->unbounded_dynamic_kernel = dynamic_kernel;
+    cache_lookup = AddCacheEntry(dynamic_key, dynamic_kernel);
     perf_stats_.num_unbounded_dynamic_hits++;
     return cache_lookup;
   }
@@ -576,7 +577,6 @@ CompilationCache::GetOrCreateUnboundedDynamicCacheEntry(
   const SharedLoadedExecutableWithMetadataFuture& future =
       cache_lookup->executable_future;
   if (!IsFutureReady(future) || future.get().ok()) {
-    cache_lookup->unbounded_dynamic_kernel = dynamic_kernel;
     perf_stats_.num_unbounded_dynamic_hits++;
     return cache_lookup;
   }
@@ -604,7 +604,7 @@ CompilationCache::GetOrCreateCacheEntry(
     if (cache_lookup_or.has_value()) {
       return *cache_lookup_or;
     }
-    return AddCacheEntry(key, CacheEntryKind::kStatic);
+    return AddCacheEntry(key);
   }
 
   // 1. Try to find a static CacheEntry.
@@ -635,11 +635,11 @@ CompilationCache::GetOrCreateCacheEntry(
   }
 
   // 3. Try to find a bounded dynamic cache entry. We hold on to the iterator to
-  // avoid having to look up the shapeless key again later.
+  // avoid having to look up the extentless key again later.
   std::optional<BoundedDynamicCache::iterator> dynamic_it =
       skip_dynamic_lookup_and_compilation
           ? std::nullopt
-          : GetBoundedDynamicCacheEntries(key.graph_key().shapeless_key());
+          : GetBoundedDynamicCacheEntries(key.graph_key().extentless_key());
   if (dynamic_it.has_value()) {
     for (const auto& entry : (*dynamic_it)->second) {
       if (entry.shape_dynamism_metadata.IsStaticShapeCompatible(input_shapes) &&
@@ -680,14 +680,14 @@ CompilationCache::GetOrCreateCacheEntry(
   if (create_dynamic_entry) {
     auto dynamism_metadata = ShapeDynamismMetadata(input_shapes, output_shapes);
     ABSL_VLOG(2) << "Creating a dynamic cache entry for key: " << key;
-    return AddBoundedDynamicCacheEntry(key.graph_key().shapeless_key(),
+    return AddBoundedDynamicCacheEntry(key.graph_key().extentless_key(),
                                        key.compile_options_key(),
                                        dynamism_metadata, dynamic_it);
   }
 
   // 5. Lastly, create a static cache entry.
   ABSL_VLOG(2) << "Creating a static cache entry for key: " << key;
-  return AddCacheEntry(key, CacheEntryKind::kStatic);
+  return AddCacheEntry(key);
 }
 
 bool CompilationCache::IsExecutableReady(const CompilationCacheKey& key,
@@ -961,7 +961,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
   if (cache_lookup.shape_dynamism_metadata.has_value()) {
     // Create a key for the storage of the dynamic executable.
     const GraphKey graph_key(
-        key.graph_key().shapeless_key(),
+        key.graph_key().extentless_key(),
         DimensionsKey(*cache_lookup.shape_dynamism_metadata));
     storage_key = CompilationCacheKey(graph_key, key.compile_options_key());
     ABSL_VLOG(2) << "Storage key for dynamic executable: " << storage_key;
@@ -1112,20 +1112,13 @@ void CompilationCache::SetExecutable(
                  << " ms";
   }
 
-  if (kind == CacheEntryKind::kUnboundedDynamic && executable.ok()) {
+  const UnboundedDynamicKernel* absl_nullable kernel =
+      cache_entry->unbounded_dynamic_kernel();
+  if (kernel != nullptr && executable.ok()) {
     // Executables loaded from the persistent tiers carry no metadata, so it is
     // attached here for every source alike.
-    const UnboundedDynamicExecutionMetadata* metadata =
-        UnboundedDynamicKernelRegistry::GetInstance()
-            .GetUnboundedDynamicMetadata(key);
-    if (metadata == nullptr) {
-      executable = TT_ERROR(  // ERROR_COV_INFEASIBLE=unreachable from Python.
-                       error::kInternal)
-                   << "no unbounded dynamic kernel registered for key " << key;
-    } else {
-      executable = LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
-          *executable, *metadata);
-    }
+    executable = LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
+        *executable, kernel->metadata);
   }
 
   TrySetExecutablePromise(key, *cache_entry->executable_promise(),

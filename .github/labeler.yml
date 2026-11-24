@@ -17,4 +17,14 @@
 
 ci:torch-tests:
   - changed-files:
-      - any-glob-to-any-file: 'tests/torch/**'
+      - any-glob-to-any-file:
+          # Test targets, configs, and runner.
+          - 'tests/torch/**'
+          # The CI workflow definition.
+          - '.github/workflows/upstream_tests.yaml'
+          # Test target generator for tests/torch/BUILD.
+          - 'ci/tools/gen_torch_tests.py'
+          - 'ci/tools/torch_test_module_utils.py'
+          # Starlark macros for defining test targets.
+          - 'build_files/torch_rules_common.bzl'
+          - 'shims/build_files/torch_rules.bzl'

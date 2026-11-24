@@ -131,6 +131,11 @@ When amending the description of a pull request that already exists:
 
 Before requesting review, run the following self-validation steps:
 
+-   [ ] **Size & Simplicity**: Did you inspect `git diff --stat` before
+    requesting review? If the pull request exceeds roughly 300 non-generated
+    non-test lines or adds multiple new files, cut speculative, low-value,
+    duplicated, or dead code, reuse existing code, and consider splitting any
+    remaining large change into a series of smaller pull requests.
 -   [ ] **Format Code**: Did you run `nox -s format` before every push,
     including after a rebase, and does `nox -s lint` pass?
 -   [ ] **Moved Files**: Is every relocated file recorded as a rename (check

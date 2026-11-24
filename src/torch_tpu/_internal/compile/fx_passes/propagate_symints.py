@@ -17,8 +17,18 @@
 from collections.abc import Set
 from typing import Any
 from absl import logging
+import sympy
 import torch
-from torch_tpu._internal.compile.dynamic import sym_utils
+
+
+def _atomic_symbol_name(val: Any) -> str | None:
+  """Returns the symbol name if `val` is a bare atomic SymInt, else None."""
+  if not isinstance(val, torch.SymInt):
+    return None
+  expr = getattr(getattr(val, "node", None), "expr", None)
+  if isinstance(expr, sympy.Symbol):
+    return str(expr)
+  return None
 
 
 def _collect_free_symbols(val: Any) -> Set[str]:
@@ -55,10 +65,10 @@ def apply(gm: torch.fx.GraphModule) -> None:
   This is required because split_module does not propagate SymInt placeholders
   to submodules unless they are explicitly used in the submodule body.
 
-  The pass detects SymInts that are used in the submodule body (or in tensor
-  shapes/strides) but are not yet propagated from the parent module.
-  It then adds these SymInt placeholders to the submodule signature and
-  updates the call site node in the parent module.
+  The pass detects atomic SymInts referenced by submodule placeholder metadata
+  (tensor shapes/strides or compound SymInt expressions) that are not yet
+  propagated from the parent module. It then adds these SymInt placeholders to
+  the submodule signature and updates the call site node in the parent module.
 
   Example:
     GraphModule before propagating SymInts:
@@ -87,8 +97,10 @@ def apply(gm: torch.fx.GraphModule) -> None:
   parent_symint_placeholders = {}
   submod_call_nodes = {}
   for node in gm.graph.nodes:
-    if node.op == "placeholder" and sym_utils.is_symint_node(node):
-      parent_symint_placeholders[str(node.meta["val"])] = node
+    if node.op == "placeholder":
+      sym_name = _atomic_symbol_name(node.meta.get("val"))
+      if sym_name is not None:
+        parent_symint_placeholders.setdefault(sym_name, node)
     elif node.op == "call_module":
       submod_call_nodes[node.target] = node
 
@@ -100,16 +112,16 @@ def apply(gm: torch.fx.GraphModule) -> None:
       continue
 
     submod_symbols = set()
-    for node in submod.graph.nodes:
-      if node.op == "placeholder" and isinstance(
-          node.meta.get("val"), torch.Tensor
-      ):
-        submod_symbols.update(_collect_free_symbols(node.meta["val"]))
-
     existing_submod_symbols = set()
     for node in submod.graph.nodes:
-      if node.op == "placeholder" and sym_utils.is_symint_node(node):
-        existing_submod_symbols.add(str(node.meta["val"]))
+      if node.op != "placeholder":
+        continue
+      val = node.meta.get("val")
+      if isinstance(val, (torch.Tensor, torch.SymInt)):
+        submod_symbols.update(_collect_free_symbols(val))
+      sym_name = _atomic_symbol_name(val)
+      if sym_name is not None:
+        existing_submod_symbols.add(sym_name)
 
     missing_symbols = submod_symbols - existing_submod_symbols
     if not missing_symbols:

@@ -44,6 +44,7 @@ struct UnboundedDynamicKernel {
 
   BuildFn absl_nonnull build;
   UnboundedDynamicExecutionMetadata metadata;
+  // Identifies the kernel, and its executable in the compilation cache.
   CompilationCacheKey key;
   // Whether a cache miss may load the kernel when
   // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS is "default" (or unset).
@@ -51,9 +52,18 @@ struct UnboundedDynamicKernel {
   bool enabled_by_default = false;
 };
 
-// Process-wide registry of unbounded dynamic kernels, grouped by shapeless key.
-// Several kernels may share a shapeless key, e.g. with different compatibility
-// predicates; a lookup returns the first compatible one in registration order.
+// A kernel to register. Graphs with the extentless key of `kernel.key` can find
+// it, as can graphs with any of the extentless keys in
+// `additional_search_keys`.
+struct UnboundedDynamicKernelRegistration {
+  UnboundedDynamicKernel kernel;
+  std::vector<ExtentlessKey> additional_search_keys;
+};
+
+// Process-wide registry of unbounded dynamic kernels, grouped by extentless
+// key. Several kernels may share an extentless key, e.g. with different
+// compatibility predicates; a lookup returns the first compatible one in
+// registration order.
 class UnboundedDynamicKernelRegistry {
  public:
   static UnboundedDynamicKernelRegistry& GetInstance();
@@ -63,42 +73,40 @@ class UnboundedDynamicKernelRegistry {
   UnboundedDynamicKernelRegistry& operator=(
       const UnboundedDynamicKernelRegistry&) = delete;
 
-  // Registers `kernel` under `kernel.key` and its shapeless key. Must only be
-  // called during static initialization; it is not synchronized with lookups.
-  // Returns kAlreadyExists if a kernel is already registered under that key.
-  absl::Status RegisterKernel(UnboundedDynamicKernel kernel);
+  // Registers `registration.kernel` under its `key`, that key's extentless key
+  // and each of `registration.additional_search_keys`, so that graphs with any
+  // of them can find it and share its executable. Must only be called during
+  // static initialization; it is not synchronized with lookups. Returns
+  // kAlreadyExists if a kernel is already registered under
+  // `registration.kernel.key`.
+  absl::Status RegisterKernel(UnboundedDynamicKernelRegistration registration);
 
   // Returns the first kernel registered under `key`, in registration order,
   // whose compatibility predicate accepts the given logical input and output
   // shapes, or null if there is none.
   [[nodiscard]] const UnboundedDynamicKernel* absl_nullable
-  FindUnboundedDynamicKernel(const ShapelessKey& key,
+  FindUnboundedDynamicKernel(const ExtentlessKey& key,
                              absl::Span<const Shape> input_shapes,
                              absl::Span<const Shape> output_shapes) const;
-
-  // Returns the execution metadata of the kernel registered under exactly
-  // `key`, or null if there is none.
-  [[nodiscard]] const UnboundedDynamicExecutionMetadata* absl_nullable
-  GetUnboundedDynamicMetadata(const CompilationCacheKey& key) const;
 
  private:
   // Owns the kernels, indexed by their exact cache key.
   using KernelMap = absl::flat_hash_map<CompilationCacheKey,
                                         std::unique_ptr<UnboundedDynamicKernel>,
                                         CompilationCacheKey::Hash>;
-  // Non-owning index from shapeless key to the kernels registered under it, in
+  // Non-owning index from extentless key to the kernels registered under it, in
   // registration order. Pointers point into `KernelMap`'s heap-allocated
   // values, which are never freed or moved (the registry is append-only).
   using KeysMap =
-      absl::flat_hash_map<ShapelessKey,
+      absl::flat_hash_map<ExtentlessKey,
                           std::vector<const UnboundedDynamicKernel*>,
-                          ShapelessKey::Hash>;
+                          ExtentlessKey::Hash>;
 
   friend class absl::NoDestructor<UnboundedDynamicKernelRegistry>;
   UnboundedDynamicKernelRegistry() = default;
 
   KernelMap kernels_;
-  KeysMap shapeless_map_;
+  KeysMap extentless_map_;
 };
 
 }  // namespace torch_tpu

@@ -14,8 +14,8 @@
 
 # Domain experts for this package:
 # willfroom
-# tudorpip
 # ghpvnist
+# tudorpip
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
@@ -210,6 +210,7 @@ torch_tpu_cc_library(
         "//csrc/eager:tensor_to_buffer",
         "//csrc/internal/device:vmem_capacity",
         "//csrc/internal/mosaic:kiln_custom_call",
+        "//csrc/internal/mosaic:kiln_utils",
         "//csrc/internal/mosaic/kiln",
         "//csrc/ops:binary",
         "//csrc/ops:op_builder_utils",

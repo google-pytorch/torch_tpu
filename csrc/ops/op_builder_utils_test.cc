@@ -33,6 +33,7 @@
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/util/Exception.h"
+#include "c10/util/StringUtil.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -1320,6 +1321,115 @@ TEST(BroadcastIfNeeded, MultipleBoundedResultDimensionsBoundedToStaticFailure) {
                        HasSubstr("cannot mix bounded and static dimensions")));
 }
 
+// Moves a size-1 dim around two bounded dims: [1, 4, ?8, ?8] -> [4, ?8, ?8, 1].
+TEST(DynamicReshapeWithRuntimeSizes, StaticAndBoundedDimsWithExplicitSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {1, 4, 8, 8}, /*bound_dims=*/{2, 3});
+  const mlir::Type i32_type = fb.getOpBuilder().getI32Type();
+  const mlir::stablehlo::Dimensions output_dims = {
+      {.size = 4},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 2},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 3},
+      {.size = 1},
+  };
+  const std::vector<mlir::MlirOp> output_sizes = {
+      MakeScalarConstant(fb, 4, i32_type),
+      mlir::stablehlo::GetDimensionSize(input, 2),
+      mlir::stablehlo::GetDimensionSize(input, 3),
+      MakeScalarConstant(fb, 1, i32_type),
+  };
+
+  mlir::MlirOp reshaped =
+      DynamicReshapeWithRuntimeSizes(input, output_dims, output_sizes);
+  mlir::func::Return(fb, reshaped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      reshaped.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(reshaped), ElementsAre(4, 8, 8, 1));
+  EXPECT_THAT(GetBoundedDims(reshaped), ElementsAre(1, 2));
+}
+
+// Merges a static dim into a bounded dim, with the runtime size of the merged
+// dim computed by the caller: [?8, ?8, 4] -> [?8, ?32].
+TEST(DynamicReshapeWithRuntimeSizes, MergedBoundedDimWithExplicitSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 8, 4}, /*bound_dims=*/{0, 1});
+  const mlir::Type i32_type = fb.getOpBuilder().getI32Type();
+  const mlir::stablehlo::Dimensions output_dims = {
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 0},
+      {.size = 32, .boundOp = input.getValue()},
+  };
+  mlir::MlirOp dim1_size = mlir::stablehlo::GetDimensionSize(input, 1);
+  mlir::MlirOp four = MakeScalarConstant(fb, 4, i32_type);
+  const std::vector<mlir::MlirOp> output_sizes = {
+      mlir::stablehlo::GetDimensionSize(input, 0),
+      mlir::stablehlo::Mul(dim1_size, four),
+  };
+
+  mlir::MlirOp reshaped =
+      DynamicReshapeWithRuntimeSizes(input, output_dims, output_sizes);
+  mlir::func::Return(fb, reshaped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      reshaped.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(reshaped), ElementsAre(8, 32));
+  EXPECT_THAT(GetBoundedDims(reshaped), ElementsAre(0, 1));
+}
+
+// Same reshape as StaticAndBoundedDimsWithExplicitSizes, with the runtime sizes
+// from GetRuntimeSizes, i.e. each dim's boundOp and boundOpDim.
+TEST(DynamicReshapeWithRuntimeSizes, StaticAndBoundedDimsFromGetRuntimeSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {1, 4, 8, 8}, /*bound_dims=*/{2, 3});
+  const mlir::stablehlo::Dimensions output_dims = {
+      {.size = 4},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 2},
+      {.size = 8, .boundOp = input.getValue(), .boundOpDim = 3},
+      {.size = 1},
+  };
+
+  mlir::MlirOp reshaped = DynamicReshapeWithRuntimeSizes(
+      input, output_dims, GetRuntimeSizes(fb, output_dims));
+  mlir::func::Return(fb, reshaped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  auto dynamic_reshape =
+      reshaped.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>();
+  ASSERT_TRUE(dynamic_reshape) << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(reshaped), ElementsAre(4, 8, 8, 1));
+  EXPECT_THAT(GetBoundedDims(reshaped), ElementsAre(1, 2));
+  // The output shape operand holds one i32 size per result dim.
+  EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(
+                dynamic_reshape.getOutputShape().getType())
+                .getShape(),
+            llvm::ArrayRef<int64_t>({4}));
+}
+
+TEST(DynamicReshapeWithRuntimeSizesDeathTest, RankZeroResult) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {1}, /*bound_dims=*/{0});
+  EXPECT_DEATH(
+      DynamicReshapeWithRuntimeSizes(input, mlir::stablehlo::Dimensions{}, {}),
+      "rank at least 1");
+}
+
 TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
@@ -1378,6 +1488,174 @@ TEST(RestoreDynamicDimSizes, RestoresBoundedDynamicDims) {
       restored.getValue().getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
   ASSERT_TRUE(set_size) << DebugString(module.get());
   EXPECT_EQ(set_size.getDimension(), 1);
+}
+
+TEST(BuildMaybeSlice, StaticDimTruncated) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-1,
+                      /*right_pad=*/-2));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_TRUE(GetTensorTypeOrDie(sliced).hasStaticShape());
+  EXPECT_THAT(GetStaticShape(sliced), ElementsAre(6, 2));
+  EXPECT_TRUE(sliced.getValue().getDefiningOp<mlir::stablehlo::SliceOp>())
+      << DebugString(module.get());
+}
+
+TEST(BuildMaybeSlice, BoundedDimTruncatedAtBoundAndRuntimeSize) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{0, 1});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/0,
+                      /*right_pad=*/-1));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  // Both dimensions stay bounded, and the bound of dimension 1 shrinks.
+  const mlir::stablehlo::Dimensions dims = GetDimensions(sliced);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 4);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  // The runtime size of dimension 1 is the input runtime size minus 1, clamped
+  // at 0.
+  auto set_size =
+      sliced.getValue().getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
+  ASSERT_TRUE(set_size) << DebugString(module.get());
+  EXPECT_EQ(set_size.getDimension(), 1);
+  auto clamp = set_size.getSize().getDefiningOp<mlir::stablehlo::MaxOp>();
+  ASSERT_TRUE(clamp) << DebugString(module.get());
+  EXPECT_TRUE(clamp.getLhs().getDefiningOp<mlir::stablehlo::SubtractOp>())
+      << DebugString(module.get());
+}
+
+TEST(BuildMaybeSlice, BoundedDimTruncatedOnBothSides) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{1});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-1,
+                      /*right_pad=*/-1));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(sliced);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_FALSE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 3);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  // The runtime size of dimension 1 shrinks by the truncation on both sides.
+  auto set_size =
+      sliced.getValue().getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
+  ASSERT_TRUE(set_size) << DebugString(module.get());
+  EXPECT_EQ(set_size.getDimension(), 1);
+  auto clamp = set_size.getSize().getDefiningOp<mlir::stablehlo::MaxOp>();
+  ASSERT_TRUE(clamp) << DebugString(module.get());
+  auto shrunk = clamp.getLhs().getDefiningOp<mlir::stablehlo::SubtractOp>();
+  ASSERT_TRUE(shrunk) << DebugString(module.get());
+  auto truncation =
+      shrunk.getRhs().getDefiningOp<mlir::stablehlo::ConstantOp>();
+  ASSERT_TRUE(truncation) << DebugString(module.get());
+  auto truncation_attr =
+      mlir::dyn_cast<mlir::DenseIntElementsAttr>(truncation.getValue());
+  ASSERT_TRUE(truncation_attr) << DebugString(module.get());
+  EXPECT_EQ(truncation_attr.getSplatValue<int32_t>(), 2);
+}
+
+TEST(BuildMaybeSlice, StaticDimTruncatedToZeroLength) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-2,
+                      /*right_pad=*/-3));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_THAT(GetStaticShape(sliced), ElementsAre(6, 0));
+}
+
+TEST(BuildMaybeSlice, OtherBoundedDimKept) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {6, 5}, /*bound_dims=*/{0});
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp sliced,
+      BuildMaybeSlice(input, /*dimension=*/1, /*left_pad=*/-1,
+                      /*right_pad=*/0));
+  mlir::func::Return(fb, sliced);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::stablehlo::Dimensions dims = GetDimensions(sliced);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 6);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 4);
+  EXPECT_FALSE(dims[1].boundOp.has_value());
+}
+
+TEST(ClampLike, StaticOperandEmitsClamp) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 8}, /*bound_dims=*/{});
+  mlir::MlirOp min = MakeConstantLike(input, -1.0);
+  mlir::MlirOp max = MakeConstantLike(input, 1.0);
+  mlir::MlirOp clamped = ClampLike(min, input, max);
+  mlir::func::Return(fb, clamped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_EQ(GetTensorTypeOrDie(clamped), GetTensorTypeOrDie(input));
+  EXPECT_TRUE(clamped.getValue().getDefiningOp<mlir::stablehlo::ClampOp>())
+      << DebugString(module.get());
+}
+
+TEST(ClampLike, BoundedOperandKeepsBounds) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 8}, /*bound_dims=*/{0, 1});
+  mlir::MlirOp min = MakeConstantLike(input, -1.0);
+  mlir::MlirOp max = MakeConstantLike(input, 1.0);
+  mlir::MlirOp clamped = ClampLike(min, input, max);
+  mlir::func::Return(fb, clamped);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  EXPECT_EQ(GetTensorTypeOrDie(clamped), GetTensorTypeOrDie(input));
+  auto min_op = clamped.getValue().getDefiningOp<mlir::stablehlo::MinOp>();
+  ASSERT_TRUE(min_op) << DebugString(module.get());
+  EXPECT_TRUE(min_op.getLhs().getDefiningOp<mlir::stablehlo::MaxOp>())
+      << DebugString(module.get());
 }
 
 TEST(FillPastRuntimeSizes, ScalarFillValue) {
@@ -2529,6 +2807,120 @@ INSTANTIATE_TEST_SUITE_P(
     }),
     [](const testing::TestParamInfo<ConvolutionLikeUnsupportedTest::ParamType>&
            info) { return info.param.test_name; });
+
+TEST(BuildFillUninitialized, FiniteOnlyFloatTypesUseMaxFiniteValue) {
+  struct TestCase {
+    mlir::ElementType element_type;
+    double expected_value;
+  };
+  const std::vector<TestCase> test_cases = {
+      {mlir::ElementType::F4E2M1FN, 6.0},
+      {mlir::ElementType::F6E2M3FN, 7.5},
+      {mlir::ElementType::F6E3M2FN, 28.0},
+  };
+
+  for (const auto& tc : test_cases) {
+    OpBuilderUtilsBuilder builder_holder;
+    mlir::ModuleBuilder& mb = builder_holder.get();
+    mlir::MlirOp op = BuildFillUninitialized(mb, tc.element_type, {2, 4});
+    auto const_op = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
+        op.getValue().getDefiningOp());
+    ASSERT_TRUE(const_op != nullptr);
+    auto dense_attr =
+        mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+    ASSERT_TRUE(dense_attr != nullptr);
+    ASSERT_TRUE(dense_attr.isSplat());
+    EXPECT_DOUBLE_EQ(
+        dense_attr.getSplatValue<llvm::APFloat>().convertToDouble(),
+        tc.expected_value);
+  }
+}
+
+TEST(BuildFillUninitialized, StandardFloatTypesUseNaN) {
+  OpBuilderUtilsBuilder builder_holder;
+  mlir::ModuleBuilder& mb = builder_holder.get();
+  mlir::MlirOp op = BuildFillUninitialized(mb, mlir::ElementType::F32, {2, 4});
+  auto const_op = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
+      op.getValue().getDefiningOp());
+  ASSERT_TRUE(const_op != nullptr);
+  auto dense_attr =
+      mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+  ASSERT_TRUE(dense_attr != nullptr);
+  ASSERT_TRUE(dense_attr.isSplat());
+  EXPECT_TRUE(dense_attr.getSplatValue<llvm::APFloat>().isNaN());
+}
+
+TEST(InferBroadcastDimensions, BroadcastsSingletonToBoundedDimension) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {1, 4}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6, 1}, {0});
+  mlir::func::Return(fb, {lhs, rhs});
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::stablehlo::Dimensions bcast_dims,
+                          InferBroadcastDimensions(lhs_dims, rhs_dims));
+  ASSERT_EQ(bcast_dims.size(), 2);
+  EXPECT_EQ(bcast_dims[0].size, 6);
+  EXPECT_EQ(bcast_dims[0].boundOp, rhs.getValue());
+  EXPECT_EQ(bcast_dims[1].size, 4);
+  EXPECT_FALSE(bcast_dims[1].boundOp.has_value());
+}
+
+TEST(InferBroadcastDimensions, ExpandsRankWhenOperandHasFewerDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6, 4}, {0});
+  mlir::func::Return(fb, rhs);
+
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::stablehlo::Dimensions bcast_dims,
+      InferBroadcastDimensions(/*lhs_dims=*/{}, /*rhs_dims=*/rhs_dims));
+  ASSERT_EQ(bcast_dims.size(), 2);
+  EXPECT_EQ(bcast_dims[0].size, 6);
+  EXPECT_EQ(bcast_dims[0].boundOp, rhs.getValue());
+  EXPECT_EQ(bcast_dims[1].size, 4);
+  EXPECT_FALSE(bcast_dims[1].boundOp.has_value());
+}
+
+TEST(InferBroadcastDimensions, RejectsIncompatibleSizes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {4}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6}, {});
+  mlir::func::Return(fb, {lhs, rhs});
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  EXPECT_THAT(
+      InferBroadcastDimensions(lhs_dims, rhs_dims),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr("expected compatible shapes for broadcasting, got 4 and "
+                    "6")));
+}
+
+TEST(InferBroadcastDimensions, RejectsMixedStaticAndBoundedDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp lhs = MakeBoundedArg(fb, {6}, {});
+  mlir::MlirOp rhs = MakeBoundedArg(fb, {6}, {0});
+  mlir::func::Return(fb, {lhs, rhs});
+
+  const mlir::stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const mlir::stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  EXPECT_THAT(
+      InferBroadcastDimensions(lhs_dims, rhs_dims),
+      StatusIs(
+          error::kInvalidArgument,
+          HasSubstr("cannot mix bounded and static dimensions in broadcast")));
+}
 
 }  // namespace
 }  // namespace torch_tpu

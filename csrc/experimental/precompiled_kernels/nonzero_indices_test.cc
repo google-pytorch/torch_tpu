@@ -21,6 +21,7 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/shape.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
@@ -44,14 +45,15 @@ struct TestCase {
 using NonzeroIndicesTest = ::testing::TestWithParam<TestCase>;
 
 // Execution, caching and compatibility with default layouts are tested through
-// torch.nonzero in tests/dynamic_ops_test.py, and the shapeless key fixes the
+// torch.nonzero in tests/dynamic_ops_test.py, and the extentless key fixes the
 // number, ranks and dtypes of the operands; this covers the compatibility
 // checks that neither can reach.
 TEST_P(NonzeroIndicesTest, IsCompatible) {
-  // GetNonzeroUnboundedDynamicKernels returns the 2-D kernel, then the 1-D one.
+  // GetNonzeroUnboundedDynamicKernels returns the four F32 1-D kernels, T(1024)
+  // first, then the F32 2-D one.
   const auto is_compatible =
-      GetNonzeroUnboundedDynamicKernels()[2 - GetParam().rank]
-          .metadata.is_compatible;
+      GetNonzeroUnboundedDynamicKernels()[GetParam().rank == 1 ? 0 : 4]
+          .kernel.metadata.is_compatible;
   EXPECT_EQ(is_compatible(GetParam().inputs, GetParam().outputs),
             GetParam().expected);
 }

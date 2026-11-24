@@ -22,6 +22,7 @@ import threading
 import types
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
@@ -106,6 +107,21 @@ def _pallas_values_and_indices(x: jax.Array) -> tuple[jax.Array, jax.Array]:
           jax.ShapeDtypeStruct(x.shape, jnp.int32),
       ),
   )(x)
+
+
+def _exported_donor_indices(exported: jax.export.Exported) -> list[int]:
+  """Returns the inputs that an exported module donates."""
+  ir = jax.interpreters.mlir.ir
+  donated_inputs = []
+  with jax.interpreters.mlir.make_ir_context():
+    module = ir.Module.parse(exported.mlir_module())
+    main = ir.SymbolTable(module.operation)["main"]
+    for i, attrs in enumerate(ir.ArrayAttr(main.arg_attrs)):
+      attrs_str = str(attrs)
+      # Donated inputs are buffer donors or alias an output.
+      if "jax.buffer_donor" in attrs_str or "tf.aliasing_output" in attrs_str:
+        donated_inputs.append(i)
+  return donated_inputs
 
 
 class FxVerifierTest(seed_test_utils.RepeatableTest):
@@ -836,6 +852,105 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     self.assertTrue(direct_rep.passed, msg=direct_rep.summary())
     self.assertIn(verifier.Phase.INTERPRET, direct_rep.checked_phases)
 
+  @parameterized.named_parameters(
+      ("nums", {"donate_argnums": (1,)}),
+      ("names", {"donate_argnames": "kv"}),
+  )
+  def test_abstract_mesh_lowering_keeps_donation(self, donate_kwargs):
+    abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
+
+    def sharded_add(x: jax.Array, kv: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          _pallas_binary_add,
+          mesh=abstract_mesh,
+          in_specs=(P("tp"), P("tp")),
+          out_specs=P("tp"),
+          check_vma=False,
+      )(x, kv)
+
+    donate_op = jax_op(
+        f"pallas_verify_fx::{self._testMethodName}",
+        sharded_add,
+        mesh=abstract_mesh,
+        input_partition_specs=(P("tp"), P("tp")),
+        output_partition_specs=(P("tp"),),
+        **donate_kwargs,
+    )
+    x = torch.ones((8, 128), dtype=torch.float32)
+    kv = torch.ones((8, 128), dtype=torch.float32)
+    jax_callable = fx_verifier.extract_jax_callable(donate_op)
+    norm_args, norm_kwargs = jax_callable._normalize_invocation_args(
+        (x, kv), {}
+    )
+    jax_args, jax_kwargs = jax_callable._get_jax_placeholders(
+        norm_args, norm_kwargs
+    )
+    # The verifier re-jits ops whose `AbstractMesh` has no device for the
+    # target TPU, which must keep their donation.
+    export_fn, _, jax_args, jax_kwargs, ambient_mesh = (
+        fx_verifier._prepare_tpu_export(
+            jax_callable, jax_args, jax_kwargs, torch.tpu.TpuVersion.V6E
+        )
+    )
+    with (
+        fx_verifier.tpu_export_mesh_context(ambient_mesh),
+        fx_verifier.ignore_export_forward_compatibility(),
+    ):
+      exported = export_fn(*jax_args, **jax_kwargs)
+    self.assertEqual(_exported_donor_indices(exported), [1])
+
+  def test_ignore_export_forward_compatibility_nests_and_restores(self):
+    orig = jax.config.jax_export_ignore_forward_compatibility
+    with fx_verifier.ignore_export_forward_compatibility():
+      with fx_verifier.ignore_export_forward_compatibility():
+        self.assertTrue(jax.config.jax_export_ignore_forward_compatibility)
+      self.assertTrue(jax.config.jax_export_ignore_forward_compatibility)
+    self.assertEqual(jax.config.jax_export_ignore_forward_compatibility, orig)
+
+  def test_abstract_mesh_lowering_keeps_keyword_only_donation(self):
+    abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
+
+    def sharded_add(x: jax.Array, *, extra: jax.Array) -> jax.Array:
+      return jax.shard_map(
+          _pallas_binary_add,
+          mesh=abstract_mesh,
+          in_specs=(P("tp"), P()),
+          out_specs=P("tp"),
+          check_vma=False,
+      )(x, extra)
+
+    # Only custom_jax_kernel can take keyword-only tensors, which can only be
+    # donated by name.
+    kernel = pallas_lib.custom_jax_kernel(
+        sharded_add,
+        mesh=abstract_mesh,
+        input_partition_specs=(P("tp"),),
+        output_partition_specs=(P("tp"),),
+        donate_argnames=("extra",),
+        warn_deprecated=False,
+    )
+    # The donor checks see `extra` as parameter 1.
+    self.assertEqual(
+        fx_verifier._get_donated_arg_indices(kernel, num_pos_args=1), {1}
+    )
+    x = torch.ones((8, 128), dtype=torch.float32)
+    extra = torch.ones((8, 128), dtype=torch.float32)
+    norm_args, norm_kwargs = kernel._normalize_invocation_args(
+        (x,), {"extra": extra}
+    )
+    jax_args, jax_kwargs = kernel._get_jax_placeholders(norm_args, norm_kwargs)
+    export_fn, _, jax_args, jax_kwargs, ambient_mesh = (
+        fx_verifier._prepare_tpu_export(
+            kernel, jax_args, jax_kwargs, torch.tpu.TpuVersion.V6E
+        )
+    )
+    with (
+        fx_verifier.tpu_export_mesh_context(ambient_mesh),
+        fx_verifier.ignore_export_forward_compatibility(),
+    ):
+      exported = export_fn(*jax_args, **jax_kwargs)
+    self.assertEqual(_exported_donor_indices(exported), [1])
+
   def test_abstract_mesh_detects_partition_spec_and_fake_shape_errors(self):
     abstract_mesh = jax.sharding.AbstractMesh((2,), ("tp",))
 
@@ -1141,6 +1256,8 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
 
     alias_callable = types.SimpleNamespace(
         _donate_argnums_set=set(),
+        _donate_argnames=set(),
+        _param_name_to_idx={},
         input_output_aliases={-1: 0},
         _orig_params=neg_bin_op._init_fn._orig_params,
     )
@@ -1809,6 +1926,18 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
         msg=oob_rep.summary(),
     )
 
+    grad_oob_rep = verifier.verify(
+        cond_nested_oob, (pred, x.clone().requires_grad_(True)), mode=STATIC
+    )
+    self.assertNotEmpty(
+        grad_oob_rep.findings_by_category(Category.OUT_OF_BOUNDS_ACCESS),
+        msg=grad_oob_rep.summary(),
+    )
+    self.assertEmpty(
+        grad_oob_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE),
+        msg=grad_oob_rep.summary(),
+    )
+
   def test_multi_output_aminmax_out_and_set_inplace_provenance(self):
     donating_op = jax_op(
         "pallas_verify_fx::multi_out_and_set_donate",
@@ -1973,8 +2102,8 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
   def test_exported_fallback_hook_is_thread_local(self):
     def _bad_lowering_fn(x: jax.Array) -> jax.Array:
       def _bad_body(x_ref, o_ref):
-        o_ref[...] = x_ref[...]
-        raise ValueError("synthetic lowering failure")
+        # Traces fine but has no Mosaic TPU lowering.
+        o_ref[...] = jnp.sort(x_ref[...], axis=0)
 
       return pl.pallas_call(
           _bad_body, out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
@@ -2412,37 +2541,6 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     )
 
   def test_preconstructed_pallas_call_autograd_and_interior_tile_and_spmd(self):
-    preconstructed_non_interp = pl.pallas_call(
-        lambda g_ref, o_ref, _sem: o_ref.__setitem__(
-            Ellipsis, g_ref[...] * 2.0
-        ),
-        out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
-        grid_spec=pltpu.PrefetchScalarGridSpec(
-            num_scalar_prefetch=0,
-            scratch_shapes=(pltpu.SemaphoreType.DMA,),
-        ),
-    )
-    params = pltpu.InterpretParams(dma_execution_mode="on_wait")
-    worker_interprets: list[object] = []
-    x_spec = jax.ShapeDtypeStruct((8, 128), jnp.float32)
-    with (
-        pltpu.force_tpu_interpret_mode(params),
-        fx_verifier.force_primitive_interpret_params(params),
-    ):
-      main_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
-      self.assertEqual(main_jaxpr.eqns[0].params["interpret"], params)
-
-      def _check_worker() -> None:
-        w_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
-        worker_interprets.append(w_jaxpr.eqns[0].params["interpret"])
-
-      worker = threading.Thread(target=_check_worker)
-      worker.start()
-      worker.join()
-    self.assertEqual(worker_interprets, [False])
-    after_jaxpr = jax.make_jaxpr(preconstructed_non_interp)(x_spec)
-    self.assertFalse(after_jaxpr.eqns[0].params["interpret"])
-
     preconstructed_bwd = pl.pallas_call(
         lambda g_ref, o_ref: o_ref.__setitem__(Ellipsis, g_ref[...] * 2.0),
         out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
@@ -2464,7 +2562,18 @@ class FxVerifierTest(seed_test_utils.RepeatableTest):
     fwd_scale2.register_autograd(lambda ctx, g: bwd_jax_op(g))
     x_small = torch.randn((8, 128), dtype=torch.float32, requires_grad=True)
     pre_rep = verifier.verify(fwd_scale2, (x_small,))
-    self._assert_autograd_ran(pre_rep)
+    # A backward kernel built before verification keeps interpret mode off, so
+    # the autograd check reports that it could not run it.
+    self.assertTrue(pre_rep.passed, msg=pre_rep.summary())
+    self.assertNotIn(verifier.Phase.AUTOGRAD, pre_rep.checked_phases)
+    pre_skips = [
+        f
+        for f in pre_rep.findings_by_category(Category.VERIFICATION_INCOMPLETE)
+        if f.phase == verifier.Phase.AUTOGRAD
+    ]
+    self.assertLen(pre_skips, 1, msg=pre_rep.summary())
+    self.assertIs(pre_skips[0].severity, verifier.Severity.INFO)
+    self.assertIn("built outside the verified function", pre_skips[0].message)
 
     # Interior-tile zero-gradient bug on (128, 128) bfloat16: rows 0:16 and
     # 112:128 are exact, while interior rows 16:112 are zeroed out.

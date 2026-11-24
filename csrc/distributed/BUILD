@@ -14,8 +14,10 @@
 
 # Domain experts for this package:
 # cbasile-g
-# zhanyong-wan
 # jparkerh
+# ghpvnist
+# zhanyong-wan
+# salkan0
 # benawilson
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
@@ -72,8 +74,10 @@ torch_tpu_cc_library(
         "//csrc/common:shape",
         "//csrc/common:to_string",
         "//csrc/common:utils",
+        "//csrc/eager:current_stream",
         "//csrc/eager:device_assignment",
         "//csrc/eager:device_buffer",
+        "//csrc/eager:eager_mode",
         "//csrc/eager:events_queue",
         "//csrc/eager:materialize",
         "//csrc/eager:op_dispatcher",
@@ -104,9 +108,12 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
+        "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/runtime:device_id",

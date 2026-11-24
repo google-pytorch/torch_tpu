@@ -796,6 +796,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
           "synchronize() is experimental and subject to change without notice."
       ),
   )
+  @torch._dynamo.disable
   def synchronize(cls, device: int | None = None) -> None:
     """Waits for all kernels in all streams on a TPU device to complete.
 

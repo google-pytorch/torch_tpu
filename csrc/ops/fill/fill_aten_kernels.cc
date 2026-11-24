@@ -17,6 +17,7 @@
 #include "csrc/ops/fill/fill_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -26,6 +27,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -43,6 +45,24 @@ namespace torch_tpu {
 
 namespace {
 
+// Returns whether `tensor` has symbolic sizes (torch.compile dynamic shapes) or
+// bounded dynamic dimensions on its device buffer.
+bool HasBoundedDynamicShape(const at::Tensor& tensor) {
+  if (tensor.unsafeGetTensorImpl()->has_symbolic_sizes_strides()) {
+    return true;
+  }
+  if (!tensor.has_storage()) {
+    return false;
+  }
+  const absl::StatusOr<std::optional<DeviceBufferRef>> buf =
+      GetBufferWithoutCreatingView(tensor);
+  if (!buf.ok() || !buf->has_value()) {
+    return false;
+  }
+  return !(*buf)->dynamic_dimensions().empty() ||
+         (*buf)->on_device_shape_is_dynamic();
+}
+
 absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,
                               OpParamCacheKeys param_keys) {
   auto out_aten_type = self.scalar_type();
@@ -57,15 +77,33 @@ absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,
       << "expected value to be a 0D tensor, got " << fill_value_dims_size
       << "D";
 
+  if (HasBoundedDynamicShape(self)) {
+    // Broadcast to `self` rather than to its static upper-bound sizes, so that
+    // the result keeps `self`'s bounded dynamic dimensions.
+    auto op_builder =
+        [out_mlir_element_type](FixedSizeSpan<mlir::MlirOp, 2> ops)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto [self_op, fill_value_op] = ops;
+      TT_ASSIGN_OR_RETURN(auto result_op,
+                          CastIfNeeded(fill_value_op, out_mlir_element_type));
+      return BroadcastIfNeeded(result_op, self_op);
+    };
+    return DispatchOpOut<2>(std::move(op_builder),
+                            /*inputs=*/{self, fill_value}, self,
+                            {.out_dtype = out_mlir_element_type,
+                             .out_dims = self.sizes(),
+                             .op_param_cache_keys = std::move(param_keys)});
+  }
+
+  // With a static shape, `self` is not an op input, so filling an empty tensor
+  // (or a view of one) does not materialize it.
   auto op_builder =
       [sizes = CopyIntVector(self.sizes()), out_mlir_element_type](
           mlir::MlirOp fill_value_op) -> absl::StatusOr<mlir::MlirOp> {
     TT_ASSIGN_OR_RETURN(auto result_op,
                         CastIfNeeded(fill_value_op, out_mlir_element_type));
-    TT_ASSIGN_OR_RETURN(result_op, BroadcastIfNeeded(result_op, sizes));
-    return result_op;
+    return BroadcastIfNeeded(result_op, sizes);
   };
-
   TT_ASSIGN_OR_RETURN(
       auto result_buf,
       DispatchOp<1>(std::move(op_builder),

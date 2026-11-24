@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
+# adamomainz
 # ghpvnist
-# salkan0
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
@@ -33,8 +33,10 @@ torch_tpu_cc_library(
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:libtpu_version",
         "//csrc/common:macro_utils",
         "//csrc/common:to_string",
+        "//csrc/common:version",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",

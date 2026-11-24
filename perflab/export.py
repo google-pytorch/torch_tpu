@@ -14,8 +14,14 @@
 
 """Data structures for benchmark export."""
 
+from collections.abc import Mapping
 import dataclasses
+import datetime
+import json
+import math
+from typing import Any
 
+from absl import logging
 from torch_tpu._internal.benchmarks import export_adapter
 from perflab import common
 from perflab import known_failures
@@ -32,6 +38,18 @@ OUT_OF_MEMORY_METRIC = "out_of_memory"
 # `batch_size`, because a smaller batch size of its benchmark ran out of device
 # memory. Like the skip records of `export_skip`, but keyed by the batch size.
 SKIPPED_METRIC = "skipped"
+
+
+# Log-line prefix for the machine-readable JSON record that `export` and
+# `export_skip` emit for every case, so results are structured and parseable
+# from test and runner logs whether or not an external exporter is configured.
+# If a log contains more than one record for a case, the last record per
+# (test_name, microbenchmark_name) wins.
+RESULT_LOG_PREFIX = "PERFLAB_RESULT_JSON"
+
+# The version of the record format logged with `RESULT_LOG_PREFIX`. Bump it
+# when a change to the format can break its readers.
+_RESULTS_SCHEMA_VERSION = 1
 
 
 def batch_size_key(batch_size: int) -> str:
@@ -137,8 +155,98 @@ def make_benchmark_data(
   )
 
 
+def _finite_or_none(value: Any) -> Any:
+  """Returns `value`, or None for a NaN or infinite float, which JSON lacks."""
+  if isinstance(value, float) and not math.isfinite(value):
+    return None
+  return value
+
+
+def _test_name(
+    *,
+    spec_name: str,
+    platform: target_lib.Platform,
+    framework: mode_lib.Framework,
+    run_mode: common.RunMode,
+) -> str:
+  """Returns the test name that the export adapter exports a case under.
+
+  The name, `torch_tpu/{platform}/{spec}/{run_mode}/{framework}`, identifies
+  the platform, run mode and framework of a record.
+
+  Args:
+    spec_name: The name of the benchmark spec.
+    platform: The hardware platform of the run.
+    framework: The execution framework.
+    run_mode: The execution run mode.
+  """
+  return (
+      f"torch_tpu/{platform.value}/{spec_name}/{run_mode.value}/"
+      f"{framework.value}"
+  )
+
+
+def _log_result(
+    *,
+    spec_name: str,
+    microbenchmark_name: str | None,
+    batch_size: int | None,
+    status: str,
+    succeeded: bool,
+    metrics: Mapping[str, Any],
+    test_name: str,
+    warmup_xprof_url: str | None = None,
+    post_warmup_xprof_url: str | None = None,
+) -> None:
+  """Logs a machine-readable JSON record prefixed with `RESULT_LOG_PREFIX`.
+
+  Any failure to build or log the record is logged rather than raised: emitting
+  the structured log line must never fail a benchmark.
+
+  Args:
+    spec_name: The name of the benchmark spec.
+    microbenchmark_name: The name of the microbenchmark, if any.
+    batch_size: The batch size of a batch sweep case, or None.
+    status: One of "ok", "failed", "skipped" and "oom".
+    succeeded: Whether the record counts as succeeded, as exported.
+    metrics: The exported metrics. NaN and infinite values are written as null.
+    test_name: The test name of the run, as exported by `_test_name`.
+    warmup_xprof_url: The XProf URL of the warmup run, if profiled.
+    post_warmup_xprof_url: The XProf URL of the post-warmup run, if profiled.
+  """
+  try:
+    record = {
+        "schema_version": _RESULTS_SCHEMA_VERSION,
+        "spec_name": spec_name,
+        "microbenchmark_name": microbenchmark_name,
+        "batch_size": batch_size,
+        "status": status,
+        "succeeded": succeeded,
+        "metrics": {
+            name: _finite_or_none(value) for name, value in metrics.items()
+        },
+        "test_name": test_name,
+        "warmup_xprof_url": warmup_xprof_url,
+        "post_warmup_xprof_url": post_warmup_xprof_url,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    line = json.dumps(record, sort_keys=True, allow_nan=False)
+    logging.info("%s %s", RESULT_LOG_PREFIX, line)
+  except Exception:  # pylint: disable=broad-exception-caught
+    logging.exception("Failed to log the result of %s", spec_name)
+
+
+def _status(data: BenchmarkData) -> str:
+  """Returns the `_log_result` status of `data`."""
+  if data.out_of_memory:
+    return "oom"
+  if data.skipped:
+    return "skipped"
+  return "ok" if data.succeeded else "failed"
+
+
 def export(data: BenchmarkData) -> None:
-  """Exports benchmark results to MLCompass via export_adapter.
+  """Exports benchmark results via export_adapter and logs a JSON record.
 
   Args:
     data: The benchmark data to export.
@@ -153,6 +261,25 @@ def export(data: BenchmarkData) -> None:
   else:
     metrics = data.metrics.metric_map()
     wall_time = data.metrics.e2e_wall_time_seconds
+  # Logged first, so that a failed export still leaves a record in the log.
+  _log_result(
+      spec_name=data.spec_name,
+      microbenchmark_name=data.microbenchmark_name,
+      batch_size=data.batch_size,
+      status=_status(data),
+      succeeded=data.succeeded,
+      metrics=metrics,
+      test_name=_test_name(
+          spec_name=data.spec_name,
+          platform=data.platform,
+          framework=data.framework,
+          run_mode=data.run_mode,
+      ),
+      warmup_xprof_url=getattr(data.metrics, "warmup_session_xprof_url", None),
+      post_warmup_xprof_url=getattr(
+          data.metrics, "post_warmup_run_session_xprof_url", None
+      ),
+  )
   export_adapter.export_benchmark_results(
       spec_name=data.spec_name,
       platform=data.platform.value,
@@ -183,6 +310,21 @@ def export_skip(
     framework: The execution framework.
     run_mode: The execution run mode.
   """
+  # Like the skip record of the export adapter, which counts as succeeded.
+  _log_result(
+      spec_name=spec_name,
+      microbenchmark_name=None,
+      batch_size=None,
+      status="skipped",
+      succeeded=True,
+      metrics={SKIPPED_METRIC: 1.0},
+      test_name=_test_name(
+          spec_name=spec_name,
+          platform=platform,
+          framework=framework,
+          run_mode=run_mode,
+      ),
+  )
   export_adapter.export_benchmark_skip(
       spec_name=spec_name,
       platform=platform.value,

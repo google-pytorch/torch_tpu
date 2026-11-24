@@ -17,16 +17,32 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_LIB_PIPELINE_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_LIB_PIPELINE_H_
 
+#include <cstdint>
+#include <variant>
+
 #include "absl/functional/any_invocable.h"
 #include "absl/functional/function_ref.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
-#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace torch_tpu::kiln {
+
+// Sentinel for a squeezed dimension in a `BlockShape`.
+struct Squeezed {
+  bool operator==(const Squeezed&) const = default;
+};
+inline constexpr Squeezed squeezed{};
+
+// The block shape of a pipelined HBM operand: an extent per dimension, or
+// `squeezed` to leave the dimension out of the VMEM blocks, as Pallas
+// `pl.squeezed`. Along a squeezed dimension, each block covers the single index
+// given by its region's offset (with extent 1). The two minor dimensions can't
+// be squeezed.
+using BlockDim = std::variant<int64_t, Squeezed>;
+using BlockShape = llvm::SmallVector<BlockDim, 4>;
 
 // The part of an HBM operand that one pipeline block covers: an offset and an
 // extent per dimension. Extents may be smaller than the VMEM block shape (e.g.
@@ -48,11 +64,14 @@ struct BlockRegion {
 // cover disjoint parts of `hbm`, as their copies out may overlap.
 struct PipelineOperand {
   HbmRef hbm;
-  Dimensions block_shape;
+  BlockShape block_shape;
   // Outputs only for now.
   absl::AnyInvocable<Scalar(Scalar step) const> block_index = nullptr;
   // Called with the step for inputs, and with the block index for outputs.
   absl::AnyInvocable<BlockRegion(Scalar block) const> region;
+  // Number of VMEM slots (and DMA semaphores) for this operand. Must be >= 2
+  // (inputs prefetch up to `num_slots - 1` steps ahead; outputs require 2).
+  int64_t num_slots = 2;
 };
 
 // One operand's block at one step of `EmitPipeline`.
@@ -81,11 +100,11 @@ struct PipelineStep {
 };
 
 // Software-pipelines a loop over steps [begin, end) that streams HBM operands
-// through double-buffered VMEM blocks: while `body` runs step s, the input
-// copies of step s + 1 and the copy of the previous output block may be in
-// flight (an output slot is only waited for before its reuse, i.e. on entering
-// the block after next). Allocates the VMEM blocks and DMA semaphores, and
-// waits for every copy before returning.
+// through buffered VMEM blocks: while `body` runs step s, input copies up to
+// `num_slots - 1` steps ahead and the copy of the previous output block may be
+// in flight (an output slot is only waited for before its reuse, i.e. on
+// entering the block after next). Allocates the VMEM blocks and DMA semaphores,
+// and waits for every copy before returning.
 void EmitPipeline(IndexArg begin, IndexArg end,
                   llvm::ArrayRef<PipelineOperand> inputs,
                   llvm::ArrayRef<PipelineOperand> outputs,

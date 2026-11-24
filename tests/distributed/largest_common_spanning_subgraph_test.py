@@ -601,6 +601,26 @@ class LargestCommonSpanningSubgraphTest(seed_test_utils.RepeatableTest):
     expected = {"sin": 0, "cos": 0, "tanh": 0, "neg": 0, "add": 0}
     self.assertEqual(partitions, [expected, expected])
 
+  def test_backward_diamond_inserts_members_in_graph_order(self):
+    def build():
+      g = fx.Graph()
+      s = g.call_function(torch.sin, (g.placeholder("x"),))
+      c = g.call_function(torch.cos, (s,))
+      t = g.call_function(torch.tanh, (s,))
+      n = g.call_function(torch.neg, (t,))
+      a = g.call_function(torch.add, (c, n))
+      g.output(a)
+      return g, a
+
+    (g0, a0), (g1, a1) = build(), build()
+
+    partitions = _shared_partitions([g0, g1], [(a0, a1)])
+
+    # Growing backward from `add` visits `cos`, `neg`, `sin`, `tanh` out of
+    # graph order, so both front and middle insertions must preserve it.
+    expected = {"sin": 0, "cos": 0, "tanh": 0, "neg": 0, "add": 0}
+    self.assertEqual(partitions, [expected, expected])
+
   def test_internal_node_order_must_match(self):
     g0 = fx.Graph()
     x0, y0 = g0.placeholder("x"), g0.placeholder("y")

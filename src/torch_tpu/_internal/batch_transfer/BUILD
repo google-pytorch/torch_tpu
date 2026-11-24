@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # zhanyong-wan
-# jparkerh
+# ghpvnist
 
 load(
     "//build_files:build_defs.bzl",

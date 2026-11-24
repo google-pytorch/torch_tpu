@@ -1027,6 +1027,79 @@ std::vector<DeviceBufferRef> ForeachMulList(at::TensorList self,
   return result_buffers;
 }
 
+absl::Status ValidateForeachNormDtype(at::TensorList self,
+                                      std::optional<c10::ScalarType> dtype) {
+  if (!dtype.has_value()) {
+    return absl::OkStatus();
+  }
+  const c10::ScalarType target_dtype = *dtype;
+  TT_RET_CHECK(
+      c10::isFloatingType(target_dtype) || c10::isComplexType(target_dtype),
+      error::kInvalidArgument)
+      << "expected dtype to be floating point or complex, got "
+      << ToString(target_dtype);
+  const Indices complexness_mismatch_indices =
+      FilterIndices(self.size(), [self, target_dtype](const int64_t i) {
+        return c10::isComplexType(self[i].scalar_type()) !=
+               c10::isComplexType(target_dtype);
+      });
+  TT_RET_CHECK(complexness_mismatch_indices.empty(), error::kInvalidArgument)
+      << "expected dtype (" << ToString(target_dtype)
+      << ") to match complexness of all tensors in the self list, got "
+      << FormatCount(complexness_mismatch_indices.size(),
+                     /*singular=*/"mismatched tensor",
+                     /*plural=*/"mismatched tensors")
+      << ": "
+      << GetValueAtIndexErrorStr(complexness_mismatch_indices,
+                                 [self](const int64_t i) {
+                                   return ToString(self[i].scalar_type());
+                                 });
+  const Indices narrowing_indices =
+      FilterIndices(self.size(), [self, target_dtype](const int64_t i) {
+        return c10::promoteTypes(self[i].scalar_type(), target_dtype) !=
+               target_dtype;
+      });
+  TT_RET_CHECK(narrowing_indices.empty(), error::kInvalidArgument)
+      << "expected dtype (" << ToString(target_dtype)
+      << ") to be safely castable from all tensors in the self list without "
+         "narrowing, got "
+      << FormatCount(narrowing_indices.size(),
+                     /*singular=*/"incompatible tensor",
+                     /*plural=*/"incompatible tensors")
+      << ": "
+      << GetValueAtIndexErrorStr(narrowing_indices, [self](const int64_t i) {
+           return ToString(self[i].scalar_type());
+         });
+  return absl::OkStatus();
+}
+
+absl::Status ValidateForeachNormInputs(at::TensorList self,
+                                       const at::Scalar& ord,
+                                       std::optional<c10::ScalarType> dtype) {
+  TT_RET_CHECK(ord.isIntegral(/*includeBool=*/false) || ord.isFloatingPoint(),
+               error::kInvalidArgument)
+      << "expected ord to be integer or float, got " << ToString(ord.type());
+  TT_RETURN_IF_ERROR(ValidateNotIntegral(self, /*arg_name=*/"self"));
+  const double ord_val = ord.toDouble();
+  const bool requires_non_empty =
+      ord_val < 0.0 || ord_val == std::numeric_limits<double>::infinity();
+  if (requires_non_empty) {
+    const Indices empty_indices = FilterIndices(
+        self.size(), [self](const int64_t i) { return self[i].numel() == 0; });
+    TT_RET_CHECK(empty_indices.empty(), error::kInvalidArgument)
+        << "expected all tensors in the self list to be non-empty for ord "
+        << ord_val << ", got "
+        << FormatCount(empty_indices.size(),
+                       /*singular=*/"empty tensor",
+                       /*plural=*/"empty tensors")
+        << ": "
+        << GetValueAtIndexErrorStr(empty_indices, [self](const int64_t i) {
+             return ToString(self[i].sizes());
+           });
+  }
+  return ValidateForeachNormDtype(self, dtype);
+}
+
 }  // namespace
 
 std::vector<at::Tensor> AtenForeachAbs(at::TensorList self) {
@@ -3087,7 +3160,7 @@ std::vector<at::Tensor> AtenForeachNormScalar(
       (self, promoted_ord,
        IgnoreInCacheKey(dtype, "Output dtype is in GraphSignature")),
       {
-        TT_THROW_IF_ERROR(ValidateNotIntegral(self, /* arg_name= */ "self"));
+        TT_THROW_IF_ERROR(ValidateForeachNormInputs(self, ord, dtype));
         if (self.empty()) {
           return {};
         }

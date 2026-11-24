@@ -14,13 +14,14 @@
 
 # Domain experts for this package:
 # gjh8
-# cbasile-g
 # lukeboyer
-# ghpvnist
-# lizlian
+# cbasile-g
+# zhanyong-wan
+# agarwalt
 
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "internal_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -657,7 +658,16 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "distributed_runner_test",
+    timeout = "long",
     srcs = ["distributed_runner_test.py"],
+    exec_properties = if_oss(
+        None,
+        select({
+            "//tools/cpp:sanitizer_build": {"test.mem": "24g"},
+            "//conditions:default": None,
+        }),
+    ),
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         ":fakes",
         "//perflab:common",
@@ -673,12 +683,15 @@ torch_tpu_py_test(
         "//perflab:workload",
         "//perflab/steps",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
+        "//tests/distributed:distributed_utils",
+        "//tests/distributed:worker_supervisor",
         "@pypi//portpicker",
     ],
 )

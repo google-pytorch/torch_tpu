@@ -125,19 +125,8 @@ docker build \
 
 # Build final image
 echo "===> Building Final Image..."
-SECRET_BUILD_ARGS=()
-if [ -z "${WHEEL_PATH}" ]; then
-  if command -v gcloud &>/dev/null; then
-    TOKEN="$(gcloud auth print-access-token 2>/dev/null || true)"
-    if [ -n "${TOKEN}" ]; then
-      SECRET_BUILD_ARGS+=(--build-arg "GCLOUD_TOKEN=${TOKEN}")
-    fi
-  fi
-fi
-
 docker build \
   --progress=plain \
-  "${SECRET_BUILD_ARGS[@]}" \
   -f "${ABS_REPO_ROOT}/${DOCKERFILE}" \
   -t "${IMAGE_TAG_PREFIX}:latest" \
   "${ABS_REPO_ROOT}"

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# cbasile-g
+# minospapa
+
 # Verification of Pallas kernels and the PyTorch programs that call them. The
 # tests live in //tests/pallas.
 
@@ -40,7 +44,6 @@ torch_tpu_py_library(
     srcs = ["fx_verifier.py"],
     deps = [
         ":findings",
-        "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/pallas:pallas_lib",
@@ -64,6 +67,8 @@ torch_tpu_py_library(
     deps = [
         ":findings",
         ":fx_verifier",
+        ":jaxpr_model",
+        ":smt_checker",
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
         "@pypi//jax",

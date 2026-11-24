@@ -55,8 +55,11 @@ the op, and new lowerings must support bounded shapes from the start:
 1.  Follow the Core Principles and build on
     [op_builder_utils.md](references/op_builder_utils.md); use §3 Cases A–C as a
     checklist of patterns to avoid.
-2.  An OpInfo-based `test_<op>` in `tests/ops_test.py` is automatically run by
-    the dynamism targets in §5. Run them for the new op (skip §1).
+2.  An OpInfo-based `test_<op>` in `tests/ops_test.py` is skipped by dynamism
+    targets (and `DynamismDenyListsTest`) while tagged
+    `@op_testing.unimplemented_on_tpu`. Once you remove
+    `@op_testing.unimplemented_on_tpu` from the existing stub, the dynamism
+    targets in §5 automatically run it. Run them for the new op (skip §1).
 3.  If a mode fails and can't be fixed in the same change, add a diagnosed
     `DYNAMISM_DENY_LISTS` entry (with a GitHub issue where possible) per §5's
     filtering policy instead of disabling dynamism in `ops_test.py`.

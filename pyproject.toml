@@ -58,7 +58,7 @@ dev = [
     "expecttest>=0.3",
     "jax >= 0.9.2",
     "ortools>=9.15; python_version < '3.15'",
-    "transformers>=5.16.1",
+    "transformers>=5.22.2",
 ]
 
 verify = [
@@ -72,7 +72,7 @@ test = [
     "numpy>=2",
     "timm>=1.0.26",
     "torchvision>=0.25",
-    "transformers>=5.16.1",
+    "transformers>=5.22.2",
     "pytest>=9",
     "six>=1.17",
     "hypothesis>=6.100",
@@ -100,7 +100,7 @@ benchmark = [
     "dm-tree>=0.1.10",
     "google-cloud-storage>=2.14.0",
     "google-api-core>=2.18.0",
-    "transformers>=5.16.1",
+    "transformers>=5.22.2",
 ]
 
 examples = [
@@ -111,7 +111,7 @@ examples = [
     "tqdm>=4",
     "huggingface-hub>=0.34; python_version < '3.15'",
     "huggingface-hub>=1.19.0; python_version >= '3.15'",
-    "transformers>=5.16.1",
+    "transformers>=5.22.2",
     "diffusers>=0.37",
     "peft>=0.18",
     "torchvision>=0.25",

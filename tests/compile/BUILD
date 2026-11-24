@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# zhanyong-wan
-# basioli-k
-# arfaian
+# nvgrw
+# lukeboyer
 # chizhang529
+# zhanyong-wan
 # cbasile-g
-# ghpvnist
-# mkhanna15
+# tudorpip
+# basioli-k
 
 load(
     "//build_files:build_defs.bzl",
@@ -39,8 +39,11 @@ exports_files(["data/goldfish.jpg"])
 
 torch_tpu_py_test(
     name = "flex_attention_test",
+    # The dK/dV backward tests are slow under ASan; shards exceeded the
+    # moderate timeout.
+    timeout = "long",
     srcs = ["flex_attention_test.py"],
-    shard_count = 4,
+    shard_count = 8,
     tags = [
         "requires-tpu-v5lite",
     ],

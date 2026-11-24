@@ -99,10 +99,11 @@ bool MaybeMergeSequential(T& first, ViewPrimitive& second) {
   return false;
 }
 // The decomposition sequence will only produce at most one broadcast, one
-// transpose, one pad, and one bitcast each of complex-to-real, real-to-real,
-// and real-to-complex, so we don't need to worry about merging them.
-// Multiple unfolds may be necessary, but they cannot be merged (as they
-// can only do one concatenation per primitive).
+// transpose, and one bitcast each of complex-to-real, real-to-real, and
+// real-to-complex, so we don't need to worry about merging them.
+// Multiple pads and unfolds may be necessary, but there is always a reshape
+// between two pads, and unfolds cannot be merged (as they can only do one
+// concatenation per primitive).
 // Only reshapes and slices need to be merged.
 template <>
 bool MaybeMergeSequential(BroadcastPrimitive& first, ViewPrimitive& second) {
@@ -221,7 +222,7 @@ bool ComputeStartAndLimit(const StridedLayout& layout_before_reshape,
         max_element_decrease / layout_before_reshape.strided_dims[i].stride;
     int64_t limit_index =
         layout_before_reshape.strided_dims[i].size - high_shift;
-    if (limit_index < start_index) {
+    if (limit_index <= start_index) {
       return false;
     }
     offset_increase -=

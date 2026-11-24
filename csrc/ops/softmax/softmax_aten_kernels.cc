@@ -81,7 +81,10 @@ absl::Status SoftmaxInternalOut(const at::Tensor& self, int64_t dim,
       half_to_float ? at::kFloat : self.scalar_type();
   TT_RETURN_IF_ERROR(ValidateOutDtype(out, expected_dtype,
                                       /*allow_out_dtype_cast=*/false));
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
 
+  // Upstream PyTorch validates out dtype and dim on 0-element inputs before
+  // short-circuiting ahead of the floating-point input dtype check.
   if (self.numel() == 0) {
     TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
     return absl::OkStatus();
@@ -127,8 +130,8 @@ absl::Status SoftmaxBackwardDataInternalOut(
       << "expected grad_output and output arguments to have the same shape, "
          "got "
       << ToString(grad_output.sizes()) << " vs. " << ToString(output.sizes());
-  // Verify that SafeWrapDim will succeed when called during the op builder.
-  TT_RETURN_IF_ERROR(SafeWrapDim(dim, output.dim()));
+  // Verify and wrap `dim` before building the backward op.
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, output.dim()));
 
   DispatchOpOptions<1> options = {
       .out_dtype = input_mlir_type,

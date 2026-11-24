@@ -463,7 +463,9 @@ def _should_skip_input_marking(
 DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
 
 # Mode-aware deny lists for bounded dynamism op tests, keyed by the reason for
-# the skip. The reason is included in the skip message.
+# the skip. The reason is included in the skip message. Each inner dict maps an
+# `OpInfo.name` (or `f"{OpInfo.name}.{OpInfo.variant_test_name}"` to narrow to
+# a single variant) to the excluded modes.
 #
 # Policy: every entry is a known bug in a lowering, XLA or TorchTPU, or a gap
 # in the dynamism test harness. The goal is to drive this to empty, so remove
@@ -480,52 +482,35 @@ DenyList = dict[str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]]
 DYNAMISM_DENY_LISTS: DenyList = {
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering broadcasts a bounded input to a static shape": {
-        # Aborts the test process with a CHECK failure in BroadcastIfNeeded
-        # (op_builder_utils.cc).
-        "_segment_reduce": {EAGER, COMPILE},
-        "_weight_norm_interface_backward": {EAGER, COMPILE},
-        "atanh": {COMPILE_GRAD},
-        "bernoulli": {EAGER},
-        "cdist": {EAGER},
         # These abort the test process with a CHECK failure in
         # BroadcastIfNeeded (op_builder_utils.cc).
-        "linalg.qr": {EAGER},
-        "linalg.svd": {EAGER},
-        "linalg.svdvals": {EAGER, COMPILE_GRAD},
+        "linalg.qr": {EAGER, COMPILE},
+        "linalg.svd": {EAGER, COMPILE},
+        "linalg.svdvals": ALL_MODES,
         "masked_scatter": {EAGER},
         "multinomial": {EAGER},
         "nn.functional.nll_loss": {COMPILE_GRAD},
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the lowering emits an op without bounded shape support": {
-        # Calls getNumElements() on a dynamic shaped type, failing an MLIR
-        # assertion that aborts the test process in builds with MLIR
-        # assertions enabled.
-        "_foreach_norm": {EAGER, COMPILE_GRAD},
-        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
-        "_fused_moving_avg_obs_fq_helper": ALL_MODES,
         # XLA ragged-dot does not support propagating bounded dimensions.
         "_grouped_mm": {EAGER, COMPILE},
         # XLA Scatter updates bound mismatches static scatter_indices bound.
         "_jagged_to_padded_dense_forward": {EAGER},
         # Fails to inline MLIR functions on bounded inputs.
         "_native_multi_head_attention": {EAGER},
-        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
-        "_weight_norm_interface": {COMPILE, COMPILE_GRAD},
         # ViewPrimitiveShlo does not support slicing a dynamic dimension.
         "as_strided": ALL_MODES,
         # Fails to inline MLIR functions on bounded inputs.
         "bincount": {EAGER},
-        # BuildMlirModule fails to inline MLIR functions on bounded inputs;
-        # EAGER mode is triaged under "the lowering broadcasts a bounded input
-        # to a static shape".
-        "cdist": {COMPILE_GRAD},
+        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
+        "cdist": {COMPILE, COMPILE_GRAD},
         # cummax_helper and cummin_helper emit static stablehlo.iota and query
         # static dim sizes (-9223372036854775808). Aborts the test process.
         "cummax": ALL_MODES,
         "cummin": ALL_MODES,
         # chlo.ScanOp fails MLIR function inlining.
-        "cumprod": {EAGER, COMPILE_GRAD},
+        "cumprod": ALL_MODES,
         # cumsum.out segfaults (eager), and chlo.ScanOp fails MLIR function
         # inlining (compile).
         "cumsum": ALL_MODES,
@@ -535,13 +520,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # embedding_renorm_ uses static BroadcastInDim and Scatter shapes.
         # Aborts the test process.
         "embedding_renorm_": {EAGER, COMPILE},
-        # BuildFmaxShlo and BuildFminShlo emit NaN CompareOp on integer tensors,
-        # failing an MLIR assertion in DenseElementsAttr. Aborts the test
-        # process in builds with MLIR assertions enabled.
-        "fmax": {EAGER},
-        "fmin": {EAGER},
+        # RFFT requires innermost dimension to be static.
+        "fft.rfft": {COMPILE},
         # Checks index.size(d) <= input.size(d) against INT64_MIN.
-        "gather": {EAGER, COMPILE_GRAD},
+        "gather": ALL_MODES,
         # Compiled backward loses grad_fn when hidden size is dynamic.
         "gru.input": {COMPILE_GRAD},
         # Fails to inline MLIR functions on bounded inputs. COMPILE is triaged
@@ -550,33 +532,38 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "index_copy": {COMPILE_GRAD},
         # BuildMlirModule fails to inline MLIR functions on bounded inputs.
         "index_fill": ALL_MODES,
+        # XLA customCall "Cholesky" does not support bounded dynamic shapes.
+        "linalg.cholesky_ex": {COMPILE},
         # chlo.ScanOp fails MLIR function inlining.
         "logcumsumexp": ALL_MODES,
         # SliceOp::build fails return type inference on bounded hidden slices.
         # Aborts the test process.
         "lstm.input": ALL_MODES,
         # Slicing a dynamic dimension is not supported in ViewPrimitiveShlo
-        # (eager), and LU_pivots shape check fails (compile_grad).
-        "lu_unpack": {EAGER, COMPILE_GRAD},
+        # (eager), and LU_pivots shape check fails (compile / compile_grad).
+        "lu_unpack": ALL_MODES,
         # Backward pass calls local_scalar_dense on a placeholder tensor.
         "mean": {COMPILE_GRAD},
         # Allocates a zero-sized shape with no zero dimension. Aborts the test
         # process.
-        "nn.functional.adaptive_avg_pool3d": {EAGER, COMPILE_GRAD},
+        "nn.functional.adaptive_avg_pool3d": ALL_MODES,
         # Queries static dim size (slice size -9223372036854775808). Aborts the
         # test process.
         "nn.functional.adaptive_max_pool2d": {EAGER, COMPILE},
-        # Aborts the test process.
-        "nn.functional.avg_pool1d": {COMPILE_GRAD},
+        # Fails to inline MLIR functions (compile) / aborts (compile_grad).
+        "nn.functional.avg_pool1d": {COMPILE, COMPILE_GRAD},
         # SliceBackwardResult queries static input shape. Aborts the test
         # process.
         "nn.functional.avg_pool2d": {COMPILE_GRAD},
         # PropagateBoundedDynamism fails MarkDynamic when pooling reduces a
-        # bounded spatial dimension to size 1 (eager), and avg_pool3d_backward
-        # queries static input shape, aborting the test process (compile_grad).
-        "nn.functional.avg_pool3d": {EAGER, COMPILE_GRAD},
+        # bounded spatial dimension to size 1 (eager), dynamic pad shape
+        # exceeds TPU size limit (compile), and avg_pool3d_backward queries
+        # static input shape, aborting the test process (compile_grad).
+        "nn.functional.avg_pool3d": ALL_MODES,
         # Fails to inline MLIR functions on bounded inputs.
         "nn.functional.channel_shuffle": ALL_MODES,
+        # BuildMlirModule fails to inline MLIR functions on bounded inputs.
+        "nn.functional.conv2d": {COMPILE},
         # cross_entropy_loss queries a dynamic dim size, failing an MLIR
         # assertion that aborts the test process in builds with MLIR assertions
         # enabled (eager), and its backward fails to inline MLIR functions
@@ -584,8 +571,8 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # values".
         "nn.functional.cross_entropy": {EAGER, COMPILE_GRAD},
         # var_mean reshape reassociation fails (eager) and local_scalar_dense
-        # cannot materialize a placeholder tensor (compile_grad).
-        "nn.functional.group_norm": {EAGER, COMPILE_GRAD},
+        # cannot materialize a placeholder tensor (compile / compile_grad).
+        "nn.functional.group_norm": ALL_MODES,
         # Queries static dim size (dimension size -9223372036854775808). Eager
         # aborts the test process, and compile fails to inline MLIR functions.
         "nn.functional.max_pool1d": ALL_MODES,
@@ -597,13 +584,13 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # test process in builds with MLIR assertions enabled. COMPILE and
         # COMPILE_GRAD are triaged under other reasons.
         "nn.functional.nll_loss": {EAGER},
+        # reflection_pad*d and replication_pad*d query static input shape.
+        # Aborts the test process.
+        "nn.functional.pad": ALL_MODES,
         # Calls getNumElements() on a dynamic shaped type, failing an MLIR
         # assertion that aborts the test process in builds with MLIR
         # assertions enabled.
         "norm": {EAGER, COMPILE},
-        # reflection_pad*d and replication_pad*d query static input shape.
-        # Aborts the test process.
-        "nn.functional.pad": {EAGER, COMPILE_GRAD},
         # Variable repeats fail MLIR function inlining in Cumsum/ScanOp.
         "repeat_interleave": {EAGER},
         # Queries static input shape (limit index -9223372036854775808). Aborts
@@ -618,10 +605,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "squeeze": {COMPILE, COMPILE_GRAD},
         "squeeze_copy": {COMPILE, COMPILE_GRAD},
         # Lowers via sort with %iota, which lacks XLA dynamic_padder support.
-        "topk": {EAGER},
+        "topk": ALL_MODES,
         # Calls getNumElements() and static scale checks on bounded operands.
         # torch._scaled_mm_v2 aborts the test process.
-        "torch._scaled_mm": {EAGER, COMPILE},
+        "torch._scaled_mm.rowwise": {EAGER, COMPILE},
         "torch._scaled_mm_v2": {EAGER, COMPILE},
         # stablehlo.reshape allows at most one bounded dimension. This fails
         # when dims 0 and 2 are both dynamic, which happens in compile mode
@@ -631,20 +618,15 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # View decomposition reshape reassociation fails on bounded dimensions.
         "unfold": ALL_MODES,
     },
-    # TODO: b/449736443 - Avoid Tensor.resize_() graph break in the *.dtype
-    # test wrappers in op_testing.py.
-    "the test wrapper calls Tensor.resize_(), which graph-breaks in Dynamo": {
-        "addmm.dtype": {COMPILE},
-        "bmm.dtype": {COMPILE},
-        "mm.dtype": {COMPILE},
-    },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "linalg decompositions do not support bounded dimensions": {
         # Slicing a dynamic dimension is not supported.
-        "linalg.inv": {COMPILE_GRAD},
-        "linalg.lu": {EAGER},
+        "linalg.inv": {COMPILE, COMPILE_GRAD},
+        "linalg.lu": {EAGER, COMPILE},
+        "linalg.lu_factor_ex": {COMPILE},
+        "linalg.lu_solve": {COMPILE},
         # Slicing a dynamic dimension is not supported.
-        "linalg.solve_ex": {COMPILE_GRAD},
+        "linalg.solve_ex": {COMPILE, COMPILE_GRAD},
     },
     # TODO: b/449736443 - Support bounded dimensions in these lowerings.
     "the result has wrong values": {
@@ -659,7 +641,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "max": {COMPILE_GRAD},
         "min": {COMPILE_GRAD},
         "permute": {COMPILE, COMPILE_GRAD},
-        "stack": {COMPILE_GRAD},
+        "stack": {COMPILE, COMPILE_GRAD},
         "transpose": {COMPILE, COMPILE_GRAD},
         "unsqueeze": {COMPILE, COMPILE_GRAD},
         "unsqueeze_copy": {COMPILE, COMPILE_GRAD},
@@ -669,26 +651,43 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "XLA fails layout verification with 'layout does not match any allowed tile kind'": {
         "__lshift__": {COMPILE},
         "__rshift__": {COMPILE},
+        # The bool `mask` output has the bounded dimensions of the input.
+        "_fused_moving_avg_obs_fq_helper": {COMPILE, COMPILE_GRAD},
         "abs": {COMPILE},
         "addcmul": {COMPILE},
+        "cat": {COMPILE},
         "ceil": {COMPILE},
         # Eager mode is triaged under "untriaged: invalid result".
         "clamp": {COMPILE, COMPILE_GRAD},
         "clone": {COMPILE},
+        "eq": {COMPILE},
+        "flip": {COMPILE},
         "floor": {COMPILE},
+        "full_like": {COMPILE},
         "index_copy": {COMPILE},
         # COMPILE is triaged under "untriaged: buffer dimension mismatch".
         "isinf": {COMPILE_GRAD},
         "isnan": {COMPILE, COMPILE_GRAD},
         "isneginf": {COMPILE, COMPILE_GRAD},
         "isposinf": {COMPILE, COMPILE_GRAD},
+        "lcm": {COMPILE},
+        "le": {COMPILE},
+        "logical_and": {COMPILE},
+        "lt": {COMPILE},
         "masked_fill": {COMPILE, COMPILE_GRAD},
         # COMPILE_GRAD is triaged under "compiled as_strided view lowering
         # fails to inline MLIR functions".
         "max": {COMPILE},
         "min": {COMPILE},
         "native_dropout_backward": {COMPILE, COMPILE_GRAD},
+        "ne": {COMPILE},
         "neg": {COMPILE},
+        "nn.functional.hardtanh": {COMPILE},
+        "ones_like": {COMPILE},
+        # OpInfo runs `x.clone().resize_(shape)` and compiles the
+        # pre-graph-break `clone`.
+        "resize_": {COMPILE},
+        "roll": {COMPILE},
         "round": {COMPILE},
         "scatter_add": {COMPILE},
         "scatter_reduce": {COMPILE},
@@ -698,6 +697,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "sgn": {COMPILE},
         "sign": {COMPILE},
         "signbit": {COMPILE, COMPILE_GRAD},
+        "sort": {COMPILE},
         # Eager mode is triaged under "untriaged: unsupported view op or
         # reshape", and compile_grad under "untriaged: XLA compile or runtime
         # failure".
@@ -708,10 +708,22 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "trunc": {COMPILE},
         "where": {COMPILE, COMPILE_GRAD},
         "zero_": {COMPILE},
+        "zeros_like": {COMPILE},
     },
     # Avoid HBM OOM when compiling 3D spatial <=128 buckets.
     "XLA runs out of HBM compiling multi-dim <=128 bounded shapes": {
         "nn.functional.conv_transpose3d": {COMPILE, COMPILE_GRAD},
+    },
+    # TODO: b/449736443 - Remove once minimum supported PyTorch is >= 2.15,
+    # where upstream _weight_norm_interface promotes float16 norms to float32.
+    "PyTorch < 2.15 _weight_norm_interface decomposition returns float16 norm": {
+        "_weight_norm_interface": {COMPILE_GRAD},
+    },
+    # TODO: b/581040310 - Generate compiled-grad GPU goldens; AOTAutograd
+    # decomposes backward in bfloat16/float16 while eager GPU grad goldens
+    # compute in float32 opmath.
+    "compiled backward differs from eager GPU grad goldens in low precision": {
+        "atanh": {COMPILE_GRAD},
     },
     "untriaged: invalid result": {
         # TODO: fix clamp() returning enormous errors or nans when dynamism is
@@ -730,7 +742,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "erf": {COMPILE_GRAD},  # float16 compiled backward tolerance
         "erfinv": {COMPILE_GRAD},  # bfloat16 compiled backward tolerance
         "nn.functional.nll_loss": {COMPILE},
+        "std": {COMPILE},
         "tanh": {COMPILE_GRAD},  # float16/bfloat16 compiled backward tolerance
+        "var": {COMPILE},
+        "var_mean": {COMPILE},
     },
     "untriaged: buffer dimension mismatch": {
         # These abort the test process with a CHECK failure in
@@ -749,7 +764,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "isin": ALL_MODES,
     },
     "untriaged: expected all dimensions to be static": {
+        # TODO: b/449736443 - FFT ATen kernels enforce FFTValidateStaticShape.
+        "fft.fft": {EAGER},
         "fft.ifft": {EAGER},
+        "fft.irfft": {EAGER},
         "fft.rfft": {EAGER},
         # Expects a static weight tensor.
         "nn.functional.embedding": {EAGER},
@@ -761,13 +779,15 @@ DYNAMISM_DENY_LISTS: DenyList = {
     },
     "untriaged: XLA compile or runtime failure": {
         "bmm": {COMPILE_GRAD},  # RuntimeProgramInputMismatch
+        "fft.ifft": {COMPILE},
         "linalg.lu_factor_ex": {EAGER},  # incompatible shapes RET_CHECK
         "mm": {COMPILE_GRAD},  # TPU core halted unexpectedly
         "split": {COMPILE_GRAD},  # RuntimeProgramInputMismatch
     },
     # These abort the test process.
     "untriaged: crash": {
-        "_transformer_encoder_layer_fwd": {EAGER},
+        "_transformer_encoder_layer_fwd": {EAGER, COMPILE},
+        "erfinv": {COMPILE},
         "fft.irfft": {COMPILE_GRAD},  # buffer != nullptr CHECK in shape.h
         "index_select": ALL_MODES,
         # Allocates a zero-sized shape with no zero dimension.
@@ -777,7 +797,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "nn.functional.grid_sample": ALL_MODES,
         "searchsorted": ALL_MODES,  # buffer != nullptr CHECK in shape.h
         "slice_scatter": {EAGER, COMPILE},  # buffer != nullptr CHECK in shape.h
-        "unique": {EAGER},
+        "unique": {EAGER, COMPILE},
         "unique_consecutive": {EAGER},
         "view_as_complex": {COMPILE, COMPILE_GRAD},
     },
@@ -785,19 +805,22 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Slicing a dynamic dimension is not supported.
         "diagonal": ALL_MODES,
         # unflatten is ambiguous for a bounded dimension.
-        "put": {EAGER, COMPILE_GRAD},
+        "put": ALL_MODES,
         # Slicing a dynamic dimension is not supported.
         "select": {EAGER},
         "split": {EAGER},
-        "split_with_sizes": {EAGER},
+        "split_with_sizes": ALL_MODES,
         "split_with_sizes_copy": {EAGER},
         # Reshape has mismatched element counts (eager), and unflatten is
         # ambiguous for a bounded dimension (compile_grad).
         "take": {EAGER, COMPILE_GRAD},
     },
     "untriaged: shape mismatch": {
+        # Query shape is padded to bounded dim while key/value stay static.
+        "_native_multi_head_attention": {COMPILE},
         # Compile marks self dim bounded but not source.
         "index_add": {COMPILE, COMPILE_GRAD},
+        "index_put": {COMPILE, COMPILE_GRAD},
         "nn.functional.logsigmoid": {COMPILE_GRAD},  # inferred bound [0]
         # src does not match the bounded self slice.
         "slice_scatter": {COMPILE_GRAD},
@@ -805,7 +828,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "untriaged: unknown failure": {
         # Input SymInt is not present in example_inputs.
         "_thnn_fused_gru_cell": {COMPILE_GRAD},
-        "bernoulli": {COMPILE_GRAD},  # Dynamo no_dispatch error
         # Compiled backward graph codegen emits invalid Python.
         "std": {COMPILE_GRAD},
         "var": {COMPILE_GRAD},
@@ -834,13 +856,28 @@ DYNAMISM_NOT_APPLICABLE_OPS: DenyList = {
 }
 
 
+def op_deny_list_key(op_info: core.OpInfo) -> str:
+  """Returns the most specific deny-list key for `op_info`."""
+  if op_info.variant_test_name:
+    return f"{op_info.name}.{op_info.variant_test_name}"
+  return op_info.name
+
+
+def _op_deny_list_lookup_keys(op_info: core.OpInfo) -> tuple[str, ...]:
+  """Returns deny-list lookup keys for `op_info`, most specific first."""
+  if op_info.variant_test_name:
+    return (f"{op_info.name}.{op_info.variant_test_name}", op_info.name)
+  return (op_info.name,)
+
+
 def _find_reason(
-    deny_lists: DenyList, op_name: str, mode: DynamismMode
+    deny_lists: DenyList, op_info: core.OpInfo, mode: DynamismMode
 ) -> str | None:
-  """Returns the first reason in `deny_lists` that excludes `op_name` in `mode`."""
-  for reason, ops in deny_lists.items():
-    if mode in ops.get(op_name, ()):
-      return reason
+  """Returns the first reason in `deny_lists` that excludes `op_info` in `mode`."""
+  for key in _op_deny_list_lookup_keys(op_info):
+    for reason, ops in deny_lists.items():
+      if mode in ops.get(key, ()):
+        return reason
   return None
 
 
@@ -857,16 +894,17 @@ def verify_op_supports_dynamism(
   Returns:
     None if the op is supported in `mode`, or a skipTest message if not.
   """
-  reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op_info.name, mode)
+  display_name = op_deny_list_key(op_info)
+  reason = _find_reason(DYNAMISM_NOT_APPLICABLE_OPS, op_info, mode)
   if reason is not None:
     return (
-        f"Dynamism is not applicable to {op_info.name} in {mode.value} mode:"
+        f"Dynamism is not applicable to {display_name} in {mode.value} mode:"
         f" {reason}."
     )
-  reason = _find_reason(DYNAMISM_DENY_LISTS, op_info.name, mode)
+  reason = _find_reason(DYNAMISM_DENY_LISTS, op_info, mode)
   if reason is not None:
     return (
-        f"Op {op_info.name} is not supported in {mode.value} dynamism mode:"
+        f"Op {display_name} is not supported in {mode.value} dynamism mode:"
         f" {reason}."
     )
   return None
@@ -930,6 +968,8 @@ class DynamicOpInfo:
         SdpaDynamicOpInfo,
         ConvolutionDynamicOpInfo,
         GluDynamicOpInfo,
+        WeightNormBackwardDynamicOpInfo,
+        FusedMovingAvgObsFqHelperDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -1588,6 +1628,111 @@ class GluDynamicOpInfo(DynamicOpInfo):
         for dim in super().dynamic_dimension_candidates(input_value, args)
         if dim != split_dim
     ]
+
+
+class WeightNormBackwardDynamicOpInfo(DynamicOpInfo):
+  """Couples `grad_w`, `saved_v`, `saved_g`, and `saved_norms` dimensions.
+
+  Upstream PyTorch's `meta_weight_norm_backward` returns
+  `(empty_like(saved_v), empty_like(saved_g))` without unifying `grad_w` with
+  `saved_v`, `saved_g`, or `saved_norms`, so symbolic `ShapeEnv` tracing alone
+  leaves the saved tensors static when `grad_w` is marked dynamic.
+  """
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "_weight_norm_interface_backward"
+
+  def _discover_coupled_dims(
+      self,
+      candidates: Sequence[TensorDim],
+      tensors: Sequence[torch.Tensor],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> dict[TensorDim, tuple[TensorDim, ...]]:
+    """Couples `grad_w` dim `d` with `saved_v` and (on `dim`) `saved_g`/`norms`."""
+    del op_func, mode  # Coupling follows from the operator's input contract.
+    if len(tensors) < 4:
+      return {}
+    grad_w, saved_v, saved_g, saved_norms = tensors[:4]
+    if grad_w.shape != saved_v.shape or grad_w.ndim == 0:
+      return {}
+    raw_dim = (
+        op_args.args[3]
+        if len(op_args.args) >= 4
+        else op_args.kwargs.get("dim", 0)
+    )
+    wrapped_dim = int(raw_dim) % grad_w.ndim
+
+    proposed: dict[TensorDim, tuple[TensorDim, ...]] = {}
+    for candidate in candidates:
+      if candidate.tensor_index != 0:
+        continue
+      d = candidate.dim
+      coupled = [candidate, TensorDim(tensor_index=1, dim=d)]
+      if d == wrapped_dim:
+        for idx, aux in ((2, saved_g), (3, saved_norms)):
+          if aux.ndim == 1 and aux.shape[0] == grad_w.shape[d]:
+            coupled.append(TensorDim(tensor_index=idx, dim=0))
+          elif aux.ndim == grad_w.ndim and aux.shape[d] == grad_w.shape[d]:
+            coupled.append(TensorDim(tensor_index=idx, dim=d))
+      proposed[candidate] = tuple(sorted(coupled))
+    return proposed
+
+
+class FusedMovingAvgObsFqHelperDynamicOpInfo(DynamicOpInfo):
+  """Couples per-channel observer buffers with `self`'s channel axis."""
+
+  # Indices of `ch_axis` and `per_row_fq` in `args`, which exclude `self`.
+  _CH_AXIS_ARG_INDEX = 9
+  _PER_ROW_FQ_ARG_INDEX = 10
+  # Indices of `running_min`, `running_max`, `scale`, and `zero_point` in
+  # `tensors`, which include `self`.
+  _BUFFER_TENSOR_INDICES = range(3, 7)
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "_fused_moving_avg_obs_fq_helper"
+
+  def _discover_coupled_dims(
+      self,
+      candidates: Sequence[TensorDim],
+      tensors: Sequence[torch.Tensor],
+      op_args: _OpArgs,
+      op_func: Callable[..., Any],
+      mode: DynamismMode,
+  ) -> dict[TensorDim, tuple[TensorDim, ...]]:
+    """Couples `ch_axis` on `self` with non-empty per-channel stat buffers."""
+    proposed = super()._discover_coupled_dims(
+        candidates, tensors, op_args, op_func, mode
+    )
+    # Like the OpInfo samples, read the arguments positionally.
+    if (
+        not isinstance(op_args.input_value, torch.Tensor)
+        or op_args.input_value.ndim == 0
+        or len(op_args.args) <= self._PER_ROW_FQ_ARG_INDEX
+        or not op_args.args[self._PER_ROW_FQ_ARG_INDEX]
+    ):
+      return proposed
+    ch_dim = op_args.args[self._CH_AXIS_ARG_INDEX] % op_args.input_value.ndim
+    ch_candidate = TensorDim(tensor_index=0, dim=ch_dim)
+    if ch_candidate not in proposed:
+      return proposed
+    ch_size = op_args.input_value.shape[ch_dim]
+    # Upstream's meta kernel omits the per-channel buffer size check, so couple
+    # the buffers structurally. Uninitialized (empty) buffers stay uncoupled.
+    stat_dims = [
+        TensorDim(tensor_index=idx, dim=0)
+        for idx in self._BUFFER_TENSOR_INDICES
+        if tensors[idx].ndim == 1 and tensors[idx].shape[0] == ch_size
+    ]
+    proposed[ch_candidate] = tuple(
+        sorted(set(proposed[ch_candidate]) | set(stat_dims))
+    )
+    return proposed
 
 
 class SdpaDynamicOpInfo(DynamicOpInfo):

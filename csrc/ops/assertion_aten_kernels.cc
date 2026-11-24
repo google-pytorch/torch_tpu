@@ -27,6 +27,7 @@
 #include "absl/status/status.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/status_builder.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
@@ -128,7 +129,8 @@ void ScheduleAsyncAssertionCheck(const at::Tensor& self,
       promise.Set(absl::OkStatus());
       return;
     }
-    promise.Set(TT_ERROR(error::kInternal) << msg);
+    // The message is the user's, so it is reported as written.
+    promise.Set(TT_ERROR(error::kInternal).SetIsUserMessage() << msg);
   });
 }
 

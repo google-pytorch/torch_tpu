@@ -43,6 +43,25 @@ namespace torch_tpu {
 // Never throws, and never guards on (and thereby specializes) symbolic shapes.
 [[nodiscard]] bool IsFakeOrFunctorchTensor(const ConstTensor& tensor);
 
+// Returns true if `tensor` is a `Meta` tensor, a `FakeTensor` (used by
+// `torch.compile` and `torch.export`, backed by `DeviceType::Meta` storage),
+// or an AOTAutograd `FunctionalTensor` (used during `torch.compile` under
+// `torch.no_grad()` or training, whose storage sets `throw_on_mutable_data_ptr`
+// while `TorchDispatchModeKey::FUNCTIONAL` is active).
+//
+// Never throws, and never guards on (and thereby specializes) symbolic shapes.
+[[nodiscard]] bool IsMetaOrFakeOrFunctionalTensor(const ConstTensor& tensor);
+
+// Returns true if `tensor` is a Python wrapper tensor subclass (such as
+// `DTensor` or `NestedTensor`) that should delegate to upstream composite
+// decompositions rather than opaque TPU `AutogradPrivateUse1` kernels.
+// Distinguishes user/distributed wrapper subclasses (even when wrapped inside
+// `aot_dispatch_subclass` under `FunctionalTensorMode`) from `FakeTensor` and
+// AOTAutograd `FunctionalTensor`.
+//
+// Never throws, and never guards on (and thereby specializes) symbolic shapes.
+[[nodiscard]] bool IsPythonWrapperSubclass(const ConstTensor& tensor);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_COMMON_FAKE_TENSOR_UTILS_H_

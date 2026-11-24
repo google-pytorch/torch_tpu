@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# willfroom
+# thcmbs
+
 # A Pallas-shaped C++ kernel language (Kiln) for authoring Mosaic TPU kernels.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
@@ -48,10 +52,12 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "kiln_test",
     srcs = ["kiln_test.cc"],
+    shard_count = 8,
     deps = [
         ":kiln",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",

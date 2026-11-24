@@ -14,11 +14,12 @@
 
 # Domain experts for this package:
 # zhanyong-wan
-# cota
-# willfroom
 # yilingyuan
+# nvgrw
 # jparkerh
-# benawilson
+# cota
+# cbasile-g
+# willfroom
 
 load(
     "//build_files:build_defs.bzl",

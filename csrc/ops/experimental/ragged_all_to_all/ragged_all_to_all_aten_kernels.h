@@ -19,9 +19,7 @@
 
 #include <string_view>
 
-#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "torch/csrc/autograd/custom_function.h"
 
 namespace torch_tpu {
 
@@ -54,21 +52,14 @@ at::Tensor& AtenRaggedAllToAllOut(
     const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
     std::string_view process_group_name, at::Tensor& out);
 
-// Autograd function for ragged all-to-all collective operation.
-struct AtenRaggedAllToAllAutograd
-    : public torch::autograd::Function<AtenRaggedAllToAllAutograd> {
-  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
-                            const at::Tensor& operand, const at::Tensor& output,
-                            const at::Tensor& input_offsets,
-                            const at::Tensor& send_sizes,
-                            const at::Tensor& output_offsets,
-                            const at::Tensor& recv_sizes,
-                            std::string_view process_group_name);
-
-  static torch::autograd::variable_list backward(
-      torch::autograd::AutogradContext* ctx,
-      torch::autograd::variable_list grad_outputs);
-};
+// Autograd kernel for ragged all-to-all collective operation.
+at::Tensor AtenRaggedAllToAllAutograd(const at::Tensor& operand,
+                                      const at::Tensor& output,
+                                      const at::Tensor& input_offsets,
+                                      const at::Tensor& send_sizes,
+                                      const at::Tensor& output_offsets,
+                                      const at::Tensor& recv_sizes,
+                                      std::string_view process_group_name);
 
 }  // namespace torch_tpu
 

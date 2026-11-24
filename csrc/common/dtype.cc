@@ -749,6 +749,49 @@ int64_t XlaEquivalentBitwidth(const mlir::ElementType element_type) {
   return TorchEquivalentBitwidth(element_type);
 }
 
+int64_t TorchPackingFactor(const mlir::ElementType element_type) {
+  switch (element_type) {
+    // PyTorch represents FP4 as `float4_e2m1fn_x2` (2 values per 1-byte
+    // container element), whereas StableHLO/XLA buffers store unpacked
+    // `F4E2M1FN` elements with a doubled packed dimension.
+    case mlir::ElementType::F4E2M1FN:
+      return 2;
+    case mlir::ElementType::PRED:
+    case mlir::ElementType::I2:
+    case mlir::ElementType::UI2:
+    case mlir::ElementType::I4:
+    case mlir::ElementType::UI4:
+    case mlir::ElementType::F6E2M3FN:
+    case mlir::ElementType::F6E3M2FN:
+    case mlir::ElementType::I8:
+    case mlir::ElementType::UI8:
+    case mlir::ElementType::F8E3M4:
+    case mlir::ElementType::F8E4M3:
+    case mlir::ElementType::F8E4M3FN:
+    case mlir::ElementType::F8E4M3FNUZ:
+    case mlir::ElementType::F8E4M3B11FNUZ:
+    case mlir::ElementType::F8E5M2:
+    case mlir::ElementType::F8E5M2FNUZ:
+    case mlir::ElementType::F8E5M3FNU:
+    case mlir::ElementType::F8E8M0FNU:
+    case mlir::ElementType::I16:
+    case mlir::ElementType::UI16:
+    case mlir::ElementType::F16:
+    case mlir::ElementType::BF16:
+    case mlir::ElementType::I32:
+    case mlir::ElementType::UI32:
+    case mlir::ElementType::F32:
+    case mlir::ElementType::COMPLEXF32:
+    case mlir::ElementType::I64:
+    case mlir::ElementType::UI64:
+    case mlir::ElementType::F64:
+    case mlir::ElementType::COMPLEXF64:
+      return 1;
+      // Deliberately no default case, so that the compiler will warn if a new
+      // MLIR type is added.
+  }
+}
+
 mlir::ElementType RealComponentOf(const mlir::ElementType element_type) {
   switch (element_type) {
     case mlir::ElementType::COMPLEXF32:

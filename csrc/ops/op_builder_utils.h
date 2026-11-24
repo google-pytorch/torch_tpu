@@ -522,6 +522,16 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
     const std::optional<mlir::stablehlo::Dimensions>& result_dims =
         std::nullopt);
 
+// Builds a stablehlo.clamp that also supports bounded dynamic dimensions.
+// Takes the same arguments as mlir::stablehlo::Clamp.
+//
+// If operand has a static shape, emits stablehlo.clamp. Otherwise, min and max
+// must have the type of operand, and this emits the equivalent
+// stablehlo.maximum and stablehlo.minimum, because stablehlo.clamp infers a
+// result type without the bounds of operand.
+mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
+                       mlir::MlirOp max);
+
 // Returns an mlir::MlirOp representing the number of elements in the input
 // tensor with the given element type, only counting the dimensions specified.
 // If dims is empty, all dimensions are counted.
@@ -580,6 +590,23 @@ absl::StatusOr<mlir::MlirOp> Unsqueeze(mlir::MlirOp input, int64_t dim);
 // Squeezes the input tensor by removing dimensions of size 1.
 absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
                                      absl::Span<const int64_t> dims);
+
+// Reshapes `op` to the result dimensions `output_dims` with a
+// `stablehlo.dynamic_reshape`, whose result may have several bounded
+// dimensions (unlike `stablehlo.reshape`). `output_sizes` holds the runtime
+// size of each result dimension as an i32 scalar. XLA's dynamic padder
+// handles the padding of the bounded dimensions. `output_dims` must not be
+// empty (a rank-0 result has no bounded dimension).
+mlir::MlirOp DynamicReshapeWithRuntimeSizes(
+    mlir::MlirOp op, const mlir::stablehlo::Dimensions& output_dims,
+    absl::Span<const mlir::MlirOp> output_sizes);
+
+// Returns the runtime size of each dimension in `dims` as an i32 scalar: the
+// size of its `boundOp` at `boundOpDim` (which must be set) if bounded, or a
+// constant `size` if static. E.g. for the `output_sizes` of
+// `DynamicReshapeWithRuntimeSizes`.
+std::vector<mlir::MlirOp> GetRuntimeSizes(
+    mlir::MlirBuilder& builder, const mlir::stablehlo::Dimensions& dims);
 
 // Flattens the input tensor to a single dimension.
 // Supports bounded dynamic flatten.
@@ -796,6 +823,12 @@ absl::StatusOr<DynamicMlirOpResults> ToResultVector(
 absl::StatusOr<DynamicMlirOpResults> ToResultVector(
     absl::StatusOr<mlir::MlirOp> results);
 
+// Computes the NumPy-broadcasted shape of `lhs_dims` and `rhs_dims`,
+// preserving bounded dynamic dimension metadata.
+absl::StatusOr<mlir::stablehlo::Dimensions> InferBroadcastDimensions(
+    absl::Span<const mlir::stablehlo::DimensionInfo> lhs_dims,
+    absl::Span<const mlir::stablehlo::DimensionInfo> rhs_dims);
+
 // Builds a module name from the current Python stack frame.
 // In most cases this frame is the one that triggered a materialization.
 //
@@ -837,7 +870,8 @@ absl::Status BuildReduceBody(mlir::RegionBuilder& rb, mlir::Type element_type,
 // memory that has uninitialized values. There is no way to represent
 // uninitialized value in MLIR; instead, we follow the convention of
 // torch.utils.deterministic.fill_uninitialized_memory, which is to use
-// std::numeric_limits<scalar_t>::quiet_NaN() for float types and
+// std::numeric_limits<scalar_t>::quiet_NaN() for float types (or maximum finite
+// value for finite-only float formats without NaN) and
 // std::numeric_limits<scalar_t>::max() for integers and boolean types.
 mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
                                     mlir::ElementType tensor_element_type,
@@ -845,6 +879,10 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
 
 // Slice if left_pad or right_pad is negative to truncate the tensor in the
 // dimension specified, otherwise return op.
+//
+// Supports bounded dynamic dimensions. If the dimension specified is bounded,
+// the truncation applies to its upper bound and to its runtime size (clamped
+// at 0), so the elements kept are those of `op` within its runtime size.
 absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
                                              int64_t left_pad,
                                              int64_t right_pad);

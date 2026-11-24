@@ -25,6 +25,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 import torch._dynamo.backends.registry as backend_registry
+from torch._subclasses import fake_tensor
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
@@ -37,6 +38,14 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
+
+try:
+  # pylint: disable=g-import-not-at-top
+  from torch._functorch._activation_offloading import offload_ops
+
+  _HAS_AO_OPS = offload_ops is not None
+except (ImportError, AttributeError):
+  _HAS_AO_OPS = False
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 
@@ -316,6 +325,83 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       tiled_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
     res_tiled = executable(tiled_x)
     utils.assert_close(res_tiled.cpu(), tiled_x.cpu() * 2.0)
+
+  def test_get_non_default_device_layout(self):
+    default_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    self.assertIsNone(compiler.get_non_default_device_layout(default_x))
+
+    # Non-TPU and FakeTensor inputs return None without hitting C++.
+    self.assertIsNone(
+        compiler.get_non_default_device_layout(torch.ones(16, 128))
+    )
+    with fake_tensor.FakeTensorMode():
+      fake_x = torch.ones(16, 128, device='tpu')
+    self.assertIsNone(compiler.get_non_default_device_layout(fake_x))
+
+    layout = annotations.TpuLayout(minor_to_major=[0, 1])
+    with annotations.LayoutContext(layout):
+      custom_x = torch.ones(16, 128, device='cpu').to(
+          device=torch.device('tpu')
+      )
+    self.assertEqual(
+        compiler.get_non_default_device_layout(custom_x)[0], [0, 1]
+    )
+
+    # Views have no direct materialized buffer, so C++ returns None without
+    # creating a deferred view op.
+    self.assertIsNone(
+        compiler.get_non_default_device_layout(custom_x.view(8, 256))
+    )
+
+    # Dynamic-shaped materialized buffers return None.
+    pad_result = tpu_torch_compile.get_dynamic_pad_module(
+        [([1, 4], torch.int32)], [([1], [8])]
+    )
+    padded = tpu_torch_compile.execute(
+        pad_result.executable,
+        [torch.ones(1, 4, dtype=torch.int32, device='tpu')],
+        output_shapes=[tpu_torch_compile.OutputShape(is_dynamic=True)],
+    )[0]
+    self.assertTrue(tpu_torch_compile.is_device_shape_dynamic(padded))
+    self.assertIsNone(compiler.get_non_default_device_layout(padded))
+
+    # Pinned-host buffers must return None from C++ without querying layout.
+    pinned_placeholder = tpu_torch_compile.placeholder(
+        [16, 128], torch.float32, is_pinned_host=True
+    )
+    self.assertIsNone(
+        compiler.get_non_default_device_layout(pinned_placeholder)
+    )
+
+    # `_is_pinned_host` on a materialized non-default tensor must short-circuit
+    # in Python (without it, C++ would return the [0, 1] layout).
+    with annotations.LayoutContext(layout):
+      marked_pinned = torch.ones(16, 128, device='cpu').to(
+          device=torch.device('tpu')
+      )
+    marked_pinned._is_pinned_host = True
+    self.assertIsNone(compiler.get_non_default_device_layout(marked_pinned))
+
+    # A contiguous same-shape view whose `_base` has `_is_pinned_host` would
+    # return `[0, 1]` from C++ if Python did not walk `_base`.
+    marked_view = marked_pinned.view(16, 128)
+    self.assertIs(marked_view._base, marked_pinned)
+    self.assertEqual(
+        tpu_torch_compile.get_non_default_device_layout(marked_view)[0], [0, 1]
+    )
+    self.assertIsNone(compiler.get_non_default_device_layout(marked_view))
+
+  @absltest.skipIf(
+      not _HAS_AO_OPS,
+      '`torch._functorch._activation_offloading.offload_ops` is not available'
+      ' in this PyTorch version',
+  )
+  def test_get_non_default_device_layout_offloaded(self):
+    default_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    offloaded = torch.ops.ao.offload(default_x)
+    torch.accelerator.synchronize()
+    self.assertTrue(tpu_torch_compile.is_pinned_host(offloaded))
+    self.assertIsNone(compiler.get_non_default_device_layout(offloaded))
 
   def test_build_mlir(self):
     with eager_mode_compile_fx_graph():
@@ -1083,6 +1169,55 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
 
     self.assertIn(expected_mlir, mlir_text)
 
+  def test_optimization_barrier_gradients_pass_through_one_barrier(self):
+    def fn(a, b):
+      a, b = torch.tpu.ops.optimization_barrier([a * 2.0, b * 3.0])
+      return (a * b).sum()
+
+    a = torch.ones(10, device=torch.device('tpu'), requires_grad=True)
+    b = torch.ones(10, device=torch.device('tpu'), requires_grad=True)
+    debugs = []
+    compiled_fn = torch.compile(
+        fn,
+        backend='tpu',
+        fullgraph=True,
+        options={'debug_callback': debugs.append},
+    )
+
+    compiled_fn(a, b).backward()
+
+    self.assertLen(debugs, 1)
+    barrier = ':2 = stablehlo.optimization_barrier'
+    self.assertEqual(debugs[0].stablehlo_forward_text[0].count(barrier), 1)
+    self.assertEqual(debugs[0].stablehlo_backward_text[0].count(barrier), 1)
+    utils.assert_close(a.grad.cpu(), torch.full((10,), 6.0))
+    utils.assert_close(b.grad.cpu(), torch.full((10,), 6.0))
+
+  def test_optimization_barrier_compiled_autograd_is_traceable(self):
+    a = torch.ones(10, device=torch.device('tpu'), requires_grad=True)
+    frozen = torch.ones(10, device=torch.device('tpu'))
+    debugs = []
+    compiler_fn = torch.compile(
+        backend='tpu',
+        fullgraph=True,
+        options={'debug_callback': debugs.append},
+    )
+    with torch._dynamo.compiled_autograd._enable(compiler_fn):
+      a_fenced, frozen_fenced = torch.tpu.ops.optimization_barrier(
+          [a * 2.0, frozen]
+      )
+      (a_fenced + frozen_fenced).sum().backward()
+
+    self.assertLen(debugs, 1)
+    self.assertEqual(
+        debugs[0]
+        .stablehlo_forward_text[0]
+        .count('stablehlo.optimization_barrier'),
+        1,
+    )
+    utils.assert_close(a.grad.cpu(), torch.full((10,), 2.0))
+    self.assertIsNone(frozen.grad)
+
   def test_force_strides_no_op(self):
     # Arrange: create a contiguous tensor on CPU and a copy of it on the TPU
     expected = torch.arange(24, device='cpu').view(2, 3, 4)
@@ -1132,6 +1267,29 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     # Arrange: create a sliced tensor on the CPU, and a contiguous copy of it
     # on the TPU.
     expected = torch.arange(60, device='cpu').view(3, 4, 5)[1:, ::2, :4]
+    x = expected.to(device='tpu')
+    self.assertTrue(x.is_contiguous())
+
+    # Act: force the strides to match expected
+    y = tpu_torch_compile.force_strides(
+        x, expected.stride(), expected.storage_offset()
+    )
+
+    # Assert: the tensor metadata is changed to match expected
+    self.assertEqual(y.shape, expected.shape)
+    self.assertEqual(y.dtype, expected.dtype)
+    self.assertEqual(y.stride(), expected.stride())
+    self.assertEqual(y.storage_offset(), expected.storage_offset())
+
+    # Assert: the tensor values are unchanged
+    actual = y.cpu()
+    utils.assert_close(actual=actual, expected=expected)
+
+  def test_force_strides_strided_middle_dimension(self):
+    # Arrange: create a strided slice on the CPU, where the size of the sliced
+    # middle dimension is not a multiple of the step, and a contiguous copy of
+    # it on the TPU.
+    expected = torch.arange(384, device='cpu').view(12, 4, 8, 1)[:, 0:4:3]
     x = expected.to(device='tpu')
     self.assertTrue(x.is_contiguous())
 
@@ -1635,6 +1793,21 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertIsInstance(tiles, list)
     self.assertIsInstance(element_size_in_bits, int)
     self.assertEqual(minor_to_major, [1, 0])
+
+    # Packed float4_e2m1fn_x2 tensors double their last dimension on TPU;
+    # [100, 64] packed has unpacked XLA shape [100, 128].
+    for packed_shape in ([8, 64], [100, 64]):
+      fp4_x = (
+          torch.zeros(packed_shape, dtype=torch.uint8)
+          .view(torch.float4_e2m1fn_x2)
+          .to(device=torch.device('tpu'))
+      )
+      device_layout = tpu_torch_compile.get_device_layout_if_materialized(fp4_x)
+      default_layout = tpu_torch_compile.get_default_layout(
+          fp4_x.dtype, list(fp4_x.shape)
+      )
+      self.assertEqual(default_layout[:2], device_layout[:2])
+      self.assertIsNone(compiler.get_non_default_device_layout(fp4_x))
 
   def test_is_device_shape_dynamic(self):
     x_static = torch.ones(2, 3, device='tpu')

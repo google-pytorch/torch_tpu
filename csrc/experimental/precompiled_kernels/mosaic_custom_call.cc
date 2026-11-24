@@ -72,14 +72,14 @@ absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicCustomCall(
   // Backend-only compilation requires an explicit schedule.
   xla::HloSchedule schedule(hlo.get());
   schedule.set_sequence(entry, entry->MakeInstructionPostOrder());
-  TT_RETURN_IF_ERROR(AdaptXlaError(hlo->set_schedule(schedule),
-                                   "failed to schedule dynamic kernel"));
+  TT_RETURN_IF_ERROR(WrapXlaError(hlo->set_schedule(schedule),
+                                  "failed to schedule dynamic kernel"));
   if (aliased_parameter >= 0) {
     TT_RETURN_IF_ERROR(
-        AdaptXlaError(hlo->input_output_alias_config().SetUpAlias(
-                          {}, aliased_parameter, {},
-                          xla::HloInputOutputAliasConfig::kMustAlias),
-                      "failed to alias private output"));
+        WrapXlaError(hlo->input_output_alias_config().SetUpAlias(
+                         {}, aliased_parameter, {},
+                         xla::HloInputOutputAliasConfig::kMustAlias),
+                     "failed to alias private output"));
   }
   return hlo;
 }

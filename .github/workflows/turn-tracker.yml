@@ -47,15 +47,18 @@ jobs:
   track-turn:
     runs-on: ubuntu-latest
     permissions:
-      contents: read       # Check out tools/turn_tracker.py.
+      contents: read       # Check out tools/turn_tracker.py and .github/quality_champions.txt.
       issues: write        # Add and remove labels on issues.
-      pull-requests: write # Add and remove labels on PRs.
+      pull-requests: write # Add and remove labels and assignees/reviewers on PRs.
+      statuses: write      # Post assignee-is-quality-champion commit status.
     steps:
       - name: Checkout tracker script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: main
-          sparse-checkout: tools
+          sparse-checkout: |
+            .github
+            tools
           persist-credentials: false
       - name: Process Turn State
         env:
@@ -66,3 +69,13 @@ jobs:
           GITHUB_API_URL: ${{ github.api_url }}
         run: |
           ./tools/turn_tracker.py
+      - name: Assign Quality Champion on Approval
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request_review'
+        env:
+          PYTHONPATH: .
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: |
+          python3 ./tools/assign_quality_champion.py

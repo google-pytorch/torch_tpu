@@ -14,7 +14,6 @@
 
 # Domain experts for this package:
 # cbasile-g
-# zhanyong-wan
 # adivinpatel04
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")

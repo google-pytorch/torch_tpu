@@ -16,6 +16,7 @@
 
 #include "csrc/ops/op_builder_utils.h"
 
+#include <algorithm>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -970,6 +971,38 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
                                 static_lhs.runtime_sizes);
 }
 
+absl::StatusOr<stablehlo::Dimensions> InferBroadcastDimensions(
+    const absl::Span<const stablehlo::DimensionInfo> lhs_dims,
+    const absl::Span<const stablehlo::DimensionInfo> rhs_dims) {
+  const size_t result_rank = std::max(lhs_dims.size(), rhs_dims.size());
+  stablehlo::Dimensions result(result_rank);
+  for (size_t i = 1; i <= result_rank; ++i) {
+    const stablehlo::DimensionInfo dim_a =
+        i <= lhs_dims.size() ? lhs_dims[lhs_dims.size() - i]
+                             : stablehlo::DimensionInfo{.size = 1};
+    const stablehlo::DimensionInfo dim_b =
+        i <= rhs_dims.size() ? rhs_dims[rhs_dims.size() - i]
+                             : stablehlo::DimensionInfo{.size = 1};
+    const size_t res_idx = result_rank - i;
+    if (!dim_a.boundOp.has_value() && dim_a.size == 1) {
+      result[res_idx] = dim_b;
+      continue;
+    }
+    if (!dim_b.boundOp.has_value() && dim_b.size == 1) {
+      result[res_idx] = dim_a;
+      continue;
+    }
+    TT_RET_CHECK(dim_a.size == dim_b.size, error::kInvalidArgument)
+        << "expected compatible shapes for broadcasting, got " << dim_a.size
+        << " and " << dim_b.size;
+    TT_RET_CHECK(dim_a.boundOp.has_value() == dim_b.boundOp.has_value(),
+                 error::kInvalidArgument)
+        << "cannot mix bounded and static dimensions in broadcast";
+    result[res_idx] = dim_a;
+  }
+  return result;
+}
+
 std::string ConsumeMlirDiagnostics(
     mlir::BaseScopedDiagnosticHandler& diag_handler) {
   // A non-OK status is always UNKNOWN with the diagnostics as its message, so
@@ -1469,12 +1502,18 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
     case mlir::ElementType::UI64:
       return MakeConstant(builder, std::numeric_limits<uint64_t>::max(),
                           tensor_element_type, shape);
-    case mlir::ElementType::BF16:
-    case mlir::ElementType::F16:
-    case mlir::ElementType::F32:
     case mlir::ElementType::F4E2M1FN:
     case mlir::ElementType::F6E2M3FN:
     case mlir::ElementType::F6E3M2FN:
+      // OCP MX 4-bit and 6-bit float formats have no NaN or Inf encoding, so
+      // fill with their maximum finite value like integer types above.
+      return MakeConstant(builder,
+                          GetMaxFiniteDouble(mlir::getElementType(
+                              builder.getContext(), tensor_element_type)),
+                          tensor_element_type, shape);
+    case mlir::ElementType::BF16:
+    case mlir::ElementType::F16:
+    case mlir::ElementType::F32:
     case mlir::ElementType::F8E3M4:
     case mlir::ElementType::F8E4M3:
     case mlir::ElementType::F8E4M3FN:
@@ -1494,6 +1533,16 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
       // Default case deliberately omitted to ensure compile-time errors if new
       // element types are not handled.
   }
+}
+
+mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
+                       mlir::MlirOp max) {
+  if (GetTensorTypeOrDie(operand).hasStaticShape()) {
+    return stablehlo::Clamp(min, operand, max);
+  }
+  // Same semantics as stablehlo.clamp: min(max(operand, min), max).
+  mlir::MlirOp lower_clamped = stablehlo::Max(operand, min);
+  return stablehlo::Min(lower_clamped, max);
 }
 
 mlir::MlirOp GetNumElements(mlir::MlirOp input, mlir::Type element_type,
@@ -1631,8 +1680,10 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
     return op;
   }
 
-  auto input_tensor_type = GetTensorTypeOrDie(op);
-  Dimensions input_shape = CopyIntVector(input_tensor_type.getShape());
+  // Slice at the upper bounds of bounded dynamic dimensions. This is a no-op
+  // for static shapes.
+  StaticAtBounds static_op = MakeStaticAtBounds(op);
+  Dimensions input_shape = GetStaticShape(static_op.op);
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Current usages are guaranteed to be
                  // within range.
@@ -1652,12 +1703,30 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
   }
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Current usages are guaranteed to be
                  // within range.
-      left_dim[dimension] < right_dim[dimension], error::kInvalidArgument)
+      left_dim[dimension] <= right_dim[dimension], error::kInvalidArgument)
       << "padding values for dimension " << dimension
       << " exceeds tensor size.";
   auto strides = Dimensions(input_shape.size(), 1);
 
-  return mlir::stablehlo::Slice(op, left_dim, right_dim, strides);
+  mlir::MlirOp sliced =
+      mlir::stablehlo::Slice(static_op.op, left_dim, right_dim, strides);
+
+  // A bounded `dimension` keeps the elements of `op` from `left_dim` up to its
+  // runtime size minus the right truncation, so its runtime size shrinks by
+  // the total truncation (clamped at 0). No element past the runtime size of
+  // `op` is read within the new runtime size.
+  if (std::optional<mlir::MlirOp>& size = static_op.runtime_sizes[dimension];
+      size.has_value()) {
+    const int64_t truncation =
+        left_dim[dimension] + input_shape[dimension] - right_dim[dimension];
+    const mlir::Type size_type = GetElementTypeOrSelf(*size);
+    mlir::MlirOp truncation_op =
+        MakeScalarConstant(op.getBuilder(), truncation, size_type);
+    mlir::MlirOp shrunk = stablehlo::Subtract(*size, truncation_op);
+    mlir::MlirOp zero = MakeScalarConstant(op.getBuilder(), 0, size_type);
+    size = stablehlo::Max(shrunk, zero);
+  }
+  return RestoreDynamicDimSizes(sliced, static_op.runtime_sizes);
 }
 
 Dimensions GetAllDimensions(mlir::MlirOp op) {
@@ -1890,7 +1959,8 @@ absl::Status HandleExpandReshape(
         << " for output shape [" << absl::StrJoin(static_shape_after, ",")
         << "] is greater than the inferred bound of " << output_dyn_bound;
     output_dims[output_bound_dim] = {.size = output_dyn_bound,
-                                     .boundOp = op.getValue()};
+                                     .boundOp = op.getValue(),
+                                     .boundOpDim = inputIdx};
     ABSL_VLOG(3) << "[HandleExpandReshape] output_bound_dim: "
                  << output_bound_dim
                  << " output_dyn_bound: " << op_dims[inputIdx].size;
@@ -1948,14 +2018,83 @@ absl::Status HandleTransposeLikeReshape(
 
     // Transfer bounded dynamism from input to output.
     if (op_dims[i].boundOp.has_value()) {
-      output_dims[j] = {.size = op_dims[i].size, .boundOp = op.getValue()};
+      output_dims[j] = {
+          .size = op_dims[i].size, .boundOp = op.getValue(), .boundOpDim = i};
     }
   }
 
   return absl::OkStatus();
 }
 
+// Returns the runtime size, as an i32 scalar, of each result dimension of the
+// reshape of `input` to `output_dims` with reassociation `reassociation`. A
+// bounded result dimension has the runtime size of its `boundOpDim` of `input`,
+// or (for collapse) the product of the runtime sizes of its input group.
+std::vector<mlir::MlirOp> GetReshapeOutputRuntimeSizes(
+    mlir::MlirOp input, const ReshapeReassociation& reassociation,
+    const mlir::stablehlo::Dimensions& output_dims) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  std::vector<mlir::MlirOp> sizes;
+  sizes.reserve(output_dims.size());
+  for (int64_t j = 0; j < static_cast<int64_t>(output_dims.size()); ++j) {
+    const mlir::stablehlo::DimensionInfo& dim = output_dims[j];
+    if (!dim.boundOp.has_value()) {
+      sizes.push_back(MakeScalarConstant(builder, dim.size, i32_type));
+    } else if (dim.boundOpDim >= 0) {
+      sizes.push_back(mlir::stablehlo::GetDimensionSize(input, dim.boundOpDim));
+    } else {
+      // Only collapse leaves boundOpDim unset: multiply the merged input dims.
+      ABSL_DCHECK(reassociation.type == ReshapeType::kCollapse);
+      sizes.push_back(
+          GetNumElements(input, i32_type, reassociation.reassociation[j]));
+    }
+  }
+  return sizes;
+}
+
 }  // namespace
+
+mlir::MlirOp DynamicReshapeWithRuntimeSizes(
+    mlir::MlirOp op, const mlir::stablehlo::Dimensions& output_dims,
+    absl::Span<const mlir::MlirOp> output_sizes) {
+  ABSL_CHECK_EQ(  // CRASH_OK=internal invariant.
+      output_dims.size(), output_sizes.size());
+  // A rank-0 result has no bounded dimension, and Concatenate needs at least
+  // one input.
+  ABSL_CHECK(  // CRASH_OK=internal invariant.
+      !output_dims.empty())
+      << "DynamicReshapeWithRuntimeSizes requires a result of rank at least 1";
+  std::vector<mlir::MlirOp> shape_parts;
+  shape_parts.reserve(output_sizes.size());
+  for (mlir::MlirOp size : output_sizes) {
+    shape_parts.push_back(mlir::stablehlo::Reshape(size, {1}));
+  }
+  mlir::MlirOp output_shape =
+      mlir::stablehlo::Concatenate(op.getBuilder(), shape_parts, /*dim=*/0);
+  mlir::RankedTensorType result_type = mlir::stablehlo::getRankedTensorType(
+      output_dims, GetTensorTypeOrDie(op).getElementType());
+  return mlir::stablehlo::DynamicReshape(result_type, op, output_shape);
+}
+
+std::vector<mlir::MlirOp> GetRuntimeSizes(
+    mlir::MlirBuilder& builder, const mlir::stablehlo::Dimensions& dims) {
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  std::vector<mlir::MlirOp> sizes;
+  sizes.reserve(dims.size());
+  for (const mlir::stablehlo::DimensionInfo& dim : dims) {
+    if (!dim.boundOp.has_value()) {
+      sizes.push_back(MakeScalarConstant(builder, dim.size, i32_type));
+      continue;
+    }
+    ABSL_CHECK_GE(  // CRASH_OK=bounded dims need a boundOpDim.
+        dim.boundOpDim, 0);
+    mlir::MlirOp bound_op(builder, *dim.boundOp);
+    sizes.push_back(
+        mlir::stablehlo::GetDimensionSize(bound_op, dim.boundOpDim));
+  }
+  return sizes;
+}
 
 // Returns a string representation of the reassociation indices for debugging.
 std::string ReassociationToString(const ReshapeReassociation& reassociation) {
@@ -2080,6 +2219,19 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
   } else if (reassociation.type == ReshapeType::kTransposeLike) {
     TT_RETURN_IF_ERROR(HandleTransposeLikeReshape(
         op, op_dims, static_shape_before, static_shape_after, output_dims));
+  }
+
+  // StableHLO `reshape` results may have at most one bounded dimension. Use
+  // `dynamic_reshape` with the runtime result sizes otherwise, which XLA's
+  // dynamic padder lowers.
+  const int64_t num_bounded_output_dims = absl::c_count_if(
+      output_dims, [](const mlir::stablehlo::DimensionInfo& dim) {
+        return dim.boundOp.has_value();
+      });
+  if (num_bounded_output_dims > 1) {
+    return DynamicReshapeWithRuntimeSizes(
+        op, output_dims,
+        GetReshapeOutputRuntimeSizes(op, reassociation, output_dims));
   }
 
   mlir::RankedTensorType dynamic_shape_after =

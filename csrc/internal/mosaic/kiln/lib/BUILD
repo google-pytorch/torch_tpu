@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# thcmbs
+# ryo-not-rio
+
 # Kernel-authoring helpers built on top of the Kiln core language.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
@@ -36,7 +40,6 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:scalar",
         "//csrc/internal/mosaic/kiln/core:semaphore",
         "//csrc/internal/mosaic/kiln/core:shape",
-        "//csrc/internal/mosaic/kiln/core:specs",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log:absl_check",

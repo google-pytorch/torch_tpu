@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # gjh8
-# cbasile-g
+# ghpvnist
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
@@ -42,7 +42,6 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
-        "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -63,7 +62,6 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/eye:eye_lib",
         "//shims/torch:aten_headers",
-        "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",

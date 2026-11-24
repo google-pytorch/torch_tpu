@@ -1090,8 +1090,13 @@ def _check_races(
     *,
     all_candidates: Sequence[tuple[_Access, _Access]] | None = None,
     skip_parallel_buckets: AbstractSet[tuple[str, str]] = frozenset(),
-) -> list[findings.VerificationFinding]:
-  """Checks feasibility, then every race candidate under an assumption."""
+) -> tuple[list[findings.VerificationFinding], bool]:
+  """Checks feasibility, then every race candidate under an assumption.
+
+  Returns:
+    The findings, and whether CP-SAT found a schedule of the unrelaxed model in
+    which every wait completes.
+  """
   op_name = model.kernel_name
   timeout = config.solver_timeout_seconds
   if timeout <= 0.0:
@@ -1103,7 +1108,7 @@ def _check_races(
             op_name,
             severity=findings.Severity.WARNING,
         )
-    ]
+    ], False
   solver = cp_model.CpSolver()
   detected: list[findings.VerificationFinding] = []
   relaxed_schedule = False
@@ -1117,15 +1122,15 @@ def _check_races(
             op_name,
             severity=findings.Severity.WARNING,
         )
-    ]
+    ], False
   if base_status == cp_model.INFEASIBLE and model.sync_truncated:
     relax_sems = _under_signaled_truncated_sems(model, sched)
     if not relax_sems:
-      return [_deadlock_finding(sched, op_name)]
+      return [_deadlock_finding(sched, op_name)], False
     relaxed_enc = _encode_schedule(model, sched, skipped_waits=relax_sems)
     relaxed_status = _solve(solver, relaxed_enc.model, timeout)
     if relaxed_status == cp_model.INFEASIBLE:
-      return [_deadlock_finding(sched, op_name)]
+      return [_deadlock_finding(sched, op_name)], False
     detected.append(
         _finding(
             _Category.VERIFICATION_INCOMPLETE,
@@ -1147,13 +1152,13 @@ def _check_races(
               severity=findings.Severity.WARNING,
           )
       )
-      return detected
+      return detected, False
     if relaxed_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-      return detected
+      return detected, False
     enc = relaxed_enc
     relaxed_schedule = True
   elif base_status == cp_model.INFEASIBLE:
-    return [_deadlock_finding(sched, op_name)]
+    return [_deadlock_finding(sched, op_name)], False
   elif base_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
     return [
         _finding(
@@ -1164,7 +1169,7 @@ def _check_races(
             op_name,
             severity=findings.Severity.WARNING,
         )
-    ]
+    ], False
 
   shared_dma_sems = {
       sem
@@ -1342,14 +1347,22 @@ def _check_races(
             severity=findings.Severity.WARNING,
         )
     )
-  return detected
+  return detected, not relaxed_schedule
 
 
 def _verify_model(
     model: jaxpr_model.KernelVerificationModel,
     config: ModelCheckConfig,
-) -> list[findings.VerificationFinding]:
-  """Checks one model for static, conservation, deadlock, and race bugs."""
+) -> tuple[list[findings.VerificationFinding], bool]:
+  """Checks one model for static, conservation, deadlock, and race bugs.
+
+  Args:
+    model: The kernel model.
+    config: Model checking configuration.
+
+  Returns:
+    The findings, and the value of `waits_proven_completable` for `model`.
+  """
   op_name = model.kernel_name
   detected = jaxpr_model.static_model_findings(model)
   sched = _collect_schedule(model)
@@ -1368,7 +1381,8 @@ def _verify_model(
             severity=findings.Severity.WARNING,
         )
     )
-    return detected
+    return detected, False
+  sync_complete = not model.sync_truncated and not model.unwalked_sync
   # Bounded unrolling drops the signals and waits of later iterations, so the
   # exit values of their semaphores (`truncated_sem_keys`) are unknown. When
   # synchronization operations exist in unwalked tails (`unwalked_sync`), skip
@@ -1403,8 +1417,10 @@ def _verify_model(
     conservation, deadlock = _check_conservation(sched, op_name, skipped_sems)
     detected.extend(conservation)
   all_candidates = _race_candidates(sched)
-  if deadlock or not (sched.waits or all_candidates):
-    return detected
+  if deadlock:
+    return detected, False
+  if not (sched.waits or all_candidates):
+    return detected, sync_complete
   if cp_model is None:
     detected.append(
         _finding(
@@ -1417,31 +1433,35 @@ def _verify_model(
             severity=findings.Severity.WARNING,
         )
     )
-    return detected
+    return detected, sync_complete and not sched.waits
   enc = _encode_schedule(model, sched)
-  detected.extend(
-      _check_races(
-          model,
-          sched,
-          enc,
-          config,
-          all_candidates=all_candidates,
-          skip_parallel_buckets=parallel_buckets,
-      )
+  race_findings, waits_completable = _check_races(
+      model,
+      sched,
+      enc,
+      config,
+      all_candidates=all_candidates,
+      skip_parallel_buckets=parallel_buckets,
   )
-  return detected
+  detected.extend(race_findings)
+  return detected, sync_complete and (waits_completable or not sched.waits)
 
 
-def verify_kernel_models(
+def _check_kernel_models(
     models: Sequence[jaxpr_model.KernelVerificationModel],
-    *,
-    config: ModelCheckConfig = ModelCheckConfig(),
-) -> findings.VerificationReport:
-  """Model-checks extracted Pallas kernel models."""
+    config: ModelCheckConfig,
+) -> tuple[
+    findings.VerificationReport,
+    tuple[jaxpr_model.KernelVerificationModel, ...],
+]:
+  """Model-checks `models`, returning them with `waits_proven_completable`."""
   detected: list[findings.VerificationFinding] = []
+  checked: list[jaxpr_model.KernelVerificationModel] = []
   for model in models:
+    waits_proven_completable = False
     try:
-      detected.extend(_verify_model(model, config))
+      model_findings, waits_proven_completable = _verify_model(model, config)
+      detected.extend(model_findings)
     except Exception as exc:  # pylint: disable=broad-exception-caught
       detected.extend(jaxpr_model.static_model_findings(model))
       detected.append(
@@ -1456,7 +1476,22 @@ def verify_kernel_models(
               ),
           )
       )
-  return findings.report_of(_PHASE, detected)
+    checked.append(
+        dataclasses.replace(
+            model, waits_proven_completable=waits_proven_completable
+        )
+    )
+  return findings.report_of(_PHASE, detected), tuple(checked)
+
+
+def verify_kernel_models(
+    models: Sequence[jaxpr_model.KernelVerificationModel],
+    *,
+    config: ModelCheckConfig = ModelCheckConfig(),
+) -> findings.VerificationReport:
+  """Model-checks extracted Pallas kernel models."""
+  report, _ = _check_kernel_models(models, config)
+  return report
 
 
 def check_kernel_concurrency_with_models(
@@ -1482,7 +1517,8 @@ def check_kernel_concurrency_with_models(
       across invocations and safe to specialize statically.
 
   Returns:
-    The report, and the models (None if the kernel could not be traced).
+    The report, and the models with `waits_proven_completable` set (None if
+    the kernel could not be traced).
   """
   static_report, models = jaxpr_model.check_kernel_static_models(
       op_or_fn,
@@ -1494,4 +1530,53 @@ def check_kernel_concurrency_with_models(
   )
   if not models:
     return static_report, models
-  return verify_kernel_models(models, config=config), models
+  return _check_kernel_models(models, config)
+
+
+def interpret_block_reason(
+    models: Sequence[jaxpr_model.KernelVerificationModel] | None,
+) -> str | None:
+  """Returns why a CPU TPU interpret run of the kernels might never finish.
+
+  JAX's TPU interpreter cannot abort a semaphore or DMA wait that is never
+  satisfied, and a stuck run would also hang interpreter exit, so kernels may
+  only run in CPU interpret mode when each of their models either has no waits
+  or proves that its waits complete (`waits_proven_completable`).
+
+  Args:
+    models: Models returned by `check_kernel_concurrency_with_models`, or None
+      if the kernels could not be modeled.
+
+  Returns:
+    The reason, or None if no kernel can block forever.
+  """
+  if models is None:
+    return (
+        "the kernel could not be modeled to rule out a semaphore or DMA wait"
+        " that never completes"
+    )
+  for model in models:
+    may_block = (
+        bool(model.sem_waits or model.dma_waits)
+        or model.sync_truncated
+        or model.unwalked_sync
+        or not model.sync_reliable
+    )
+    if not may_block or model.waits_proven_completable:
+      continue
+    if not model.sync_reliable:
+      cause = "some semaphore operations could not be resolved statically"
+    elif model.sync_truncated or model.unwalked_sync:
+      cause = (
+          "only some semaphore operations were modeled; raise"
+          " max_unrolled_iterations"
+      )
+    elif cp_model is None:
+      cause = "the OR-Tools CP-SAT solver is not installed"
+    else:
+      cause = "CP-SAT found no schedule that completes every wait"
+    return (
+        f"{model.kernel_name} might block forever on a semaphore or DMA wait"
+        f" ({cause})"
+    )
+  return None

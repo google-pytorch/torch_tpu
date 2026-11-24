@@ -1,0 +1,7 @@
+# GitHub usernames of TorchTPU quality champions.
+# Only users listed here may be assigned to pull requests (enforced by
+# .github/workflows/enforce_pr_assignee.yml and required before Copybara import).
+cbasile-g
+LeeHowes
+vladbelous
+zhanyong-wan

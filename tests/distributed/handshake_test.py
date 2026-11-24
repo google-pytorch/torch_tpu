@@ -31,6 +31,7 @@ import torch.multiprocessing as mp
 from torch.testing._internal.distributed import fake_pg
 from torch_tpu._internal import env
 from torch_tpu._internal.distributed import handshake
+from torch_tpu._internal.distributed import handshake_messages
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -89,6 +90,16 @@ class ProcessGroupCollectiveCountTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(count.collective_count_before, 0)
     self.assertEqual(count.num_collectives_in_graph, 2)
+
+  def test_collective_count_after(self) -> None:
+    count = ProcessGroupCollectiveCount(
+        collective_count_before=3,
+        num_collectives_in_graph=2,
+    )
+    self.assertEqual(count.collective_count_after, 5)
+
+    count.increment_num_collectives_in_graph(4)
+    self.assertEqual(count.collective_count_after, 9)
 
   def test_increment_num_collectives_in_graph(self) -> None:
     count = ProcessGroupCollectiveCount(
@@ -423,6 +434,30 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     self.assertEqual(deserialized.participating_ranks, [0, 2, 5])
     self.assertEqual(deserialized.pg_collective_counts, pg_counts)
 
+  def test_to_bytes_and_from_bytes_process_group_unused_by_the_graph(
+      self,
+  ) -> None:
+    earlier_pg = ProcessGroupId([0, 1])
+    pg = ProcessGroupId([0, 2])
+    pg_counts = RankCollectiveCounts()
+    # The first graph only uses `earlier_pg`, the second one only `pg`.
+    pg_counts.increment_pg_collective_counts({earlier_pg: 3})
+    pg_counts.increment_pg_collective_counts({pg: 1})
+    request = CollectiveHandshakeRequest(
+        pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=0
+    )
+
+    deserialized = CollectiveHandshakeRequest.from_bytes(request.to_bytes())
+
+    self.assertEqual(deserialized.pg_collective_counts, pg_counts)
+    self.assertEqual(
+        deserialized.pg_collective_counts[earlier_pg],
+        ProcessGroupCollectiveCount(
+            collective_count_before=3, num_collectives_in_graph=0
+        ),
+    )
+    self.assertEqual(deserialized.participating_ranks, [0, 2])
+
   def test_from_bytes_shares_process_group_instances(self) -> None:
     pg_counts = RankCollectiveCounts()
     pg_counts.increment_pg_collective_counts({ProcessGroupId(range(16)): 1})
@@ -442,7 +477,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     pg_counts = RankCollectiveCounts()
     pg_counts.increment_pg_collective_counts({ProcessGroupId([0, 1]): 1})
     with mock.patch.object(
-        handshake, "_is_torch_tpu_debug_mode", return_value=False
+        handshake_messages, "is_torch_tpu_debug_mode", return_value=False
     ):
       request = CollectiveHandshakeRequest(
           pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=2
@@ -475,7 +510,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
         ),
     })
     with mock.patch.object(
-        handshake, "_is_torch_tpu_debug_mode", return_value=False
+        handshake_messages, "is_torch_tpu_debug_mode", return_value=False
     ):
       request = CollectiveHandshakeRequest(
           pg_collective_counts=pg_counts,

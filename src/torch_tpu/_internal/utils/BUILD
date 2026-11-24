@@ -15,10 +15,10 @@
 # Domain experts for this package:
 # yilingyuan
 # zhanyong-wan
-# ghpvnist
-# arfaian
-# adivinpatel04
 # haifeng-jin
+# cbasile-g
+# ghpvnist
+# adivinpatel04
 # chizhang529
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")

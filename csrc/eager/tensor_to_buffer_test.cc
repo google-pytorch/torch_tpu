@@ -17,6 +17,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,6 +39,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/tsl/framework/allocator.h"
 
 namespace torch_tpu {
 namespace {
@@ -58,6 +60,104 @@ TEST(TensorToBufferTest, GetBufferContiguous) {
   // Reading the buffer from the tensor should yield the same buffer.
   TT_ASSERT_OK_AND_ASSIGN(auto read_buffer, GetBuffer(tensor));
   EXPECT_EQ(read_buffer, dummy_buffer);
+}
+
+TEST(TensorToBufferTest, GetBufferWithoutCreatingViewReturnsContiguousBase) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  const auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef dummy_buffer,
+      CreateEmptyDeviceBufferRef({2, 3}, mlir::ElementType::F32));
+  const at::Tensor tensor = MakeTensor(dummy_buffer);
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::optional<DeviceBufferRef> read_buffer,
+                          GetBufferWithoutCreatingView(tensor));
+  EXPECT_THAT(read_buffer, testing::Optional(dummy_buffer));
+  EXPECT_EQ(dummy_buffer.device_buffer_list()->num_child_ops(), 0);
+}
+
+TEST(TensorToBufferTest,
+     GetBufferWithoutCreatingViewReturnsNulloptForViewsWithoutOp) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kInternalDeferAll);
+  const auto cleanup_mode =
+      absl::MakeCleanup([prev_mode]() { SetEagerMode(prev_mode); });
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef dummy_buffer,
+      CreateEmptyDeviceBufferRef({2, 3}, mlir::ElementType::F32));
+  const at::Tensor base_tensor = MakeTensor(dummy_buffer);
+
+  // Non-contiguous (transposed) view.
+  at::Tensor transposed = MakeTensor(dummy_buffer);
+  transposed.t_();
+  TT_ASSERT_OK_AND_ASSIGN(const std::optional<DeviceBufferRef> transposed_buf,
+                          GetBufferWithoutCreatingView(transposed));
+  EXPECT_EQ(transposed_buf, std::nullopt);
+
+  // Contiguous reshaped view with different dimensions.
+  at::Tensor reshaped(c10::make_intrusive<c10::TensorImpl>(
+      c10::Storage(base_tensor.storage()), base_tensor.key_set(),
+      base_tensor.dtype()));
+  reshaped.unsafeGetTensorImpl()->set_sizes_contiguous({6});
+  TT_ASSERT_OK_AND_ASSIGN(const std::optional<DeviceBufferRef> reshaped_buf,
+                          GetBufferWithoutCreatingView(reshaped));
+  EXPECT_EQ(reshaped_buf, std::nullopt);
+
+  // Contiguous view with non-zero storage offset.
+  at::Tensor offset_slice(c10::make_intrusive<c10::TensorImpl>(
+      c10::Storage(base_tensor.storage()), base_tensor.key_set(),
+      base_tensor.dtype()));
+  offset_slice.unsafeGetTensorImpl()->set_sizes_contiguous({1, 3});
+  offset_slice.unsafeGetTensorImpl()->set_storage_offset(3);
+  TT_ASSERT_OK_AND_ASSIGN(const std::optional<DeviceBufferRef> offset_buf,
+                          GetBufferWithoutCreatingView(offset_slice));
+  EXPECT_EQ(offset_buf, std::nullopt);
+
+  // Contiguous view with reinterpreted element type.
+  at::Tensor reinterpreted(c10::make_intrusive<c10::TensorImpl>(
+      c10::Storage(base_tensor.storage()), base_tensor.key_set(),
+      c10::scalarTypeToTypeMeta(at::kInt)));
+  reinterpreted.unsafeGetTensorImpl()->set_sizes_contiguous({2, 3});
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::optional<DeviceBufferRef> reinterpreted_buf,
+      GetBufferWithoutCreatingView(reinterpreted));
+  EXPECT_EQ(reinterpreted_buf, std::nullopt);
+
+  // Conjugated view on a complex buffer.
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef complex_buffer,
+      CreateEmptyDeviceBufferRef({2, 3}, mlir::ElementType::COMPLEXF32));
+  at::Tensor conjugated = MakeTensor(complex_buffer);
+  conjugated.unsafeGetTensorImpl()->_set_conj(true);
+  TT_ASSERT_OK_AND_ASSIGN(const std::optional<DeviceBufferRef> conjugated_buf,
+                          GetBufferWithoutCreatingView(conjugated));
+  EXPECT_EQ(conjugated_buf, std::nullopt);
+
+  // None of the view lookups should have created a deferred child op.
+  EXPECT_EQ(dummy_buffer.device_buffer_list()->num_child_ops(), 0);
+  EXPECT_EQ(complex_buffer.device_buffer_list()->num_child_ops(), 0);
+}
+
+TEST(TensorToBufferTest, GetBufferWithoutCreatingViewRejectsInvalidTensors) {
+  const at::Tensor undefined_tensor;  // UNINITIALIZED_TENSOR_OK
+  EXPECT_FALSE(GetBufferWithoutCreatingView(undefined_tensor).ok());
+
+  // A non-TPU tensor must still return an error even when non-contiguous /
+  // non-zero offset (not std::nullopt).
+  at::Tensor cpu_tensor(c10::make_intrusive<c10::TensorImpl>(
+      c10::Storage::create_legacy(c10::Device(c10::DeviceType::CPU)),
+      c10::DispatchKeySet(c10::DispatchKey::CPU),
+      c10::scalarTypeToTypeMeta(at::kFloat)));
+  cpu_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
+      at::IntArrayRef({2, 3}), at::IntArrayRef({1, 2}));
+  cpu_tensor.unsafeGetTensorImpl()->set_storage_offset(1);
+  EXPECT_FALSE(GetBufferWithoutCreatingView(cpu_tensor).ok());
 }
 
 TEST(TensorToBufferTest, GetBufferContiguousDonated) {
@@ -361,6 +461,31 @@ TEST(TensorToBufferTest, AssignBufferToAtTensorBumpVersion) {
             initial_version + 2);
   EXPECT_EQ(view.unsafeGetTensorImpl()->version_counter().current_version(),
             initial_version + 2);
+}
+
+TEST(GetFreeAndTotalMemoryTest, ExcludesInUseAndReservedMemory) {
+  tsl::AllocatorStats stats;
+  stats.bytes_limit = 1000;
+  stats.bytes_in_use = 300;
+  stats.bytes_reserved = 200;
+
+  EXPECT_THAT(internal::GetFreeAndTotalMemory(stats), testing::Pair(500, 1000));
+}
+
+TEST(GetFreeAndTotalMemoryTest, ClampsFreeMemoryAtZero) {
+  tsl::AllocatorStats stats;
+  stats.bytes_limit = 1000;
+  stats.bytes_in_use = 800;
+  stats.bytes_reserved = 300;
+
+  EXPECT_THAT(internal::GetFreeAndTotalMemory(stats), testing::Pair(0, 1000));
+}
+
+TEST(GetFreeAndTotalMemoryTest, IsZeroWithoutLimit) {
+  tsl::AllocatorStats stats;
+  stats.bytes_in_use = 300;
+
+  EXPECT_THAT(internal::GetFreeAndTotalMemory(stats), testing::Pair(0, 0));
 }
 
 }  // namespace

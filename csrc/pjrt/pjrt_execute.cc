@@ -43,6 +43,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
@@ -89,7 +90,7 @@ CreateRuntimeShapeMetadataBuffer(
   }
 
   const int64_t rank = s32_dims.size();
-  return AdaptXlaError(
+  return WrapXlaError(
       client->BufferFromHostBuffer(
           s32_dims.data(), xla::S32, /*dims=*/{rank},
           /*byte_strides=*/std::nullopt,
@@ -117,8 +118,9 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
     const UnboundedDynamicExecutionMetadata& meta,
     absl::Span<xla::PjRtBuffer* const> argument_buffers,
     absl::Span<const Shape> logical_output_shapes) {
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetPjRtClient());
-  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, GetPjRtDevice());
+  PjrtBackend& backend = PjrtBackend::GetInstance();
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, backend.GetClient());
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, backend.GetDevice());
   TT_ASSIGN_OR_RETURN(xla::PjRtMemorySpace * memory_space,
                       GetDefaultMemorySpace(device));
 
@@ -157,7 +159,7 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
     }
     TT_ASSIGN_OR_RETURN(
         std::unique_ptr<xla::PjRtBuffer> donated_buf,
-        AdaptXlaError(
+        WrapXlaError(
             client->CreateUninitializedBuffer(xla_out_shape, memory_space),
             /* context= */ "failed to allocate donated dynamic output buffer"));
     result.full_args[donated_spec.pjrt_param_idx] = donated_buf.get();
@@ -315,10 +317,10 @@ absl::StatusOr<PjRtBufferPointers> Execute(
   TT_ASSIGN_OR_RETURN(
       std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
           results_per_device,
-      AdaptXlaError(executable->GetLoadedExecutable()->Execute(
-                        absl::MakeConstSpan(&argument_buffers, 1),
-                        execute_options, returned_futures),
-                    /* context= */ "failed to run executable"));
+      WrapXlaError(executable->GetLoadedExecutable()->Execute(
+                       absl::MakeConstSpan(&argument_buffers, 1),
+                       execute_options, returned_futures),
+                   /* context= */ "failed to run executable"));
 
   if (!ephemeral_buffers.empty()) {
     TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA execution contracts guarantee

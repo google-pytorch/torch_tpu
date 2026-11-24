@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -126,19 +127,42 @@ void AdjustMinMaxForEq(mlir::MlirOp& min_op, mlir::MlirOp& max_op) {
   max_op = stablehlo::Select(cond_op, max_op_plus_one, max_op);
 }
 
+enum class HistcIntDivWidth {
+  kI32,
+  kI64,
+};
+
 // Computes bin indices for each element in input_op.
 mlir::MlirOp BuildIndices(mlir::MlirOp input_op, mlir::MlirOp min_op,
-                          mlir::MlirOp max_op, int64_t bins) {
+                          mlir::MlirOp max_op, const int64_t bins,
+                          const HistcIntDivWidth int_div_width) {
+  const bool is_integer =
+      GetTensorTypeOrDie(input_op).getElementType().isInteger();
+  mlir::MlirOp numerator;
+  mlir::MlirOp denominator;
+  if (is_integer && int_div_width == HistcIntDivWidth::kI32) {
+    // Avoid expensive I64 division:
+    //   numerator   = int32(clamp(input_op, min_op, max_op) - min_op)
+    //   denominator = int32(max_op - min_op)
+    // `histc` ignores out-of-range values, which is enforced later via
+    // `in_range`.
+    mlir::MlirOp clamped_hi = stablehlo::Min(input_op, max_op);
+    mlir::MlirOp clamped_in = stablehlo::Max(clamped_hi, min_op);
+    mlir::MlirOp numerator_i64 = stablehlo::Subtract(clamped_in, min_op);
+    numerator =
+        stablehlo::ConvertElementType(numerator_i64, mlir::ElementType::I32);
+    mlir::MlirOp denominator_i64 = stablehlo::Subtract(max_op, min_op);
+    denominator =
+        stablehlo::ConvertElementType(denominator_i64, mlir::ElementType::I32);
+  } else {
+    numerator = stablehlo::Subtract(input_op, min_op);
+    denominator = stablehlo::Subtract(max_op, min_op);
+  }
   // floor((input_op - min) * bins / (max - min))
-  mlir::MlirOp numerator = stablehlo::Subtract(input_op, min_op);
-  mlir::MlirOp denominator = stablehlo::Subtract(max_op, min_op);
-  mlir::MlirOp bins_op = MakeConstantLike(input_op, bins);
+  mlir::MlirOp bins_op = MakeConstantLike(numerator, bins);
   mlir::MlirOp mul_bins = stablehlo::Mul(numerator, bins_op);
   mlir::MlirOp div = stablehlo::Div(mul_bins, denominator);
-  if (GetTensorTypeOrDie(input_op).getElementType().isInteger()) {
-    return stablehlo::ConvertElementType(div, mlir::ElementType::I32);
-  }
-  mlir::MlirOp indices = stablehlo::Floor(div);
+  mlir::MlirOp indices = is_integer ? div : stablehlo::Floor(div);
   return stablehlo::ConvertElementType(indices, mlir::ElementType::I32);
 }
 
@@ -228,9 +252,9 @@ absl::StatusOr<HistcBounds> BuildHistcBoundsShlo(mlir::MlirOp input_op) {
   return HistcBounds{.min = min_op, .max = max_op};
 }
 
-absl::StatusOr<mlir::MlirOp> BuildHistcShlo(mlir::MlirOp input_op, int64_t bins,
-                                            mlir::MlirOp min_op,
-                                            mlir::MlirOp max_op) {
+absl::StatusOr<mlir::MlirOp> BuildHistcShlo(
+    mlir::MlirOp input_op, const int64_t bins, mlir::MlirOp min_op,
+    mlir::MlirOp max_op, const HistcIntDivWidth int_div_width) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::Type input_dtype = GetTensorTypeOrDie(input_op).getElementType();
   const mlir::Type bounds_dtype = GetTensorTypeOrDie(min_op).getElementType();
@@ -250,7 +274,8 @@ absl::StatusOr<mlir::MlirOp> BuildHistcShlo(mlir::MlirOp input_op, int64_t bins,
 
   // Compute bin indices:
   //   indices = floor((input - min) * bins / (max - min))
-  mlir::MlirOp indices = BuildIndices(compute_input_op, min_op, max_op, bins);
+  mlir::MlirOp indices =
+      BuildIndices(compute_input_op, min_op, max_op, bins, int_div_width);
   // Then clamp indices to [0, bins - 1].
   mlir::MlirOp clamped_indices = BuildClampedIndices(indices, bins);
 
@@ -549,11 +574,60 @@ absl::StatusOr<HistcBoundTensors> ComputeHistcBoundsFromInput(
   };
 }
 
-auto MakeHistcOpBuilder(const int64_t bins) {
-  return [bins](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+// Returns kI32 when (acc_max - acc_min) * bins <= INT32_MAX so the caller can
+// use I32 instead of expensive I64 division.
+// Precondition: bins > 0 and acc_min < acc_max.
+HistcIntDivWidth GetExplicitIntDivWidth(const at::Tensor& self,
+                                        const int64_t bins,
+                                        const at::Scalar& acc_min,
+                                        const at::Scalar& acc_max) {
+  if (!IsInteger(self) || bins > std::numeric_limits<int32_t>::max()) {
+    return HistcIntDivWidth::kI64;
+  }
+  uint64_t min_u64 = 0;
+  uint64_t max_u64 = 0;
+  if (acc_min.type() == c10::ScalarType::UInt64 ||
+      acc_max.type() == c10::ScalarType::UInt64) {
+    min_u64 = acc_min.toUInt64();
+    max_u64 = acc_max.toUInt64();
+  } else {
+    min_u64 = static_cast<uint64_t>(acc_min.toLong());
+    max_u64 = static_cast<uint64_t>(acc_max.toLong());
+  }
+  const uint64_t span = max_u64 - min_u64;
+  const uint64_t max_i32_span =
+      static_cast<uint64_t>(std::numeric_limits<int32_t>::max() / bins);
+  return span <= max_i32_span ? HistcIntDivWidth::kI32 : HistcIntDivWidth::kI64;
+}
+
+// Returns kI32 when max_dtype_span * bins <= INT32_MAX (using conservative
+// upper bounds of 256/65536 for exact 8-bit/16-bit max spans of 255/65535) so
+// the caller can use I32 instead of expensive I64 division. Used when bounds
+// are computed from self on device (min == max).
+HistcIntDivWidth GetFromInputIntDivWidth(const at::Tensor& self,
+                                         const int64_t bins) {
+  switch (self.scalar_type()) {
+    case at::ScalarType::Byte:
+    case at::ScalarType::Char:
+      return bins <= (std::numeric_limits<int32_t>::max() / 256)
+                 ? HistcIntDivWidth::kI32
+                 : HistcIntDivWidth::kI64;
+    case at::ScalarType::Short:
+    case at::ScalarType::UInt16:
+      return bins <= (std::numeric_limits<int32_t>::max() / 65536)
+                 ? HistcIntDivWidth::kI32
+                 : HistcIntDivWidth::kI64;
+    default:
+      return HistcIntDivWidth::kI64;
+  }
+}
+
+auto MakeHistcOpBuilder(const int64_t bins,
+                        const HistcIntDivWidth int_div_width) {
+  return [bins, int_div_width](FixedSizeSpan<mlir::MlirOp, 3> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     auto& [input, min, max] = inputs;
-    return BuildHistcShlo(input, bins, min, max);
+    return BuildHistcShlo(input, bins, min, max, int_div_width);
   };
 }
 
@@ -561,12 +635,18 @@ absl::StatusOr<at::Tensor> DispatchHistc(const at::Tensor& self,
                                          const int64_t bins,
                                          const at::Tensor& min_val,
                                          const at::Tensor& max_val,
+                                         const HistcIntDivWidth int_div_width,
                                          OpParamCacheKeys param_keys) {
+  if (IsInteger(self)) {
+    TT_RETURN_IF_ERROR(param_keys.SetParam(
+        "use_i32_div", int_div_width == HistcIntDivWidth::kI32));
+  }
   TT_ASSIGN_OR_RETURN(const auto mlir_out_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   TT_ASSIGN_OR_RETURN(
       DeviceBufferRef out_buf,
-      DispatchOp<3>(MakeHistcOpBuilder(bins), {self, min_val, max_val},
+      DispatchOp<3>(MakeHistcOpBuilder(bins, int_div_width),
+                    {self, min_val, max_val},
                     {.out_dtype = mlir_out_dtype,
                      .out_dims = {bins},
                      .op_param_cache_keys = std::move(param_keys)}));
@@ -576,11 +656,16 @@ absl::StatusOr<at::Tensor> DispatchHistc(const at::Tensor& self,
 absl::Status DispatchHistcOut(const at::Tensor& self, const int64_t bins,
                               const at::Tensor& min_val,
                               const at::Tensor& max_val, at::Tensor& out,
+                              const HistcIntDivWidth int_div_width,
                               OpParamCacheKeys param_keys) {
+  if (IsInteger(self)) {
+    TT_RETURN_IF_ERROR(param_keys.SetParam(
+        "use_i32_div", int_div_width == HistcIntDivWidth::kI32));
+  }
   TT_ASSIGN_OR_RETURN(const auto mlir_out_dtype,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
-  return DispatchOpOut<3>(MakeHistcOpBuilder(bins), {self, min_val, max_val},
-                          out,
+  return DispatchOpOut<3>(MakeHistcOpBuilder(bins, int_div_width),
+                          {self, min_val, max_val}, out,
                           {.out_dtype = mlir_out_dtype,
                            .out_dims = {bins},
                            .op_param_cache_keys = std::move(param_keys)});
@@ -590,9 +675,10 @@ at::Tensor HistcFromInput(const at::Tensor& self, const int64_t bins) {
   TT_KERNEL(OpName::kHistc, param_keys, (self, bins), {
     TT_ASSIGN_OR_THROW(const HistcBoundTensors bounds,
                        ComputeHistcBoundsFromInput(self));
+    const HistcIntDivWidth int_div_width = GetFromInputIntDivWidth(self, bins);
     TT_ASSIGN_OR_THROW(at::Tensor out,
                        DispatchHistc(self, bins, bounds.min_val, bounds.max_val,
-                                     std::move(param_keys)));
+                                     int_div_width, std::move(param_keys)));
     return out;
   });
 }
@@ -608,9 +694,11 @@ at::Tensor HistcExplicit(const at::Tensor& self, const int64_t bins,
                            promoted_min.GetTensor(acc_dtype));
         TT_ASSIGN_OR_THROW(const at::Tensor max_val,
                            promoted_max.GetTensor(acc_dtype));
-        TT_ASSIGN_OR_THROW(
-            at::Tensor out,
-            DispatchHistc(self, bins, min_val, max_val, std::move(param_keys)));
+        const HistcIntDivWidth int_div_width =
+            GetExplicitIntDivWidth(self, bins, acc_min, acc_max);
+        TT_ASSIGN_OR_THROW(at::Tensor out,
+                           DispatchHistc(self, bins, min_val, max_val,
+                                         int_div_width, std::move(param_keys)));
         return out;
       });
 }
@@ -620,8 +708,9 @@ at::Tensor& HistcOutFromInput(const at::Tensor& self, const int64_t bins,
   TT_KERNEL(OpName::kHistcOut, param_keys, (self, bins, out), {
     TT_ASSIGN_OR_THROW(const HistcBoundTensors bounds,
                        ComputeHistcBoundsFromInput(self));
+    const HistcIntDivWidth int_div_width = GetFromInputIntDivWidth(self, bins);
     TT_THROW_IF_ERROR(DispatchHistcOut(self, bins, bounds.min_val,
-                                       bounds.max_val, out,
+                                       bounds.max_val, out, int_div_width,
                                        std::move(param_keys)));
     return out;
   });
@@ -640,8 +729,11 @@ at::Tensor& HistcOutExplicit(const at::Tensor& self, const int64_t bins,
                                  promoted_min.GetTensor(acc_dtype));
               TT_ASSIGN_OR_THROW(const at::Tensor max_val,
                                  promoted_max.GetTensor(acc_dtype));
+              const HistcIntDivWidth int_div_width =
+                  GetExplicitIntDivWidth(self, bins, acc_min, acc_max);
               TT_THROW_IF_ERROR(DispatchHistcOut(self, bins, min_val, max_val,
-                                                 out, std::move(param_keys)));
+                                                 out, int_div_width,
+                                                 std::move(param_keys)));
               return out;
             });
 }

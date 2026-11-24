@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -115,9 +116,8 @@ static_assert(!std::is_convertible_v<HbmRef, VmemRef>);
 // Nothing can rebind a typed ref through a common base.
 static_assert(!std::is_assignable_v<internal::RefBase&, SmemRef>);
 
-// A `ValueHandle` can only be created from an `mlir::Value` or
-// `ValueHandle::Null()`, not from an arbitrary pointer. Handles stay cheap to
-// copy.
+// A `ValueHandle` can only be created from an `mlir::Value`, not from an
+// arbitrary pointer. Handles stay cheap to copy.
 static_assert(!std::is_default_constructible_v<internal::ValueHandle>);
 static_assert(!std::is_constructible_v<internal::ValueHandle, const void*>);
 static_assert(std::is_trivially_copyable_v<internal::ValueHandle>);
@@ -143,10 +143,13 @@ static_assert(!Storable<SmemRef, Tile>);
 static_assert(!Storable<HbmRef, Tile>);
 static_assert(!Storable<Ref, Tile>);
 
-// Slicing preserves the memory space.
+// Slicing and bitcasting preserve `TypedRef<kSpace>` vs `Ref`.
 static_assert(
     std::is_same_v<decltype(std::declval<VmemRef>()(0, all)), VmemRef>);
 static_assert(std::is_same_v<decltype(std::declval<Ref>()(0, all)), Ref>);
+static_assert(
+    std::is_same_v<decltype(std::declval<VmemRef>().Bitcast(i32)), VmemRef>);
+static_assert(std::is_same_v<decltype(std::declval<Ref>().Bitcast(i32)), Ref>);
 
 // out[i, j] += a[i, k] @ b[k, j], with K as the innermost ("arbitrary") grid
 // axis and an f32 accumulator in scratch.
@@ -1178,8 +1181,8 @@ TEST(KilnTest, ForLoopWithEmptyState) {
 TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
-      InSpec{i32(32, 128)}, InSpec{u32(32, 128)}, OutSpec{f32(32, 128)},
-      [](VmemRef f_in, VmemRef i_in, VmemRef u_in, VmemRef out) {
+      InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
+      [](VmemRef f_in, VmemRef i_in, VmemRef out) {
         Scalar s_i = I32(1);
         Scalar s_u = U32(1);
         Scalar s_f = F32(1.0);
@@ -1206,6 +1209,16 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
         EXPECT_DEATH(For(s_f, [](Scalar) {}),
                      "IndexArg requires an integer scalar");
 
+        Store(out, Load(f_in));
+      });
+  ASSERT_THAT(kernel, IsOk());
+}
+
+TEST(KilnDeathTest, TileMismatchedTypesFail) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
+      InSpec{i32(32, 128)}, InSpec{u32(32, 128)}, OutSpec{f32(32, 128)},
+      [](VmemRef f_in, VmemRef i_in, VmemRef u_in, VmemRef out) {
         Tile t_f = Load(f_in);
         Tile t_i = Load(i_in);
         Tile t_u = Load(u_in);
@@ -1220,6 +1233,18 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
         EXPECT_DEATH(Reciprocal(t_i),
                      "Reciprocal\\(\\) requires a floating-point tile");
 
+        Store(out, t_f);
+      });
+  ASSERT_THAT(kernel, IsOk());
+}
+
+TEST(KilnDeathTest, InvalidRefAccessesFail) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
+      InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
+      [](VmemRef f_in, VmemRef i_in, VmemRef out) {
+        Tile t_f = Load(f_in);
+        Tile t_i = Load(i_in);
         EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
         EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
         EXPECT_DEATH(Load(f_in, {0}, {8, 128}),
@@ -2338,6 +2363,97 @@ TEST(KilnTest, RefAtSlicesWithAListOfIndexers) {
   )"));
 }
 
+struct RefBitcastTestCase {
+  std::string_view name;
+  Shape from;
+  Shape to;
+};
+
+using RefBitcastTest = TestWithParam<RefBitcastTestCase>;
+
+TEST_P(RefBitcastTest, ScalesTheSecondMinorDimByTheBitwidthRatio) {
+  const RefBitcastTestCase& tc = GetParam();
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "ref_bitcast"}, InSpec::Vmem(tc.from),
+                   [&](VmemRef in) {
+                     EXPECT_EQ(in.Bitcast(tc.to.dtype()).shape(), tc.to);
+                   }),
+      IsOkAndMatchesIr("CHECK: tpu.memref_bitcast"));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    KilnTest, RefBitcastTest,
+    testing::ValuesIn<RefBitcastTestCase>({
+        // Equal bitwidths keep the shape, even of rank one or with dynamic
+        // rows.
+        {"F32ToI32", f32(8, 128), i32(8, 128)},
+        {"F32ToI32Rank1", f32(128), i32(128)},
+        {"F32ToI32DynamicRows", f32(kDynamic, 128), i32(kDynamic, 128)},
+        // Rows of a narrower dtype pack into fewer rows of a wider one.
+        {"U8ToI32", u8(8, 128), i32(2, 128)},
+        {"Bf16ToI32", bf16(16, 128), i32(8, 128)},
+        {"U8ToBf16", u8(16, 128), bf16(8, 128)},
+        // Rows of a wider dtype unpack into more rows of a narrower one.
+        {"I32ToU8", i32(2, 128), u8(8, 128)},
+        {"I32ToBf16", i32(8, 128), bf16(16, 128)},
+        {"Bf16ToU8", bf16(8, 128), u8(16, 128)},
+        // Only the second-minor dimension scales.
+        {"U8ToI32Rank3", u8(2, 8, 128), i32(2, 2, 128)},
+    }),
+    [](const TestParamInfo<RefBitcastTestCase>& info) {
+      return std::string(info.param.name);
+    });
+
+TEST(KilnTest, UntypedRefBitcastPreservesMemorySpace) {
+  EXPECT_THAT(CreateKernel(GridSpec{.name = "untyped_ref_bitcast"},
+                           InSpec::Vmem(u8(8, 128)),
+                           [&](Ref in) {
+                             Ref words = in.Bitcast(i32);
+                             EXPECT_EQ(words.shape(), i32(2, 128));
+                             EXPECT_EQ(words.memory_space(),
+                                       MemorySpace::kVmem);
+                           }),
+              IsOkAndMatchesIr("CHECK: tpu.memref_bitcast"));
+}
+
+struct RefBitcastDeathTestCase {
+  std::string_view name;
+  Shape from;
+  DType to;
+  std::string error;
+};
+
+using RefBitcastDeathTest = TestWithParam<RefBitcastDeathTestCase>;
+
+TEST_P(RefBitcastDeathTest, RejectsInvalidShapesAndDTypes) {
+  const RefBitcastDeathTestCase& tc = GetParam();
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "ref_bitcast"}, InSpec::Vmem(tc.from),
+          [&](VmemRef in) { EXPECT_DEATH(in.Bitcast(tc.to), tc.error); }),
+      IsOk());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    KilnTest, RefBitcastDeathTest,
+    testing::ValuesIn<RefBitcastDeathTestCase>({
+        {"FromBool", bool_(32, 128), i32,
+         "does not support bool \\(i1\\) or 64-bit element types"},
+        {"ToBool", i32(1, 128), bool_,
+         "does not support bool \\(i1\\) or 64-bit element types"},
+        {"FromI64", i64(4, 128), i32,
+         "does not support bool \\(i1\\) or 64-bit element types"},
+        {"ToU64", i32(8, 128), u64,
+         "does not support bool \\(i1\\) or 64-bit element types"},
+        {"Rank1", u8(128), i32, "rank 2 or more"},
+        {"DynamicRows", u8(kDynamic, 128), i32,
+         "static second-minor dimension"},
+        {"PartialRows", u8(6, 128), i32, "whole number of i32 rows"},
+    }),
+    [](const TestParamInfo<RefBitcastDeathTestCase>& info) {
+      return std::string(info.param.name);
+    });
+
 // Copy assignment rebinds the handle and emits no IR; a later `Store` writes
 // to the newly bound memref.
 TEST(KilnTest, RefCopyAssignmentRebinds) {
@@ -2477,6 +2593,85 @@ TEST(KilnTest, EmitPipelineWithTwo2dInputs) {
   )"));
 }
 
+TEST(KilnTest, EmitPipelineWithSqueezedDim) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "emit_pipeline_squeezed"},
+      InSpec::Hbm(f32(kDynamic, 8, 128)), OutSpec::Hbm(f32(8, 128)),
+      ScratchSpec::Vmem(f32(8, 128)), [&](HbmRef in, HbmRef out, VmemRef acc) {
+        PipelineOperand input{.hbm = in,
+                              .block_shape = {squeezed, 8, 128},
+                              .region = [](Scalar step) {
+                                return BlockRegion{.offsets = {step, 0, 0},
+                                                   .sizes = {1, 8, 128}};
+                              }};
+        Store(acc, Zeros(acc.shape()));
+        EmitPipeline(0, in.Dim(0), {std::move(input)}, /*outputs=*/{},
+                     [&](const PipelineStep& s) {
+                       Store(acc, Load(acc) + Load(s.inputs[0].ref));
+                     });
+        AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
+      });
+
+  // The slots leave out the squeezed dimension, which each copy indexes away
+  // from `in`.
+  EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @emit_pipeline_squeezed(
+    CHECK:         memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[SRC:.*]] = tpu.memref_squeeze {{.*}} -> memref<8x128xf32, #tpu.memory_space<hbm>>
+    CHECK:         tpu.enqueue_dma source(%[[SRC]] : {{.*}})
+  )"));
+}
+
+TEST(KilnTest, EmitPipelineWithSqueezedOutputDim) {
+  auto slice = [](Scalar i) {
+    return BlockRegion{.offsets = {i, 0, 0}, .sizes = {1, 8, 128}};
+  };
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "emit_pipeline_squeezed_output"},
+      InSpec::Hbm(f32(kDynamic, 8, 128)), OutSpec::Hbm(f32(kDynamic, 8, 128)),
+      [&](HbmRef in, HbmRef out) {
+        EmitPipeline(
+            0, in.Dim(0),
+            {{.hbm = in, .block_shape = {squeezed, 8, 128}, .region = slice}},
+            {{.hbm = out, .block_shape = {squeezed, 8, 128}, .region = slice}},
+            [&](const PipelineStep& s) {
+              Store(s.outputs[0].ref, Load(s.inputs[0].ref) * 2.0);
+            });
+      });
+
+  // The output slots leave out the squeezed dimension too, and each copy out
+  // goes from a slot to a squeezed window of `out`.
+  EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @emit_pipeline_squeezed_output(
+    CHECK:         memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         memref.alloca() : memref<2x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         tpu.enqueue_dma source(%{{.*}} : memref<8x128xf32, #tpu.memory_space<vmem>>) target(%{{.*}} : memref<8x128xf32, #tpu.memory_space<hbm>>)
+  )"));
+}
+
+TEST(KilnDeathTest, EmitPipelineRejectsSqueezedMinorDims) {
+  auto emit = [](HbmRef hbm, BlockShape block_shape) {
+    EmitPipeline(0, 1,
+                 {{.hbm = hbm,
+                   .block_shape = std::move(block_shape),
+                   .region = [](Scalar) { return BlockRegion{}; }}},
+                 /*outputs=*/{}, [](const PipelineStep&) {});
+  };
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "emit_pipeline_squeezed_minor_errors"},
+                   InSpec::Hbm(f32(128)), InSpec::Hbm(f32(8, 128)),
+                   OutSpec::Vmem(f32(8, 128)),
+                   [&](HbmRef hbm_1d, HbmRef hbm_2d, VmemRef) {
+                     EXPECT_DEATH(emit(hbm_1d, {squeezed}),
+                                  "the two minor dimensions can't be squeezed");
+                     EXPECT_DEATH(emit(hbm_2d, {squeezed, 128}),
+                                  "the two minor dimensions can't be squeezed");
+                     EXPECT_DEATH(emit(hbm_2d, {8, squeezed}),
+                                  "the two minor dimensions can't be squeezed");
+                   }),
+      IsOk());
+}
+
 TEST(KilnTest, EmitPipelineWithOutputs) {
   constexpr int64_t kBlock = 128;
   auto block = [](Scalar step) {
@@ -2585,6 +2780,86 @@ TEST(KilnTest, EmitPipelineContraction) {
     CHECK:               tpu.wait_dma
     CHECK:             tpu.wait_dma
   )"));
+}
+
+TEST(KilnTest, EmitPipelineMultiSlotInput) {
+  auto rows = [](Scalar i) {
+    return BlockRegion{.offsets = {i * 8, 0}, .sizes = {8, 128}};
+  };
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "pipeline_3slots"}, InSpec::Hbm(f32(kDynamic, 128)),
+          OutSpec::Hbm(f32(kDynamic, 128)),
+          [&](HbmRef in, HbmRef out) {
+            EmitPipeline(
+                0, in.Dim(0) / 8,
+                {{.hbm = in,
+                  .block_shape = {8, 128},
+                  .region = rows,
+                  .num_slots = 3}},
+                {{.hbm = out, .block_shape = {8, 128}, .region = rows}},
+                [&](const PipelineStep& s) {
+                  Store(s.outputs[0].ref, Load(s.inputs[0].ref));
+                });
+          }),
+      IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @pipeline_3slots(
+    CHECK:           memref.alloca() : memref<3x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:           tpu.sem_alloc : memref<3x!tpu.dma_semaphore
+    CHECK-NOT:       arith.remsi
+    CHECK:           tpu.enqueue_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+    CHECK-NOT:       arith.remsi
+    CHECK:           scf.if
+    CHECK-NOT:         arith.remsi
+    CHECK:             tpu.enqueue_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+    CHECK:           scf.for %[[IV:[^ ]+]] =
+    CHECK:             %[[STEP:.*]] = arith.index_cast %[[IV]] : index to i32
+    CHECK:             %[[REM:.*]] = arith.subi {{.*}}, %[[STEP]] : i32
+    CHECK:             %[[C2_CMP:.*]] = arith.constant 2 : i32
+    CHECK:             arith.cmpi sgt, %[[REM]], %[[C2_CMP]] : i32
+    CHECK:             scf.if
+    CHECK:               %[[C2:.*]] = arith.constant 2 : i32
+    CHECK:               %[[PF:.*]] = arith.addi %[[STEP]], %[[C2]] : i32
+    CHECK:               %[[C3_PF:.*]] = arith.constant 3 : i32
+    CHECK:               arith.remsi {{.*}}, %[[C3_PF]] : i32
+    CHECK:               tpu.enqueue_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+    CHECK:             %[[C3_WAIT:.*]] = arith.constant 3 : i32
+    CHECK:             arith.remsi {{.*}}, %[[C3_WAIT]] : i32
+    CHECK:             tpu.wait_dma source({{.*}}hbm>>) target({{.*}}vmem>>)
+  )"));
+}
+
+TEST(KilnDeathTest, EmitPipelineRejectsInvalidNumSlots) {
+  auto chunk = [](Scalar i) {
+    return BlockRegion{.offsets = {i * 128}, .sizes = {128}};
+  };
+  EXPECT_THAT(CreateKernel(GridSpec{.name = "bad_input_slots"},
+                           InSpec::Hbm(f32(kDynamic)),
+                           [&](HbmRef in) {
+                             EXPECT_DEATH(
+                                 EmitPipeline(0, in.Dim(0) / 128,
+                                              {{.hbm = in,
+                                                .block_shape = {128},
+                                                .region = chunk,
+                                                .num_slots = 1}},
+                                              /*outputs=*/{},
+                                              [](const PipelineStep&) {}),
+                                 "need at least 2 slots");
+                           }),
+              IsOk());
+  EXPECT_THAT(
+      CreateKernel(
+          GridSpec{.name = "bad_output_slots"}, OutSpec::Hbm(f32(kDynamic)),
+          [&](HbmRef out) {
+            EXPECT_DEATH(EmitPipeline(0, out.Dim(0) / 128, /*inputs=*/{},
+                                      {{.hbm = out,
+                                        .block_shape = {128},
+                                        .region = chunk,
+                                        .num_slots = 3}},
+                                      [](const PipelineStep&) {}),
+                         "not supported for outputs");
+          }),
+      IsOk());
 }
 
 TEST(KilnTest, IfReturnsValues) {

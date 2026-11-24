@@ -245,6 +245,8 @@ Tile Tile::Splat(Scalar scalar) const { return kiln::Splat(scalar, dims()); }
 
 Tile Zeros(const Shape& shape) { return Full(shape, /*value=*/0.0); }
 
+Tile Ones(const Shape& shape) { return Full(shape, /*value=*/1.0); }
+
 Tile Full(const Shape& shape, Literal value) {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(

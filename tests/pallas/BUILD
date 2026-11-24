@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# willfroom
-# yaoshiang
+# minospapa
+# cbasile-g
+# haifeng-jin
 # zhanyong-wan
 # ghpvnist
-# pganssle-google
-# jparkerh
-# chizhang529
+# ryo-not-rio
+# nvgrw
 
 load(
     "//build_files:build_defs.bzl",
@@ -50,6 +50,7 @@ torch_tpu_py_test(
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
@@ -79,6 +80,7 @@ torch_tpu_py_test(
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/pallas",
@@ -109,10 +111,7 @@ torch_tpu_py_test(
     name = "pallas_communication_test",
     timeout = "long",
     srcs = ["pallas_communication_test.py"],
-    env = {
-        "IS_OSS": if_oss("1", "0"),
-        "TPU_PREMAPPED_BUFFER_SIZE": "0",
-    },
+    env = {"TPU_PREMAPPED_BUFFER_SIZE": "0"},
     tags = if_oss(
         ["exclusive"],
         [],
@@ -132,7 +131,6 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:oss_utils",
         "//tests/distributed:continuous_test_utils",
         "//tests/distributed:distributed_utils",
         "@pypi//jax",
@@ -164,6 +162,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "pallas_verify_fx_test",
+    timeout = "long",  # Needed for asan.
     srcs = ["pallas_verify_fx_test.py"],
     env = {
         # Keeps JAX off the TPU of OSS CI hosts.
@@ -174,6 +173,7 @@ torch_tpu_py_test(
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
@@ -221,6 +221,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "pallas_verify_torchtpu_kernels_test",
+    timeout = "long",  # Needed for msan.
     srcs = ["pallas_verify_torchtpu_kernels_test.py"],
     env = {
         # Keeps JAX off the TPU of OSS CI hosts.

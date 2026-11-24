@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # pganssle-google
-# jonathan1920
+# chizhang529
 
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")

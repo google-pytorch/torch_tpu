@@ -14,11 +14,8 @@
 
 # Domain experts for this package:
 # gjh8
-# cbasile-g
 # lukeboyer
-# ghpvnist
-# zhanyong-wan
-# haifeng-jin
+# cbasile-g
 
 load(
     "//build_files:build_defs.bzl",
@@ -143,6 +140,7 @@ torch_tpu_py_library(
         ":mode",
         ":registry",
         ":target",
+        "//shims/absl_py/logging",
         "//src/torch_tpu/_internal/benchmarks:export_adapter",
     ],
 )
@@ -648,12 +646,14 @@ torch_tpu_py_library(
         "//perflab/distributed_models",
         "//perflab/steps",
         "//shims/absl_py:app",
+        "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests/distributed:distributed_utils",
+        "//tests/distributed:worker_supervisor",
         "@pypi//fairscale",
     ],
 )

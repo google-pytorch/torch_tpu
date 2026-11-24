@@ -21,8 +21,7 @@ import importlib.resources
 import os
 import pathlib
 import plistlib
-import typing
-from typing import Any, IO
+from typing import Any
 
 from absl import flags
 from tests import goldens_pin
@@ -156,11 +155,11 @@ def load_golden_files(
         f" {local_file}",
         flush=True,
     )
-    with gzip.open(local_file, "rb") as f:
-      # gzip.GzipFile duck types as typing.IO[bytes], but does not inherit
-      # from it, so need to cast.
-      f = typing.cast(IO[bytes], f)
-      plist_ptree = plistlib.load(f, fmt=plistlib.FMT_BINARY)
+    # Decompress into memory first so plistlib's binary backward seeks do not
+    # rewind GzipFile to byte 0 and re-decompress repeatedly (~18-20x faster).
+    plist_ptree = plistlib.loads(
+        gzip.decompress(local_file.read_bytes()), fmt=plistlib.FMT_BINARY
+    )
     results.append(LoadedGolden(fname, plist_ptree))
 
   return results

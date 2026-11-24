@@ -39,6 +39,7 @@
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -89,8 +90,8 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormShlo(mlir::MlirOp v_op,
     broadcast_dims.push_back(dim);
   }
 
-  auto inv_norm_bcst =
-      mlir::stablehlo::BroadcastInDim(v_type, inv_norm, broadcast_dims);
+  TT_ASSIGN_OR_RETURN(auto inv_norm_bcst,
+                      BroadcastIfNeeded(inv_norm, v_op, broadcast_dims));
 
   auto weight_norm = mlir::stablehlo::Mul(v_op, inv_norm_bcst);
 
@@ -175,8 +176,8 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormBackwardShlo(
   }
 
   auto v_scale = mlir::stablehlo::Div(grad_g, norms_aligned);
-  auto v_scale_bcst =
-      mlir::stablehlo::BroadcastInDim(v_calc_type, v_scale, broadcast_dims);
+  TT_ASSIGN_OR_RETURN(auto v_scale_bcst,
+                      BroadcastIfNeeded(v_scale, v_op, broadcast_dims));
 
   // diff = grad_w - v * v_scale
   auto v_scaled = mlir::stablehlo::Mul(v_op, v_scale_bcst);
@@ -184,8 +185,8 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormBackwardShlo(
 
   // inv_norm = g / ||v||
   auto inv_norm = mlir::stablehlo::Div(g_op, norms_aligned);
-  auto inv_norm_bcst =
-      mlir::stablehlo::BroadcastInDim(v_calc_type, inv_norm, broadcast_dims);
+  TT_ASSIGN_OR_RETURN(auto inv_norm_bcst,
+                      BroadcastIfNeeded(inv_norm, v_op, broadcast_dims));
 
   // grad_v = diff * inv_norm
   auto grad_v = mlir::stablehlo::Mul(diff, inv_norm_bcst);

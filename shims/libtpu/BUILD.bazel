@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# jialei-chen
 # pganssle-google
+# jialei-chen
 
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 

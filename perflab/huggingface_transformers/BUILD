@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Domain experts for this package:
+# lukeboyer
 # cbasile-g
-# gjh8
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 

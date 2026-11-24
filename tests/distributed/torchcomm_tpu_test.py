@@ -28,7 +28,7 @@ from torch_tpu._internal.distributed import torchcomm_tpu
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
-from tests.distributed import distributed_utils
+from tests.distributed import continuous_test_utils
 import torchcomms
 
 _WORLD_SIZE = 2
@@ -58,7 +58,7 @@ def _mock_int_env(values: Mapping[str, int]):
 def _new_gloo_comm(name: str) -> torchcomms.TorchComm:
   """Creates a TPU TorchComm on top of the current rank's gloo default group.
 
-  Must run inside `distributed_utils.gloo_run`. With no store, TorchCommsTPU
+  Must run inside `GlooMultiProcContinuousTest`. With no store, TorchCommsTPU
   adopts the initialized default process group, and reads its rank and size
   from the RANK / WORLD_SIZE variables that the launcher sets.
 
@@ -87,127 +87,6 @@ def _assert_equal(actual: torch.Tensor, expected: torch.Tensor) -> None:
   )
 
 
-def _worker_all_reduce() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_all_reduce")
-
-  tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
-  _wait(comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False))
-  total = world_size * (world_size + 1) / 2
-  _assert_equal(tensor, torch.tensor([total, 10.0 * total]))
-
-  # A non-default op shows that the torchcomms op is translated, not dropped.
-  tensor = torch.tensor([rank + 1.0])
-  _wait(comm.all_reduce(tensor, op=torchcomms.ReduceOp.MAX, async_op=False))
-  _assert_equal(tensor, torch.tensor([float(world_size)]))
-  comm.finalize()
-
-
-def _worker_broadcast() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_broadcast")
-
-  # Broadcast from the last rank so that a dropped root (defaulting to 0) shows.
-  root = world_size - 1
-  tensor = torch.tensor([rank + 1.0, rank + 2.0])
-  _wait(comm.broadcast(tensor, root=root, async_op=False))
-  _assert_equal(tensor, torch.tensor([root + 1.0, root + 2.0]))
-  comm.finalize()
-
-
-def _worker_all_gather() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_all_gather")
-  tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
-  expected = [
-      torch.tensor([i + 1.0, 10.0 * (i + 1)]) for i in range(world_size)
-  ]
-
-  out_list = [torch.zeros(2) for _ in range(world_size)]
-  _wait(comm.all_gather(out_list, tensor, async_op=False))
-  for actual, want in zip(out_list, expected, strict=True):
-    _assert_equal(actual, want)
-
-  out_list_v = [torch.zeros(2) for _ in range(world_size)]
-  _wait(comm.all_gather_v(out_list_v, tensor, async_op=False))
-  for actual, want in zip(out_list_v, expected, strict=True):
-    _assert_equal(actual, want)
-  comm.finalize()
-
-
-def _worker_all_gather_single() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_all_gather_single")
-
-  tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
-  out = torch.zeros(2 * world_size)
-  _wait(comm.all_gather_single(out, tensor, async_op=False))
-  _assert_equal(
-      out,
-      torch.tensor(
-          [x for i in range(world_size) for x in (i + 1.0, 10.0 * (i + 1))]
-      ),
-  )
-  comm.finalize()
-
-
-def _worker_reduce_scatter() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_reduce_scatter")
-  # Rank k contributes 10 * k + i to chunk i, so chunk `rank` sums to
-  # 10 * sum(k) + world_size * rank.
-  in_list = [torch.full((2,), 10.0 * rank + i) for i in range(world_size)]
-  expected = torch.full((2,), 10.0 * sum(range(world_size)) + world_size * rank)
-
-  out = torch.zeros(2)
-  _wait(
-      comm.reduce_scatter(
-          out, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
-      )
-  )
-  _assert_equal(out, expected)
-
-  out_v = torch.zeros(2)
-  _wait(
-      comm.reduce_scatter_v(
-          out_v, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
-      )
-  )
-  _assert_equal(out_v, expected)
-  comm.finalize()
-
-
-def _worker_reduce_scatter_single() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_reduce_scatter_single")
-
-  in_t = torch.arange(2.0 * world_size) + 100.0 * rank
-  out = torch.zeros(2)
-  _wait(
-      comm.reduce_scatter_single(
-          out, in_t, op=torchcomms.ReduceOp.SUM, async_op=False
-      )
-  )
-  chunk = torch.arange(2.0 * rank, 2.0 * rank + 2)
-  _assert_equal(out, world_size * chunk + 100.0 * sum(range(world_size)))
-  comm.finalize()
-
-
-def _worker_barrier(marker_dir: str) -> None:
-  rank = dist.get_rank()
-  comm = _new_gloo_comm("test_barrier")
-  marker = os.path.join(marker_dir, "rank0_done")
-
-  if rank == 0:
-    # Give the other ranks time to reach the check if the barrier is a no-op.
-    time.sleep(0.5)
-    with open(marker, "w") as f:
-      f.write("done")
-  _wait(comm.barrier(async_op=False))
-  assert os.path.exists(marker), f"rank {rank} passed the barrier before rank 0"
-  comm.finalize()
-
-
 class _P2PProcessGroup:
   """Exposes a c10d group's send/recv under ProcessGroupTpu's P2P method names.
 
@@ -228,93 +107,6 @@ class _P2PProcessGroup:
       self, tensors: list[torch.Tensor], src: int, tag: int
   ) -> dist.Work:
     return self._pg.recv(tensors, src, tag)
-
-
-def _worker_send_recv() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  # Without the P2P methods, send/recv must refuse rather than silently no-op.
-  gloo_comm = _new_gloo_comm("test_sr_unsupported")
-  try:
-    gloo_comm.get_backend_impl().send(
-        torch.zeros(1), dst=(rank + 1) % world_size
-    )
-  except NotImplementedError:
-    pass
-  else:
-    raise AssertionError("send on a group without P2P support did not raise")
-  gloo_comm.finalize()
-
-  comm = torchcomm_tpu.TorchCommsTPU(
-      device=torch.device("cpu"),
-      name="test_sr",
-      group_rank=rank,
-      group_size=world_size,
-      pg=_P2PProcessGroup(dist.group.WORLD),
-  )
-  # Pass a value around the ring: send to the next rank, receive from the
-  # previous one. Even ranks send first so that the blocking calls pair up.
-  dst, src = (rank + 1) % world_size, (rank - 1) % world_size
-  payload = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
-  received = torch.zeros(2)
-  if rank % 2 == 0:
-    comm.send(payload, dst=dst).wait()
-    comm.recv(received, src=src).wait()
-  else:
-    comm.recv(received, src=src).wait()
-    comm.send(payload, dst=dst).wait()
-  _assert_equal(received, torch.tensor([src + 1.0, 10.0 * (src + 1)]))
-  comm.finalize()
-
-
-def _worker_all_to_all() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_all_to_all")
-
-  # Rank r sends 10 * r + i to rank i, so rank r receives 10 * i + r from i.
-  in_list = [torch.tensor([10.0 * rank + i]) for i in range(world_size)]
-  out_list = [torch.zeros(1) for _ in range(world_size)]
-  _wait(comm.all_to_all(out_list, in_list, async_op=False))
-  for i, actual in enumerate(out_list):
-    _assert_equal(actual, torch.tensor([10.0 * i + rank]))
-  comm.finalize()
-
-
-def _worker_all_to_all_single() -> None:
-  rank, world_size = dist.get_rank(), dist.get_world_size()
-  comm = _new_gloo_comm("test_all_to_all_single")
-
-  # Even splits: row i of rank r's input goes to rank i.
-  in_t = torch.tensor([[10.0 * rank + i] for i in range(world_size)])
-  out = torch.zeros(world_size, 1)
-  _wait(comm.all_to_all_single(out, in_t, async_op=False))
-  _assert_equal(
-      out, torch.tensor([[10.0 * i + rank] for i in range(world_size)])
-  )
-
-  # Uneven splits: every rank sends i + 1 elements to rank i, so rank r
-  # receives r + 1 elements from each peer.
-  in_splits = [i + 1 for i in range(world_size)]
-  in_v = torch.cat(
-      [torch.full((n,), 10.0 * rank + i) for i, n in enumerate(in_splits)]
-  )
-  out_splits = [rank + 1] * world_size
-  out_v = torch.zeros(sum(out_splits))
-  _wait(
-      comm.all_to_all_v_single(
-          out_v,
-          in_v,
-          output_split_sizes=out_splits,
-          input_split_sizes=in_splits,
-          async_op=False,
-      )
-  )
-  _assert_equal(
-      out_v,
-      torch.cat(
-          [torch.full((rank + 1,), 10.0 * i + rank) for i in range(world_size)]
-      ),
-  )
-  comm.finalize()
 
 
 class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
@@ -560,46 +352,219 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     comm.finalize()
 
 
-class TorchCommsTPUCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
-  """Runs each collective across real gloo ranks and checks the results."""
+class TorchCommsTPUCollectivesTest(
+    continuous_test_utils.GlooMultiProcContinuousTest
+):
+  """Runs each collective across persistent gloo ranks and checks results."""
+
+  world_size = _WORLD_SIZE
 
   def test_all_reduce(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_reduce)
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_all_reduce")
+
+    tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+    _wait(comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False))
+    total = world_size * (world_size + 1) / 2
+    _assert_equal(tensor, torch.tensor([total, 10.0 * total]))
+
+    # A non-default op shows that the torchcomms op is translated, not dropped.
+    tensor = torch.tensor([rank + 1.0])
+    _wait(comm.all_reduce(tensor, op=torchcomms.ReduceOp.MAX, async_op=False))
+    _assert_equal(tensor, torch.tensor([float(world_size)]))
+    comm.finalize()
 
   def test_broadcast(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_broadcast)
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_broadcast")
+
+    # Broadcast from the last rank so that a dropped root (defaulting to 0) shows.
+    root = world_size - 1
+    tensor = torch.tensor([rank + 1.0, rank + 2.0])
+    _wait(comm.broadcast(tensor, root=root, async_op=False))
+    _assert_equal(tensor, torch.tensor([root + 1.0, root + 2.0]))
+    comm.finalize()
 
   def test_all_gather_and_all_gather_v(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather)
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_all_gather")
+    tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+    expected = [
+        torch.tensor([i + 1.0, 10.0 * (i + 1)]) for i in range(world_size)
+    ]
 
-  @test_utils.skip_if_asan("b/585575105: Slow / times out in ASAN mode.")
-  @test_utils.skip_if_tsan(
-      "b/585575105: Times out and reports TSAN data race in"
-      " ProcessGroupGloo::runLoop."
-  )
+    out_list = [torch.zeros(2) for _ in range(world_size)]
+    _wait(comm.all_gather(out_list, tensor, async_op=False))
+    for actual, want in zip(out_list, expected, strict=True):
+      _assert_equal(actual, want)
+
+    out_list_v = [torch.zeros(2) for _ in range(world_size)]
+    _wait(comm.all_gather_v(out_list_v, tensor, async_op=False))
+    for actual, want in zip(out_list_v, expected, strict=True):
+      _assert_equal(actual, want)
+    comm.finalize()
+
   def test_all_gather_single(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather_single)
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_all_gather_single")
+
+    tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+    out = torch.zeros(2 * world_size)
+    _wait(comm.all_gather_single(out, tensor, async_op=False))
+    expected_values = []
+    for i in range(world_size):
+      expected_values.extend((i + 1.0, 10.0 * (i + 1)))
+    _assert_equal(out, torch.tensor(expected_values))
+    comm.finalize()
 
   def test_reduce_scatter_and_reduce_scatter_v(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_reduce_scatter)
-
-  def test_reduce_scatter_single(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_reduce_scatter_single)
-
-  def test_barrier(self):
-    distributed_utils.gloo_run(
-        _WORLD_SIZE, _worker_barrier, self.create_tempdir().full_path
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_reduce_scatter")
+    # Rank k contributes 10 * k + i to chunk i, so chunk `rank` sums to
+    # 10 * sum(k) + world_size * rank.
+    in_list = [torch.full((2,), 10.0 * rank + i) for i in range(world_size)]
+    expected = torch.full(
+        (2,), 10.0 * sum(range(world_size)) + world_size * rank
     )
 
-  def test_send_recv(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_send_recv)
+    out = torch.zeros(2)
+    _wait(
+        comm.reduce_scatter(
+            out, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
+        )
+    )
+    _assert_equal(out, expected)
 
-  @test_utils.skip_if_asan("b/585575105: Slow (~112s) in ASAN mode.")
+    out_v = torch.zeros(2)
+    _wait(
+        comm.reduce_scatter_v(
+            out_v, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
+        )
+    )
+    _assert_equal(out_v, expected)
+    comm.finalize()
+
+  def test_reduce_scatter_single(self):
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_reduce_scatter_single")
+
+    in_t = torch.arange(2.0 * world_size) + 100.0 * rank
+    out = torch.zeros(2)
+    _wait(
+        comm.reduce_scatter_single(
+            out, in_t, op=torchcomms.ReduceOp.SUM, async_op=False
+        )
+    )
+    chunk = torch.arange(2.0 * rank, 2.0 * rank + 2)
+    _assert_equal(out, world_size * chunk + 100.0 * sum(range(world_size)))
+    comm.finalize()
+
+  def test_barrier(self):
+    comm = _new_gloo_comm("test_barrier")
+    paths = [
+        self.create_tempdir(cleanup=absltest.TempFileCleanup.OFF).full_path
+        if self.rank == 0
+        else None
+    ]
+    dist.broadcast_object_list(paths, src=0)
+    marker_dir = paths[0]
+    assert marker_dir is not None
+    marker = os.path.join(marker_dir, "rank0_done")
+
+    if self.rank == 0:
+      # Give the other ranks time to reach the check if the barrier is a no-op.
+      time.sleep(0.5)
+      with open(marker, "w") as f:
+        f.write("done")
+    _wait(comm.barrier(async_op=False))
+    assert os.path.exists(
+        marker
+    ), f"rank {self.rank} passed the barrier before rank 0"
+    comm.finalize()
+
+  def test_send_recv(self):
+    rank, world_size = self.rank, self.world_size
+    # Without the P2P methods, send/recv must refuse rather than silently no-op.
+    gloo_comm = _new_gloo_comm("test_sr_unsupported")
+    try:
+      gloo_comm.get_backend_impl().send(
+          torch.zeros(1), dst=(rank + 1) % world_size
+      )
+    except NotImplementedError:
+      pass
+    else:
+      raise AssertionError("send on a group without P2P support did not raise")
+    gloo_comm.finalize()
+
+    comm = torchcomm_tpu.TorchCommsTPU(
+        device=torch.device("cpu"),
+        name="test_sr",
+        group_rank=rank,
+        group_size=world_size,
+        pg=_P2PProcessGroup(dist.group.WORLD),
+    )
+    # Pass a value around the ring: send to the next rank, receive from the
+    # previous one. Even ranks send first so that the blocking calls pair up.
+    dst, src = (rank + 1) % world_size, (rank - 1) % world_size
+    payload = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+    received = torch.zeros(2)
+    if rank % 2 == 0:
+      comm.send(payload, dst=dst).wait()
+      comm.recv(received, src=src).wait()
+    else:
+      comm.recv(received, src=src).wait()
+      comm.send(payload, dst=dst).wait()
+    _assert_equal(received, torch.tensor([src + 1.0, 10.0 * (src + 1)]))
+    comm.finalize()
+
   def test_all_to_all(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_to_all)
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_all_to_all")
+
+    # Rank r sends 10 * r + i to rank i, so rank r receives 10 * i + r from i.
+    in_list = [torch.tensor([10.0 * rank + i]) for i in range(world_size)]
+    out_list = [torch.zeros(1) for _ in range(world_size)]
+    _wait(comm.all_to_all(out_list, in_list, async_op=False))
+    for i, actual in enumerate(out_list):
+      _assert_equal(actual, torch.tensor([10.0 * i + rank]))
+    comm.finalize()
 
   def test_all_to_all_single_and_v(self):
-    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_to_all_single)
+    rank, world_size = self.rank, self.world_size
+    comm = _new_gloo_comm("test_all_to_all_single")
+
+    # Even splits: row i of rank r's input goes to rank i.
+    in_t = torch.tensor([[10.0 * rank + i] for i in range(world_size)])
+    out = torch.zeros(world_size, 1)
+    _wait(comm.all_to_all_single(out, in_t, async_op=False))
+    _assert_equal(
+        out, torch.tensor([[10.0 * i + rank] for i in range(world_size)])
+    )
+
+    # Uneven splits: every rank sends i + 1 elements to rank i, so rank r
+    # receives r + 1 elements from each peer.
+    in_splits = [i + 1 for i in range(world_size)]
+    in_v = torch.cat(
+        [torch.full((n,), 10.0 * rank + i) for i, n in enumerate(in_splits)]
+    )
+    out_splits = [rank + 1] * world_size
+    out_v = torch.zeros(sum(out_splits))
+    _wait(
+        comm.all_to_all_v_single(
+            out_v,
+            in_v,
+            output_split_sizes=out_splits,
+            input_split_sizes=in_splits,
+            async_op=False,
+        )
+    )
+    _assert_equal(
+        out_v,
+        torch.cat([
+            torch.full((rank + 1,), 10.0 * i + rank) for i in range(world_size)
+        ]),
+    )
+    comm.finalize()
 
 
 # Alias for backward compatibility

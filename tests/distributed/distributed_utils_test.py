@@ -19,6 +19,7 @@ import os
 import random
 import socket
 import sys
+import time
 import types
 from unittest import mock
 
@@ -26,10 +27,10 @@ from absl.testing import absltest
 import portpicker
 import torch
 import torch.multiprocessing as mp
-from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
+from tests.distributed import worker_supervisor
 
 
 def _worker_seed_check(
@@ -103,6 +104,10 @@ def _worker_gloo_all_reduce(world_size: int) -> None:
 def _worker_fail_on_rank_one() -> None:
   if torch.distributed.get_rank() == 1:
     raise AssertionError("rank 1 failed on purpose")
+
+
+def _worker_hang() -> None:
+  time.sleep(120)
 
 
 class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
@@ -222,34 +227,12 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     """Verifies that gloo_run ranks share an initialized gloo group."""
     distributed_utils.gloo_run(2, _worker_gloo_all_reduce, 2)
 
-  @test_utils.skip_if_msan("TODO(b/585574829): Flaky under MSAN.")
   def test_gloo_run_propagates_rank_failure(self) -> None:
     """Verifies that an assertion failing on one rank fails the caller."""
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests the test fixture
         mp.ProcessRaisedException, "rank 1 failed on purpose"
     ):
       distributed_utils.gloo_run(2, _worker_fail_on_rank_one)
-
-  def test_dist_run_retries_on_port_collision(self) -> None:
-    """Verifies that dist_run retries when port collision (EADDRINUSE) occurs."""
-    attempt_count = 0
-
-    def mock_spawn(fn, args=(), nprocs=1, join=True):
-      nonlocal attempt_count
-      attempt_count += 1
-      if attempt_count == 1:
-        raise mp.ProcessRaisedException(
-            msg="RuntimeError: Address already in use (errno: 98 EADDRINUSE)",
-            error_index=0,
-            error_pid=12345,
-        )
-      # Second attempt succeeds.
-      return None
-
-    with mock.patch.object(mp, "spawn", side_effect=mock_spawn):
-      distributed_utils.dist_run(2, lambda: None, max_retries=3)
-
-    self.assertEqual(attempt_count, 2)
 
   def test_dist_run_keeps_pinned_slicebuilder_ports(self) -> None:
     """Verifies caller-pinned SliceBuilder addresses survive a retry."""
@@ -359,6 +342,43 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
       self.assertNotIn("TORCH_TPU_SLICEBUILDER_ADDRESSES", os.environ)
     mock_spawn.assert_called_once()
 
+  def test_dist_run_timeout_kills_hung_workers(self) -> None:
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=The workers hang.
+        worker_supervisor.WorkerTimeoutError,
+        "did not finish by the deadline",
+    ):
+      distributed_utils.dist_run(2, _worker_hang, timeout_seconds=0.2)
+
+  def test_dist_run_retries_share_one_deadline(self) -> None:
+    deadlines = []
+
+    def fake_spawn_and_join(fn, args=(), nprocs=1, *, deadline=None):
+      del fn, args, nprocs  # Unused.
+      deadlines.append(deadline)
+      if len(deadlines) == 1:
+        raise mp.ProcessRaisedException(
+            msg="RuntimeError: Address already in use (errno: 98 EADDRINUSE)",
+            error_index=0,
+            error_pid=12345,
+        )
+
+    start = time.monotonic()
+    with (
+        mock.patch.dict(os.environ),
+        mock.patch.object(
+            worker_supervisor,
+            "spawn_and_join",
+            autospec=True,
+            side_effect=fake_spawn_and_join,
+        ),
+    ):
+      os.environ.pop("MASTER_PORT", None)
+      distributed_utils.dist_run(2, lambda: None, timeout_seconds=30.0)
+
+    self.assertLen(deadlines, 2)
+    self.assertEqual(deadlines[0], deadlines[1])
+    self.assertBetween(deadlines[0], start + 30.0, time.monotonic() + 30.0)
+
   def test_dist_run_retries_and_succeeds_with_real_socket_collision(
       self,
   ) -> None:
@@ -371,7 +391,7 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     catch the ProcessRaisedException, request a new port from portpicker, and
     succeed on attempt 2.
     """
-    free_port = portpicker.pick_unused_port()
+    real_pick_unused_port = portpicker.pick_unused_port
 
     # Open and hold a real listening socket to guarantee EADDRINUSE on attempt 1.
     busy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -379,17 +399,31 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     busy_sock.listen(1)
     busy_port = busy_sock.getsockname()[1]
 
+    call_count = 0
+
+    def pick_busy_then_free() -> int:
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return busy_port
+      return real_pick_unused_port()
+
     try:
-      with mock.patch.object(
-          portpicker,
-          "pick_unused_port",
-          side_effect=[busy_port, free_port],
+      with (
+          mock.patch.dict(os.environ),
+          mock.patch.object(
+              portpicker,
+              "pick_unused_port",
+              side_effect=pick_busy_then_free,
+          ),
       ):
+        os.environ.pop("MASTER_PORT", None)
         distributed_utils.dist_run(
             2,
             _worker_init_process_group,
             max_retries=3,
         )
+      self.assertGreaterEqual(call_count, 2)
     finally:
       busy_sock.close()
 

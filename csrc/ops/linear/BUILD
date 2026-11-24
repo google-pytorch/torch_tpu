@@ -14,6 +14,8 @@
 
 # Domain experts for this package:
 # adivinpatel04
+# zhanyong-wan
+# nvgrw
 # ghpvnist
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
@@ -29,6 +31,7 @@ torch_tpu_cc_library(
     hdrs = ["linear_aten_kernels.h"],
     deps = [
         "//csrc/common:aten_utils",
+        "//csrc/common:autograd_utils",
         "//csrc/common:cache_key",
         "//csrc/common:const_tensor",
         "//csrc/common:dimension_types",
@@ -55,6 +58,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",

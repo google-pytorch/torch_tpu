@@ -23,10 +23,11 @@
 
 namespace torch_tpu {
 
-// Returns the Mosaic nonzero indices kernels, 2-D then 1-D, for registration
-// with `UnboundedDynamicKernelRegistry` in that order. Each is keyed under the
-// shapeless key of a nonzero graph with an F32 input of its rank. The predicate
-// excludes only +0.0 and -0.0, matching torch.nonzero.
+// Returns the Mosaic nonzero indices kernels, F32 then U8, each 1-D to 8-D, for
+// registration with `UnboundedDynamicKernelRegistry` in that order. Each is
+// keyed under the extentless key of the graphs it serves: nonzero graphs with
+// an input of its dtype and rank. The predicate excludes only +0.0 and -0.0 (or
+// 0), matching torch.nonzero.
 //
 // Buffer contracts (all payloads have no dynamic-metadata prefix). The input is
 // the only buffer the caller supplies; `Execute` allocates the destination
@@ -58,7 +59,26 @@ namespace torch_tpu {
 //     to {1,0:T(1,128)} when K == 1.
 //   - Caller-checked arithmetic bounds: 2 <= N <= INT32_MAX - 127 and
 //     2 <= K <= N.
-std::vector<UnboundedDynamicKernel> GetNonzeroUnboundedDynamicKernels();
+// - N-D kernels, one per rank D in [3, 8]: as the 2-D kernel, with coordinates
+//   in row-major order.
+//   - Input: F32[...,M,N]{D-1,...,0:T(8,128)}. XLA defaults to another layout
+//     if that pads less, e.g. to {2,0,1:T(4,128)} for F32[3,5,5].
+//   - Output: S64[K,D]{0,1:T(P,128)}, P = D rounded up to a power of two,
+//     through the view with R = 2 * P * ceil(K/128); rows [0, R/2) hold P rows
+//     per 128 nonzeros, one per coordinate and then tile padding, [R/2, R)
+//     hold zeroed high words.
+//     NB: requires K > P because the XLA default layout for S64[K,D] switches
+//     to {1,0} when K <= P.
+//   - Caller-checked arithmetic bounds: every dimension is at most INT32_MAX,
+//     N <= INT32_MAX - 127, and P < K <= min(element count, INT32_MAX).
+// - U8 kernels: as the F32 ones, with U8 inputs in their default layouts, which
+//   pack four rows (of 128 elements for rank one) to a word:
+//   U8[N]{0:T(B)(128)(4,1)} with B in {1024, 512}, XLA's default being 512 if
+//   N <= 512, and U8[...,M,N]{D-1,...,0:T(8,128)(4,1)}. XLA defaults to
+//   another layout if that pads less, e.g. to {1,0:T(32,128)(4,1)} if M is a
+//   multiple of 32.
+std::vector<UnboundedDynamicKernelRegistration>
+GetNonzeroUnboundedDynamicKernels();
 
 }  // namespace torch_tpu
 

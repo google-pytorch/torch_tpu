@@ -84,6 +84,12 @@ Handshake decides for any other `torch.compile` graphs.
 | Compilation Handshake (opt-in) | `TORCH_TPU_SPMD_HANDSHAKE_STAGE=COMPILE_STAGE` or `DISPATCH_STAGE` (default: OFF) | In torch.compile graphs, checks that the compiled FX graphs match across all ranks; fuses collectives if they do and falls back to skinny collectives if they don't. | Automatically enabling collective fusion in `torch.compile` while guarding against accidental MPMD divergence. |
 <!-- mdformat on -->
 
+Inside a fused program (`@torch.tpu.distributed.spmd_safe` in `DEFER_AND_FUSE`
+mode, or `torch.compile`), XLA eliminates any collective whose output is never
+read on every rank, such as an in-place collective immediately overwritten by
+`zero_()`. That collective does not communicate and its `Work` completes without
+waiting for peer ranks, so do not use an unread collective to synchronize ranks.
+
 #### Using `@torch.tpu.distributed.spmd_safe`
 
 When you know a function or model step is strictly SPMD across all ranks (no

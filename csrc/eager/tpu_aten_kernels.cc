@@ -29,6 +29,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/dispatch/Dispatcher.h"
+#include "ATen/core/enum_tag.h"
 #include "ATen/core/stack.h"
 #include "ATen/native/CPUFallback.h"
 #include "ATen/native/DispatchStub.h"
@@ -140,6 +141,7 @@
 #include "csrc/ops/index_put/index_put_aten_kernels.h"
 #include "csrc/ops/index_reduce/index_reduce_aten_kernels.h"
 #include "csrc/ops/index_select/index_select_aten_kernels.h"
+#include "csrc/ops/int_mm/int_mm_aten_kernels.h"
 #include "csrc/ops/is/is_aten_kernels.h"
 #include "csrc/ops/isin/isin_aten_kernels.h"
 #include "csrc/ops/jagged/jagged_aten_kernels.h"
@@ -432,7 +434,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kBaddbmmDtype>(m, AtenBaddbmmDtype);
   ImplStable<OpName::kBaddbmmDtypeOut>(m, AtenBaddbmmDtypeOut);
   ImplStable<OpName::kBaddbmmOut>(m, AtenBaddbmmOut);
+  ImplStable<OpName::kBernoulli>(m, AtenBernoulli);
   ImplStable<OpName::kBernoulliOut>(m, AtenBernoulliOut);
+  ImplStable<OpName::kBernoulliP>(m, AtenBernoulliP);
   ImplStable<OpName::kBernoulli_Float>(m, AtenBernoulli_Float);
   ImplStable<OpName::kBernoulli_Tensor>(m, AtenBernoulli_Tensor);
   ImplStable<OpName::kBinCount>(m, AtenBinCount);
@@ -781,6 +785,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kIndexReduceOut>(m, TpuAtenIndexReduceOut);
   ImplStable<OpName::kIndexSelect>(m, TpuAtenIndexSelect);
   ImplStable<OpName::kIndexTensorOut>(m, AtenIndexTensorOut);
+  ImplStable<OpName::kIntMm>(m, AtenIntMm);
+  ImplStable<OpName::kIntMmOut>(m, AtenIntMmOut);
   ImplStable<OpName::kIrshiftScalar>(m, AtenIrshiftScalar);
   ImplStable<OpName::kIrshiftTensor>(m, AtenIrshiftTensor);
   ImplStable<OpName::kIsInScalarTensorOut>(m, AtenIsInScalarTensorOut);
@@ -852,6 +858,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMaskedFillTensor>(m, AtenMaskedFillTensor);
   ImplStable<OpName::kMaskedFill_Scalar>(m, AtenMaskedFill_Scalar);
   ImplStable<OpName::kMaskedFill_Tensor>(m, AtenMaskedFill_Tensor);
+  ImplStable<OpName::kMaskedScale>(m, AtenMaskedScale);
   ImplStable<OpName::kMaskedScatter_>(m, AtenMaskedScatter_);
   ImplStable<OpName::kMaskedSelect>(m, AtenMaskedSelect);
   ImplStable<OpName::kMaskedSelectOut>(m, AtenMaskedSelectOut);
@@ -882,6 +889,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMmDtypeOut>(m, AtenMmDtypeOut);
   ImplStable<OpName::kMmOut>(m, AtenMmOut);
   ImplStable<OpName::kMseLossBackward>(m, AtenMseLossBackward);
+  ImplStable<OpName::kMseLossBackwardGradInput>(m,
+                                                AtenMseLossBackwardGradInput);
   ImplStable<OpName::kMseLossOut>(m, AtenMseLossOut);
   ImplStable<OpName::kMulOut>(m, AtenMulOut);
   ImplStable<OpName::kMultinomial>(m, AtenMultinomial);
@@ -1274,7 +1283,9 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
   ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
   ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
+  ImplStable<OpName::kGruInput>(m, AtenGruInputAutogradKernel);
   ImplStable<OpName::kLinear>(m, AtenLinearAutograd);
+  ImplStable<OpName::kLstmInput>(m, AtenLstmInputAutogradKernel);
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNdAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);
@@ -1291,6 +1302,37 @@ TORCH_LIBRARY(tpu, m) {
   // We don't need to use ImplExperimental/ImplStable/ImplDeprecated here as
   // these are just signatures. The actual stages of the ops are marked in
   // TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m).
+  m.def(
+      "_gru_input(Tensor input, Tensor hx, Tensor[] params, bool has_biases, "
+      "int num_layers, float dropout, bool train, bool bidirectional, "
+      "bool batch_first) -> (Tensor, Tensor)",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_gru_input_forward_cached(Tensor input, Tensor hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first) -> Tensor[]",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_gru_input_backward(Tensor grad_output, Tensor grad_hy, Tensor input, "
+      "Tensor hx, Tensor[] params, bool has_biases, int num_layers, "
+      "float dropout, bool train, bool bidirectional, bool batch_first, "
+      "Tensor[] cached_activations) -> Tensor[]");
+  m.def(
+      "_lstm_input(Tensor input, Tensor[] hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first) -> (Tensor, Tensor, Tensor)",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_lstm_input_forward_cached(Tensor input, Tensor[] hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first) -> Tensor[]",
+      {at::Tag::nondeterministic_seeded});
+  m.def(
+      "_lstm_input_backward(Tensor grad_output, Tensor grad_hy, "
+      "Tensor grad_cy, Tensor input, Tensor[] hx, Tensor[] params, "
+      "bool has_biases, int num_layers, float dropout, bool train, "
+      "bool bidirectional, bool batch_first, "
+      "Tensor[] cached_activations) -> Tensor[]");
   m.def(
       "_max_pool1d(Tensor self, int[] kernel_size, int[] stride, "
       "int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
@@ -1313,6 +1355,11 @@ TORCH_LIBRARY(tpu, m) {
       "int[] kernel_size, int[] stride, int[] padding, int[] dilation, "
       "bool ceil_mode) -> Tensor");
   m.def("_ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
+  m.def(
+      "_flex_attention_bwd_dkv(Tensor q, Tensor k, Tensor v, Tensor grad_out, "
+      "Tensor lse, Tensor di, Tensor q_num_blocks, Tensor q_indices, "
+      "int mask_batch, int mask_heads, int q_block, int kv_block, "
+      "float scale, str mask_mod_mlir) -> (Tensor, Tensor)");
   m.def(
       "_flex_attention_fwd(Tensor q, Tensor k, Tensor v, "
       "Tensor kv_num_blocks, Tensor kv_indices, int mask_batch, "
@@ -1738,7 +1785,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
              const at::Tensor& input_offsets, const at::Tensor& send_sizes,
              const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
              std::string_view process_group_name) {
-        return at::empty_like(output);
+        return at::empty_symint(output.sym_sizes(), output.options());
       });
   ImplInternal<OpName::kRaggedAllToAllOut>(
       m,
@@ -1746,7 +1793,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
           const at::Tensor& input_offsets, const at::Tensor& send_sizes,
           const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
           std::string_view process_group_name, at::Tensor& out) -> at::Tensor& {
-        at::native::resize_output(out, output.sizes());
+        at::native::resize_output_symint(out, output.sym_sizes());
         return out;
       });
   ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
@@ -1761,6 +1808,14 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
       });
   ImplInternal<OpName::kDistributedAllGatherDim>(m, MetaAllGatherDim);
   ImplInternal<OpName::kDistributedReduceScatterDim>(m, MetaReduceScatterDim);
+  ImplInternal<OpName::kTpuGruInput>(m, MetaTpuGruInput);
+  ImplInternal<OpName::kTpuGruInputForwardCached>(m,
+                                                  MetaTpuGruInputForwardCached);
+  ImplInternal<OpName::kTpuGruInputBackward>(m, MetaTpuGruInputBackward);
+  ImplInternal<OpName::kTpuLstmInput>(m, MetaTpuLstmInput);
+  ImplInternal<OpName::kTpuLstmInputForwardCached>(
+      m, MetaTpuLstmInputForwardCached);
+  ImplInternal<OpName::kTpuLstmInputBackward>(m, MetaTpuLstmInputBackward);
 }
 
 // Registers implementations for torch.ops.tpu ops for TPU tensors.
@@ -1769,6 +1824,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   // ImplDeprecated to mark their API stages.
   ImplInternal<OpName::kDistributedSend>(m, TorchTpuSend);
   ImplInternal<OpName::kDistributedRecv>(m, TorchTpuRecv);
+  ImplInternal<OpName::kFlexAttentionBwdDkv>(m, FlexAttentionBwdDkv);
   ImplInternal<OpName::kFlexAttentionFwd>(m, FlexAttentionFwd);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
@@ -1806,6 +1862,13 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kSparseMapRow>(m, AtenSparseMapRow);
   ImplInternal<OpName::kDistributedAllGatherDim>(m, AllGatherDim);
   ImplInternal<OpName::kDistributedReduceScatterDim>(m, ReduceScatterDim);
+  ImplInternal<OpName::kTpuGruInput>(m, TpuGruInput);
+  ImplInternal<OpName::kTpuGruInputForwardCached>(m, TpuGruInputForwardCached);
+  ImplInternal<OpName::kTpuGruInputBackward>(m, TpuGruInputBackward);
+  ImplInternal<OpName::kTpuLstmInput>(m, TpuLstmInput);
+  ImplInternal<OpName::kTpuLstmInputForwardCached>(m,
+                                                   TpuLstmInputForwardCached);
+  ImplInternal<OpName::kTpuLstmInputBackward>(m, TpuLstmInputBackward);
 }
 
 // Registers custom autograd for torch.ops.tpu ops.
@@ -1815,15 +1878,7 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
              const at::Tensor& group_sizes) {
         return AtenRaggedDotAutograd::apply(lhs, rhs, group_sizes);
       });
-  ImplInternal<OpName::kRaggedAllToAll>(
-      m, +[](const at::Tensor& operand, const at::Tensor& output,
-             const at::Tensor& input_offsets, const at::Tensor& send_sizes,
-             const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
-             std::string_view process_group_name) {
-        return AtenRaggedAllToAllAutograd::apply(
-            operand, output, input_offsets, send_sizes, output_offsets,
-            recv_sizes, process_group_name);
-      });
+  ImplInternal<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAllAutograd);
   ImplInternal<OpName::kSparseGather>(
       m, +[](const at::Tensor& row_pointers, const at::Tensor& indices,
              const at::Tensor& operand, int64_t max_non_zeroes_per_row) {
@@ -1837,6 +1892,13 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
         return AtenSparseDenseMatmulActivationUnstackAutograd::apply(
             stacked_activations, per_feature_batch_sizes, per_feature_dims);
       });
+}
+
+// Registers custom autograd for torch.ops.tpu ops whose autograd kernel is
+// device-agnostic, so that meta tensors get it too.
+TORCH_LIBRARY_IMPL(tpu, Autograd, m) {
+  ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
+      m, TorchTpuOptimizationBarrierAutograd);
 }
 
 // Registers implementations for torch.ops.tpu ops for CPU tensors.

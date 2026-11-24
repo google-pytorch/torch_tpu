@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # chizhang529
-# jialei-chen
+# cota
 
 load(
     "//build_files:build_defs.bzl",
@@ -33,6 +33,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -76,6 +77,11 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "distributed__tools_fake_collectives_test",
+    torch_test_module = "distributed/_tools/test_fake_collectives",
+)
+
+torch_tpu_torch_test(
     name = "distributed_fsdp_distributed_checkpoint_test",
     torch_test_module = "distributed/fsdp/test_distributed_checkpoint",
 )
@@ -84,6 +90,11 @@ torch_tpu_torch_test(
     name = "distributed_fsdp_fsdp_apply_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/fsdp/test_fsdp_apply",
+)
+
+torch_tpu_torch_test(
+    name = "distributed_fsdp_fsdp_backward_prefetch_test",
+    torch_test_module = "distributed/fsdp/test_fsdp_backward_prefetch",
 )
 
 torch_tpu_torch_test(
@@ -126,6 +137,11 @@ torch_tpu_torch_test(
     name = "distributed_fsdp_fsdp_fine_tune_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/fsdp/test_fsdp_fine_tune",
+)
+
+torch_tpu_torch_test(
+    name = "distributed_fsdp_fsdp_freezing_weights_test",
+    torch_test_module = "distributed/fsdp/test_fsdp_freezing_weights",
 )
 
 torch_tpu_torch_test(
@@ -213,6 +229,12 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "distributed_tensor_math_ops_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "distributed/tensor/test_math_ops",
+)
+
+torch_tpu_torch_test(
     name = "distributed_backends_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/test_backends",
@@ -221,6 +243,11 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "distributed_c10d_torchcomms_test",
     torch_test_module = "distributed/test_c10d_torchcomms",
+)
+
+torch_tpu_torch_test(
+    name = "distributed_collective_utils_test",
+    torch_test_module = "distributed/test_collective_utils",
 )
 
 torch_tpu_torch_test(
@@ -238,6 +265,26 @@ torch_tpu_torch_test(
     name = "distributed_functional_differentials_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/test_functional_differentials",
+)
+
+torch_tpu_torch_test(
+    name = "distributed_multi_threaded_pg_test",
+    torch_test_module = "distributed/test_multi_threaded_pg",
+)
+
+torch_tpu_torch_test(
+    name = "distributed_serialization_test",
+    torch_test_module = "distributed/test_serialization",
+)
+
+torch_tpu_torch_test(
+    name = "distributed_token_switch_test",
+    torch_test_module = "distributed/test_token_switch",
+)
+
+torch_tpu_torch_test(
+    name = "distributions_constraints_test",
+    torch_test_module = "distributions/test_constraints",
 )
 
 torch_tpu_torch_test(
@@ -295,13 +342,38 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "dynamo_error_messages_test",
+    torch_test_module = "dynamo/test_error_messages",
+)
+
+torch_tpu_torch_test(
     name = "dynamo_export_test",
     torch_test_module = "dynamo/test_export",
 )
 
 torch_tpu_torch_test(
+    name = "dynamo_functions_test",
+    torch_test_module = "dynamo/test_functions",
+)
+
+torch_tpu_torch_test(
     name = "dynamo_fx_annotate_test",
     torch_test_module = "dynamo/test_fx_annotate",
+)
+
+torch_tpu_torch_test(
+    name = "dynamo_fx_graph_runnable_test",
+    torch_test_module = "dynamo/test_fx_graph_runnable",
+)
+
+torch_tpu_torch_test(
+    name = "dynamo_getitem_test",
+    torch_test_module = "dynamo/test_getitem",
+)
+
+torch_tpu_torch_test(
+    name = "dynamo_guard_serialization_test",
+    torch_test_module = "dynamo/test_guard_serialization",
 )
 
 torch_tpu_torch_test(
@@ -336,6 +408,11 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "dynamo_package_test",
+    torch_test_module = "dynamo/test_package",
+)
+
+torch_tpu_torch_test(
     name = "dynamo_python_dispatcher_test",
     torch_test_module = "dynamo/test_python_dispatcher",
 )
@@ -366,8 +443,28 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "dynamo_wrap_inductor_compiled_regions_test",
+    torch_test_module = "dynamo/test_wrap_inductor_compiled_regions",
+)
+
+torch_tpu_torch_test(
     name = "export_converter_test",
     torch_test_module = "export/test_converter",
+)
+
+torch_tpu_torch_test(
+    name = "export_draft_export_test",
+    torch_test_module = "export/test_draft_export",
+)
+
+torch_tpu_torch_test(
+    name = "export_experimental_test",
+    torch_test_module = "export/test_experimental",
+)
+
+torch_tpu_torch_test(
+    name = "export_export_test",
+    torch_test_module = "export/test_export",
 )
 
 torch_tpu_torch_test(
@@ -401,11 +498,6 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "functorch_dim_split_test",
     torch_test_module = "functorch/dim/test_split",
-)
-
-torch_tpu_torch_test(
-    name = "functorch_ac_test",
-    torch_test_module = "functorch/test_ac",
 )
 
 torch_tpu_torch_test(
@@ -494,9 +586,21 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "inductor_debug_trace_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_debug_trace",
+)
+
+torch_tpu_torch_test(
     name = "inductor_decompose_mem_bound_mm_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_decompose_mem_bound_mm",
+)
+
+torch_tpu_torch_test(
+    name = "inductor_device_assert_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_device_assert",
 )
 
 torch_tpu_torch_test(
@@ -528,23 +632,8 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "inductor_mix_order_reduction_test",
-    torch_test_module = "inductor/test_mix_order_reduction",
-)
-
-torch_tpu_torch_test(
     name = "inductor_mmdecomp_test",
     torch_test_module = "inductor/test_mmdecomp",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_op_dtype_prop_test",
-    torch_test_module = "inductor/test_op_dtype_prop",
-)
-
-torch_tpu_torch_test(
-    name = "inductor_selective_lowering_test",
-    torch_test_module = "inductor/test_selective_lowering",
 )
 
 torch_tpu_torch_test(
@@ -553,15 +642,24 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "inductor_torchinductor_codegen_dynamic_shapes_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "inductor/test_torchinductor_codegen_dynamic_shapes",
+    name = "inductor_snode_runtime_test",
+    torch_test_module = "inductor/test_snode_runtime",
 )
 
 torch_tpu_torch_test(
-    name = "inductor_torchinductor_dynamic_shapes_test",
-    shard_count = 8,
-    torch_test_module = "inductor/test_torchinductor_dynamic_shapes",
+    name = "inductor_static_triton_launcher_test",
+    torch_test_module = "inductor/test_static_triton_launcher",
+)
+
+torch_tpu_torch_test(
+    name = "inductor_torchbind_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_torchbind",
+)
+
+torch_tpu_torch_test(
+    name = "inductor_torchinductor_codegen_config_overrides_test",
+    torch_test_module = "inductor/test_torchinductor_codegen_config_overrides",
 )
 
 torch_tpu_torch_test(
@@ -648,6 +746,12 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "profiler_kineto_registration_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "profiler/test_kineto_registration",
+)
+
+torch_tpu_torch_test(
     name = "profiler_memory_profiler_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "profiler/test_memory_profiler",
@@ -657,6 +761,12 @@ torch_tpu_torch_test(
     name = "profiler_profiler_test",
     shard_count = 4,
     torch_test_module = "profiler/test_profiler",
+)
+
+torch_tpu_torch_test(
+    name = "profiler_profiler_tree_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "profiler/test_profiler_tree",
 )
 
 torch_tpu_torch_test(
@@ -996,6 +1106,17 @@ torch_tpu_torch_test(
     name = "stateless_rng_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_stateless_rng",
+)
+
+torch_tpu_torch_test(
+    name = "stream_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "test_stream",
+)
+
+torch_tpu_torch_test(
+    name = "sympy_utils_test",
+    torch_test_module = "test_sympy_utils",
 )
 
 torch_tpu_torch_test(

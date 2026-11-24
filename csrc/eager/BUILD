@@ -14,9 +14,10 @@
 
 # Domain experts for this package:
 # benawilson
+# zhanyong-wan
+# yilingyuan
 # cbasile-g
-# haifeng-jin
-# jparkerh
+# adivinpatel04
 
 load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 
@@ -40,14 +41,21 @@ torch_tpu_cc_test(
         ":tensor_to_buffer",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:layout_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",
         "//csrc/common:status_test_utils",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",
         "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -350,6 +358,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/profiler/lib:traceme",
+        "@xla//xla/tsl/framework:allocator",
     ],
 )
 
@@ -398,6 +407,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla/tsl/framework:allocator",
     ],
 )
 
@@ -679,6 +689,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:layout_utils",
         "//csrc/common:op_name_stack",
         "//csrc/common:shape",
         "//csrc/common:to_string",
@@ -687,11 +698,13 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/resize:resize_aten_kernels",
+        "//csrc/ops/stride:stride_helper",
         "//csrc/pjrt:pjrt_transfer",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -850,6 +863,7 @@ torch_tpu_cc_library(
         "//csrc/ops/index_put:index_put_aten_kernels",
         "//csrc/ops/index_reduce:index_reduce_aten_kernels",
         "//csrc/ops/index_select:index_select_aten_kernels",
+        "//csrc/ops/int_mm:int_mm_aten_kernels",
         "//csrc/ops/is:is_aten_kernels",
         "//csrc/ops/isin:isin_aten_kernels",
         "//csrc/ops/jagged:jagged_aten_kernels",

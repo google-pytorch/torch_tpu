@@ -150,6 +150,59 @@ class PropagateSymintsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(submod_placeholders[1].name, "x")
     self.assertEqual(call_submod.args, (p_s0, p_x))
 
+  def test_propagate_symints_from_compound_symint(self):
+    shape_env = torch.fx.experimental.symbolic_shapes.ShapeEnv()
+    symint_s0 = shape_env.create_symintnode(
+        shape_env.create_symbol(8, torch._dynamo.source.ConstantSource("s0")),
+        hint=8,
+    )
+    symint_expr = symint_s0 // 2 + 1
+
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode(
+        shape_env=shape_env
+    )
+    with fake_mode:
+      loss = torch.empty((), dtype=torch.float32)
+
+    # Like an AOTAutograd backward submodule after a collective split, only a
+    # compound SymInt references s0, since the scalar loss has no dynamic dims.
+    sub_graph = Graph()
+    sub_loss = sub_graph.placeholder("loss")
+    sub_loss.meta["val"] = loss
+    sub_expr = sub_graph.placeholder("expr")
+    sub_expr.meta["val"] = symint_expr
+    sub_out = sub_graph.call_function(
+        torch.ops.aten.mul.Scalar, (sub_loss, sub_expr)
+    )
+    sub_graph.output(sub_out)
+    submod = GraphModule(torch.nn.Module(), sub_graph)
+
+    # The compound placeholder comes first so that it would be picked if it
+    # were wrongly treated as a provider of s0.
+    parent_graph = Graph()
+    p_expr = parent_graph.placeholder("expr")
+    p_expr.meta["val"] = symint_expr
+    p_s0 = parent_graph.placeholder("s0")
+    p_s0.meta["val"] = symint_s0
+    p_loss = parent_graph.placeholder("loss")
+    p_loss.meta["val"] = loss
+    call_submod = parent_graph.call_module("submod_0", (p_loss, p_expr))
+    parent_graph.output(call_submod)
+
+    parent_gm = GraphModule({"submod_0": submod}, parent_graph)
+
+    propagate_symints.apply(parent_gm)
+
+    submod_placeholders = [
+        n for n in submod.graph.nodes if n.op == "placeholder"
+    ]
+    self.assertEqual(
+        [n.name for n in submod_placeholders],
+        [f"sym_{str(symint_s0)}", "loss", "expr"],
+    )
+    self.assertEqual(submod_placeholders[0].meta["val"], symint_s0)
+    self.assertEqual(call_submod.args, (p_s0, p_loss, p_expr))
+
 
 if __name__ == "__main__":
   absltest.main()

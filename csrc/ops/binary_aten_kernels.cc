@@ -16,6 +16,8 @@
 
 #include "csrc/ops/binary_aten_kernels.h"
 
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -861,51 +863,77 @@ absl::Status BitwiseRightShiftTensor(
       {.op_name = op_name, .op_param_cache_keys = OpParamCacheKeys::Empty()});
 }
 
-// Result helper for each scaling step in the static split method.
-struct ScaleStepResult {
-  mlir::MlirOp result;
-  mlir::MlirOp remaining_exponent;
+// TODO(b/587430714): Refactor BinaryOp/DispatchBinaryOp or dispatch ldexp
+// directly so integral exponents don't need to be cast to float.
+//
+// `BinaryOp` casts `other` to float via `force_float_inputs = true`, so we
+// record whether `other` was integral. `Exp2` is only needed for floats, and
+// skipping it saves thousands of StableHLO/HLO instructions.
+enum class LdexpExponentKind {
+  kIntegral,
+  kFloatingPoint,
 };
 
-// Perform a single step of scaling.
-// To prevent intermediate overflow or underflow (e.g. if we computed 2^exponent
-// directly for a large exponent, which would overflow float/half ranges even
-// if the final multiplied value is representable), we clamp the exponent to
-// [min_exp_const, max_exp_const], calculate the scaling factor 2^clamped_exp,
-// multiply 'self' by this factor, and calculate the remaining exponent that
-// still needs to be scaled in subsequent steps.
-absl::StatusOr<ScaleStepResult> ScaleStep(mlir::MlirOp self,
-                                          mlir::MlirOp exponent,
-                                          mlir::MlirOp min_exp_const,
-                                          mlir::MlirOp max_exp_const,
-                                          mlir::MlirOp two) {
-  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
-  auto element_type = self_type.getElementType();
+struct LdexpFloatFormat {
+  int32_t max_step_exp;
+  int32_t bias;
+  int32_t mantissa_bits;
+  mlir::ElementType int_elem_type;
+};
 
-  // Convert exponent to match the element type of 'self' (float/half/double).
-  auto casted_exponent = stablehlo::ConvertElementType(exponent, element_type);
+// Returns IEEE-754 bit-packing parameters and the per-step exponent clamp
+// `max_step_exp`. Each `max_step_exp` keeps `2^±max_step_exp` in the normal
+// range while `3 * max_step_exp` covers the full finite-to-subnormal span
+// (40 for F16, 277 for F32, 261 for BF16, 2098 for F64).
+absl::StatusOr<LdexpFloatFormat> GetLdexpFloatFormat(
+    const mlir::Type float_elem_type) {
+  if (float_elem_type.isF64()) {
+    return LdexpFloatFormat{.max_step_exp = 1000,
+                            .bias = 1023,
+                            .mantissa_bits = 52,
+                            .int_elem_type = mlir::ElementType::I64};
+  }
+  if (float_elem_type.isF32()) {
+    return LdexpFloatFormat{.max_step_exp = 120,
+                            .bias = 127,
+                            .mantissa_bits = 23,
+                            .int_elem_type = mlir::ElementType::I32};
+  }
+  if (float_elem_type.isBF16()) {
+    return LdexpFloatFormat{.max_step_exp = 120,
+                            .bias = 127,
+                            .mantissa_bits = 7,
+                            .int_elem_type = mlir::ElementType::I16};
+  }
+  if (float_elem_type.isF16()) {
+    return LdexpFloatFormat{.max_step_exp = 14,
+                            .bias = 15,
+                            .mantissa_bits = 10,
+                            .int_elem_type = mlir::ElementType::I16};
+  }
+  return TT_ERROR(error::kInvalidArgument)
+         << "unsupported element type for ldexp: " << ToString(float_elem_type);
+}
 
-  // Clamp exponent to the safe limits [min_exp_const, max_exp_const] to prevent
-  // overflow/underflow during the Pow (2^exponent) operation.
-  // We use Min and Max instead of Clamp because stablehlo::Clamp drops dynamic
-  // bounds when the first operand (min) is a scalar constant.
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp min_exp_clamped,
-                      BuildMinimumShlo(casted_exponent, max_exp_const));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp clamp_exp,
-                      BuildMaximumShlo(min_exp_clamped, min_exp_const));
-
-  // Compute 2^clamped_exp
-  auto two_tensor = MakeConstantLike(clamp_exp, 2.0);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp factor, BuildPowShlo(two_tensor, clamp_exp));
-
-  // Multiply self by 2^clamped_exp
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildMulShlo(self, factor));
-
-  // Compute remaining exponent that was not applied in this step
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp remaining_exponent,
-                      BuildSubShlo(casted_exponent, clamp_exp));
-
-  return ScaleStepResult{result, remaining_exponent};
+// Computes `2^k_i32`.
+// Standard IEEE-754 bit-construction: shifts `(k_i32 + bias)` into the
+// exponent field and bitcasts to `float_elem_type` (supports `F16`, `BF16`,
+// `F32`, and `F64`). Caller guarantees `k_i32` is clamped within the normal
+// exponent range of `float_elem_type`.
+mlir::MlirOp BuildPow2IntFactorShlo(mlir::MlirOp k_i32,
+                                    const mlir::Type float_elem_type,
+                                    const LdexpFloatFormat& fmt) {
+  mlir::MlirOp bias_i32 = MakeConstantLike(k_i32, fmt.bias);
+  mlir::MlirOp biased_i32 = stablehlo::Add(k_i32, bias_i32);
+  mlir::MlirOp biased_int =
+      (fmt.int_elem_type == mlir::ElementType::I32)
+          ? biased_i32
+          : stablehlo::ConvertElementType(biased_i32, fmt.int_elem_type);
+  mlir::MlirOp shift_const = MakeConstantLike(biased_int, fmt.mantissa_bits);
+  mlir::MlirOp exp_bits = stablehlo::ShiftLeft(biased_int, shift_const);
+  const mlir::RankedTensorType target_type =
+      GetTensorTypeOrDie(exp_bits).clone(float_elem_type);
+  return stablehlo::BitcastConvert(target_type, exp_bits);
 }
 
 absl::Status ValidateLdexpInputs(const at::Tensor& self,
@@ -925,28 +953,94 @@ absl::Status ValidateLdexpOutput(const at::Tensor& out) {
   return absl::OkStatus();
 }
 
-// Performs 3 successive steps of scaling using ScaleStep to avoid intermediate
-// overflow/underflow.
-absl::StatusOr<mlir::MlirOp> Scale3Steps(mlir::MlirOp val, mlir::MlirOp exp,
-                                         mlir::MlirOp min_exp,
-                                         mlir::MlirOp max_exp,
-                                         mlir::MlirOp two) {
-  TT_ASSIGN_OR_RETURN(auto step1, ScaleStep(val, exp, min_exp, max_exp, two));
-  TT_ASSIGN_OR_RETURN(
-      auto step2,
-      ScaleStep(step1.result, step1.remaining_exponent, min_exp, max_exp, two));
-  TT_ASSIGN_OR_RETURN(
-      auto step3,
-      ScaleStep(step2.result, step2.remaining_exponent, min_exp, max_exp, two));
-  return step3.result;
+// Scales each op in `vals` in place by `2^exp` within clamped limits.
+// Decomposes the exponent into clamped integer steps and applies bitwise
+// power-of-two conversion to prevent intermediate overflow.
+absl::Status Scale3Steps(absl::Span<mlir::MlirOp> vals, mlir::MlirOp exp,
+                         const LdexpFloatFormat& fmt,
+                         const LdexpExponentKind exponent_kind) {
+  if (vals.empty()) {
+    return absl::OkStatus();
+  }
+  const mlir::Type float_elem_type =
+      GetTensorTypeOrDie(vals.front()).getElementType();
+  mlir::MlirOp casted_exp =
+      (GetTensorTypeOrDie(exp).getElementType() == float_elem_type)
+          ? exp
+          : stablehlo::ConvertElementType(exp, float_elem_type);
+
+  const double total_limit = 3.0 * static_cast<double>(fmt.max_step_exp);
+  mlir::MlirOp min_total = MakeConstantLike(casted_exp, -total_limit);
+  mlir::MlirOp max_total = MakeConstantLike(casted_exp, total_limit);
+  mlir::MlirOp clamped_hi = stablehlo::Min(casted_exp, max_total);
+  mlir::MlirOp clamped_total = stablehlo::Max(clamped_hi, min_total);
+
+  // Make NaN tracking optional so kIntegral skips Compare/Select, keeping the
+  // integer-exponent graph smaller.
+  std::optional<mlir::MlirOp> exp_is_nan;
+  mlir::MlirOp safe_exp = clamped_total;
+  if (exponent_kind == LdexpExponentKind::kFloatingPoint) {
+    exp_is_nan = stablehlo::Compare(casted_exp, casted_exp,
+                                    stablehlo::ComparisonDirection::NE);
+    mlir::MlirOp zero_exp = MakeConstantLike(casted_exp, 0.0);
+    // Replace NaNs with 0.0 so the clamped exponent can safely cast to I32.
+    safe_exp = stablehlo::Select(*exp_is_nan, zero_exp, clamped_total);
+  }
+
+  // Break `safe_exp` into integer (`int_exp_i32`) and fractional (`frac_exp`)
+  // parts when float (e.g., `100.5 -> 100 + 0.5`, `-1.5 -> -1 + (-0.5)`).
+  mlir::MlirOp int_exp_i32 =
+      stablehlo::ConvertElementType(safe_exp, mlir::ElementType::I32);
+  mlir::MlirOp rem_i32 = int_exp_i32;
+
+  mlir::MlirOp min_step_i32 = MakeConstantLike(rem_i32, -fmt.max_step_exp);
+  mlir::MlirOp max_step_i32 = MakeConstantLike(rem_i32, fmt.max_step_exp);
+  // Scale by `2^rem_i32` in 3 clamped steps of [-max_step_exp, max_step_exp]
+  // so each `2^k_i32` factor stays normal and products don't overflow.
+  for (int step = 0; step < 3; ++step) {
+    mlir::MlirOp clamped_step_hi = stablehlo::Min(rem_i32, max_step_i32);
+    mlir::MlirOp k_i32 = stablehlo::Max(clamped_step_hi, min_step_i32);
+    mlir::MlirOp int_factor =
+        BuildPow2IntFactorShlo(k_i32, float_elem_type, fmt);
+    for (mlir::MlirOp& val : vals) {
+      TT_ASSIGN_OR_RETURN(val, BuildMulShlo(val, int_factor));
+    }
+    if (step < 2) {
+      rem_i32 = stablehlo::Subtract(rem_i32, k_i32);
+    }
+  }
+
+  if (exponent_kind == LdexpExponentKind::kFloatingPoint) {
+    // Apply the fractional factor after the integer steps so subnormal inputs
+    // are lifted into normal range first (avoiding subnormal grid rounding).
+    mlir::MlirOp int_exp_f =
+        stablehlo::ConvertElementType(int_exp_i32, float_elem_type);
+    mlir::MlirOp frac_exp = stablehlo::Subtract(safe_exp, int_exp_f);
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType elem_type,
+                        ConvertTo<mlir::ElementType>(float_elem_type));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp frac_factor,
+                        BuildExp2Shlo(frac_exp, elem_type));
+    for (mlir::MlirOp& val : vals) {
+      TT_ASSIGN_OR_RETURN(val, BuildMulShlo(val, frac_factor));
+    }
+  }
+
+  if (exp_is_nan.has_value()) {
+    mlir::MlirOp nan_val = MakeConstantLike(
+        vals.front(), std::numeric_limits<double>::quiet_NaN());
+    for (mlir::MlirOp& val : vals) {
+      val = stablehlo::Select(*exp_is_nan, nan_val, val);
+    }
+  }
+  return absl::OkStatus();
 }
 
 // Implements ldexp for complex base and/or exponent inputs.
 absl::StatusOr<mlir::MlirOp> BuildLdexpComplexShlo(
     mlir::MlirOp self_op, mlir::MlirOp other_op,
     const mlir::RankedTensorType& self_type,
-    const mlir::RankedTensorType& other_type, bool self_is_complex,
-    bool other_is_complex) {
+    const mlir::RankedTensorType& other_type, const bool self_is_complex,
+    const bool other_is_complex, const LdexpExponentKind exponent_kind) {
   auto& builder = self_op.getBuilder();
   TT_ASSIGN_OR_RETURN((auto [self_bcst, other_bcst]),
                       ApplyBroadcastIfNeeded(self_op, other_op));
@@ -971,25 +1065,8 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpComplexShlo(
                              ? mlir::stablehlo::Imag(other_bcst)
                              : MakeConstantLike(other_bcst, 0.0, float_type);
 
-  // Determine the maximum safe exponent range depending on precision limits.
-  auto get_max_exp = [](mlir::Type type) -> absl::StatusOr<double> {
-    if (type.isF64()) {
-      return 1000.0;
-    }
-    if (type.isF32() || type.isBF16()) {
-      return 120.0;
-    }
-    if (type.isF16()) {
-      return 14.0;
-    }
-    return TT_ERROR(error::kInvalidArgument)
-           << "unsupported float type for complex ldexp: " << ToString(type);
-  };
-  TT_ASSIGN_OR_RETURN(const double max_exp, get_max_exp(float_type));
-
-  const auto min_exp_const = MakeScalarConstant(builder, -max_exp, float_type);
-  const auto max_exp_const = MakeScalarConstant(builder, max_exp, float_type);
-  const auto two = MakeScalarConstant(builder, 2.0, float_type);
+  TT_ASSIGN_OR_RETURN(const LdexpFloatFormat fmt,
+                      GetLdexpFloatFormat(float_type));
 
   // 1. Compute the complex rotation factor (rotation = cos(theta) +
   // i*sin(theta)) where theta = d * ln(2).
@@ -1007,41 +1084,23 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpComplexShlo(
   const auto real_rot = mlir::stablehlo::Real(base_rot);
   const auto imag_rot = mlir::stablehlo::Imag(base_rot);
 
-  // 4. Scale the components by 2^c using our Scale3Steps helper.
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp real_scaled,
-      Scale3Steps(real_rot, c, min_exp_const, max_exp_const, two));
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp imag_scaled,
-      Scale3Steps(imag_rot, c, min_exp_const, max_exp_const, two));
+  // 4. Scale both components together so 2^c factors are emitted once.
+  mlir::MlirOp scaled[2] = {real_rot, imag_rot};
+  TT_RETURN_IF_ERROR(
+      Scale3Steps(absl::MakeSpan(scaled), c, fmt, exponent_kind));
 
-  return mlir::MlirOp(mlir::stablehlo::Complex(real_scaled, imag_scaled));
+  return mlir::MlirOp(mlir::stablehlo::Complex(scaled[0], scaled[1]));
 }
 
 // Build StableHLO for the ldexp operator.
 // ldexp(x, exp) computes x * 2^exp.
-// Since TPU (StableHLO) does not have a native ldexp operation, we implement it
-// by computing x * 2^exp.
 // To avoid intermediate overflow/underflow when computing 2^exp for large
-// exponents, we use a 3-step Static Split Method. In each step, we scale by at
-// most the maximum safe exponent of the datatype (max_exp).
-//
-// Maximum safe exponents:
-// - Float64 (F64): max_exp = 1000.0 (Fits within double exponent range +/-
-// 1023)
-// - Float32 (F32), Bfloat16 (BF16): max_exp = 120.0 (Fits within exponent range
-// +/- 127)
-// - Float16 (F16): max_exp = 14.0 (Fits within exponent range +/- 15)
-//
-// By applying 3 successive steps of scaling, we cover maximum total exponents
-// of:
-// - F64: 3 * 1000 = 3000 (well beyond double limits)
-// - F32, BF16: 3 * 120 = 360 (well beyond float limits)
-// - F16: 3 * 14 = 42 (well beyond half limits)
-// This ensures that any exponent value within standard range can be scaled
-// without causing premature overflow/underflow in intermediate math.
-absl::StatusOr<mlir::MlirOp> BuildLdexpShlo(mlir::MlirOp self_op,
-                                            mlir::MlirOp other_op) {
+// exponents while keeping HLO small, we split scaling across 3 integer-exponent
+// IEEE-754 bitcast steps (covering +/-3000 for F64, +/-360 for F32/BF16, +/-42
+// for F16) plus a single Exp2 step when `exp` is floating-point.
+absl::StatusOr<mlir::MlirOp> BuildLdexpShlo(
+    mlir::MlirOp self_op, mlir::MlirOp other_op,
+    const LdexpExponentKind exponent_kind) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
   const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
   const bool self_is_complex = IsComplexType(self_type);
@@ -1049,33 +1108,42 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpShlo(mlir::MlirOp self_op,
 
   if (self_is_complex || other_is_complex) {
     return BuildLdexpComplexShlo(self_op, other_op, self_type, other_type,
-                                 self_is_complex, other_is_complex);
+                                 self_is_complex, other_is_complex,
+                                 exponent_kind);
   }
 
   // Real-only path:
-  auto element_type = self_type.getElementType();
-  auto& builder = self_op.getBuilder();
-
+  const mlir::Type element_type = self_type.getElementType();
   TT_ASSIGN_OR_RETURN((auto [self_bcst, other_bcst]),
                       ApplyBroadcastIfNeeded(self_op, other_op));
+  TT_ASSIGN_OR_RETURN(const LdexpFloatFormat fmt,
+                      GetLdexpFloatFormat(element_type));
 
-  double max_exp = 120.0;
-  if (element_type.isF64()) {
-    max_exp = 1000.0;
-  } else if (element_type.isF32() || element_type.isBF16()) {
-    max_exp = 120.0;
-  } else if (element_type.isF16()) {
-    max_exp = 14.0;
-  } else {
-    return TT_ERROR(error::kInvalidArgument)
-           << "unsupported element type for ldexp: " << ToString(element_type);
-  }
+  mlir::MlirOp val = self_bcst;
+  TT_RETURN_IF_ERROR(
+      Scale3Steps(absl::MakeSpan(&val, 1), other_bcst, fmt, exponent_kind));
+  return val;
+}
 
-  auto min_exp_const = MakeScalarConstant(builder, -max_exp, element_type);
-  auto max_exp_const = MakeScalarConstant(builder, max_exp, element_type);
-  auto two = MakeScalarConstant(builder, 2.0, element_type);
+[[nodiscard]] LdexpExponentKind GetLdexpExponentKind(const at::Tensor& other) {
+  return c10::isIntegralType(other.scalar_type(), /*includeBool=*/true)
+             ? LdexpExponentKind::kIntegral
+             : LdexpExponentKind::kFloatingPoint;
+}
 
-  return Scale3Steps(self_bcst, other_bcst, min_exp_const, max_exp_const, two);
+[[nodiscard]] MlirBinaryOpBuilder MakeLdexpShloBuilder(
+    const LdexpExponentKind exponent_kind) {
+  return [exponent_kind](mlir::MlirOp self_op, mlir::MlirOp other_op) {
+    return BuildLdexpShlo(self_op, other_op, exponent_kind);
+  };
+}
+
+// Record captured `exponent_kind` in the cache key (guards wrapped CPU scalars
+// materialized at the promoted float dtype by `MoveCpuScalarsToTpu`).
+absl::StatusOr<OpParamCacheKeys> MakeLdexpParamKeys(
+    const LdexpExponentKind exponent_kind) {
+  const bool exp_is_integral = exponent_kind == LdexpExponentKind::kIntegral;
+  return TT_MAKE_OP_PARAM_CACHE_KEYS(exp_is_integral);
 }
 
 }  // namespace
@@ -1534,11 +1602,14 @@ at::Tensor& AtenLdexpOut(const at::Tensor& self, const at::Tensor& other,
             : self.scalar_type();
     TT_ASSIGN_OR_THROW(const auto expected_element_type,
                        ConvertTo<mlir::ElementType>(expected_result_type));
-    TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, BuildLdexpShlo,
-                    {.force_float_inputs = true,
-                     .op_param_cache_keys = OpParamCacheKeys::Empty(),
-                     .result_dtype = expected_element_type}));
+    const LdexpExponentKind exponent_kind = GetLdexpExponentKind(other);
+    TT_ASSIGN_OR_THROW(OpParamCacheKeys param_keys,
+                       MakeLdexpParamKeys(exponent_kind));
+    TT_THROW_IF_ERROR(BinaryOpOut(self, other, out,
+                                  MakeLdexpShloBuilder(exponent_kind),
+                                  {.force_float_inputs = true,
+                                   .op_param_cache_keys = std::move(param_keys),
+                                   .result_dtype = expected_element_type}));
     return out;
   });
 }
@@ -1546,11 +1617,14 @@ at::Tensor& AtenLdexpOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor AtenLdexpTensor(const at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kLdexpTensor, _, (self, other), {
     TT_THROW_IF_ERROR(ValidateLdexpInputs(self, other));
+    const LdexpExponentKind exponent_kind = GetLdexpExponentKind(other);
+    TT_ASSIGN_OR_THROW(OpParamCacheKeys param_keys,
+                       MakeLdexpParamKeys(exponent_kind));
     TT_ASSIGN_OR_THROW(
         at::Tensor out,
-        BinaryOp(self, other, BuildLdexpShlo,
+        BinaryOp(self, other, MakeLdexpShloBuilder(exponent_kind),
                  {.force_float_inputs = true,
-                  .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+                  .op_param_cache_keys = std::move(param_keys)}));
     return out;
   });
 }
@@ -1565,11 +1639,14 @@ at::Tensor& AtenLdexp_(at::Tensor& self, const at::Tensor& other) {
             : self.scalar_type();
     TT_ASSIGN_OR_THROW(const auto expected_element_type,
                        ConvertTo<mlir::ElementType>(expected_result_type));
-    TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, self, BuildLdexpShlo,
-                    {.force_float_inputs = true,
-                     .op_param_cache_keys = OpParamCacheKeys::Empty(),
-                     .result_dtype = expected_element_type}));
+    const LdexpExponentKind exponent_kind = GetLdexpExponentKind(other);
+    TT_ASSIGN_OR_THROW(OpParamCacheKeys param_keys,
+                       MakeLdexpParamKeys(exponent_kind));
+    TT_THROW_IF_ERROR(BinaryOpOut(self, other, self,
+                                  MakeLdexpShloBuilder(exponent_kind),
+                                  {.force_float_inputs = true,
+                                   .op_param_cache_keys = std::move(param_keys),
+                                   .result_dtype = expected_element_type}));
     return self;
   });
 }

@@ -28,17 +28,27 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/core/dispatch/Dispatcher.h"
+#include "ATen/ops/empty.h"
+#include "ATen/ops/gru_native.h"
 #include "ATen/ops/zeros.h"
+#include "absl/base/no_destructor.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/GradMode.h"
-#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for at::IntArrayRef
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
+#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for operator==
+#include "c10/util/DimVector.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fake_tensor_utils.h"
+#include "csrc/common/op_name_stack.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -48,6 +58,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "csrc/ops/python_context.h"
 #include "csrc/ops/rng_utils.h"
 #include "csrc/ops/uniform/uniform.h"
 #include "mlir/IR/Builders.h"
@@ -61,6 +72,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"
+#include "torch/csrc/autograd/functions/utils.h"
 
 // =============================================================================
 // Fused StableHLO GRU (aten::gru.input) Kernel Implementation for Google TPU
@@ -164,27 +176,27 @@ constexpr int64_t kGruUnrollFactor = 8;
 // InvalidArgument status.
 absl::Status ValidateGruTensorShapes(const at::Tensor& hx,
                                      const int64_t num_layers,
-                                     const int64_t batch,
+                                     const c10::SymInt& batch,
                                      const bool bidirectional = false) {
   const int64_t num_directions = bidirectional ? 2 : 1;
   // Step 1: Verify rank is 3D [num_layers * num_directions, batch, hidden]
   TT_RET_CHECK(hx.dim() == 3, error::kInvalidArgument)
       << "expected the initial hidden state hx to be a 3D tensor "
          "[num_layers * num_directions, batch, hidden_size], got "
-      << hx.dim() << "D tensor of shape " << ToString(hx.sizes());
+      << hx.dim() << "D tensor of shape " << ToString(hx.sym_sizes());
   // Step 2: Verify layer/direction dimension matches num_layers *
   // num_directions
-  TT_RET_CHECK(hx.size(0) == num_layers * num_directions,
+  TT_RET_CHECK(hx.sym_size(0) == num_layers * num_directions,
                error::kInvalidArgument)
       << "expected the size of the initial hidden state hx at dimension 0 to "
          "be "
       << num_layers * num_directions
-      << " (num_layers * number of directions), got " << hx.size(0);
+      << " (num_layers * number of directions), got " << hx.sym_size(0);
   // Step 3: Verify batch size matches the input batch dimension
-  TT_RET_CHECK(hx.size(1) == batch, error::kInvalidArgument)
+  TT_RET_CHECK(hx.sym_size(1) == batch, error::kInvalidArgument)
       << "expected the size of the initial hidden state hx at dimension 1 to "
          "be "
-      << batch << " (batch size), got " << hx.size(1);
+      << batch << " (batch size), got " << hx.sym_size(1);
   return absl::OkStatus();
 }
 
@@ -219,7 +231,8 @@ absl::Status ValidateGruTensorShapes(const at::Tensor& hx,
 // mismatched shape.
 absl::Status ValidateGruWeights(const at::TensorList params,
                                 const bool has_biases, const int64_t num_layers,
-                                const int64_t input_size, const int64_t hidden,
+                                const c10::SymInt& input_size,
+                                const c10::SymInt& hidden,
                                 const bool bidirectional = false) {
   const int64_t num_directions = bidirectional ? 2 : 1;
   const size_t params_per_direction = has_biases ? 4 : 2;
@@ -234,44 +247,44 @@ absl::Status ValidateGruWeights(const at::TensorList params,
   // Validate matrix and bias dimensions layer-by-layer and
   // direction-by-direction
   for (int64_t l = 0; l < num_layers; ++l) {
-    const int64_t in_dim = (l == 0) ? input_size : hidden * num_directions;
+    const c10::SymInt in_dim = (l == 0) ? input_size : hidden * num_directions;
     for (int64_t d_dir = 0; d_dir < num_directions; ++d_dir) {
       const size_t p_offset =
           (l * num_directions + d_dir) * params_per_direction;
       const std::string_view dir_str = (d_dir == 0) ? "forward" : "reverse";
 
       // w_ih shape check: [3 * hidden, in_dim]
-      TT_RET_CHECK(
-          params[p_offset].sizes() == at::IntArrayRef({3 * hidden, in_dim}),
-          error::kInvalidArgument)
+      TT_RET_CHECK(params[p_offset].sym_sizes() ==
+                       c10::SymIntArrayRef({3 * hidden, in_dim}),
+                   error::kInvalidArgument)
           << "expected the input-hidden weight tensor of layer " << l << " ("
           << dir_str << " direction) to have shape [" << 3 * hidden << ", "
-          << in_dim << "], got " << ToString(params[p_offset].sizes());
+          << in_dim << "], got " << ToString(params[p_offset].sym_sizes());
 
       // w_hh shape check: [3 * hidden, hidden]
-      TT_RET_CHECK(
-          params[p_offset + 1].sizes() == at::IntArrayRef({3 * hidden, hidden}),
-          error::kInvalidArgument)
+      TT_RET_CHECK(params[p_offset + 1].sym_sizes() ==
+                       c10::SymIntArrayRef({3 * hidden, hidden}),
+                   error::kInvalidArgument)
           << "expected the hidden-hidden weight tensor of layer " << l << " ("
           << dir_str << " direction) to have shape [" << 3 * hidden << ", "
-          << hidden << "], got " << ToString(params[p_offset + 1].sizes());
+          << hidden << "], got " << ToString(params[p_offset + 1].sym_sizes());
 
       if (has_biases) {
         // b_ih shape check: [3 * hidden]
-        TT_RET_CHECK(
-            params[p_offset + 2].sizes() == at::IntArrayRef({3 * hidden}),
-            error::kInvalidArgument)
+        TT_RET_CHECK(params[p_offset + 2].sym_sizes() ==
+                         c10::SymIntArrayRef({3 * hidden}),
+                     error::kInvalidArgument)
             << "expected the input-hidden bias tensor of layer " << l << " ("
             << dir_str << " direction) to have shape [" << 3 * hidden
-            << "], got " << ToString(params[p_offset + 2].sizes());
+            << "], got " << ToString(params[p_offset + 2].sym_sizes());
 
         // b_hh shape check: [3 * hidden]
-        TT_RET_CHECK(
-            params[p_offset + 3].sizes() == at::IntArrayRef({3 * hidden}),
-            error::kInvalidArgument)
+        TT_RET_CHECK(params[p_offset + 3].sym_sizes() ==
+                         c10::SymIntArrayRef({3 * hidden}),
+                     error::kInvalidArgument)
             << "expected the hidden-hidden bias tensor of layer " << l << " ("
             << dir_str << " direction) to have shape [" << 3 * hidden
-            << "], got " << ToString(params[p_offset + 3].sizes());
+            << "], got " << ToString(params[p_offset + 3].sym_sizes());
       }
     }
   }
@@ -313,9 +326,14 @@ absl::Status ValidateGruInputs(const at::Tensor& input, const at::Tensor& hx,
   TT_RET_CHECK(input.dim() == 3, error::kInvalidArgument)
       << "expected input to be a 3D tensor, got " << input.dim() << "D";
 
-  const int64_t batch = batch_first ? input.size(0) : input.size(1);
-  const int64_t seq_len = batch_first ? input.size(1) : input.size(0);
-  const int64_t input_size = input.size(2);
+  // The fused lowering has no bounded-dimension support, so this specializes
+  // the sequence length, batch and hidden sizes. Only the input size stays
+  // symbolic.
+  const int64_t batch = (batch_first ? input.sym_size(0) : input.sym_size(1))
+                            .guard_int(__FILE__, __LINE__);
+  const int64_t seq_len = (batch_first ? input.sym_size(1) : input.sym_size(0))
+                              .guard_int(__FILE__, __LINE__);
+  const c10::SymInt input_size = input.sym_size(2);
 
   // Validate positive dimensions
   TT_RET_CHECK(seq_len > 0, error::kInvalidArgument)
@@ -333,7 +351,7 @@ absl::Status ValidateGruInputs(const at::Tensor& input, const at::Tensor& hx,
   // Validate initial hidden state tensor shapes
   TT_RETURN_IF_ERROR(
       ValidateGruTensorShapes(hx, num_layers, batch, bidirectional));
-  const int64_t hidden = hx.size(2);
+  const int64_t hidden = hx.sym_size(2).guard_int(__FILE__, __LINE__);
   // Validate weight and bias parameter tensor shapes
   TT_RETURN_IF_ERROR(ValidateGruWeights(params, has_biases, num_layers,
                                         input_size, hidden, bidirectional));
@@ -2830,7 +2848,6 @@ struct GruBidirLayerBackwardOutputs {
 // - `hidden`: Hidden dimension H.
 // - `in_dim`: Feature dimension of layer_in.
 // - `batch_first`: Memory layout indicator.
-// - `to_out`: Dtype conversion lambda.
 // - `zero_const`: Zero scalar constant for summation reductions.
 // - `sum_reduce_builder`: Region builder lambda for reduction operations.
 // - `precision`: Hardware precision level.
@@ -2838,13 +2855,13 @@ struct GruBidirLayerBackwardOutputs {
 // Returns:
 // - `GruLayerBackwardOutputs` struct containing grad_x, grad_h0, grad_w_ih,
 // grad_w_hh, and optional bias grads.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 GruLayerBackwardOutputs ComputeLayerBackwardStatic(
     mlir::MlirBuilder& builder, mlir::MlirOp grad_y, mlir::MlirOp grad_hy,
     mlir::MlirOp layer_in, mlir::MlirOp h_init, mlir::MlirOp y_out,
     mlir::MlirOp act_4h_seq, mlir::MlirOp w_ih, mlir::MlirOp w_hh,
     bool has_biases, int64_t seq_len, int64_t batch, int64_t hidden,
-    int64_t in_dim, bool batch_first, ToOutFn to_out, mlir::MlirOp zero_const,
+    int64_t in_dim, bool batch_first, mlir::MlirOp zero_const,
     ReduceBuilderFn sum_reduce_builder, mlir::stablehlo::Precision precision) {
   mlir::MLIRContext& ctx = builder.getContext();
   const auto hh_bwd_dot_dims = MakeDotDims(&ctx, {1}, {0});
@@ -2900,7 +2917,7 @@ GruLayerBackwardOutputs ComputeLayerBackwardStatic(
   const int64_t concat_dim = batch_first ? 1 : 0;
   mlir::MlirOp grad_x = ConcatDim(builder, grad_x_steps, concat_dim);
   mlir::MlirOp grad_h0 =
-      mlir::stablehlo::Reshape(to_out(delta_h_next), {1, batch, hidden});
+      mlir::stablehlo::Reshape(delta_h_next, {1, batch, hidden});
 
   // Parameter gradients: full sequence dot products
   mlir::MlirOp delta_pre_ig_seq =
@@ -2940,14 +2957,13 @@ GruLayerBackwardOutputs ComputeLayerBackwardStatic(
   std::optional<mlir::MlirOp> grad_b_ih = std::nullopt;
   std::optional<mlir::MlirOp> grad_b_hh = std::nullopt;
   if (has_biases) {
-    grad_b_ih = to_out(mlir::stablehlo::Reduce(
-        builder, delta_pre_ig_2d, zero_const, sum_reduce_builder, {0})[0]);
-    grad_b_hh = to_out(mlir::stablehlo::Reduce(
-        builder, delta_pre_hg_2d, zero_const, sum_reduce_builder, {0})[0]);
+    grad_b_ih = mlir::stablehlo::Reduce(builder, delta_pre_ig_2d, zero_const,
+                                        sum_reduce_builder, {0})[0];
+    grad_b_hh = mlir::stablehlo::Reduce(builder, delta_pre_hg_2d, zero_const,
+                                        sum_reduce_builder, {0})[0];
   }
 
-  return {grad_x,    grad_h0,  to_out(grad_w_ih), to_out(grad_w_hh),
-          grad_b_ih, grad_b_hh};
+  return {grad_x, grad_h0, grad_w_ih, grad_w_hh, grad_b_ih, grad_b_hh};
 }
 
 // Container holding initialized backward carry state and remainder gradients
@@ -3285,7 +3301,6 @@ inline GruBackwardChunkStepsResult ComputeGruBackwardChunkSteps(
 // - `hidden`: Hidden dimension H.
 // - `in_dim`: Input feature dimension.
 // - `batch_first`: Memory layout indicator.
-// - `to_out`: Type-conversion lambda to output dtype.
 // - `zero_const`: Zero scalar for reductions.
 // - `sum_reduce_builder`: Region builder lambda for reductions.
 // - `precision`: Hardware precision level.
@@ -3456,7 +3471,6 @@ void BuildLayerBackwardChunkedWhileBody(
 // - `hidden`: Hidden dimension H.
 // - `in_dim`: Input feature dimension.
 // - `batch_first`: Memory layout indicator.
-// - `to_out`: Type-conversion lambda to output dtype.
 // - `zero_const`: Zero scalar for reductions.
 // - `sum_reduce_builder`: Region builder lambda for reductions.
 // - `precision`: Hardware precision level.
@@ -3464,14 +3478,14 @@ void BuildLayerBackwardChunkedWhileBody(
 // Returns:
 // - `GruLayerBackwardOutputs` struct containing complete layer backward
 // gradients.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 GruLayerBackwardOutputs ComputeLayerBackwardChunked(
     mlir::MlirBuilder& builder, mlir::MlirOp grad_y, mlir::MlirOp grad_hy,
     mlir::MlirOp layer_in, mlir::MlirOp h_init, mlir::MlirOp y_out,
     mlir::MlirOp act_4h_seq, mlir::MlirOp w_ih, mlir::MlirOp w_hh,
     const bool has_biases, const int64_t seq_len, const int64_t batch,
     const int64_t hidden, const int64_t in_dim, const bool batch_first,
-    ToOutFn to_out, mlir::MlirOp zero_const, ReduceBuilderFn sum_reduce_builder,
+    mlir::MlirOp zero_const, ReduceBuilderFn sum_reduce_builder,
     const mlir::stablehlo::Precision precision) {
   const int64_t num_chunks = seq_len / kGruUnrollFactor;
   const int64_t chunked_steps = num_chunks * kGruUnrollFactor;
@@ -3596,21 +3610,17 @@ GruLayerBackwardOutputs ComputeLayerBackwardChunked(
   }
 
   mlir::MlirOp grad_h0_layer =
-      mlir::stablehlo::Reshape(to_out(final_delta_h_next), {1, batch, hidden});
+      mlir::stablehlo::Reshape(final_delta_h_next, {1, batch, hidden});
 
   std::optional<mlir::MlirOp> grad_b_ih;
   std::optional<mlir::MlirOp> grad_b_hh;
   if (has_biases) {
-    grad_b_ih = to_out(mlir::MlirOp(builder, while_op.getResult(5)));
-    grad_b_hh = to_out(mlir::MlirOp(builder, while_op.getResult(6)));
+    grad_b_ih = mlir::MlirOp(builder, while_op.getResult(5));
+    grad_b_hh = mlir::MlirOp(builder, while_op.getResult(6));
   }
 
-  return {grad_x_layer,
-          grad_h0_layer,
-          to_out(final_grad_w_ih),
-          to_out(final_grad_w_hh),
-          grad_b_ih,
-          grad_b_hh};
+  return {grad_x_layer,    grad_h0_layer, final_grad_w_ih,
+          final_grad_w_hh, grad_b_ih,     grad_b_hh};
 }
 
 // Dispatcher for unidirectional GRU layer backward evaluation.
@@ -3637,7 +3647,6 @@ GruLayerBackwardOutputs ComputeLayerBackwardChunked(
 // - `hidden`: Hidden dimension.
 // - `in_dim`: Input feature dimension.
 // - `batch_first`: Memory layout indicator.
-// - `to_out`: Dtype conversion lambda.
 // - `zero_const`: Zero constant for reductions.
 // - `sum_reduce_builder`: Region builder for reductions.
 // - `precision`: Hardware precision level.
@@ -3645,25 +3654,25 @@ GruLayerBackwardOutputs ComputeLayerBackwardChunked(
 // Returns:
 // - `GruLayerBackwardOutputs` struct with all computed gradients for this
 // layer.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 GruLayerBackwardOutputs ComputeLayerBackward(
     mlir::MlirBuilder& builder, mlir::MlirOp grad_y, mlir::MlirOp grad_hy,
     mlir::MlirOp layer_in, mlir::MlirOp h_init, mlir::MlirOp y_out,
     mlir::MlirOp act_4h_seq, mlir::MlirOp w_ih, mlir::MlirOp w_hh,
     const bool has_biases, const int64_t seq_len, const int64_t batch,
     const int64_t hidden, const int64_t in_dim, const bool batch_first,
-    ToOutFn to_out, mlir::MlirOp zero_const, ReduceBuilderFn sum_reduce_builder,
+    mlir::MlirOp zero_const, ReduceBuilderFn sum_reduce_builder,
     const mlir::stablehlo::Precision precision) {
   if (seq_len < kGruUnrollFactor) {
     return ComputeLayerBackwardStatic(
         builder, grad_y, grad_hy, layer_in, h_init, y_out, act_4h_seq, w_ih,
-        w_hh, has_biases, seq_len, batch, hidden, in_dim, batch_first, to_out,
+        w_hh, has_biases, seq_len, batch, hidden, in_dim, batch_first,
         zero_const, sum_reduce_builder, precision);
   }
   return ComputeLayerBackwardChunked(
       builder, grad_y, grad_hy, layer_in, h_init, y_out, act_4h_seq, w_ih, w_hh,
-      has_biases, seq_len, batch, hidden, in_dim, batch_first, to_out,
-      zero_const, sum_reduce_builder, precision);
+      has_biases, seq_len, batch, hidden, in_dim, batch_first, zero_const,
+      sum_reduce_builder, precision);
 }
 
 // =============================================================================
@@ -3703,7 +3712,6 @@ GruLayerBackwardOutputs ComputeLayerBackward(
 //   has_biases: Whether layer includes additive bias parameters.
 //   seq_len, batch, hidden, in_dim: Layer dimensions.
 //   batch_first: Whether batch is dimension 0.
-//   to_out: Functor converting accumulator tensors to output datatype.
 //   zero_const: Scalar zero constant for bias reduction.
 //   sum_reduce_builder: Reduction region builder for StableHLO ReduceOp.
 //   precision: Precision configuration for matrix multiplication operations.
@@ -3712,7 +3720,7 @@ GruLayerBackwardOutputs ComputeLayerBackward(
 //   GruBidirLayerBackwardOutputs containing input gradients (grad_x), initial
 //   hidden state gradients (grad_h0), and parameter gradients for both
 //   directions.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
     mlir::MlirBuilder& builder, mlir::MlirOp grad_y, mlir::MlirOp grad_hy,
     mlir::MlirOp layer_in, mlir::MlirOp h_init_fwd, mlir::MlirOp h_init_rev,
@@ -3720,7 +3728,7 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
     mlir::MlirOp act_rev_seq, mlir::MlirOp w_ih_fwd, mlir::MlirOp w_hh_fwd,
     mlir::MlirOp w_ih_rev, mlir::MlirOp w_hh_rev, bool has_biases,
     int64_t seq_len, int64_t batch, int64_t hidden, int64_t in_dim,
-    bool batch_first, ToOutFn to_out, mlir::MlirOp zero_const,
+    bool batch_first, mlir::MlirOp zero_const,
     ReduceBuilderFn sum_reduce_builder, mlir::stablehlo::Precision precision) {
   mlir::MLIRContext& ctx = builder.getContext();
   // Contracting dimensions: [B, 3*H] x [3*H, H] -> [B, H]
@@ -3838,9 +3846,9 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
 
   // Combine initial hidden state gradients [2, B, H].
   mlir::MlirOp grad_h0_fwd_3d =
-      mlir::stablehlo::Reshape(to_out(delta_h_next_fwd), {1, batch, hidden});
+      mlir::stablehlo::Reshape(delta_h_next_fwd, {1, batch, hidden});
   mlir::MlirOp grad_h0_rev_3d =
-      mlir::stablehlo::Reshape(to_out(delta_h_next_rev), {1, batch, hidden});
+      mlir::stablehlo::Reshape(delta_h_next_rev, {1, batch, hidden});
   mlir::MlirOp grad_h0 = mlir::stablehlo::Concatenate(
       builder, {grad_h0_fwd_3d, grad_h0_rev_3d}, /*dim=*/0);
 
@@ -3904,26 +3912,19 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardStatic(
   std::optional<mlir::MlirOp> grad_b_ih_rev = std::nullopt;
   std::optional<mlir::MlirOp> grad_b_hh_rev = std::nullopt;
   if (has_biases) {
-    grad_b_ih_fwd = to_out(mlir::stablehlo::Reduce(
-        builder, delta_pre_ig_fwd_2d, zero_const, sum_reduce_builder, {0})[0]);
-    grad_b_hh_fwd = to_out(mlir::stablehlo::Reduce(
-        builder, delta_pre_hg_fwd_2d, zero_const, sum_reduce_builder, {0})[0]);
-    grad_b_ih_rev = to_out(mlir::stablehlo::Reduce(
-        builder, delta_pre_ig_rev_2d, zero_const, sum_reduce_builder, {0})[0]);
-    grad_b_hh_rev = to_out(mlir::stablehlo::Reduce(
-        builder, delta_pre_hg_rev_2d, zero_const, sum_reduce_builder, {0})[0]);
+    grad_b_ih_fwd = mlir::stablehlo::Reduce(
+        builder, delta_pre_ig_fwd_2d, zero_const, sum_reduce_builder, {0})[0];
+    grad_b_hh_fwd = mlir::stablehlo::Reduce(
+        builder, delta_pre_hg_fwd_2d, zero_const, sum_reduce_builder, {0})[0];
+    grad_b_ih_rev = mlir::stablehlo::Reduce(
+        builder, delta_pre_ig_rev_2d, zero_const, sum_reduce_builder, {0})[0];
+    grad_b_hh_rev = mlir::stablehlo::Reduce(
+        builder, delta_pre_hg_rev_2d, zero_const, sum_reduce_builder, {0})[0];
   }
 
-  return {grad_x,
-          grad_h0,
-          to_out(grad_w_ih_fwd),
-          to_out(grad_w_hh_fwd),
-          grad_b_ih_fwd,
-          grad_b_hh_fwd,
-          to_out(grad_w_ih_rev),
-          to_out(grad_w_hh_rev),
-          grad_b_ih_rev,
-          grad_b_hh_rev};
+  return {grad_x,        grad_h0,       grad_w_ih_fwd, grad_w_hh_fwd,
+          grad_b_ih_fwd, grad_b_hh_fwd, grad_w_ih_rev, grad_w_hh_rev,
+          grad_b_ih_rev, grad_b_hh_rev};
 }
 
 // Result of evaluating tail remainder steps for bidirectional GRU backward
@@ -4359,7 +4360,6 @@ inline GruBidirBackwardChunkStepsResult ComputeBidirBackwardChunkSteps(
 //   has_biases: Whether biases are present.
 //   seq_len, batch, hidden, in_dim: Layer dimensions.
 //   batch_first: Whether batch is dimension 0.
-//   to_out: Functor converting tensors to output datatype.
 //   zero_const: Constant scalar zero for bias reduction.
 //   sum_reduce_builder: Reduction region builder.
 //   precision: StableHLO dot precision mode.
@@ -4604,14 +4604,13 @@ void BuildBidirLayerBackwardChunkedWhileBody(
 //   has_biases: Whether biases are present.
 //   seq_len, batch, hidden, in_dim: Layer dimensions.
 //   batch_first: Whether batch is dimension 0.
-//   to_out: Functor converting tensors to output datatype.
 //   zero_const: Constant scalar zero for bias reduction.
 //   sum_reduce_builder: Reduction region builder.
 //   precision: StableHLO dot precision mode.
 //
 // Returns:
 //   GruBidirLayerBackwardOutputs containing all input and parameter gradients.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
     mlir::MlirBuilder& builder, mlir::MlirOp grad_y, mlir::MlirOp grad_hy,
     mlir::MlirOp layer_in, mlir::MlirOp h_init_fwd, mlir::MlirOp h_init_rev,
@@ -4619,8 +4618,8 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
     mlir::MlirOp act_rev_seq, mlir::MlirOp w_ih_fwd, mlir::MlirOp w_hh_fwd,
     mlir::MlirOp w_ih_rev, mlir::MlirOp w_hh_rev, const bool has_biases,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t in_dim, const bool batch_first, ToOutFn to_out,
-    mlir::MlirOp zero_const, ReduceBuilderFn sum_reduce_builder,
+    const int64_t in_dim, const bool batch_first, mlir::MlirOp zero_const,
+    ReduceBuilderFn sum_reduce_builder,
     const mlir::stablehlo::Precision precision) {
   const int64_t num_chunks = seq_len / kGruUnrollFactor;
   const int64_t chunked_steps = num_chunks * kGruUnrollFactor;
@@ -4831,9 +4830,9 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
       mlir::stablehlo::Add(grad_x_fwd_full, grad_x_rev_full);
 
   mlir::MlirOp final_delta_h_fwd_3d =
-      mlir::stablehlo::Reshape(to_out(final_delta_h_fwd), {1, batch, hidden});
+      mlir::stablehlo::Reshape(final_delta_h_fwd, {1, batch, hidden});
   mlir::MlirOp final_delta_h_rev_3d =
-      mlir::stablehlo::Reshape(to_out(final_delta_h_rev), {1, batch, hidden});
+      mlir::stablehlo::Reshape(final_delta_h_rev, {1, batch, hidden});
   mlir::MlirOp grad_h0_layer = mlir::stablehlo::Concatenate(
       builder, {final_delta_h_fwd_3d, final_delta_h_rev_3d}, /*dim=*/0);
 
@@ -4842,21 +4841,15 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
   std::optional<mlir::MlirOp> grad_b_ih_rev;
   std::optional<mlir::MlirOp> grad_b_hh_rev;
   if (has_biases) {
-    grad_b_ih_fwd = to_out(mlir::MlirOp(builder, while_op.getResult(9)));
-    grad_b_hh_fwd = to_out(mlir::MlirOp(builder, while_op.getResult(10)));
-    grad_b_ih_rev = to_out(mlir::MlirOp(builder, while_op.getResult(11)));
-    grad_b_hh_rev = to_out(mlir::MlirOp(builder, while_op.getResult(12)));
+    grad_b_ih_fwd = mlir::MlirOp(builder, while_op.getResult(9));
+    grad_b_hh_fwd = mlir::MlirOp(builder, while_op.getResult(10));
+    grad_b_ih_rev = mlir::MlirOp(builder, while_op.getResult(11));
+    grad_b_hh_rev = mlir::MlirOp(builder, while_op.getResult(12));
   }
 
-  return {grad_x_layer,
-          grad_h0_layer,
-          to_out(final_grad_w_ih_fwd),
-          to_out(final_grad_w_hh_fwd),
-          grad_b_ih_fwd,
-          grad_b_hh_fwd,
-          to_out(final_grad_w_ih_rev),
-          to_out(final_grad_w_hh_rev),
-          grad_b_ih_rev,
+  return {grad_x_layer,        grad_h0_layer,       final_grad_w_ih_fwd,
+          final_grad_w_hh_fwd, grad_b_ih_fwd,       grad_b_hh_fwd,
+          final_grad_w_ih_rev, final_grad_w_hh_rev, grad_b_ih_rev,
           grad_b_hh_rev};
 }
 
@@ -4876,14 +4869,13 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackwardChunked(
 //   has_biases: Whether bias parameters are enabled.
 //   seq_len, batch, hidden, in_dim: Layer dimensions.
 //   batch_first: Layout configuration.
-//   to_out: Datatype conversion functor.
 //   zero_const: Scalar zero constant for bias reduction.
 //   sum_reduce_builder: Reduction region builder.
 //   precision: StableHLO dot precision mode.
 //
 // Returns:
 //   GruBidirLayerBackwardOutputs containing all computed gradients.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 GruBidirLayerBackwardOutputs ComputeBidirLayerBackward(
     mlir::MlirBuilder& builder, mlir::MlirOp grad_y, mlir::MlirOp grad_hy,
     mlir::MlirOp layer_in, mlir::MlirOp h_init_fwd, mlir::MlirOp h_init_rev,
@@ -4891,19 +4883,19 @@ GruBidirLayerBackwardOutputs ComputeBidirLayerBackward(
     mlir::MlirOp act_rev_seq, mlir::MlirOp w_ih_fwd, mlir::MlirOp w_hh_fwd,
     mlir::MlirOp w_ih_rev, mlir::MlirOp w_hh_rev, bool has_biases,
     int64_t seq_len, int64_t batch, int64_t hidden, int64_t in_dim,
-    bool batch_first, ToOutFn to_out, mlir::MlirOp zero_const,
+    bool batch_first, mlir::MlirOp zero_const,
     ReduceBuilderFn sum_reduce_builder, mlir::stablehlo::Precision precision) {
   if (seq_len < kGruUnrollFactor) {
     return ComputeBidirLayerBackwardStatic(
         builder, grad_y, grad_hy, layer_in, h_init_fwd, h_init_rev, y_out_fwd,
         y_out_rev, act_fwd_seq, act_rev_seq, w_ih_fwd, w_hh_fwd, w_ih_rev,
         w_hh_rev, has_biases, seq_len, batch, hidden, in_dim, batch_first,
-        to_out, zero_const, sum_reduce_builder, precision);
+        zero_const, sum_reduce_builder, precision);
   }
   return ComputeBidirLayerBackwardChunked(
       builder, grad_y, grad_hy, layer_in, h_init_fwd, h_init_rev, y_out_fwd,
       y_out_rev, act_fwd_seq, act_rev_seq, w_ih_fwd, w_hh_fwd, w_ih_rev,
-      w_hh_rev, has_biases, seq_len, batch, hidden, in_dim, batch_first, to_out,
+      w_hh_rev, has_biases, seq_len, batch, hidden, in_dim, batch_first,
       zero_const, sum_reduce_builder, precision);
 }
 
@@ -5476,12 +5468,10 @@ void BuildWavefrontBackwardWhileBody(
 }
 
 // Finalizes output gradients for pipelined wavefront backward pass.
-template <typename ToOutFn>
 GruMultiLayerBackwardOutputs FinalizeWavefrontBackwardOutputs(
     mlir::MlirBuilder& builder, mlir::stablehlo::WhileOp while_op,
     const std::optional<mlir::MlirOp>& rem_grad_x_0, int64_t num_layers,
-    int64_t batch, int64_t hidden, bool has_biases, int64_t concat_dim,
-    ToOutFn to_out) {
+    int64_t batch, int64_t hidden, bool has_biases, int64_t concat_dim) {
   int res_idx = 1;
   std::vector<mlir::MlirOp> final_delta_h(num_layers);
   for (int64_t l = 0; l < num_layers; ++l) {
@@ -5503,12 +5493,10 @@ GruMultiLayerBackwardOutputs FinalizeWavefrontBackwardOutputs(
       has_biases ? num_layers : 0);
   if (has_biases) {
     for (int64_t l = 0; l < num_layers; ++l) {
-      final_grad_b_ih[l] =
-          to_out(mlir::MlirOp(builder, while_op.getResult(res_idx++)));
+      final_grad_b_ih[l] = mlir::MlirOp(builder, while_op.getResult(res_idx++));
     }
     for (int64_t l = 0; l < num_layers; ++l) {
-      final_grad_b_hh[l] =
-          to_out(mlir::MlirOp(builder, while_op.getResult(res_idx++)));
+      final_grad_b_hh[l] = mlir::MlirOp(builder, while_op.getResult(res_idx++));
     }
   }
 
@@ -5526,7 +5514,7 @@ GruMultiLayerBackwardOutputs FinalizeWavefrontBackwardOutputs(
   all_h0_3d.reserve(num_layers);
   for (int64_t l = 0; l < num_layers; ++l) {
     all_h0_3d.push_back(
-        mlir::stablehlo::Reshape(to_out(final_delta_h[l]), {1, batch, hidden}));
+        mlir::stablehlo::Reshape(final_delta_h[l], {1, batch, hidden}));
   }
   mlir::MlirOp final_grad_h0 = ConcatDim(builder, all_h0_3d, /*dim=*/0);
 
@@ -5536,8 +5524,8 @@ GruMultiLayerBackwardOutputs FinalizeWavefrontBackwardOutputs(
   std::vector<mlir::MlirOp> all_grad_params;
   all_grad_params.reserve(num_layers * params_per_layer);
   for (int64_t l = 0; l < num_layers; ++l) {
-    all_grad_params.push_back(to_out(final_grad_w_ih[l]));
-    all_grad_params.push_back(to_out(final_grad_w_hh[l]));
+    all_grad_params.push_back(final_grad_w_ih[l]);
+    all_grad_params.push_back(final_grad_w_hh[l]);
     if (has_biases) {
       all_grad_params.push_back(*final_grad_b_ih[l]);
       all_grad_params.push_back(*final_grad_b_hh[l]);
@@ -5548,7 +5536,7 @@ GruMultiLayerBackwardOutputs FinalizeWavefrontBackwardOutputs(
 }
 
 // Builds pipelined wavefront backward pass for multi-layer unidirectional GRU.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 GruMultiLayerBackwardOutputs BuildGruPipelinedWavefrontBackward(
     mlir::MlirBuilder& builder, absl::Span<const mlir::MlirOp> layer_inputs,
     absl::Span<const mlir::MlirOp> layer_outputs,
@@ -5562,10 +5550,9 @@ GruMultiLayerBackwardOutputs BuildGruPipelinedWavefrontBackward(
     const mlir::stablehlo::DotDimensionNumbersAttr x_bwd_dot_dims,
     const mlir::stablehlo::DotDimensionNumbersAttr w_dot_dims,
     const int64_t seq_len, const int64_t batch, const int64_t hidden,
-    const int64_t input_size, const int64_t num_layers, ToOutFn to_out,
-    const bool has_dropout, const double dropout,
-    absl::Span<const mlir::MlirOp> dropout_masks, const bool batch_first,
-    const mlir::stablehlo::Precision precision) {
+    const int64_t input_size, const int64_t num_layers, const bool has_dropout,
+    const double dropout, absl::Span<const mlir::MlirOp> dropout_masks,
+    const bool batch_first, const mlir::stablehlo::Precision precision) {
   const int64_t num_chunks = seq_len / kGruUnrollFactor;
   const int64_t chunked_steps = num_chunks * kGruUnrollFactor;
   const int64_t rem_steps = seq_len % kGruUnrollFactor;
@@ -5676,7 +5663,7 @@ GruMultiLayerBackwardOutputs BuildGruPipelinedWavefrontBackward(
 
   return FinalizeWavefrontBackwardOutputs(builder, while_op, rem.rem_grad_x_0,
                                           num_layers, batch, hidden, has_biases,
-                                          concat_dim, to_out);
+                                          concat_dim);
 }
 
 // Builds the complete StableHLO computational graph for multi-layer GRU forward
@@ -6364,8 +6351,8 @@ mlir::SmallVector<mlir::MlirOp> DispatchGruWavefrontBackwardPath(
           fwd_data.fwd_cached_acts, h_inits, incoming_grad_y, grad_hy_list,
           w_ih_list, w_hh_list, has_biases, zero_const, sum_reduce_builder,
           hh_bwd_dot_dims, x_bwd_dot_dims, w_dot_dims, seq_len, batch, hidden,
-          input_size, num_layers, to_out, has_dropout, dropout,
-          fwd_data.dropout_masks, batch_first, current_precision);
+          input_size, num_layers, has_dropout, dropout, fwd_data.dropout_masks,
+          batch_first, current_precision);
 
   mlir::SmallVector<mlir::MlirOp> outputs;
   outputs.reserve(2 + wavefront_bwd.all_grad_params.size());
@@ -6379,7 +6366,7 @@ mlir::SmallVector<mlir::MlirOp> DispatchGruWavefrontBackwardPath(
 
 // Evaluates backward pass for a single layer in the reverse topological
 // cascade.
-template <typename ToOutFn, typename ReduceBuilderFn>
+template <typename ReduceBuilderFn>
 void ComputeLayerByLayerBackwardStep(
     mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp> builder_inputs,
     int64_t l, int64_t num_layers, int64_t num_directions, int64_t batch,
@@ -6389,7 +6376,7 @@ void ComputeLayerByLayerBackwardStep(
     mlir::MlirOp incoming_grad_hy, const GruReconstructedForwardData& fwd_data,
     mlir::MlirOp& curr_grad_y, std::vector<mlir::MlirOp>& all_grad_h0,
     std::vector<mlir::MlirOp>& all_grad_params, mlir::MlirOp zero_const,
-    ReduceBuilderFn sum_reduce_builder, ToOutFn to_out,
+    ReduceBuilderFn sum_reduce_builder,
     mlir::stablehlo::Precision current_precision) {
   const int64_t in_dim = (l == 0) ? input_size : num_directions * hidden;
   mlir::MlirOp layer_out_l = fwd_data.layer_outputs[l];
@@ -6405,7 +6392,7 @@ void ComputeLayerByLayerBackwardStep(
     GruLayerBackwardOutputs bwd = ComputeLayerBackward(
         builder, curr_grad_y, grad_hy_l, fwd_data.layer_inputs[l], h_init_l,
         layer_out_l, fwd_data.fwd_cached_acts[l], w_ih, w_hh, has_biases,
-        seq_len, batch, hidden, in_dim, batch_first, to_out, zero_const,
+        seq_len, batch, hidden, in_dim, batch_first, zero_const,
         sum_reduce_builder, current_precision);
 
     all_grad_h0[l] = bwd.grad_h0;
@@ -6459,7 +6446,7 @@ void ComputeLayerByLayerBackwardStep(
         h_init_fwd, h_init_rev, y_out_fwd, y_out_rev,
         fwd_data.fwd_cached_acts[2 * l], fwd_data.fwd_cached_acts[2 * l + 1],
         w_ih_fwd, w_hh_fwd, w_ih_rev, w_hh_rev, has_biases, seq_len, batch,
-        hidden, in_dim, batch_first, to_out, zero_const, sum_reduce_builder,
+        hidden, in_dim, batch_first, zero_const, sum_reduce_builder,
         current_precision);
 
     all_grad_h0[2 * l] = ExtractLayer2D(bwd.grad_h0, 0, batch, hidden);
@@ -6497,8 +6484,7 @@ inline mlir::SmallVector<mlir::MlirOp> FormatGruBackwardOutputs(
   std::vector<mlir::MlirOp> grad_h0_3d;
   grad_h0_3d.reserve(all_grad_h0.size());
   for (const auto& gh : all_grad_h0) {
-    grad_h0_3d.push_back(
-        mlir::stablehlo::Reshape(to_out(gh), {1, batch, hidden}));
+    grad_h0_3d.push_back(mlir::stablehlo::Reshape(gh, {1, batch, hidden}));
   }
   mlir::MlirOp final_grad_h0 = ConcatDim(builder, grad_h0_3d, /*dim=*/0);
 
@@ -6642,7 +6628,7 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildGruBackwardShloGraph(
         hidden, input_size, batch_first, bidirectional, has_biases,
         params_offset, params_per_layer, params_per_direction, hx_val,
         incoming_grad_hy, fwd_data, curr_grad_y, all_grad_h0, all_grad_params,
-        zero_const, sum_reduce_builder, to_out, current_precision);
+        zero_const, sum_reduce_builder, current_precision);
 
     if (has_dropout && l > 0) {
       curr_grad_y = ApplyDropoutBackward(
@@ -6736,11 +6722,15 @@ absl::StatusOr<std::vector<DeviceBufferRef>> GruInputBackwardImpl(
 
   out_dtypes.push_back(out_dtype);
   out_dims_spans.push_back(input.sizes());
-  out_dtypes.push_back(out_dtype);
+  TT_ASSIGN_OR_RETURN(const auto hx_dtype,
+                      ConvertTo<mlir::ElementType>(hx.scalar_type()));
+  out_dtypes.push_back(hx_dtype);
   out_dims_spans.push_back(hx.sizes());
 
   for (const at::Tensor& param : params) {
-    out_dtypes.push_back(out_dtype);
+    TT_ASSIGN_OR_RETURN(const auto param_dtype,
+                        ConvertTo<mlir::ElementType>(param.scalar_type()));
+    out_dtypes.push_back(param_dtype);
     out_dims_spans.push_back(param.sizes());
   }
 
@@ -6987,19 +6977,30 @@ torch::autograd::variable_list AtenGruInputAutograd::forward(
     const at::Tensor& hx, const at::TensorList params, const bool has_biases,
     const int64_t num_layers, const double dropout, const bool train,
     const bool bidirectional, const bool batch_first) {
-  auto [output, hy, cached_acts] =
-      AtenGruInputForwardCached(input, hx, params, has_biases, num_layers,
-                                dropout, train, bidirectional, batch_first);
+  static const absl::NoDestructor op(
+      at::Dispatcher::singleton()
+          .findSchemaOrThrow("tpu::_gru_input_forward_cached", "")
+          .typed<std::vector<at::Tensor>(const at::Tensor&, const at::Tensor&,
+                                         at::TensorList, bool, int64_t, double,
+                                         bool, bool, bool)>());
+  std::vector<at::Tensor> results;
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    results = op->call(input, hx, params, has_biases, num_layers, dropout,
+                       train, bidirectional, batch_first);
+  }
+  ABSL_CHECK_GE(  // CRASH_OK=internal custom op contract
+      results.size(), size_t{2});
 
   std::vector<at::Tensor> to_save;
-  to_save.reserve(2 + params.size() + cached_acts.size());
+  to_save.reserve(2 + params.size() + (results.size() - 2));
   to_save.push_back(input);
   to_save.push_back(hx);
   for (const at::Tensor& p : params) {
     to_save.push_back(p);
   }
-  for (const at::Tensor& a : cached_acts) {
-    to_save.push_back(a);
+  for (size_t i = 2; i < results.size(); ++i) {
+    to_save.push_back(results[i]);
   }
   ctx->save_for_backward(to_save);
 
@@ -7011,12 +7012,12 @@ torch::autograd::variable_list AtenGruInputAutograd::forward(
   ctx->saved_data["batch_first"] = batch_first;
   ctx->saved_data["params_count"] = static_cast<int64_t>(params.size());
 
-  return {output, hy};
+  return {std::move(results[0]), std::move(results[1])};
 }
 
 // Autograd backward implementation: unpacks saved variables, calls
-// AtenGruInputBackward, and maps returned gradients back to autograd variable
-// list.
+// tpu::_gru_input_backward, and maps returned gradients back to autograd
+// variable list.
 torch::autograd::variable_list AtenGruInputAutograd::backward(
     torch::autograd::AutogradContext* ctx,
     torch::autograd::variable_list grad_outputs) {
@@ -7036,35 +7037,50 @@ torch::autograd::variable_list AtenGruInputAutograd::backward(
   const bool bidirectional = ctx->saved_data["bidirectional"].toBool();
   const bool batch_first = ctx->saved_data["batch_first"].toBool();
 
-  const int64_t batch = batch_first ? input.size(0) : input.size(1);
-  const int64_t seq_len = batch_first ? input.size(1) : input.size(0);
-  const int64_t hidden = hx.size(2);
+  // Uses sym_size() so that FakeTensors with symbolic shapes are not
+  // specialized.
+  const c10::SymInt batch = batch_first ? input.sym_size(0) : input.sym_size(1);
+  const c10::SymInt seq_len =
+      batch_first ? input.sym_size(1) : input.sym_size(0);
+  const c10::SymInt hidden = hx.sym_size(2);
   const int64_t num_directions = bidirectional ? 2 : 1;
 
   at::Tensor grad_output = grad_outputs[0];
   if (!grad_output.defined()) {
-    Dimensions out_shape =
-        batch_first ? Dimensions{batch, seq_len, hidden * num_directions}
-                    : Dimensions{seq_len, batch, hidden * num_directions};
-    grad_output = at::zeros(out_shape, input.options());
+    const c10::SymDimVector out_shape =
+        batch_first
+            ? c10::SymDimVector{batch, seq_len, hidden * num_directions}
+            : c10::SymDimVector{seq_len, batch, hidden * num_directions};
+    grad_output = at::zeros_symint(out_shape, input.options());
   }
 
   at::Tensor grad_hy = grad_outputs[1];
   if (!grad_hy.defined()) {
-    grad_hy = at::zeros({num_layers * num_directions, batch, hidden},
-                        input.options());
+    grad_hy = at::zeros_symint({num_layers * num_directions, batch, hidden},
+                               input.options());
   }
 
-  auto [grad_input, grad_hx, grad_params] = AtenGruInputBackward(
-      grad_output, grad_hy, input, hx, params, has_biases, num_layers, dropout,
-      train, bidirectional, batch_first, cached_acts);
+  static const absl::NoDestructor op(
+      at::Dispatcher::singleton()
+          .findSchemaOrThrow("tpu::_gru_input_backward", "")
+          .typed<std::vector<at::Tensor>(const at::Tensor&, const at::Tensor&,
+                                         const at::Tensor&, const at::Tensor&,
+                                         at::TensorList, bool, int64_t, double,
+                                         bool, bool, bool, at::TensorList)>());
+  std::vector<at::Tensor> grads;
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    grads = op->call(grad_output, grad_hy, input, hx, params, has_biases,
+                     num_layers, dropout, train, bidirectional, batch_first,
+                     cached_acts);
+  }
+  ABSL_CHECK_EQ(  // CRASH_OK=internal custom op contract
+      grads.size(), static_cast<size_t>(2 + params_count));
 
   torch::autograd::variable_list result;
   result.reserve(2 + params_count + 6);
-  result.push_back(std::move(grad_input));
-  result.push_back(std::move(grad_hx));
-  for (at::Tensor& p_grad : grad_params) {
-    result.push_back(std::move(p_grad));
+  for (at::Tensor& grad : grads) {
+    result.push_back(std::move(grad));
   }
   result.push_back(at::Tensor());  // has_biases
   result.push_back(at::Tensor());  // num_layers
@@ -7076,46 +7092,200 @@ torch::autograd::variable_list AtenGruInputAutograd::backward(
   return result;
 }
 
+void ValidateGruInputsOrThrow(const at::Tensor& input, const at::Tensor& hx,
+                              const at::TensorList params,
+                              const bool has_biases, const int64_t num_layers,
+                              const double dropout, const bool train,
+                              const bool bidirectional,
+                              const bool batch_first) {
+  internal::ScopedOpName scoped_op_name(OpName::kGruInput);
+  ScopedPythonContextCapturer capturer(OpName::kGruInput);
+  try {
+    TT_THROW_IF_ERROR(ValidateGruInputs(input, hx, params, has_biases,
+                                        num_layers, dropout, train,
+                                        bidirectional, batch_first));
+  } catch (const TtError& e) {
+    TranslateToC10ErrorAndThrow(e);
+  }
+}
+
+// Returns true if `aten::gru.input` must run PyTorch's composite
+// `at::native::gru`: `functorch` transforms (e.g. `torch.func.grad`) and
+// forward-mode AD don't support the C++ `AtenGruInputAutograd`, and Python
+// wrapper subclasses (e.g. `DTensor`) must see the composite's ATen ops.
+bool ShouldFallbackToNativeGru(const at::Tensor& input, const at::Tensor& hx,
+                               const at::TensorList params) {
+  if (IsFunctorchActive() || IsPythonWrapperSubclass(input) ||
+      IsPythonWrapperSubclass(hx) || torch::autograd::isFwGradDefined(input) ||
+      torch::autograd::isFwGradDefined(hx) ||
+      torch::autograd::isFwGradDefinedTensorList(params)) {
+    return true;
+  }
+  for (const at::Tensor& p : params) {
+    if (IsPythonWrapperSubclass(p)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
-// Top-level public ATen operator for GRU execution on TPU.
-// Automatically routes between autograd-aware differentiation (when gradients
-// are required) and optimized direct inference.
-//
-// Arguments:
-//   input: Input sequence tensor.
-//   hx: Initial hidden states.
-//   params: List of layer weight and bias parameters.
-//   has_biases: Whether bias parameters are used.
-//   num_layers: Number of stacked layers.
-//   dropout: Inter-layer dropout probability.
-//   train: Whether running in training mode.
-//   bidirectional: Whether layer is bidirectional.
-//   batch_first: Whether sequence layout is [batch, seq, feature].
-//
-// Returns:
-//   Tuple of (output_sequence, final_hidden_state).
-std::tuple<at::Tensor, at::Tensor> AtenGruInput(
+std::tuple<at::Tensor, at::Tensor> TpuGruInput(
     const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
     const bool has_biases, const int64_t num_layers, const double dropout,
     const bool train, const bool bidirectional, const bool batch_first) {
-  bool requires_grad = input.requires_grad() || hx.requires_grad();
-  if (!requires_grad) {
-    for (const at::Tensor& p : params) {
-      if (p.requires_grad()) {
-        requires_grad = true;
-        break;
-      }
+  return AtenGruInputForward(input, hx, params, has_biases, num_layers, dropout,
+                             train, bidirectional, batch_first);
+}
+
+std::tuple<at::Tensor, at::Tensor> MetaTpuGruInput(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  ValidateGruInputsOrThrow(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  const c10::SymInt batch = batch_first ? input.sym_size(0) : input.sym_size(1);
+  const c10::SymInt seq_len =
+      batch_first ? input.sym_size(1) : input.sym_size(0);
+  const c10::SymInt hidden = hx.sym_size(2);
+  const int64_t num_directions = bidirectional ? 2 : 1;
+  const c10::SymDimVector output_shape =
+      batch_first ? c10::SymDimVector{batch, seq_len, hidden * num_directions}
+                  : c10::SymDimVector{seq_len, batch, hidden * num_directions};
+  return {at::empty_symint(output_shape, input.options()),
+          at::empty_symint({num_layers * num_directions, batch, hidden},
+                           input.options())};
+}
+
+std::vector<at::Tensor> TpuGruInputForwardCached(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  auto [output, hy, cached_acts] =
+      AtenGruInputForwardCached(input, hx, params, has_biases, num_layers,
+                                dropout, train, bidirectional, batch_first);
+  std::vector<at::Tensor> results;
+  results.reserve(2 + cached_acts.size());
+  results.push_back(std::move(output));
+  results.push_back(std::move(hy));
+  for (at::Tensor& act : cached_acts) {
+    results.push_back(std::move(act));
+  }
+  return results;
+}
+
+std::vector<at::Tensor> MetaTpuGruInputForwardCached(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  ValidateGruInputsOrThrow(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  const c10::SymInt batch = batch_first ? input.sym_size(0) : input.sym_size(1);
+  const c10::SymInt seq_len =
+      batch_first ? input.sym_size(1) : input.sym_size(0);
+  const c10::SymInt hidden = hx.sym_size(2);
+  const int64_t num_directions = bidirectional ? 2 : 1;
+  const bool has_dropout = (dropout > 0.0 && train && num_layers > 1);
+
+  const c10::SymDimVector output_shape =
+      batch_first ? c10::SymDimVector{batch, seq_len, hidden * num_directions}
+                  : c10::SymDimVector{seq_len, batch, hidden * num_directions};
+  const c10::SymDimVector act_shape =
+      batch_first ? c10::SymDimVector{batch, seq_len, 4 * hidden}
+                  : c10::SymDimVector{seq_len, batch, 4 * hidden};
+  const auto acc_options =
+      input.options().dtype(ToAccumulateType(input.scalar_type()));
+
+  std::vector<at::Tensor> results;
+  results.reserve(2 + num_layers * num_directions + (has_dropout ? 1 : 0));
+  results.push_back(at::empty_symint(output_shape, input.options()));
+  results.push_back(at::empty_symint(
+      {num_layers * num_directions, batch, hidden}, input.options()));
+
+  for (int64_t l = 0; l < num_layers; ++l) {
+    for (int64_t d = 0; d < num_directions; ++d) {
+      results.push_back(at::empty_symint(act_shape, acc_options));
     }
   }
+  if (has_dropout) {
+    results.push_back(at::empty({2}, input.options().dtype(at::kUInt64)));
+  }
+  return results;
+}
 
-  if (c10::GradMode::is_enabled() && requires_grad) {
+std::vector<at::Tensor> TpuGruInputBackward(
+    const at::Tensor& grad_output, const at::Tensor& grad_hy,
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first,
+    const at::TensorList cached_activations) {
+  auto [grad_input, grad_hx, grad_params] = AtenGruInputBackward(
+      grad_output, grad_hy, input, hx, params, has_biases, num_layers, dropout,
+      train, bidirectional, batch_first, cached_activations);
+  std::vector<at::Tensor> results;
+  results.reserve(2 + grad_params.size());
+  results.push_back(std::move(grad_input));
+  results.push_back(std::move(grad_hx));
+  for (at::Tensor& grad_param : grad_params) {
+    results.push_back(std::move(grad_param));
+  }
+  return results;
+}
+
+std::vector<at::Tensor> MetaTpuGruInputBackward(
+    const at::Tensor& /*grad_output*/, const at::Tensor& /*grad_hy*/,
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first,
+    const at::TensorList cached_activations) {
+  ValidateGruInputsOrThrow(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  const int64_t num_directions = bidirectional ? 2 : 1;
+  const bool has_dropout = (dropout > 0.0 && train && num_layers > 1);
+  const size_t expected_cached_acts =
+      static_cast<size_t>(num_layers * num_directions + (has_dropout ? 1 : 0));
+  ABSL_CHECK_EQ(  // CRASH_OK=internal custom op contract
+      cached_activations.size(), expected_cached_acts);
+  std::vector<at::Tensor> results;
+  results.reserve(2 + params.size());
+  results.push_back(at::empty_symint(input.sym_sizes(), input.options()));
+  results.push_back(at::empty_symint(hx.sym_sizes(), hx.options()));
+  for (const at::Tensor& param : params) {
+    results.push_back(at::empty_symint(param.sym_sizes(), param.options()));
+  }
+  return results;
+}
+
+std::tuple<at::Tensor, at::Tensor> AtenGruInputAutogradKernel(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
+  if (ShouldFallbackToNativeGru(input, hx, params)) {
+    return at::native::gru(input, hx, params, has_biases, num_layers, dropout,
+                           train, bidirectional, batch_first);
+  }
+  if (torch::autograd::compute_requires_grad(input, hx, params)) {
     auto results =
         AtenGruInputAutograd::apply(input, hx, params, has_biases, num_layers,
                                     dropout, train, bidirectional, batch_first);
     return {results[0], results[1]};
   }
+  static const absl::NoDestructor op(
+      at::Dispatcher::singleton()
+          .findSchemaOrThrow("tpu::_gru_input", "")
+          .typed<std::tuple<at::Tensor, at::Tensor>(
+              const at::Tensor&, const at::Tensor&, at::TensorList, bool,
+              int64_t, double, bool, bool, bool)>());
+  at::AutoDispatchBelowADInplaceOrView guard;
+  return op->call(input, hx, params, has_biases, num_layers, dropout, train,
+                  bidirectional, batch_first);
+}
 
+std::tuple<at::Tensor, at::Tensor> AtenGruInput(
+    const at::Tensor& input, const at::Tensor& hx, const at::TensorList params,
+    const bool has_biases, const int64_t num_layers, const double dropout,
+    const bool train, const bool bidirectional, const bool batch_first) {
   return AtenGruInputForward(input, hx, params, has_biases, num_layers, dropout,
                              train, bidirectional, batch_first);
 }

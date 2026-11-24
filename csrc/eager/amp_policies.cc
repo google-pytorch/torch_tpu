@@ -23,6 +23,7 @@
 #include "ATen/ops/_lu_with_info_ops.h"
 #include "ATen/ops/_native_multi_head_attention_ops.h"
 #include "ATen/ops/_scaled_dot_product_flash_attention_ops.h"
+#include "ATen/ops/_thnn_fused_gru_cell_ops.h"
 #include "ATen/ops/_thnn_fused_lstm_cell_ops.h"
 #include "ATen/ops/adaptive_avg_pool3d_ops.h"
 #include "ATen/ops/adaptive_max_pool3d_ops.h"
@@ -70,6 +71,7 @@
 #include "ATen/ops/grid_sampler_3d_ops.h"
 #include "ATen/ops/grid_sampler_ops.h"
 #include "ATen/ops/gru_cell_ops.h"
+#include "ATen/ops/gru_ops.h"
 #include "ATen/ops/hinge_embedding_loss_ops.h"
 #include "ATen/ops/huber_loss_ops.h"
 #include "ATen/ops/inverse_ops.h"
@@ -97,6 +99,7 @@
 #include "ATen/ops/linalg_vecdot_ops.h"
 #include "ATen/ops/linear_ops.h"
 #include "ATen/ops/lstm_cell_ops.h"
+#include "ATen/ops/lstm_ops.h"
 #include "ATen/ops/lu_solve_ops.h"
 #include "ATen/ops/margin_ranking_loss_ops.h"
 #include "ATen/ops/matmul_ops.h"
@@ -126,7 +129,9 @@
 #include "ATen/ops/replication_pad2d_ops.h"
 #include "ATen/ops/replication_pad3d_ops.h"
 #include "ATen/ops/rnn_relu_cell_ops.h"
+#include "ATen/ops/rnn_relu_ops.h"
 #include "ATen/ops/rnn_tanh_cell_ops.h"
+#include "ATen/ops/rnn_tanh_ops.h"
 #include "ATen/ops/scaled_dot_product_attention_ops.h"
 #include "ATen/ops/smooth_l1_loss_ops.h"
 #include "ATen/ops/soft_margin_loss_ops.h"
@@ -192,6 +197,7 @@ TORCH_LIBRARY_IMPL(aten, AutocastPrivateUse1, m) {
   TT_AMP_POLICY(_convolution, lower_precision_fp);
   TT_AMP_POLICY(_native_multi_head_attention, lower_precision_fp);
   TT_AMP_POLICY(_scaled_dot_product_flash_attention, lower_precision_fp);
+  TT_AMP_POLICY(_thnn_fused_gru_cell, lower_precision_fp);
   TT_AMP_POLICY(_thnn_fused_lstm_cell, lower_precision_fp);
   TT_AMP_POLICY(addbmm, lower_precision_fp);
   TT_AMP_POLICY(addmm, lower_precision_fp);
@@ -212,16 +218,20 @@ TORCH_LIBRARY_IMPL(aten, AutocastPrivateUse1, m) {
   TT_AMP_POLICY(conv_transpose3d, input, lower_precision_fp);
   TT_AMP_POLICY(convolution, lower_precision_fp);
   TT_AMP_POLICY(einsum, lower_precision_fp);
+  TT_AMP_POLICY(gru, input, lower_precision_fp);
   TT_AMP_POLICY(gru_cell, lower_precision_fp);
   TT_AMP_POLICY(linalg_multi_dot, lower_precision_fp);
   TT_AMP_POLICY(linalg_vecdot, lower_precision_fp);
   TT_AMP_POLICY(linear, lower_precision_fp);
+  TT_AMP_POLICY(lstm, input, lower_precision_fp);
   TT_AMP_POLICY(lstm_cell, lower_precision_fp);
   TT_AMP_POLICY(matmul, lower_precision_fp);
   TT_AMP_POLICY(mm, lower_precision_fp);
   TT_AMP_POLICY(mv, lower_precision_fp);
   TT_AMP_POLICY(prelu, lower_precision_fp);
+  TT_AMP_POLICY(rnn_relu, input, lower_precision_fp);
   TT_AMP_POLICY(rnn_relu_cell, lower_precision_fp);
+  TT_AMP_POLICY(rnn_tanh, input, lower_precision_fp);
   TT_AMP_POLICY(rnn_tanh_cell, lower_precision_fp);
   TT_AMP_POLICY(scaled_dot_product_attention, lower_precision_fp);
   // go/keep-sorted end

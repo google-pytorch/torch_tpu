@@ -73,12 +73,12 @@ class TieredCompilationCacheTest : public testing::Test {
   }
 
   // Registers a dummy kernel under `key` and returns the lookup key that
-  // resolves to it (same shapeless key, different dimensions).
+  // resolves to it (same extentless key, different dimensions).
   static CompilationCacheKey RegisterAndMakeLookupKey(
       const CompilationCacheKey& key) {
     RegisterDummyKernel(key);
     return CompilationCacheKey(
-        GraphKey(key.graph_key().shapeless_key(), DimensionsKey({128, 128})),
+        GraphKey(key.graph_key().extentless_key(), DimensionsKey({128, 128})),
         key.compile_options_key());
   }
 
@@ -105,7 +105,7 @@ class TieredCompilationCacheTest : public testing::Test {
 
 TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier2Hit) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  const CompilationCacheKey key(GraphKey(ShapelessKey(2), DimensionsKey({})),
+  const CompilationCacheKey key(GraphKey(ExtentlessKey(2), DimensionsKey({})),
                                 CompileOptionsKey({}), /*id_key=*/2);
   const CompilationCacheKey lookup_key = RegisterAndMakeLookupKey(key);
   EXPECT_TRUE(GetOrCompileDummy(cache, lookup_key).ok());
@@ -122,7 +122,7 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier2Hit) {
 
 TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier3Hit) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  const CompilationCacheKey key(GraphKey(ShapelessKey(3), DimensionsKey({})),
+  const CompilationCacheKey key(GraphKey(ExtentlessKey(3), DimensionsKey({})),
                                 CompileOptionsKey({}), /*id_key=*/3);
   const CompilationCacheKey lookup_key = RegisterAndMakeLookupKey(key);
   EXPECT_TRUE(GetOrCompileDummy(cache, lookup_key).ok());

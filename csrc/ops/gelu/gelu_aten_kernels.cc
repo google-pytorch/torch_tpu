@@ -17,12 +17,13 @@
 #include "csrc/ops/gelu/gelu_aten_kernels.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -42,7 +43,7 @@
 namespace torch_tpu {
 namespace {
 
-MlirUnaryOpBuilder GetGeluFunctional(c10::string_view approximate,
+MlirUnaryOpBuilder GetGeluFunctional(std::string_view approximate,
                                      mlir::ElementType output_dtype) {
   return [approximate = static_cast<std::string>(approximate),
           output_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -52,7 +53,7 @@ MlirUnaryOpBuilder GetGeluFunctional(c10::string_view approximate,
 
 }  // namespace
 
-at::Tensor AtenGelu(const at::Tensor& self, c10::string_view approximate) {
+at::Tensor AtenGelu(const at::Tensor& self, std::string_view approximate) {
   TT_KERNEL(OpName::kGelu, param_keys, (self, approximate), {
     TT_CHECK_THROW(approximate == "none" || approximate == "tanh",
                    error::kInvalidArgument)
@@ -75,7 +76,7 @@ at::Tensor AtenGelu(const at::Tensor& self, c10::string_view approximate) {
   });
 }
 
-at::Tensor& AtenGeluOut(const at::Tensor& self, c10::string_view approximate,
+at::Tensor& AtenGeluOut(const at::Tensor& self, std::string_view approximate,
                         at::Tensor& out) {
   TT_KERNEL(OpName::kGeluOut, param_keys, (self, approximate, out), {
     TT_CHECK_THROW(approximate == "none" || approximate == "tanh",
@@ -101,7 +102,7 @@ at::Tensor& AtenGeluOut(const at::Tensor& self, c10::string_view approximate,
 
 at::Tensor& AtenGeluBackwardGradInput(const at::Tensor& grad_output,
                                       const at::Tensor& self,
-                                      c10::string_view approximate,
+                                      std::string_view approximate,
                                       at::Tensor& grad_input) {
   TT_KERNEL(
       OpName::kGeluBackwardGradInput, param_keys,
@@ -109,26 +110,31 @@ at::Tensor& AtenGeluBackwardGradInput(const at::Tensor& grad_output,
         TT_CHECK_THROW(approximate == "none" || approximate == "tanh",
                        error::kInvalidArgument)
             << "unsupported approximate argument: " << approximate;
-        const c10::ScalarType self_dtype = self.scalar_type();
-        TT_CHECK_THROW(!c10::isComplexType(self_dtype),
-                       error::kPythonNotImplementedError)
-            << "unsupported input dtype: " << ToString(self_dtype);
-        TT_CHECK_THROW(!IsIntegral(self_dtype),
-                       error::kPythonNotImplementedError)
-            << "unsupported input dtype: " << ToString(self_dtype);
-        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, self_dtype,
-                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_output));
         TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self));
-        const c10::ScalarType output_tensor_type = InferOutputDtype(self);
-        TT_ASSIGN_OR_THROW(const auto out_dtype,
-                           ConvertTo<mlir::ElementType>(output_tensor_type));
+        const c10::ScalarType promoted_type =
+            at::result_type(grad_output, self);
+        TT_CHECK_THROW(!c10::isComplexType(promoted_type),
+                       error::kPythonNotImplementedError)
+            << "unsupported input dtype: " << ToString(promoted_type);
+        TT_CHECK_THROW(!IsIntegral(promoted_type),
+                       error::kPythonNotImplementedError)
+            << "unsupported input dtype: " << ToString(promoted_type);
+        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, promoted_type,
+                                           /*allow_out_dtype_cast=*/true));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_input));
+        TT_ASSIGN_OR_THROW(const auto promoted_mlir_dtype,
+                           ConvertTo<mlir::ElementType>(promoted_type));
+        TT_ASSIGN_OR_THROW(const auto out_dtype, ConvertTo<mlir::ElementType>(
+                                                     grad_input.scalar_type()));
 
-        auto op_builder = [approximate = static_cast<std::string>(approximate),
-                           out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        auto op_builder =
+            [approximate = static_cast<std::string>(approximate),
+             promoted_mlir_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
           auto& [grad_output_op, input_op] = inputs;
-          return BuildGeluBackwardGradInputShlo(grad_output_op, input_op,
-                                                approximate, out_dtype);
+          return BuildGeluBackwardGradInputShlo(
+              grad_output_op, input_op, approximate, promoted_mlir_dtype);
         };
         auto output_shape = CopyIntVector(self.sizes());
 

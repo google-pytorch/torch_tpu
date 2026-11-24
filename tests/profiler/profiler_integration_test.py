@@ -269,6 +269,23 @@ def _describe_xspace(xspace: xplane_pb2.XSpace) -> str:
   return "\n".join(parts)
 
 
+def _count_host_events(xspace: xplane_pb2.XSpace, event_name: str) -> int:
+  """Counts events matching `event_name` on `/host:CPU` XPlanes."""
+  total = 0
+  for plane in xspace.planes:
+    if plane.name == "/host:CPU":
+      matching_ids = {
+          meta_id
+          for meta_id, metadata in plane.event_metadata.items()
+          if metadata.name == event_name
+      }
+      for line in plane.lines:
+        for event in line.events:
+          if event.metadata_id in matching_ids:
+            total += 1
+  return total
+
+
 def _format_inline_mlir(mlir_text: str) -> str:
   """Formats an MLIR module with inline debug locations."""
   with jax.interpreters.mlir.make_ir_context() as ctx:
@@ -690,6 +707,9 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         content,
         "Python annotation not found in XPlane!",
     )
+    xspace = xplane_pb2.XSpace.FromString(content)
+    self.assertEqual(_count_host_events(xspace, "full_pipeline"), 1)
+    self.assertEqual(_count_host_events(xspace, "model1_inference_tpu"), 1)
 
   def test_compiled_module_name_scopes(self):
     """Checks that the module hierarchy of a compiled model reaches the trace."""
@@ -1088,6 +1108,10 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         xplane_files, "Should have a .xplane.pb file in fallback directory"
     )
 
+  @unittest.skip(
+      "TODO(b/585659501): Re-enable once upstream PyTorch enableProfiler rolls"
+      " back ProfilerStateBase when startTrace throws."
+  )
   def test_invalid_profiler_config(self):
     """Tests that invalid profiler configuration raises a Python exception."""
     device = torch.device("tpu")

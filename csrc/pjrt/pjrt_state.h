@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_PJRT_PJRT_STATE_H_
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -27,13 +28,19 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/hash/hash.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
+#include "xla/layout.h"
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/framework/allocator.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -56,6 +63,68 @@ struct PjRtDeviceAttributes {
   std::optional<std::vector<int64_t>> coords;  // INT_VEC_OK
   std::optional<int64_t> core_on_chip;
   std::optional<int64_t> slice_index;
+};
+
+// Caches a PjRt client's default on-device layouts per `(element_type, dims)`.
+// Clears itself when it holds `max_entries` layouts and a new one is added.
+class DefaultLayoutCache {
+ public:
+  // Entries are small and should rarely if ever exceed this limit.
+  static constexpr int64_t kDefaultMaxEntries = 16384;
+
+  explicit DefaultLayoutCache(int64_t max_entries = kDefaultMaxEntries)
+      : max_entries_(max_entries) {}
+
+  DefaultLayoutCache(const DefaultLayoutCache&) = delete;
+  DefaultLayoutCache& operator=(const DefaultLayoutCache&) = delete;
+
+  // Returns `client.GetDefaultLayout(element_type, dims)`, querying `client`
+  // only if no layout is cached for `(element_type, dims)`. Errors are not
+  // cached. Callers must pass the same `client` until the next `Clear()`.
+  absl::StatusOr<xla::Layout> Get(xla::PjRtClient& client,
+                                  xla::PrimitiveType element_type,
+                                  absl::Span<const int64_t> dims)
+      ABSL_LOCKS_EXCLUDED(mu_);
+
+  // Removes all cached layouts.
+  void Clear() ABSL_LOCKS_EXCLUDED(mu_);
+
+ private:
+  struct Key {
+    xla::PrimitiveType element_type;
+    Dimensions dims;
+  };
+
+  // Lets lookups use `dims` without copying them into a `Key`.
+  struct KeyView {
+    xla::PrimitiveType element_type;
+    absl::Span<const int64_t> dims;
+  };
+
+  // Hashes `dims` as a span for both `Key` and `KeyView`, so that equal keys
+  // hash the same.
+  struct KeyHash {
+    using is_transparent = void;
+    template <typename K>
+    size_t operator()(const K& key) const {
+      return absl::HashOf(  // HASH_OK=in-memory map
+          key.element_type, absl::MakeConstSpan(key.dims));
+    }
+  };
+
+  struct KeyEq {
+    using is_transparent = void;
+    template <typename A, typename B>
+    bool operator()(const A& a, const B& b) const {
+      return a.element_type == b.element_type &&
+             absl::MakeConstSpan(a.dims) == absl::MakeConstSpan(b.dims);
+    }
+  };
+
+  const int64_t max_entries_;
+  absl::Mutex mu_;
+  absl::flat_hash_map<Key, xla::Layout, KeyHash, KeyEq> layouts_
+      ABSL_GUARDED_BY(mu_);
 };
 
 // PjrtBackend manages the lifecycle and state of the PjRt runtime.
@@ -140,6 +209,12 @@ class PjrtBackend {
   absl::StatusOr<xla::HostMemoryAllocator*> GetHostAllocator()
       ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns the PjRt client's default on-device layout for `element_type` and
+  // `dims`, cached until Shutdown().
+  absl::StatusOr<xla::Layout> GetDefaultLayout(xla::PrimitiveType element_type,
+                                               absl::Span<const int64_t> dims)
+      ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Shuts down the PjRt runtime and resets the global state.
   void Shutdown() ABSL_LOCKS_EXCLUDED(mutex_);
 
@@ -166,6 +241,8 @@ class PjrtBackend {
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;
   absl::Status init_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
+  // Default layouts of `client_`, cleared on Shutdown.
+  DefaultLayoutCache default_layout_cache_;
   std::atomic<BadForkChecker> bad_fork_checker_{nullptr};
   std::atomic<OnInitializedHook> on_initialized_hook_{nullptr};
 };

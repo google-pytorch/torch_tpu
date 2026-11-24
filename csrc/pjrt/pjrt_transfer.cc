@@ -38,6 +38,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/host_allocator.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "csrc/pjrt/pjrt_utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/future.h"
@@ -157,8 +158,9 @@ absl::StatusOr<DeviceBufferRef> HostToDeviceTransfer::Run() {
 absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>>
 HostToDeviceTransfer::StartTransfer(
     absl_nonnull std::unique_ptr<HostToDeviceTransferImpl> impl) {
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetPjRtClient());
-  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, GetPjRtDevice());
+  PjrtBackend& backend = PjrtBackend::GetInstance();
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, backend.GetClient());
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, backend.GetDevice());
 
   // Get the parameters for the PjRtBuffer to be created.
   const xla::PrimitiveType type =
@@ -180,7 +182,7 @@ HostToDeviceTransfer::StartTransfer(
       << "either a nonnull host_data or a non-empty backing_data is required";
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtBuffer> buffer,
-      AdaptXlaError(
+      WrapXlaError(
           client->BufferFromHostBuffer(
               host_data, type, impl->dimensions, std::nullopt, semantics,
               [backing_data = std::move(impl->backing_data)]() mutable {
@@ -322,8 +324,8 @@ void DeviceToHostTransfer::OnToLiteralReady(
     PackFp4Vector(impl->fp4_receiver, static_cast<uint8_t*>(impl->dst_ptr));
   }
   impl->promise.Set(
-      AdaptXlaError(to_literal_status,
-                    /*context=*/"failed to copy buffer from device to host"));
+      WrapXlaError(to_literal_status,
+                   /*context=*/"failed to copy buffer from device to host"));
   // impl is destructed here
 }
 
@@ -485,8 +487,8 @@ absl::StatusOr<PreparedRawDmaBuffer> PreparedRawDmaBuffer::Prepare(
   // Await the PjRtBuffer from the reference and verify computation readiness.
   TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * buffer, buffer_ref.AwaitBuffer());
   TT_RETURN_IF_ERROR(
-      AdaptXlaError(buffer->GetReadyFuture().Await(),
-                    "TPU buffer computation failed or not ready"));
+      WrapXlaError(buffer->GetReadyFuture().Await(),
+                   "TPU buffer computation failed or not ready"));
 
   // Ensure the buffer is backed by the PjRt C API client.
   auto* capi_buffer = dynamic_cast<xla::PjRtCApiBuffer*>(buffer);
@@ -525,8 +527,8 @@ absl::StatusOr<PreparedRawDmaBuffer> PreparedRawDmaBuffer::Prepare(
   if (create_error != nullptr) {
     std::unique_ptr<PJRT_Error, pjrt::PJRT_ErrorDeleter> error_cleanup(
         create_error, pjrt::MakeErrorDeleter(c_api));
-    return AdaptXlaError(pjrt::PjrtErrorToStatus(create_error, c_api),
-                         "Failed to create raw alias of buffer");
+    return WrapXlaError(pjrt::PjrtErrorToStatus(create_error, c_api),
+                        "Failed to create raw alias of buffer");
   }
 
   return PreparedRawDmaBuffer(std::make_shared<Holder>(
@@ -555,8 +557,8 @@ absl::StatusOr<xla::Future<>> PreparedRawDmaBuffer::CopyDtoH(
   if (error != nullptr) {
     std::unique_ptr<PJRT_Error, pjrt::PJRT_ErrorDeleter> error_cleanup(
         error, pjrt::MakeErrorDeleter(holder_->c_api));
-    return AdaptXlaError(pjrt::PjrtErrorToStatus(error, holder_->c_api),
-                         "PJRT CopyRawDeviceToHost invocation failed");
+    return WrapXlaError(pjrt::PjrtErrorToStatus(error, holder_->c_api),
+                        "PJRT CopyRawDeviceToHost invocation failed");
   }
 
   auto [promise, future] = xla::MakePromise<void>();
@@ -591,8 +593,8 @@ absl::StatusOr<xla::Future<>> PreparedRawDmaBuffer::CopyHtoD(
   if (error != nullptr) {
     std::unique_ptr<PJRT_Error, pjrt::PJRT_ErrorDeleter> error_cleanup(
         error, pjrt::MakeErrorDeleter(holder_->c_api));
-    return AdaptXlaError(pjrt::PjrtErrorToStatus(error, holder_->c_api),
-                         "PJRT CopyRawHostToDevice invocation failed");
+    return WrapXlaError(pjrt::PjrtErrorToStatus(error, holder_->c_api),
+                        "PJRT CopyRawHostToDevice invocation failed");
   }
 
   auto [promise, future] = xla::MakePromise<void>();

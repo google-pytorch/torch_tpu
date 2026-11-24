@@ -714,6 +714,119 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     self.assertEqual(changes.add, ())
     self.assertEqual(changes.remove, ())
 
+  def test_pr_responder_side_talk_keeps_turn_label(self):
+    for event_name in ("issue_comment", "pull_request_review_comment"):
+      for label in (REVIEWERS_LABEL, REQUESTER_LABEL):
+        with self.subTest(event_name=event_name, label=label):
+          payload = {
+              "action": "created",
+              "issue": self._make_issue(
+                  author="alice",
+                  assignee="wan",
+                  is_pr=True,
+                  labels=[{"name": label}],
+              ),
+              "sender": {"login": "mkhanna15"},
+              "comment": {
+                  "author_association": "MEMBER",
+                  "body": "@wan verified CI checks pass.",
+              },
+          }
+          changes = determine_label_changes(
+              event_name, payload, reviewers=frozenset({"mkhanna15"})
+          )
+          self.assertEqual(changes, ((), ()))
+
+  def test_pr_responder_commented_review_side_talk_keeps_turn(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="wan",
+            is_pr=True,
+            labels=[{"name": REVIEWERS_LABEL}],
+        ),
+        "sender": {"login": "mkhanna15"},
+        "review": {
+            "state": "COMMENTED",
+            "author_association": "MEMBER",
+            "body": "@wan PTAL",
+        },
+    }
+    changes = determine_label_changes(
+        "pull_request_review", payload, reviewers=frozenset({"mkhanna15"})
+    )
+    self.assertEqual(changes, ((), ()))
+
+  def test_pr_responder_verdict_review_flips_even_with_mention(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="wan",
+            is_pr=True,
+            labels=[{"name": REVIEWERS_LABEL}],
+        ),
+        "sender": {"login": "mkhanna15"},
+        "review": {
+            "state": "APPROVED",
+            "author_association": "MEMBER",
+            "body": "LGTM, over to @wan",
+        },
+    }
+    changes = determine_label_changes(
+        "pull_request_review", payload, reviewers=frozenset({"mkhanna15"})
+    )
+    self.assertEqual(changes.add, (REQUESTER_LABEL,))
+    self.assertEqual(changes.remove, (REVIEWERS_LABEL,))
+
+  def test_pr_responder_mentioning_op_or_quotes_or_non_responder_flips(self):
+    cases = [
+        (
+            "mentions_op_too",
+            {"author_association": "MEMBER", "body": "@alice please fix. @wan"},
+            [REVIEWERS_LABEL],
+        ),
+        (
+            "quoted_mention_only",
+            {"author_association": "MEMBER", "body": "> @wan\nLooks good."},
+            [REVIEWERS_LABEL],
+        ),
+        (
+            "non_member",
+            {"author_association": "CONTRIBUTOR", "body": "@wan PTAL"},
+            [REVIEWERS_LABEL],
+        ),
+        (
+            "mentions_non_responder",
+            {"author_association": "MEMBER", "body": "@stranger FYI"},
+            [REVIEWERS_LABEL],
+        ),
+        (
+            "after_pull_ready",
+            {"author_association": "MEMBER", "body": "@wan CI passes"},
+            [REVIEWERS_LABEL, "pull ready"],
+        ),
+    ]
+    for name, comment, labels in cases:
+      with self.subTest(name=name):
+        payload = {
+            "action": "created",
+            "issue": self._make_issue(
+                author="alice",
+                assignee="wan",
+                is_pr=True,
+                labels=[{"name": lbl} for lbl in labels],
+            ),
+            "sender": {"login": "mkhanna15"},
+            "comment": comment,
+        }
+        changes = determine_label_changes(
+            "issue_comment", payload, reviewers=frozenset({"mkhanna15"})
+        )
+        self.assertEqual(changes.add, (REQUESTER_LABEL,))
+        self.assertEqual(changes.remove, (REVIEWERS_LABEL,))
+
 
 class _FakeResponse:
 

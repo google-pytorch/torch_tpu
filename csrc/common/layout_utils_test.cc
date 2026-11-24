@@ -46,6 +46,22 @@ TEST(LayoutUtilsTest, XlaEquivalentBitwidth) {
   EXPECT_EQ(XlaEquivalentBitwidth(mlir::ElementType::I4), 4);
 }
 
+TEST(LayoutUtilsTest, TorchPackingFactorAndIsPackedSubByteType) {
+  EXPECT_EQ(TorchPackingFactor(mlir::ElementType::F4E2M1FN), 2);
+  EXPECT_TRUE(IsPackedSubByteType(mlir::ElementType::F4E2M1FN));
+
+  EXPECT_EQ(TorchPackingFactor(mlir::ElementType::PRED), 1);
+  EXPECT_FALSE(IsPackedSubByteType(mlir::ElementType::PRED));
+  EXPECT_EQ(TorchPackingFactor(mlir::ElementType::I4), 1);
+  EXPECT_FALSE(IsPackedSubByteType(mlir::ElementType::I4));
+  EXPECT_EQ(TorchPackingFactor(mlir::ElementType::F8E4M3FN), 1);
+  EXPECT_FALSE(IsPackedSubByteType(mlir::ElementType::F8E4M3FN));
+  EXPECT_EQ(TorchPackingFactor(mlir::ElementType::BF16), 1);
+  EXPECT_FALSE(IsPackedSubByteType(mlir::ElementType::BF16));
+  EXPECT_EQ(TorchPackingFactor(mlir::ElementType::F32), 1);
+  EXPECT_FALSE(IsPackedSubByteType(mlir::ElementType::F32));
+}
+
 TEST(LayoutUtilsTest, CustomLayoutTilingAndEquality) {
   CustomLayout layout1;
   layout1.minor_to_major = {1, 0};

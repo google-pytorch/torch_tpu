@@ -50,20 +50,24 @@ namespace {
 // Returns `tensor`'s layout on the TPU if it isn't the default for its shape,
 // e.g. the SparseCore layout of an embedding table.
 std::optional<xla::Layout> GetNonDefaultLayout(const at::Tensor& tensor) {
-  const absl::StatusOr<DeviceBufferRef> buffer = GetBuffer(tensor);
+  const absl::StatusOr<std::optional<DeviceBufferRef>> existing_buffer =
+      GetBufferWithoutCreatingView(tensor);
+  if (!existing_buffer.ok() || !existing_buffer->has_value()) {
+    return std::nullopt;
+  }
+  const DeviceBufferRef& buffer = **existing_buffer;
   // Buffers in pinned host memory have host layouts.
-  if (!buffer.ok() || buffer->is_pinned_host() ||
-      !buffer->shape().layout().has_value() ||
-      IsDefaultDeviceLayout(*buffer->shape().layout(), buffer->element_type(),
-                            buffer->dimensions())) {
+  if (buffer.is_pinned_host() || !buffer.shape().layout().has_value() ||
+      IsDefaultDeviceLayout(*buffer.shape().layout(), buffer.element_type(),
+                            buffer.dimensions())) {
     return std::nullopt;
   }
   const absl::StatusOr<xla::Layout> default_layout =
-      GetDefaultDeviceLayout(buffer->element_type(), buffer->dimensions());
+      GetDefaultDeviceLayout(buffer.element_type(), buffer.dimensions());
   if (!default_layout.ok()) return std::nullopt;
   // The buffer's layout records the dtype's width as its element size. Like
   // LayoutContext, use the default element size instead.
-  xla::Layout layout = ToXlaLayout(*buffer->shape().layout());
+  xla::Layout layout = ToXlaLayout(*buffer.shape().layout());
   layout.set_element_size_in_bits(default_layout->element_size_in_bits());
   return layout;
 }
@@ -156,7 +160,7 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
     // Do the transfer immediately and block on completion; don't touch any
     // streams.
     TT_ASSIGN_OR_RETURN(DeviceBufferRef tpu_buf, transfer.Run());
-    TT_RETURN_IF_ERROR(AdaptXlaError(
+    TT_RETURN_IF_ERROR(WrapXlaError(
         tpu_buf.Synchronize(),
         /* context= */ "failed to copy buffer from host to device"));
     TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(tpu_buf), dest));

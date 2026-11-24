@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -28,7 +29,6 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -78,7 +78,7 @@ int64_t SpatialAxisDim(const SpatialAxis axis) {
   }
 }
 
-c10::string_view SpatialAxisEinsumEquation(const SpatialAxis axis) {
+std::string_view SpatialAxisEinsumEquation(const SpatialAxis axis) {
   switch (axis) {
     case SpatialAxis::kHeight:
       return "nchw,oh->ncow";

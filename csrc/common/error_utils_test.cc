@@ -27,6 +27,7 @@
 #include <ios>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1979,6 +1980,15 @@ TEST_F(ErrorMessageGuidelinesDeathTest,
                 "alpha-numeric"));
 }
 
+TEST_F(ErrorMessageGuidelinesPassTest, UppercaseStartAndNewlineOnXlaError) {
+  // The XLA compiler error is passed through verbatim, so it may start with an
+  // uppercase letter or end with a newline.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "failed to initialize the PjRt client",
+                   /* xla_error_message= */ "TPU initialization failed\n"),
+               c10::Error);
+}
+
 TEST_F(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
   EXPECT_THROW(ThrowWithMessage("expected 3D tensor, got 2D"), c10::Error);
   // Valid format after a single context prefix.
@@ -2075,6 +2085,62 @@ TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityLookalikesAreAllowed) {
                c10::Error);
 }
 
+// Throws an error with `message`, marked as holding the user's text if
+// `is_user_message`, the way an op kernel does.
+void ThrowWithMessageAndIsUserMessage(const std::string_view message,
+                                      const bool is_user_message) {
+  TT_KERNEL(OpName::kAdd, _,
+            (IgnoreInCacheKey(message, "test"),
+             IgnoreInCacheKey(is_user_message, "test")),
+            {
+              StatusBuilder builder = TT_ERROR(error::kInternal);
+              if (is_user_message) builder.SetIsUserMessage();
+              TT_THROW_IF_ERROR(builder << message);
+            });
+}
+
+// Throws an error with the message and "is user message" state of `status`,
+// the way an op kernel does.
+void ThrowStatus(const absl::Status& status) {
+  ThrowWithMessageAndIsUserMessage(status.message(),
+                                   internal::IsUserMessage(status));
+}
+
+// Returns an error whose message is marked as holding the user's text.
+absl::Status UserMessageError(const std::string_view message) {
+  return TT_ERROR(error::kInternal).SetIsUserMessage() << message;
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, UserMessage) {
+  EXPECT_THROW(ThrowStatus(UserMessageError("Value must be positive.")),
+               c10::Error);
+  StatusBuilder builder = TT_ERROR(error::kInternal);
+  builder.SetIsUserMessage();
+  EXPECT_THROW(ThrowStatus(builder << "Value must be positive."), c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, UserMessageWithAddedContext) {
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                      .SetPrepend()
+                  << "failed to copy: "),
+      c10::Error);
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                  << " Try again."),
+      c10::Error);
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest, OverriddenUserMessage) {
+  // Overriding the message keeps the "is user message" state, so the
+  // replacement isn't checked.
+  EXPECT_THROW(
+      ThrowStatus(StatusBuilder(UserMessageError("Value must be positive."))
+                      .SetOverride()
+                  << "Dimension size negative"),
+      c10::Error);
+}
+
 TEST_F(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {
   EXPECT_THROW(ThrowWithMessage("1D tensor is not supported"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("-1 is not a valid dimension"), c10::Error);
@@ -2152,6 +2218,20 @@ TEST(AdaptExternalErrorMessage,
             "xLA_FLAGS is not set");
 }
 
+TEST(WrapXlaErrorTest, PassesMessageThroughVerbatim) {
+  const absl::Status status = WrapXlaError(
+      absl::Status(error::kInternal, "TPU initialization failed.\n"),
+      /* context= */ "failed to initialize the PjRt client");
+  EXPECT_EQ(status.code(), error::kInternal);
+  EXPECT_EQ(status.message(),
+            "failed to initialize the PjRt client -- the XLA compiler failed "
+            "with: TPU initialization failed.\n");
+}
+
+TEST(WrapXlaErrorTest, ReturnsOkStatusUnchanged) {
+  EXPECT_TRUE(WrapXlaError(absl::OkStatus(), "context").ok());
+}
+
 TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {
   setenv(kTorchTpuTopologyEnvVar, "2x2x1", 1);
   TT_ASSERT_OK_AND_ASSIGN(const auto val,
@@ -2206,6 +2286,65 @@ TEST(TranslateXlaTensorOomError, TranslatesInternalErrorWithAllocationSize) {
 TEST(TranslateXlaTensorOomError, ReturnsNonOomErrorUnchanged) {
   const absl::Status original(error::kInvalidArgument, "some other error");
   EXPECT_EQ(TranslateXlaTensorOomError(original, "float32", {2, 3}), original);
+}
+
+TEST(TranslateTtErrorToC10Error, ForwardsReturnValuesAndMemberPointers) {
+  struct Helper {
+    std::string stored = "hello";
+    int Add(int a, int b) const { return a + b; }
+    const std::string& Stored() const { return stored; }
+    void Set(std::string value) { stored = std::move(value); }
+  };
+
+  EXPECT_EQ(TranslateTtErrorToC10Error([](int x) { return x * 2; }, 21), 42);
+
+  Helper helper;
+  EXPECT_EQ(TranslateTtErrorToC10Error(&Helper::Add, helper, 10, 5), 15);
+
+  const std::string& out = TranslateTtErrorToC10Error(&Helper::Stored, helper);
+  EXPECT_EQ(&out, &helper.stored);
+
+  TranslateTtErrorToC10Error(&Helper::Set, helper, "updated");
+  EXPECT_EQ(helper.stored, "updated");
+}
+
+void ThrowTtErrorWithCode(absl::StatusCode code, std::string_view message) {
+  TT_THROW_IF_ERROR(TT_ERROR(code) << message);
+}
+
+TEST(TranslateTtErrorToC10Error, TranslatesTtErrorByStatusCode) {
+  EXPECT_THROW(
+      TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                 error::kResourceExhausted, "out of memory"),
+      c10::OutOfMemoryError);
+  EXPECT_THROW(TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                          error::kPythonIndexError,
+                                          "index is out of bounds"),
+               c10::IndexError);
+  EXPECT_THROW(TranslateTtErrorToC10Error(&ThrowTtErrorWithCode,
+                                          error::kPythonNotImplementedError,
+                                          "operation is not implemented"),
+               c10::NotImplementedError);
+  try {
+    TranslateTtErrorToC10Error(&ThrowTtErrorWithCode, error::kInvalidArgument,
+                               "invalid argument value");
+    FAIL() << "Expected c10::Error";
+  } catch (const c10::OutOfMemoryError&) {
+    FAIL() << "Expected plain c10::Error, got c10::OutOfMemoryError";
+  } catch (const c10::IndexError&) {
+    FAIL() << "Expected plain c10::Error, got c10::IndexError";
+  } catch (const c10::NotImplementedError&) {
+    FAIL() << "Expected plain c10::Error, got c10::NotImplementedError";
+  } catch (const c10::Error& e) {
+    EXPECT_THAT(e.what(), HasSubstr("invalid argument value"));
+  }
+}
+
+TEST(TranslateTtErrorToC10Error, PropagatesNonTtErrorUnchanged) {
+  const auto throw_non_tt = []() {
+    throw std::logic_error("other");  // Tests non-TtError passthrough.
+  };
+  EXPECT_THROW(TranslateTtErrorToC10Error(throw_non_tt), std::logic_error);
 }
 
 }  // namespace

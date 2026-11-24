@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# adivinpatel04
+# ghpvnist
+
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
 
 package(
@@ -25,6 +29,7 @@ torch_tpu_cc_library(
     hdrs = ["einsum_aten_kernels.h"],
     deps = [
         "//csrc/common:aten_utils",
+        "//csrc/common:autograd_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
@@ -45,7 +50,6 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
-        "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/status",

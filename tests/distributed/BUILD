@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# basioli-k
-# cbasile-g
+# zacmustin
 # zhanyong-wan
-# jialei-chen
-# yilingyuan
 # ghpvnist
-# chizhang529
+# basioli-k
+# haifeng-jin
+# minospapa
+# lukeboyer
 
 load(
     "//build_files:build_defs.bzl",
@@ -75,6 +75,42 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_library(
+    name = "worker_supervisor",
+    testonly = True,
+    srcs = ["worker_supervisor.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "worker_supervisor_test",
+    # Worker startup dominates; several minutes under sanitizers.
+    timeout = "long",
+    srcs = ["worker_supervisor_test.py"],
+    # Spawned workers each import torch; exceeds the default Forge memory under
+    # sanitizers.
+    exec_properties = if_oss(
+        None,
+        select({
+            "//tools/cpp:sanitizer_build": {"test.mem": "24g"},
+            "//conditions:default": None,
+        }),
+    ),
+    tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
+    deps = [
+        ":worker_supervisor",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_library(
     name = "distributed_utils",
     testonly = True,
     srcs = [
@@ -82,6 +118,7 @@ torch_tpu_py_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":worker_supervisor",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
@@ -100,11 +137,11 @@ torch_tpu_py_test(
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = [
         ":distributed_utils",
+        ":worker_supervisor",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
     ],
@@ -194,6 +231,34 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "compile_cache_world_size_test",
+    timeout = "long",
+    srcs = ["compile_cache_world_size_test.py"],
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        REQUIRES_V5_MULTI_DEVICE,
+        # The world-size-1 phase calls topology(1), which does not exist on
+        # 2-TensorCore-per-chip TPU v7x ('No TPU topology found for count: 1').
+        "fails-on-tpu-v7",
+        "noasan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+        "nomsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+        "notsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+        "requires-accel-hbm",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "compile_cache_process_groups_test",
     timeout = "long",
     srcs = ["compile_cache_process_groups_test.py"],
@@ -253,7 +318,7 @@ torch_tpu_py_test(
         [],
         ["@pypi//torchcomms"],
     ) + [
-        ":distributed_utils",
+        ":continuous_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
@@ -317,6 +382,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -357,6 +423,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -471,6 +538,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
@@ -503,6 +571,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
@@ -709,9 +778,9 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "uneven_sharding_errors_test",
+    name = "uneven_sharding_collective_errors_test",
     timeout = "long",
-    srcs = ["uneven_sharding_errors_test.py"],
+    srcs = ["uneven_sharding_collective_errors_test.py"],
     args = if_oss(
         [],
         [
@@ -731,10 +800,13 @@ torch_tpu_py_test(
                 "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
             ]),
             "TORCH_DISABLE_ADDR2LINE": "1",
+            "TORCH_TPU_ENABLE_DEBUG_CHECKS": "0",
         },
-        {},
+        {
+            "TORCH_TPU_ENABLE_DEBUG_CHECKS": "0",
+        },
     ),
-    shard_count = 8,
+    shard_count = 4,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -757,7 +829,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "uneven_sharding_test",
     srcs = ["uneven_sharding_test.py"],
-    shard_count = 2,
+    env = {
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "0",
+    },
     tags = if_oss(
         ["exclusive"],
         [],
@@ -766,6 +840,34 @@ torch_tpu_py_test(
         "nomsan",  # Disabled due to b/516945438.
         "notsan",  # Disabled due to b/497035517.
         REQUIRES_V5_MULTI_DEVICE,
+    ],
+    deps = [
+        ":continuous_test_utils",
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "uneven_sharding_debug_checks_test",
+    srcs = ["uneven_sharding_test.py"],
+    env = {
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+    },
+    main = "uneven_sharding_test.py",
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        REQUIRES_V5_MULTI_DEVICE,
+        "noasan",  # Disabled due to b/497035517.
+        "nomsan",  # Disabled due to b/516945438.
+        "notsan",  # Disabled due to b/497035517.
     ],
     deps = [
         ":continuous_test_utils",
@@ -1051,6 +1153,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:handshake",
+        "//src/torch_tpu/_internal/distributed:handshake_messages",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
         "@pypi//pyzmq",
@@ -1073,6 +1176,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:handshake",
+        "//src/torch_tpu/_internal/distributed:handshake_messages",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
         "@pypi//portpicker",

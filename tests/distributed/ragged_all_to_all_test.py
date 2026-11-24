@@ -802,6 +802,75 @@ def run_ragged_all_to_all_no_grad_test() -> None:
   utils.assert_close(result.cpu(), expected)
 
 
+def run_ragged_all_to_all_compiled_autograd_test() -> None:
+  """Tests compiled fullgraph ragged_all_to_all forward and backward parity."""
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  group_name = dist.group.WORLD.group_name
+  hidden_dim, send_pad, recv_pad = 16, 3, 4
+
+  splits = (
+      torch.arange(world_size * world_size * 2, dtype=torch.int32) % 5
+  ).reshape(world_size, world_size, 2)
+  send_sizes = splits[rank].flatten()
+  recv_sizes = splits[:, rank].flatten()
+  in_offs = send_sizes.cumsum(0, dtype=torch.int32) - send_sizes
+  dst_splits = splits.permute(1, 0, 2).reshape(world_size, -1)
+  out_offs = (dst_splits.cumsum(1, dtype=torch.int32) - dst_splits)[
+      :, rank * 2 : (rank + 1) * 2
+  ].flatten()
+  total_send = int(send_sizes.sum())
+  send_cap = int(splits.sum(dim=(1, 2)).max()) + send_pad
+  recv_cap = int(splits.sum(dim=(0, 2)).max()) + recv_pad
+  args = tuple(t.to("tpu") for t in (in_offs, send_sizes, out_offs, recv_sizes))
+
+  eager_in = torch.randn(
+      (send_cap, hidden_dim),
+      dtype=torch.bfloat16,
+      device="tpu",
+      requires_grad=True,
+  )
+  comp_in = eager_in.detach().clone().requires_grad_(True)
+  out_init = torch.full(
+      (recv_cap, hidden_dim), -7.0, dtype=torch.bfloat16, device="tpu"
+  )
+  grad_out = torch.randn(
+      (recv_cap, hidden_dim), dtype=torch.bfloat16, device="tpu"
+  )
+
+  @torch.compile(backend="tpu", fullgraph=True)
+  def compiled_fn(
+      operand,
+      output,
+      input_offsets,
+      send_sizes,
+      output_offsets,
+      recv_sizes,
+  ):
+    return torch.tpu.ops.ragged_all_to_all(
+        operand,
+        output,
+        input_offsets,
+        send_sizes,
+        output_offsets,
+        recv_sizes,
+        group_name,
+    )
+
+  eager_res = torch.tpu.ops.ragged_all_to_all(
+      eager_in, out_init.clone(), *args, group_name
+  )
+  eager_res.backward(grad_out)
+  comp_res = compiled_fn(comp_in, out_init.clone(), *args)
+  comp_res.backward(grad_out)
+
+  utils.assert_close(comp_res.detach().cpu(), eager_res.detach().cpu())
+  utils.assert_close(comp_in.grad.cpu(), eager_in.grad.cpu())
+  utils.assert_close(
+      comp_in.grad[total_send:].cpu(),
+      torch.zeros((send_cap - total_send, hidden_dim), dtype=torch.bfloat16),
+  )
+
+
 class RaggedAllToAllTest(continuous_test_utils.TpuMultiProcContinuousTest):
   """Tests the ragged_all_to_all TPU collective operation and autograd.
 
@@ -848,6 +917,10 @@ class RaggedAllToAllTest(continuous_test_utils.TpuMultiProcContinuousTest):
   def test_ragged_all_to_all_no_grad(self):
     """Tests execution inside torch.no_grad() ensuring detached output and no grad state."""
     run_ragged_all_to_all_no_grad_test()
+
+  def test_ragged_all_to_all_compiled_autograd(self):
+    """Tests fullgraph torch.compile forward and backward with padding."""
+    run_ragged_all_to_all_compiled_autograd_test()
 
 
 if __name__ == "__main__":

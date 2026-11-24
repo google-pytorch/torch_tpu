@@ -31,6 +31,12 @@ at::Tensor AtenMseLossBackward(const at::Tensor& grad_output,
                                const at::Tensor& self, const at::Tensor& target,
                                int64_t reduction);
 
+at::Tensor& AtenMseLossBackwardGradInput(const at::Tensor& grad_output,
+                                         const at::Tensor& self,
+                                         const at::Tensor& target,
+                                         int64_t reduction,
+                                         at::Tensor& grad_input);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_MSE_LOSS_MSE_LOSS_ATEN_KERNELS_H_

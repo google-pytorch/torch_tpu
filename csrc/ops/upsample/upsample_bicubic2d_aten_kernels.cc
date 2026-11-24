@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -28,7 +29,6 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/string_view.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -213,7 +213,7 @@ absl::StatusOr<mlir::MlirOp> InterpolateSpatialDim(
   const mlir::Type calc_type = GetTensorTypeOrDie(operand).getElementType();
   mlir::MlirOp matrix = BuildBicubicInterpolationMatrix(
       builder, in_size, out_size, align_corners, scale, calc_type);
-  const c10::string_view equation =
+  const std::string_view equation =
       (direction == BicubicDirection::kBackward)
           ? (spatial_dim == kBicubicHeightDim ? "ncow,oh->nchw"
                                               : "ncho,ow->nchw")

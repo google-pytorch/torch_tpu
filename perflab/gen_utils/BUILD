@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # cbasile-g
-# yilingyuan
+# gjh8
 
 load(
     "//build_files:build_defs.bzl",

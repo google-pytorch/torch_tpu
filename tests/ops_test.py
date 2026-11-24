@@ -85,22 +85,46 @@ def _unbounded_dynamic_hits() -> int:
 
 
 def also_run_static(func):
-  """Also runs the test in ops_test_static, asserting no dynamic kernels ran."""
+  """Also runs the test in ops_test_static, asserting no dynamic kernels ran.
+
+  In the other targets, which load the dynamic kernels enabled by default, the
+  test fails if no dynamic kernel served any of its samples, so that the
+  kernels can't silently lose their coverage.
+
+  Args:
+    func: The test method of an op with dynamic kernels enabled by default.
+
+  Returns:
+    The wrapped test method.
+  """
 
   @functools.wraps(func)
   def wrapper(self, *args, **kwargs):
-    if not _unbounded_dynamic_kernels_disabled():
+    # Samples only run on the TPU if there is one, e.g. not when recording GPU
+    # goldens or dtype exclusions.
+    accelerator = torch.accelerator.current_accelerator()
+    if accelerator is None or accelerator.type != "tpu":
       return func(self, *args, **kwargs)
-
     hits_before = _unbounded_dynamic_hits()
     result = func(self, *args, **kwargs)
     torch.accelerator.synchronize()
-    self.assertEqual(
-        _unbounded_dynamic_hits() - hits_before,
-        0,
-        "Lookups served by unbounded dynamic kernels, although"
-        f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
-    )
+    hits = _unbounded_dynamic_hits() - hits_before
+    if _unbounded_dynamic_kernels_disabled():
+      self.assertEqual(
+          hits,
+          0,
+          "Lookups served by unbounded dynamic kernels, although"
+          f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
+      )
+    # The served samples may be filtered out by the dtypes or the sample limit.
+    elif self._subtests_run and op_testing.runs_all_samples():
+      self.assertGreater(
+          hits,
+          0,
+          f"No unbounded dynamic kernel served {self._testMethodName}, which"
+          " is marked with @also_run_static: its dynamic kernels have no"
+          " coverage.",
+      )
     return result
 
   setattr(wrapper, _ALSO_RUN_STATIC_ATTR, True)
@@ -581,7 +605,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"rtol": 3.3e-2, "atol": 8e-2},
     },
     "nn.functional.linear": {
-        torch.bfloat16: {"rtol": 8.7e-3, "atol": 1.9e-2},
+        torch.bfloat16: {"atol": 4.7e-3},
         torch.complex64: {"rtol": 2.2e-2, "atol": 3.5e-2},
         torch.float16: {"rtol": 1.9e-2, "atol": 1.5e-2},
         torch.float32: {"rtol": 2.0e-2, "atol": 1.7e-2},
@@ -1327,8 +1351,17 @@ if oss_utils.is_oss():
 
 
 def _if_tpu_vs_gpu_compiled(true_value: Any, false_value: Any) -> Any:
-  """Returns true_value if the test is TPU vs GPU compiled, false_value otherwise."""
-  return true_value if op_testing.is_tpu_vs_gpu_compiled() else false_value
+  """Returns true_value for compiled GPU-golden exclusions.
+
+  Evaluates to `true_value` during compiled TPU replay and golden recording
+  so `_out_casting_tests` selects matching pairs. Call
+  `op_testing.is_tpu_vs_gpu_compiled()` for replay-only options.
+  """
+  if op_testing.is_tpu_vs_gpu_compiled() or (
+      op_testing._gen_gpu_golden_mode() and op_testing.is_compiled_mode()
+  ):
+    return true_value
+  return false_value
 
 
 class TestOps(op_testing.OpInfoTestBase):
@@ -3210,6 +3243,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_normal_(self):
     self.do_test_op(
         "normal",
+        variant_test_name="in_place",
         # By definition, normal() returns a tensor with random values, so
         # there's no point in checking the values.
         check_value=CheckValueMode.SKIP,
@@ -3961,6 +3995,14 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("unfold")
 
   def test_unique(self):
+    if (
+        not op_testing._CHECK_DYNAMISM.value
+        and op_testing.is_compiled_mode()
+        and not op_testing._gen_gpu_golden_mode()
+    ):
+      self.skipTest(
+          "TODO(b/584809741): unique is not supported in static compiled mode."
+      )
     self.do_test_op(
         "unique",
         # PyTorch autograd backward is not implemented for _unique2.
@@ -3971,8 +4013,7 @@ class TestOps(op_testing.OpInfoTestBase):
         skip_if=lambda _variant, op_input: (
             not op_testing._CHECK_DYNAMISM.value
             and (
-                op_testing.is_compiled_mode()
-                or (
+                (
                     not op_input.kwargs.get("sorted", True)
                     and op_input.kwargs.get("dim") is None
                 )
@@ -4232,6 +4273,1638 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=((torch.float64,) + COMPLEX_DTYPES + INTEGRAL_DTYPES),
         check_grad=False,
     )
+
+  @op_testing.unimplemented_on_tpu
+  def test_H(self):
+    self.do_test_op("H")
+
+  @op_testing.unimplemented_on_tpu
+  def test_T(self):
+    self.do_test_op("T")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_getitem(self):
+    self.do_test_op("__getitem__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_radd(self):
+    self.do_test_op("__radd__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rand(self):
+    self.do_test_op("__rand__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rdiv(self):
+    self.do_test_op("__rdiv__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rmatmul(self):
+    self.do_test_op("__rmatmul__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rmod(self):
+    self.do_test_op("__rmod__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rmul(self):
+    self.do_test_op("__rmul__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_ror(self):
+    self.do_test_op("__ror__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rpow(self):
+    self.do_test_op("__rpow__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rsub(self):
+    self.do_test_op("__rsub__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dunder_rxor(self):
+    self.do_test_op("__rxor__")
+
+  @op_testing.unimplemented_on_tpu
+  def test_batch_norm_with_update(self):
+    self.do_test_op("_batch_norm_with_update")
+
+  @op_testing.unimplemented_on_tpu
+  def test_chunk_cat(self):
+    self.do_test_op("_chunk_cat")
+
+  @category("foreach")
+  @op_testing.unimplemented_on_tpu
+  def test_foreach_clone(self):
+    self.do_test_op("_foreach_clone")
+
+  @category("foreach")
+  @op_testing.unimplemented_on_tpu
+  def test_foreach_mm(self):
+    self.do_test_op("_foreach_mm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unsafe_masked_index(self):
+    self.do_test_op("_unsafe_masked_index")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unsafe_masked_index_put_accumulate(self):
+    self.do_test_op("_unsafe_masked_index_put_accumulate")
+
+  @op_testing.unimplemented_on_tpu
+  def test_addbmm(self):
+    self.do_test_op("addbmm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_addmm_decomposed(self):
+    self.do_test_op("addmm", variant_test_name="decomposed")
+
+  @op_testing.unimplemented_on_tpu
+  def test_addr(self):
+    self.do_test_op("addr")
+
+  @op_testing.unimplemented_on_tpu
+  def test_alias_copy(self):
+    self.do_test_op("alias_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_allclose(self):
+    self.do_test_op("allclose")
+
+  @op_testing.unimplemented_on_tpu
+  def test_argsort(self):
+    self.do_test_op("argsort")
+
+  @op_testing.unimplemented_on_tpu
+  def test_argwhere(self):
+    self.do_test_op("argwhere")
+
+  @op_testing.unimplemented_on_tpu
+  def test_as_strided_partial_views(self):
+    self.do_test_op("as_strided", variant_test_name="partial_views")
+
+  @op_testing.unimplemented_on_tpu
+  def test_as_strided_copy(self):
+    self.do_test_op("as_strided_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_as_strided_scatter(self):
+    self.do_test_op("as_strided_scatter")
+
+  @op_testing.unimplemented_on_tpu
+  def test_atleast_1d(self):
+    self.do_test_op("atleast_1d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_atleast_2d(self):
+    self.do_test_op("atleast_2d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_atleast_3d(self):
+    self.do_test_op("atleast_3d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_bfloat16(self):
+    self.do_test_op("bfloat16")
+
+  @op_testing.unimplemented_on_tpu
+  def test_block_diag(self):
+    self.do_test_op("block_diag")
+
+  @op_testing.unimplemented_on_tpu
+  def test_bool(self):
+    self.do_test_op("bool")
+
+  @op_testing.unimplemented_on_tpu
+  def test_broadcast_shapes(self):
+    self.do_test_op("broadcast_shapes")
+
+  @op_testing.unimplemented_on_tpu
+  def test_broadcast_tensors(self):
+    self.do_test_op("broadcast_tensors")
+
+  @op_testing.unimplemented_on_tpu
+  def test_broadcast_to(self):
+    self.do_test_op("broadcast_to")
+
+  @op_testing.unimplemented_on_tpu
+  def test_byte(self):
+    self.do_test_op("byte")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cartesian_prod(self):
+    self.do_test_op("cartesian_prod")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cauchy(self):
+    self.do_test_op("cauchy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cdouble(self):
+    self.do_test_op("cdouble")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cfloat(self):
+    self.do_test_op("cfloat")
+
+  @op_testing.unimplemented_on_tpu
+  def test_chalf(self):
+    self.do_test_op("chalf")
+
+  @op_testing.unimplemented_on_tpu
+  def test_char(self):
+    self.do_test_op("char")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cholesky_inverse(self):
+    self.do_test_op("cholesky_inverse")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cholesky_solve(self):
+    self.do_test_op("cholesky_solve")
+
+  @op_testing.unimplemented_on_tpu
+  def test_chunk(self):
+    self.do_test_op("chunk")
+
+  @op_testing.unimplemented_on_tpu
+  def test_column_stack(self):
+    self.do_test_op("column_stack")
+
+  @op_testing.unimplemented_on_tpu
+  def test_combinations(self):
+    self.do_test_op("combinations")
+
+  @op_testing.unimplemented_on_tpu
+  def test_contiguous(self):
+    self.do_test_op("contiguous")
+
+  @op_testing.unimplemented_on_tpu
+  def test_copysign(self):
+    self.do_test_op("copysign")
+
+  @op_testing.unimplemented_on_tpu
+  def test_corrcoef(self):
+    self.do_test_op("corrcoef")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cov(self):
+    self.do_test_op("cov")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cross(self):
+    self.do_test_op("cross")
+
+  @op_testing.unimplemented_on_tpu
+  def test_cumulative_trapezoid(self):
+    self.do_test_op("cumulative_trapezoid")
+
+  @op_testing.unimplemented_on_tpu
+  def test_deg2rad(self):
+    self.do_test_op("deg2rad")
+
+  @op_testing.unimplemented_on_tpu
+  def test_diag(self):
+    self.do_test_op("diag")
+
+  @op_testing.unimplemented_on_tpu
+  def test_diag_embed(self):
+    self.do_test_op("diag_embed")
+
+  @op_testing.unimplemented_on_tpu
+  def test_diagflat(self):
+    self.do_test_op("diagflat")
+
+  @op_testing.unimplemented_on_tpu
+  def test_diagonal_copy(self):
+    self.do_test_op("diagonal_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_diagonal_scatter(self):
+    self.do_test_op("diagonal_scatter")
+
+  @op_testing.unimplemented_on_tpu
+  def test_diff(self):
+    self.do_test_op("diff")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dist(self):
+    self.do_test_op("dist")
+
+  @op_testing.unimplemented_on_tpu
+  def test_div_floor_rounding(self):
+    self.do_test_op("div", variant_test_name="floor_rounding")
+
+  @op_testing.unimplemented_on_tpu
+  def test_div_trunc_rounding(self):
+    self.do_test_op("div", variant_test_name="trunc_rounding")
+
+  @op_testing.unimplemented_on_tpu
+  def test_double(self):
+    self.do_test_op("double")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dsplit(self):
+    self.do_test_op("dsplit")
+
+  @op_testing.unimplemented_on_tpu
+  def test_dstack(self):
+    self.do_test_op("dstack")
+
+  @op_testing.unimplemented_on_tpu
+  def test_empty_like(self):
+    self.do_test_op("empty_like")
+
+  @op_testing.unimplemented_on_tpu
+  def test_empty_permuted(self):
+    self.do_test_op("empty_permuted")
+
+  @op_testing.unimplemented_on_tpu
+  def test_erfc(self):
+    self.do_test_op("erfc")
+
+  @op_testing.unimplemented_on_tpu
+  def test_expand_as(self):
+    self.do_test_op("expand_as")
+
+  @op_testing.unimplemented_on_tpu
+  def test_expand_copy(self):
+    self.do_test_op("expand_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_fft2(self):
+    self.do_test_op("fft.fft2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_fftn(self):
+    self.do_test_op("fft.fftn")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_fftshift(self):
+    self.do_test_op("fft.fftshift")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_hfft(self):
+    self.do_test_op("fft.hfft")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_hfft2(self):
+    self.do_test_op("fft.hfft2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_hfftn(self):
+    self.do_test_op("fft.hfftn")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_ifft2(self):
+    self.do_test_op("fft.ifft2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_ifftn(self):
+    self.do_test_op("fft.ifftn")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_ifftshift(self):
+    self.do_test_op("fft.ifftshift")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_ihfft(self):
+    self.do_test_op("fft.ihfft")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_ihfft2(self):
+    self.do_test_op("fft.ihfft2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_ihfftn(self):
+    self.do_test_op("fft.ihfftn")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_irfft2(self):
+    self.do_test_op("fft.irfft2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_irfftn(self):
+    self.do_test_op("fft.irfftn")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_rfft2(self):
+    self.do_test_op("fft.rfft2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fft_rfftn(self):
+    self.do_test_op("fft.rfftn")
+
+  @op_testing.unimplemented_on_tpu
+  def test_fliplr(self):
+    self.do_test_op("fliplr")
+
+  @op_testing.unimplemented_on_tpu
+  def test_flipud(self):
+    self.do_test_op("flipud")
+
+  @op_testing.unimplemented_on_tpu
+  def test_float(self):
+    self.do_test_op("float")
+
+  @op_testing.unimplemented_on_tpu
+  def test_float_power(self):
+    self.do_test_op("float_power")
+
+  @op_testing.unimplemented_on_tpu
+  def test_frexp(self):
+    self.do_test_op("frexp")
+
+  @op_testing.unimplemented_on_tpu
+  def test_gcd(self):
+    self.do_test_op("gcd")
+
+  @op_testing.unimplemented_on_tpu
+  def test_geometric(self):
+    self.do_test_op("geometric")
+
+  @op_testing.unimplemented_on_tpu
+  def test_gradient(self):
+    self.do_test_op("gradient")
+
+  @op_testing.unimplemented_on_tpu
+  def test_grid_sampler_2d(self):
+    self.do_test_op("grid_sampler_2d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_grid_sampler_3d(self):
+    self.do_test_op("grid_sampler_3d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_half(self):
+    self.do_test_op("half")
+
+  @op_testing.unimplemented_on_tpu
+  def test_hash_tensor(self):
+    self.do_test_op("hash_tensor")
+
+  @op_testing.unimplemented_on_tpu
+  def test_heaviside(self):
+    self.do_test_op("heaviside")
+
+  @op_testing.unimplemented_on_tpu
+  def test_histogram(self):
+    self.do_test_op("histogram")
+
+  @op_testing.unimplemented_on_tpu
+  def test_histogramdd(self):
+    self.do_test_op("histogramdd")
+
+  @op_testing.unimplemented_on_tpu
+  def test_hsplit(self):
+    self.do_test_op("hsplit")
+
+  @op_testing.unimplemented_on_tpu
+  def test_hstack(self):
+    self.do_test_op("hstack")
+
+  @op_testing.unimplemented_on_tpu
+  def test_hypot(self):
+    self.do_test_op("hypot")
+
+  @op_testing.unimplemented_on_tpu
+  def test_i0(self):
+    self.do_test_op("i0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_igamma(self):
+    self.do_test_op("igamma")
+
+  @op_testing.unimplemented_on_tpu
+  def test_igammac(self):
+    self.do_test_op("igammac")
+
+  @op_testing.unimplemented_on_tpu
+  def test_imag(self):
+    self.do_test_op("imag")
+
+  @op_testing.unimplemented_on_tpu
+  def test_inner(self):
+    self.do_test_op("inner")
+
+  @op_testing.unimplemented_on_tpu
+  def test_int(self):
+    self.do_test_op("int")
+
+  @op_testing.unimplemented_on_tpu
+  def test_isclose(self):
+    self.do_test_op("isclose")
+
+  @op_testing.unimplemented_on_tpu
+  def test_isreal(self):
+    self.do_test_op("isreal")
+
+  @op_testing.unimplemented_on_tpu
+  def test_istft(self):
+    self.do_test_op("istft")
+
+  @op_testing.unimplemented_on_tpu
+  def test_item(self):
+    self.do_test_op("item")
+
+  @op_testing.unimplemented_on_tpu
+  def test_kthvalue(self):
+    self.do_test_op("kthvalue")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_cholesky(self):
+    self.do_test_op("linalg.cholesky")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_cond(self):
+    self.do_test_op("linalg.cond")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_cross(self):
+    self.do_test_op("linalg.cross")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_det(self):
+    self.do_test_op("linalg.det")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_diagonal(self):
+    self.do_test_op("linalg.diagonal")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_eig(self):
+    self.do_test_op("linalg.eig")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_eigh(self):
+    self.do_test_op("linalg.eigh")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_eigvals(self):
+    self.do_test_op("linalg.eigvals")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_eigvalsh(self):
+    self.do_test_op("linalg.eigvalsh")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_householder_product(self):
+    self.do_test_op("linalg.householder_product")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_inv_ex(self):
+    self.do_test_op("linalg.inv_ex")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_ldl_factor(self):
+    self.do_test_op("linalg.ldl_factor")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_ldl_factor_ex(self):
+    self.do_test_op("linalg.ldl_factor_ex")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_ldl_solve(self):
+    self.do_test_op("linalg.ldl_solve")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_lstsq(self):
+    self.do_test_op("linalg.lstsq")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_lstsq_grad_oriented(self):
+    self.do_test_op("linalg.lstsq", variant_test_name="grad_oriented")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_lu_factor(self):
+    self.do_test_op("linalg.lu_factor")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_matrix_norm(self):
+    self.do_test_op("linalg.matrix_norm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_matrix_power(self):
+    self.do_test_op("linalg.matrix_power")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_matrix_rank(self):
+    self.do_test_op("linalg.matrix_rank")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_matrix_rank_hermitian(self):
+    self.do_test_op("linalg.matrix_rank", variant_test_name="hermitian")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_matrix_sqrth(self):
+    self.do_test_op("linalg.matrix_sqrth")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_multi_dot(self):
+    self.do_test_op("linalg.multi_dot")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_norm(self):
+    self.do_test_op("linalg.norm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_norm_subgradients_at_zero(self):
+    self.do_test_op("linalg.norm", variant_test_name="subgradients_at_zero")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_pinv(self):
+    self.do_test_op("linalg.pinv")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_pinv_hermitian(self):
+    self.do_test_op("linalg.pinv", variant_test_name="hermitian")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_pinv_singular(self):
+    self.do_test_op("linalg.pinv", variant_test_name="singular")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_polar(self):
+    self.do_test_op("linalg.polar")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_slogdet(self):
+    self.do_test_op("linalg.slogdet")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_solve(self):
+    self.do_test_op("linalg.solve")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_tensorinv(self):
+    self.do_test_op("linalg.tensorinv")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_tensorsolve(self):
+    self.do_test_op("linalg.tensorsolve")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_vander(self):
+    self.do_test_op("linalg.vander")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linalg_vecdot(self):
+    self.do_test_op("linalg.vecdot")
+
+  @op_testing.unimplemented_on_tpu
+  def test_linspace_tensor_overload(self):
+    self.do_test_op("linspace", variant_test_name="tensor_overload")
+
+  @op_testing.unimplemented_on_tpu
+  def test_log_normal(self):
+    self.do_test_op("log_normal")
+
+  @op_testing.unimplemented_on_tpu
+  def test_log_softmax_with_dtype(self):
+    self.do_test_op("log_softmax", variant_test_name="with_dtype")
+
+  @op_testing.unimplemented_on_tpu
+  def test_logaddexp(self):
+    self.do_test_op("logaddexp")
+
+  @op_testing.unimplemented_on_tpu
+  def test_logaddexp2(self):
+    self.do_test_op("logaddexp2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_logdet(self):
+    self.do_test_op("logdet")
+
+  @op_testing.unimplemented_on_tpu
+  def test_logspace(self):
+    self.do_test_op("logspace")
+
+  @op_testing.unimplemented_on_tpu
+  def test_logspace_tensor_overload(self):
+    self.do_test_op("logspace", variant_test_name="tensor_overload")
+
+  @op_testing.unimplemented_on_tpu
+  def test_logsumexp(self):
+    self.do_test_op("logsumexp")
+
+  @op_testing.unimplemented_on_tpu
+  def test_long(self):
+    self.do_test_op("long")
+
+  @op_testing.unimplemented_on_tpu
+  def test_lu(self):
+    self.do_test_op("lu")
+
+  @op_testing.unimplemented_on_tpu
+  def test_lu_solve(self):
+    self.do_test_op("lu_solve")
+
+  @op_testing.unimplemented_on_tpu
+  def test_mH(self):
+    self.do_test_op("mH")
+
+  @op_testing.unimplemented_on_tpu
+  def test_mT(self):
+    self.do_test_op("mT")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_amax(self):
+    self.do_test_op("masked.amax")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_amin(self):
+    self.do_test_op("masked.amin")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_argmax(self):
+    self.do_test_op("masked.argmax")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_argmin(self):
+    self.do_test_op("masked.argmin")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_cumprod(self):
+    self.do_test_op("masked.cumprod")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_cumsum(self):
+    self.do_test_op("masked.cumsum")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_log_softmax(self):
+    self.do_test_op("masked.log_softmax")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_logaddexp(self):
+    self.do_test_op("masked.logaddexp")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_logsumexp(self):
+    self.do_test_op("masked.logsumexp")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_mean(self):
+    self.do_test_op("masked.mean")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_median(self):
+    self.do_test_op("masked.median")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_norm(self):
+    self.do_test_op("masked.norm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_normalize(self):
+    self.do_test_op("masked.normalize")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_prod(self):
+    self.do_test_op("masked.prod")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_softmax_2(self):
+    self.do_test_op("masked.softmax")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_softmin(self):
+    self.do_test_op("masked.softmin")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_std(self):
+    self.do_test_op("masked.std")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_sum(self):
+    self.do_test_op("masked.sum")
+
+  @op_testing.unimplemented_on_tpu
+  def test_masked_var(self):
+    self.do_test_op("masked.var")
+
+  @op_testing.unimplemented_on_tpu
+  def test_matrix_exp(self):
+    self.do_test_op("matrix_exp")
+
+  @op_testing.unimplemented_on_tpu
+  def test_max_binary(self):
+    self.do_test_op("max", variant_test_name="binary")
+
+  @op_testing.unimplemented_on_tpu
+  def test_max_reduction_no_dim(self):
+    self.do_test_op("max", variant_test_name="reduction_no_dim")
+
+  @op_testing.unimplemented_on_tpu
+  def test_max_pool2d_with_indices_backward(self):
+    self.do_test_op("max_pool2d_with_indices_backward")
+
+  @op_testing.unimplemented_on_tpu
+  def test_median(self):
+    self.do_test_op("median")
+
+  @op_testing.unimplemented_on_tpu
+  def test_meshgrid_list_of_tensors(self):
+    self.do_test_op("meshgrid", variant_test_name="list_of_tensors")
+
+  @op_testing.unimplemented_on_tpu
+  def test_meshgrid_variadic_tensors(self):
+    self.do_test_op("meshgrid", variant_test_name="variadic_tensors")
+
+  @op_testing.unimplemented_on_tpu
+  def test_min_binary(self):
+    self.do_test_op("min", variant_test_name="binary")
+
+  @op_testing.unimplemented_on_tpu
+  def test_min_reduction_no_dim(self):
+    self.do_test_op("min", variant_test_name="reduction_no_dim")
+
+  @op_testing.unimplemented_on_tpu
+  def test_mode(self):
+    self.do_test_op("mode")
+
+  @op_testing.unimplemented_on_tpu
+  def test_movedim(self):
+    self.do_test_op("movedim")
+
+  @op_testing.unimplemented_on_tpu
+  def test_msort(self):
+    self.do_test_op("msort")
+
+  @op_testing.unimplemented_on_tpu
+  def test_mv(self):
+    self.do_test_op("mv")
+
+  @op_testing.unimplemented_on_tpu
+  def test_mvlgamma_mvlgamma_p_1(self):
+    self.do_test_op("mvlgamma", variant_test_name="mvlgamma_p_1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_mvlgamma_mvlgamma_p_3(self):
+    self.do_test_op("mvlgamma", variant_test_name="mvlgamma_p_3")
+
+  @op_testing.unimplemented_on_tpu
+  def test_mvlgamma_mvlgamma_p_5(self):
+    self.do_test_op("mvlgamma", variant_test_name="mvlgamma_p_5")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nanmean(self):
+    self.do_test_op("nanmean")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nanmedian(self):
+    self.do_test_op("nanmedian")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nanquantile(self):
+    self.do_test_op("nanquantile")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nansum(self):
+    self.do_test_op("nansum")
+
+  @op_testing.unimplemented_on_tpu
+  def test_narrow(self):
+    self.do_test_op("narrow")
+
+  @op_testing.unimplemented_on_tpu
+  def test_narrow_copy(self):
+    self.do_test_op("narrow_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_native_group_norm_2(self):
+    self.do_test_op("native_group_norm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_new_empty(self):
+    self.do_test_op("new_empty")
+
+  @op_testing.unimplemented_on_tpu
+  def test_new_empty_strided(self):
+    self.do_test_op("new_empty_strided")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nextafter(self):
+    self.do_test_op("nextafter")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_adaptive_avg_pool1d(self):
+    self.do_test_op("nn.functional.adaptive_avg_pool1d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_adaptive_max_pool1d(self):
+    self.do_test_op("nn.functional.adaptive_max_pool1d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_adaptive_max_pool3d(self):
+    self.do_test_op("nn.functional.adaptive_max_pool3d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_alpha_dropout(self):
+    self.do_test_op("nn.functional.alpha_dropout")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_batch_norm_without_cudnn(self):
+    self.do_test_op(
+        "nn.functional.batch_norm", variant_test_name="without_cudnn"
+    )
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_bilinear(self):
+    self.do_test_op("nn.functional.bilinear")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_binary_cross_entropy_with_logits(self):
+    self.do_test_op("nn.functional.binary_cross_entropy_with_logits")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_celu(self):
+    self.do_test_op("nn.functional.celu")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_cosine_embedding_loss(self):
+    self.do_test_op("nn.functional.cosine_embedding_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_cosine_similarity(self):
+    self.do_test_op("nn.functional.cosine_similarity")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_dropout(self):
+    self.do_test_op("nn.functional.dropout")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_dropout2d(self):
+    self.do_test_op("nn.functional.dropout2d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_dropout3d(self):
+    self.do_test_op("nn.functional.dropout3d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_feature_alpha_dropout_with_train(self):
+    self.do_test_op(
+        "nn.functional.feature_alpha_dropout", variant_test_name="with_train"
+    )
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_feature_alpha_dropout_without_train(self):
+    self.do_test_op(
+        "nn.functional.feature_alpha_dropout", variant_test_name="without_train"
+    )
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_fractional_max_pool2d(self):
+    self.do_test_op("nn.functional.fractional_max_pool2d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_fractional_max_pool3d(self):
+    self.do_test_op("nn.functional.fractional_max_pool3d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_gaussian_nll_loss(self):
+    self.do_test_op("nn.functional.gaussian_nll_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_hardshrink(self):
+    self.do_test_op("nn.functional.hardshrink")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_hinge_embedding_loss(self):
+    self.do_test_op("nn.functional.hinge_embedding_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_huber_loss(self):
+    self.do_test_op("nn.functional.huber_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_instance_norm(self):
+    self.do_test_op("nn.functional.instance_norm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_interpolate_area(self):
+    self.do_test_op("nn.functional.interpolate", variant_test_name="area")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_interpolate_bilinear(self):
+    self.do_test_op("nn.functional.interpolate", variant_test_name="bilinear")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_interpolate_nearest(self):
+    self.do_test_op("nn.functional.interpolate", variant_test_name="nearest")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_interpolate_trilinear(self):
+    self.do_test_op("nn.functional.interpolate", variant_test_name="trilinear")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_kl_div(self):
+    self.do_test_op("nn.functional.kl_div")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_l1_loss(self):
+    self.do_test_op("nn.functional.l1_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_layer_norm(self):
+    self.do_test_op("nn.functional.layer_norm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_linear_cross_entropy(self):
+    self.do_test_op("nn.functional.linear_cross_entropy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_linear_cross_entropy_chunked(self):
+    self.do_test_op(
+        "nn.functional.linear_cross_entropy", variant_test_name="chunked"
+    )
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_linear_cross_entropy_chunked_none(self):
+    self.do_test_op(
+        "nn.functional.linear_cross_entropy", variant_test_name="chunked_none"
+    )
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_local_response_norm(self):
+    self.do_test_op("nn.functional.local_response_norm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_margin_ranking_loss(self):
+    self.do_test_op("nn.functional.margin_ranking_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_max_unpool1d(self):
+    self.do_test_op("nn.functional.max_unpool1d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_max_unpool1d_grad(self):
+    self.do_test_op("nn.functional.max_unpool1d", variant_test_name="grad")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_max_unpool2d(self):
+    self.do_test_op("nn.functional.max_unpool2d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_max_unpool2d_grad(self):
+    self.do_test_op("nn.functional.max_unpool2d", variant_test_name="grad")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_max_unpool3d(self):
+    self.do_test_op("nn.functional.max_unpool3d")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_max_unpool3d_grad(self):
+    self.do_test_op("nn.functional.max_unpool3d", variant_test_name="grad")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_mish(self):
+    self.do_test_op("nn.functional.mish")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_multi_head_attention_forward(self):
+    self.do_test_op("nn.functional.multi_head_attention_forward")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_multi_margin_loss(self):
+    self.do_test_op("nn.functional.multi_margin_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_multilabel_margin_loss(self):
+    self.do_test_op("nn.functional.multilabel_margin_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_multilabel_soft_margin_loss(self):
+    self.do_test_op("nn.functional.multilabel_soft_margin_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_normalize(self):
+    self.do_test_op("nn.functional.normalize")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_one_hot(self):
+    self.do_test_op("nn.functional.one_hot")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_pad_circular(self):
+    self.do_test_op("nn.functional.pad", variant_test_name="circular")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_pad_constant(self):
+    self.do_test_op("nn.functional.pad", variant_test_name="constant")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_pad_replicate_negative(self):
+    self.do_test_op("nn.functional.pad", variant_test_name="replicate_negative")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_pairwise_distance(self):
+    self.do_test_op("nn.functional.pairwise_distance")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_pixel_shuffle(self):
+    self.do_test_op("nn.functional.pixel_shuffle")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_pixel_unshuffle(self):
+    self.do_test_op("nn.functional.pixel_unshuffle")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_poisson_nll_loss(self):
+    self.do_test_op("nn.functional.poisson_nll_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_relu6(self):
+    self.do_test_op("nn.functional.relu6")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_rrelu(self):
+    self.do_test_op("nn.functional.rrelu")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_selu(self):
+    self.do_test_op("nn.functional.selu")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_silu_complex(self):
+    self.do_test_op("nn.functional.silu", variant_test_name="complex")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_smooth_l1_loss(self):
+    self.do_test_op("nn.functional.smooth_l1_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_soft_margin_loss(self):
+    self.do_test_op("nn.functional.soft_margin_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_softmin(self):
+    self.do_test_op("nn.functional.softmin")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_softmin_with_dtype(self):
+    self.do_test_op("nn.functional.softmin", variant_test_name="with_dtype")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_softshrink(self):
+    self.do_test_op("nn.functional.softshrink")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_softsign(self):
+    self.do_test_op("nn.functional.softsign")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_tanhshrink(self):
+    self.do_test_op("nn.functional.tanhshrink")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_triplet_margin_loss(self):
+    self.do_test_op("nn.functional.triplet_margin_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nn_functional_triplet_margin_with_distance_loss(self):
+    self.do_test_op("nn.functional.triplet_margin_with_distance_loss")
+
+  @op_testing.unimplemented_on_tpu
+  def test_nonzero_static(self):
+    self.do_test_op("nonzero_static")
+
+  @op_testing.unimplemented_on_tpu
+  def test_norm_fro(self):
+    self.do_test_op("norm", variant_test_name="fro")
+
+  @op_testing.unimplemented_on_tpu
+  def test_norm_inf(self):
+    self.do_test_op("norm", variant_test_name="inf")
+
+  @op_testing.unimplemented_on_tpu
+  def test_norm_nuc(self):
+    self.do_test_op("norm", variant_test_name="nuc")
+
+  @op_testing.unimplemented_on_tpu
+  def test_normal(self):
+    self.do_test_op("normal", variant_test_name="")
+
+  @op_testing.unimplemented_on_tpu
+  def test_normal_number_mean(self):
+    self.do_test_op("normal", variant_test_name="number_mean")
+
+  @op_testing.unimplemented_on_tpu
+  def test_ormqr(self):
+    self.do_test_op("ormqr")
+
+  @op_testing.unimplemented_on_tpu
+  def test_outer(self):
+    self.do_test_op("outer")
+
+  @op_testing.unimplemented_on_tpu
+  def test_pca_lowrank(self):
+    self.do_test_op("pca_lowrank")
+
+  @op_testing.unimplemented_on_tpu
+  def test_permute_copy(self):
+    self.do_test_op("permute_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_pinverse(self):
+    self.do_test_op("pinverse")
+
+  @op_testing.unimplemented_on_tpu
+  def test_polygamma_polygamma_n_1(self):
+    self.do_test_op("polygamma", variant_test_name="polygamma_n_1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_polygamma_polygamma_n_2(self):
+    self.do_test_op("polygamma", variant_test_name="polygamma_n_2")
+
+  @op_testing.unimplemented_on_tpu
+  def test_polygamma_polygamma_n_3(self):
+    self.do_test_op("polygamma", variant_test_name="polygamma_n_3")
+
+  @op_testing.unimplemented_on_tpu
+  def test_polygamma_polygamma_n_4(self):
+    self.do_test_op("polygamma", variant_test_name="polygamma_n_4")
+
+  @op_testing.unimplemented_on_tpu
+  def test_positive(self):
+    self.do_test_op("positive")
+
+  @op_testing.unimplemented_on_tpu
+  def test_quantile(self):
+    self.do_test_op("quantile")
+
+  @op_testing.unimplemented_on_tpu
+  def test_rad2deg(self):
+    self.do_test_op("rad2deg")
+
+  @op_testing.unimplemented_on_tpu
+  def test_rand_like(self):
+    self.do_test_op("rand_like")
+
+  @op_testing.unimplemented_on_tpu
+  def test_randint_like(self):
+    self.do_test_op("randint_like")
+
+  @op_testing.unimplemented_on_tpu
+  def test_randn_like(self):
+    self.do_test_op("randn_like")
+
+  @op_testing.unimplemented_on_tpu
+  def test_ravel(self):
+    self.do_test_op("ravel")
+
+  @op_testing.unimplemented_on_tpu
+  def test_real(self):
+    self.do_test_op("real")
+
+  @op_testing.unimplemented_on_tpu
+  def test_renorm(self):
+    self.do_test_op("renorm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_reshape_as(self):
+    self.do_test_op("reshape_as")
+
+  @op_testing.unimplemented_on_tpu
+  def test_resize_as(self):
+    self.do_test_op("resize_as_")
+
+  @op_testing.unimplemented_on_tpu
+  def test_rot90(self):
+    self.do_test_op("rot90")
+
+  @op_testing.unimplemented_on_tpu
+  def test_round_decimals_0(self):
+    self.do_test_op("round", variant_test_name="decimals_0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_round_decimals_3(self):
+    self.do_test_op("round", variant_test_name="decimals_3")
+
+  @op_testing.unimplemented_on_tpu
+  def test_round_decimals_neg_3(self):
+    self.do_test_op("round", variant_test_name="decimals_neg_3")
+
+  @op_testing.unimplemented_on_tpu
+  def test_scatter_reduce_amax(self):
+    self.do_test_op("scatter_reduce", variant_test_name="amax")
+
+  @op_testing.unimplemented_on_tpu
+  def test_scatter_reduce_amin(self):
+    self.do_test_op("scatter_reduce", variant_test_name="amin")
+
+  @op_testing.unimplemented_on_tpu
+  def test_scatter_reduce_mean(self):
+    self.do_test_op("scatter_reduce", variant_test_name="mean")
+
+  @op_testing.unimplemented_on_tpu
+  def test_scatter_reduce_prod(self):
+    self.do_test_op("scatter_reduce", variant_test_name="prod")
+
+  @op_testing.unimplemented_on_tpu
+  def test_short(self):
+    self.do_test_op("short")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_bartlett(self):
+    self.do_test_op("signal.windows.bartlett")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_blackman(self):
+    self.do_test_op("signal.windows.blackman")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_cosine(self):
+    self.do_test_op("signal.windows.cosine")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_exponential(self):
+    self.do_test_op("signal.windows.exponential")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_gaussian(self):
+    self.do_test_op("signal.windows.gaussian")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_general_cosine(self):
+    self.do_test_op("signal.windows.general_cosine")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_general_hamming(self):
+    self.do_test_op("signal.windows.general_hamming")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_hamming(self):
+    self.do_test_op("signal.windows.hamming")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_hann(self):
+    self.do_test_op("signal.windows.hann")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_kaiser(self):
+    self.do_test_op("signal.windows.kaiser")
+
+  @op_testing.unimplemented_on_tpu
+  def test_signal_windows_nuttall(self):
+    self.do_test_op("signal.windows.nuttall")
+
+  @op_testing.unimplemented_on_tpu
+  def test_sinc(self):
+    self.do_test_op("sinc")
+
+  @op_testing.unimplemented_on_tpu
+  def test_softmax_with_dtype(self):
+    self.do_test_op("softmax", variant_test_name="with_dtype")
+
+  @op_testing.unimplemented_on_tpu
+  def test_sparse_mm_reduce(self):
+    self.do_test_op("sparse.mm", variant_test_name="reduce")
+
+  @op_testing.unimplemented_on_tpu
+  def test_sparse_sampled_addmm(self):
+    self.do_test_op("sparse.sampled_addmm")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_airy_ai(self):
+    self.do_test_op("special.airy_ai")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_bessel_j0(self):
+    self.do_test_op("special.bessel_j0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_bessel_j1(self):
+    self.do_test_op("special.bessel_j1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_bessel_y0(self):
+    self.do_test_op("special.bessel_y0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_bessel_y1(self):
+    self.do_test_op("special.bessel_y1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_chebyshev_polynomial_t(self):
+    self.do_test_op("special.chebyshev_polynomial_t")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_chebyshev_polynomial_u(self):
+    self.do_test_op("special.chebyshev_polynomial_u")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_chebyshev_polynomial_v(self):
+    self.do_test_op("special.chebyshev_polynomial_v")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_chebyshev_polynomial_w(self):
+    self.do_test_op("special.chebyshev_polynomial_w")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_entr(self):
+    self.do_test_op("special.entr")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_erfcx(self):
+    self.do_test_op("special.erfcx")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_hermite_polynomial_h(self):
+    self.do_test_op("special.hermite_polynomial_h")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_hermite_polynomial_he(self):
+    self.do_test_op("special.hermite_polynomial_he")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_i0e(self):
+    self.do_test_op("special.i0e")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_i1(self):
+    self.do_test_op("special.i1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_i1e(self):
+    self.do_test_op("special.i1e")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_laguerre_polynomial_l(self):
+    self.do_test_op("special.laguerre_polynomial_l")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_legendre_polynomial_p(self):
+    self.do_test_op("special.legendre_polynomial_p")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_log_ndtr(self):
+    self.do_test_op("special.log_ndtr")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_modified_bessel_i0(self):
+    self.do_test_op("special.modified_bessel_i0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_modified_bessel_i1(self):
+    self.do_test_op("special.modified_bessel_i1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_modified_bessel_k0(self):
+    self.do_test_op("special.modified_bessel_k0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_modified_bessel_k1(self):
+    self.do_test_op("special.modified_bessel_k1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_ndtr(self):
+    self.do_test_op("special.ndtr")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_ndtri(self):
+    self.do_test_op("special.ndtri")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_polygamma_special_polygamma_n_0(self):
+    self.do_test_op(
+        "special.polygamma", variant_test_name="special_polygamma_n_0"
+    )
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_scaled_modified_bessel_k0(self):
+    self.do_test_op("special.scaled_modified_bessel_k0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_scaled_modified_bessel_k1(self):
+    self.do_test_op("special.scaled_modified_bessel_k1")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_shifted_chebyshev_polynomial_t(self):
+    self.do_test_op("special.shifted_chebyshev_polynomial_t")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_shifted_chebyshev_polynomial_u(self):
+    self.do_test_op("special.shifted_chebyshev_polynomial_u")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_shifted_chebyshev_polynomial_v(self):
+    self.do_test_op("special.shifted_chebyshev_polynomial_v")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_shifted_chebyshev_polynomial_w(self):
+    self.do_test_op("special.shifted_chebyshev_polynomial_w")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_spherical_bessel_j0(self):
+    self.do_test_op("special.spherical_bessel_j0")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_xlog1py(self):
+    self.do_test_op("special.xlog1py")
+
+  @op_testing.unimplemented_on_tpu
+  def test_special_zeta(self):
+    self.do_test_op("special.zeta")
+
+  @op_testing.unimplemented_on_tpu
+  def test_split_list_args(self):
+    self.do_test_op("split", variant_test_name="list_args")
+
+  @op_testing.unimplemented_on_tpu
+  def test_square(self):
+    self.do_test_op("square")
+
+  @op_testing.unimplemented_on_tpu
+  def test_squeeze_multiple(self):
+    self.do_test_op("squeeze", variant_test_name="multiple")
+
+  @op_testing.unimplemented_on_tpu
+  def test_std_unbiased(self):
+    self.do_test_op("std", variant_test_name="unbiased")
+
+  @op_testing.unimplemented_on_tpu
+  def test_std_mean(self):
+    self.do_test_op("std_mean")
+
+  @op_testing.unimplemented_on_tpu
+  def test_std_mean_unbiased(self):
+    self.do_test_op("std_mean", variant_test_name="unbiased")
+
+  @op_testing.unimplemented_on_tpu
+  def test_stft(self):
+    self.do_test_op("stft")
+
+  @op_testing.unimplemented_on_tpu
+  def test_sum_to_size(self):
+    self.do_test_op("sum_to_size")
+
+  @op_testing.unimplemented_on_tpu
+  def test_svd(self):
+    self.do_test_op("svd")
+
+  @op_testing.unimplemented_on_tpu
+  def test_svd_lowrank(self):
+    self.do_test_op("svd_lowrank")
+
+  @op_testing.unimplemented_on_tpu
+  def test_t_copy(self):
+    self.do_test_op("t_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_take_along_dim(self):
+    self.do_test_op("take_along_dim")
+
+  @op_testing.unimplemented_on_tpu
+  def test_tensor_split(self):
+    self.do_test_op("tensor_split")
+
+  @op_testing.unimplemented_on_tpu
+  def test_tensordot(self):
+    self.do_test_op("tensordot")
+
+  @op_testing.unimplemented_on_tpu
+  def test_tile(self):
+    self.do_test_op("tile")
+
+  @op_testing.unimplemented_on_tpu
+  def test_to_sparse(self):
+    self.do_test_op("to_sparse")
+
+  @op_testing.unimplemented_on_tpu
+  def test_torch__scaled_mm(self):
+    self.do_test_op("torch._scaled_mm", variant_test_name="")
+
+  @op_testing.unimplemented_on_tpu
+  def test_torch_ops_aten__efficient_attention_forward(self):
+    self.do_test_op("torch.ops.aten._efficient_attention_forward")
+
+  @op_testing.unimplemented_on_tpu
+  def test_torch_ops_aten__flash_attention_forward(self):
+    self.do_test_op("torch.ops.aten._flash_attention_forward")
+
+  @op_testing.unimplemented_on_tpu
+  def test_torch_ops_aten__scaled_dot_product_flash_attention_for_cpu(self):
+    self.do_test_op(
+        "torch.ops.aten._scaled_dot_product_flash_attention_for_cpu"
+    )
+
+  @op_testing.unimplemented_on_tpu
+  def test_trace(self):
+    self.do_test_op("trace")
+
+  @op_testing.unimplemented_on_tpu
+  def test_transpose_copy(self):
+    self.do_test_op("transpose_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_trapezoid(self):
+    self.do_test_op("trapezoid")
+
+  @op_testing.unimplemented_on_tpu
+  def test_trapz(self):
+    self.do_test_op("trapz")
+
+  @op_testing.unimplemented_on_tpu
+  def test_triangular_solve(self):
+    self.do_test_op("triangular_solve")
+
+  @op_testing.unimplemented_on_tpu
+  def test_triu_indices(self):
+    self.do_test_op("triu_indices")
+
+  @op_testing.unimplemented_on_tpu
+  def test_true_divide(self):
+    self.do_test_op("true_divide")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unbind_copy(self):
+    self.do_test_op("unbind_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unflatten(self):
+    self.do_test_op("unflatten")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unfold_copy(self):
+    self.do_test_op("unfold_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unravel_index(self):
+    self.do_test_op("unravel_index")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unsafe_chunk(self):
+    self.do_test_op("unsafe_chunk")
+
+  @op_testing.unimplemented_on_tpu
+  def test_unsafe_split(self):
+    self.do_test_op("unsafe_split")
+
+  @op_testing.unimplemented_on_tpu
+  def test_var_unbiased(self):
+    self.do_test_op("var", variant_test_name="unbiased")
+
+  @op_testing.unimplemented_on_tpu
+  def test_var_mean_unbiased(self):
+    self.do_test_op("var_mean", variant_test_name="unbiased")
+
+  @op_testing.unimplemented_on_tpu
+  def test_view_as(self):
+    self.do_test_op("view_as")
+
+  @op_testing.unimplemented_on_tpu
+  def test_view_copy(self):
+    self.do_test_op("view_copy")
+
+  @op_testing.unimplemented_on_tpu
+  def test_vsplit(self):
+    self.do_test_op("vsplit")
+
+  @op_testing.unimplemented_on_tpu
+  def test_vstack(self):
+    self.do_test_op("vstack")
 
 
 def setUpModule() -> None:

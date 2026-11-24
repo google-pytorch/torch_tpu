@@ -36,6 +36,7 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/distributed:distributed",
     "//src/torch_tpu/_internal/distributed:gpu_env",
     "//src/torch_tpu/_internal/distributed:handshake",
+    "//src/torch_tpu/_internal/distributed:handshake_messages",
     "//src/torch_tpu/_internal/distributed:init",
     "//src/torch_tpu/_internal/distributed:process_group_utils",
     "//src/torch_tpu/_internal/distributed:spmd_util",

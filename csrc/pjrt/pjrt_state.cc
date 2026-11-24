@@ -35,8 +35,10 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "csrc/common/contain.h"
 #include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/discovery.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/environment.h"
@@ -49,6 +51,7 @@
 #include "tsl/profiler/lib/profiler_interface.h"
 #include "xla/backends/profiler/plugin/plugin_tracer.h"  // IWYU pragma: keep for xla::profiler::PluginTracer
 #include "xla/backends/profiler/plugin/profiler_c_api.h"
+#include "xla/layout.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 #include "xla/pjrt/c/pjrt_c_api_profiler_extension.h"
@@ -58,6 +61,7 @@
 #include "xla/pjrt/pjrt_device_description.h"
 #include "xla/pjrt/plugin/plugin_names.h"
 #include "xla/tsl/framework/allocator.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 namespace {
@@ -175,6 +179,37 @@ void MaybeSkipMegascaleForLaterClients(
 }
 
 }  // namespace
+
+absl::StatusOr<xla::Layout> DefaultLayoutCache::Get(
+    xla::PjRtClient& client, const xla::PrimitiveType element_type,
+    const absl::Span<const int64_t> dims) {
+  {
+    absl::ReaderMutexLock lock(mu_);
+    if (const auto it =
+            layouts_.find(KeyView{.element_type = element_type, .dims = dims});
+        it != layouts_.end()) {
+      return it->second;
+    }
+  }
+  TT_ASSIGN_OR_RETURN(xla::Layout layout,
+                      client.GetDefaultLayout(element_type, dims));
+  absl::MutexLock lock(mu_);
+  // The cache is very unlikely to fill up. If it does, one client query is
+  // quite cheap. Clearing also keeps lookups read-only so they can share `mu_`.
+  // An LRU policy would have to write on every hit.
+  if (static_cast<int64_t>(layouts_.size()) >= max_entries_) {
+    layouts_.clear();
+  }
+  layouts_.emplace(Key{.element_type = element_type,
+                       .dims = Dimensions(dims.begin(), dims.end())},
+                   layout);
+  return layout;
+}
+
+void DefaultLayoutCache::Clear() {
+  absl::MutexLock lock(mu_);
+  layouts_.clear();
+}
 
 PjrtBackend& PjrtBackend::GetInstance() {
   static absl::NoDestructor<PjrtBackend> instance;
@@ -443,6 +478,13 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
          << "host memory allocator is not implemented for this client";
 }
 
+absl::StatusOr<xla::Layout> PjrtBackend::GetDefaultLayout(
+    const xla::PrimitiveType element_type,
+    const absl::Span<const int64_t> dims) {
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetClient());
+  return default_layout_cache_.Get(*client, element_type, dims);
+}
+
 void PjrtBackend::Shutdown() {
   if (IsInBadFork()) {
     return;
@@ -454,6 +496,7 @@ void PjrtBackend::Shutdown() {
   ABSL_VLOG(1) << "ShutdownPjRt";
 
   client_.reset();
+  default_layout_cache_.Clear();
   device_ = nullptr;
   device_type_ = PjRtDeviceType::kUnknown;
   global_device_count_ = 0;

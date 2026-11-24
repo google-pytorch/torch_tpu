@@ -185,16 +185,23 @@ def _is_tracing_enabled() -> bool:
   return bool(trace_log.handlers)
 
 
+def _has_is_pinned_host_attr(tensor: torch.Tensor) -> bool:
+  """Returns whether `tensor` or its base has `_is_pinned_host` set."""
+  current = tensor
+  while current is not None:
+    if getattr(current, "_is_pinned_host", False):
+      return True
+    current = getattr(current, "_base", None)
+  return False
+
+
 def is_pinned_host_tensor(t: Any) -> bool:
   """Returns whether `t` is a Tensor located in pinned host memory."""
   if not isinstance(t, torch.Tensor) or t.device.type != "tpu":
     return False
 
-  current = t
-  while current is not None:
-    if getattr(current, "_is_pinned_host", False):
-      return True
-    current = getattr(current, "_base", None)
+  if _has_is_pinned_host_attr(t):
+    return True
 
   try:
     return tpu_torch_compile.is_pinned_host(t)
@@ -216,18 +223,13 @@ def get_non_default_device_layout(t: Any) -> Any | None:
       not isinstance(t, torch.Tensor)
       or t.device.type != "tpu"
       or isinstance(t, FakeTensor)
-      or is_pinned_host_tensor(t)
+      or _has_is_pinned_host_attr(t)
   ):
     return None
   try:
-    layout = tpu_torch_compile.get_device_layout_if_materialized(t)
-    if layout is None or tpu_torch_compile.is_device_shape_dynamic(t):
-      return None
-    default_layout = tpu_torch_compile.get_default_layout(t.dtype, t.shape)
+    return tpu_torch_compile.get_non_default_device_layout(t)
   except (RuntimeError, TypeError):
     return None
-  # Like eager execution, compares only minor_to_major and tiles.
-  return None if layout[:2] == default_layout[:2] else layout
 
 
 # TODO: b/576283069 - Remove once minimum OSS PyTorch is >= 2.12.0 (pytorch/pytorch#182421).

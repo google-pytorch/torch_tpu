@@ -117,7 +117,7 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
         << " cache");
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
-      AdaptXlaError(
+      WrapXlaError(
           LoadSerializedExecutableAtOrigin(*client, data, subslice_origin),
           /* context =*/absl::StrCat(
               "failed to load serialized executable from the ", tier,

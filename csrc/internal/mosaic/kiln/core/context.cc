@@ -19,8 +19,6 @@
 #include <string_view>
 
 #include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
-#include "absl/status/status.h"
 #include "csrc/internal/mosaic/kiln/core/builder_scope.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
@@ -108,21 +106,6 @@ void CheckElementType(ValueHandle handle, DType dtype,
       << type_name << " dtype " << dtype
       << " does not match its IR element type "
       << mlir::debugString(element_type);
-}
-
-mlir::Value ValueOf(ValueHandle handle) {
-  if (!handle.is_null()) {
-    return handle.value();
-  }
-  const absl::Status& error = CurrentBuilderScope().error();
-  if (error.ok()) {
-    ABSL_LOG(FATAL)  // CRASH_OK=a failed operation has no value to give
-        << "The value of a failed Kiln operation was used, with no error "
-           "recorded on the active scope";
-  }
-  ABSL_LOG(FATAL)  // CRASH_OK=a failed operation has no value to give
-      << "The value of a failed Kiln operation was used; the failure was: "
-      << error;
 }
 
 mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,

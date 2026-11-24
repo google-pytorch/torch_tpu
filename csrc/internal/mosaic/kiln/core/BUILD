@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Domain experts for this package:
+# willfroom
+# thcmbs
+
 # Core building blocks of the Kiln kernel language.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
@@ -81,14 +85,10 @@ torch_tpu_cc_library(
     deps = [
         ":builder_scope",
         ":dtype",
-        ":error",
         ":literal",
         ":shape",
         ":value_handle",
-        "//csrc/common:error_utils",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
@@ -100,14 +100,10 @@ torch_tpu_cc_test(
     name = "context_test",
     srcs = ["context_test.cc"],
     deps = [
-        ":builder_scope",
         ":context",
         ":dtype",
-        ":error",
         ":value_handle",
-        "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
-        "@com_google_absl//absl/status:status_matchers",
         "@llvm-project//mlir:IR",
     ],
 )

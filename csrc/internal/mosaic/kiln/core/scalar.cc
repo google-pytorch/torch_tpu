@@ -28,7 +28,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
@@ -73,6 +72,7 @@ Scalar Scalar::Coerce(Literal value) const {
 Scalar I32(Literal value) { return MakeScalarConstant(i32, value); }
 Scalar U32(Literal value) { return MakeScalarConstant(u32, value); }
 Scalar F32(Literal value) { return MakeScalarConstant(f32, value); }
+Scalar Bool(bool value) { return MakeScalarConstant(bool_, value); }
 
 template struct internal::ElementwiseOps<Scalar>;
 

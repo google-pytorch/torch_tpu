@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # Domain experts for this package:
+# haifeng-jin
+# minospapa
+# serina1218
+# ryo-not-rio
+# haitong
 # adivinpatel04
 # ghpvnist
-# zhanyong-wan
-# haifeng-jin
-# cbasile-g
-# willfroom
-# arfaian
 
 load(
     "//build_files:build_defs.bzl",
@@ -97,6 +97,9 @@ _GPU_GOLDENS_BASE = [
     "ops_test_gpu_golden0.gz",
     "ops_test_gpu_golden1.gz",
     "ops_test_gpu_golden2.gz",
+    "ops_test_gpu_golden3.gz",
+    "ops_test_gpu_golden4.gz",
+    "ops_test_gpu_golden5.gz",
 ]
 
 _GPU_GOLDENS_HOPPER = [
@@ -107,6 +110,9 @@ _GPU_GOLDENS_GRAD_BASE = [
     "ops_test_gpu_golden_grad0.gz",
     "ops_test_gpu_golden_grad1.gz",
     "ops_test_gpu_golden_grad2.gz",
+    "ops_test_gpu_golden_grad3.gz",
+    "ops_test_gpu_golden_grad4.gz",
+    "ops_test_gpu_golden_grad5.gz",
 ]
 
 _GPU_GOLDENS_GRAD_HOPPER = [
@@ -916,7 +922,8 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--test_categories=nonzero",
-        "--max_samples_per_op_dtype=10",  # To avoid timeout.
+        # No sample limit: nonzero's first samples are ones that no dynamic
+        # kernel serves (0-d inputs and inputs with fewer than 2 nonzeros).
     ],
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
@@ -1233,18 +1240,11 @@ torch_tpu_py_test(
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
-    # Each shard generates one golden file that contains one slice of the
-    # golden data. Therefore the smaller the count, the bigger each file
-    # will be.
-    #
-    # We should minimize the shard count without making a golden file larger
-    # than 100 MB (a limit imposed by GitHub). The problem with a large shard
-    # count is that it makes updating the golden files more tedious as it's
-    # still done manually.
-    #
-    # If we adjust this, we must also adjust the data attribute in the
-    # ops_test_vs_gpu target.
-    shard_count = 3,
+    # Each shard generates one golden archive slice. Keeping shard_count tied
+    # to the explicit list length lets each mode (eager, grad, compiled,
+    # Hopper) scale independently. Golden .gz files are excluded from GitHub
+    # export and fetched from GCS in OSS builds (see oss/bazel/goldens.bzl).
+    shard_count = len(_GPU_GOLDENS_BASE),
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1273,7 +1273,7 @@ torch_tpu_py_test(
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 3,
+    shard_count = len(_GPU_GOLDENS_COMPILED_BASE),
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1298,7 +1298,7 @@ torch_tpu_py_test(
     ],
     main = "ops_test.py",
     nolocal = "slow test",
-    shard_count = 1,
+    shard_count = len(_GPU_GOLDENS_HOPPER),
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":op_testing",
@@ -1327,7 +1327,7 @@ torch_tpu_py_test(
     main = "ops_test.py",
     nolocal = "slow test",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 6,
+    shard_count = 12,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1416,11 +1416,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "op_testing_test",
     srcs = ["op_testing_test.py"],
+    env = {"IS_OSS": if_oss("1", "0")},
     deps = [
         ":dynamism_test_utils",
         ":goldens_pin",
         ":op_testing",
         ":ops_test_lib",
+        ":oss_utils",
         ":seed_test_utils",
         ":test_utils",
         "//shims/absl_py/testing:absltest",
@@ -1444,7 +1446,7 @@ torch_tpu_py_test(
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
-    shard_count = 3,
+    shard_count = len(_GPU_GOLDENS_GRAD_BASE),
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1468,7 +1470,7 @@ torch_tpu_py_test(
     ],
     main = "ops_test.py",
     nolocal = "slow test",
-    shard_count = 1,
+    shard_count = len(_GPU_GOLDENS_GRAD_HOPPER),
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":op_testing",
@@ -1493,7 +1495,7 @@ torch_tpu_py_test(
     env = {"TORCHINDUCTOR_COMPILE_THREADS": "0"},
     main = "ops_test.py",
     nolocal = "slow test",
-    shard_count = 1,
+    shard_count = len(_GPU_GOLDENS_COMPILED_HOPPER),
     tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":op_testing",
@@ -1534,6 +1536,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention_redirect",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
@@ -1674,6 +1677,10 @@ torch_tpu_py_test(
     shard_count = 50,
     tags = [
         "fails-on-tpu-v7",  # Numeric divergence in scaled_mm on TPU v7.
+        # Runs in the .opt presubmit. The cache code has no
+        # compilation-mode-specific logic, and :ops_unit_test already runs
+        # ops_unit_test.py in fastbuild and ASAN.
+        "nofastbuild",
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
@@ -1690,6 +1697,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention_redirect",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
@@ -2388,6 +2396,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/sync",
+        "//src/torch_tpu/_internal/utils:annotations",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
@@ -2452,6 +2461,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
@@ -2510,11 +2520,12 @@ torch_tpu_py_test(
     ],
 )
 
-# Checks that the precompiled unbounded dynamic kernels serve the ops of
-# dynamic_ops_test.py.
+# Checks that the precompiled unbounded dynamic kernels, including the opt-in
+# ones, serve the ops of dynamic_ops_test.py.
 torch_tpu_py_test(
     name = "dynamic_ops_test",
     srcs = ["dynamic_ops_test.py"],
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "all"},
     main = "dynamic_ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -2670,6 +2681,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "optimization_barrier_meta_test",
+    srcs = ["optimization_barrier_meta_test.py"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "autoload_test_tpu",
     srcs = ["autoload_tpu_test.py"],
     main = "autoload_tpu_test.py",
@@ -2733,6 +2757,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",  # build_cleaner: keep
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -2966,6 +2991,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",  # build_cleaner: keep
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
@@ -2981,6 +3007,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",  # build_cleaner: keep
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],

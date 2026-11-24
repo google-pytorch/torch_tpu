@@ -13,8 +13,10 @@
 # limitations under the License.
 
 # Domain experts for this package:
-# thcmbs
 # ryo-not-rio
+# thcmbs
+# tudorpip
+# willfroom
 
 load(
     "//build_files:build_defs.bzl",
@@ -65,8 +67,52 @@ torch_tpu_cc_library(
     srcs = ["kernel_utils.cc"],
     hdrs = ["kernel_utils.h"],
     deps = [
+        ":mosaic_custom_call",
         "//csrc/common:cache_key",
+        "//csrc/common:compilation_spec",
         "//csrc/common:compile_options_key",
+        "//csrc/common:dimension_types",
+        "//csrc/common:error_utils",
+        "//csrc/common:layout_utils",
+        "//csrc/common:shape",
+        "//csrc/internal/mosaic/kiln",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/client:executable_build_options",
+        "@xla//xla/hlo/builder:xla_computation",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "matmul",
+    srcs = ["matmul.cc"],
+    hdrs = ["matmul.h"],
+    deps = [
+        ":kernel_utils",
+        "//csrc/common:cache_key",
+        "//csrc/common:compilation",
+        "//csrc/common:compilation_spec",
+        "//csrc/common:dimension_types",
+        "//csrc/common:error_utils",
+        "//csrc/common:shape",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
+        "//csrc/internal/mosaic:kiln_utils",
+        "//csrc/internal/mosaic/kiln",
+        "//csrc/ops:op_names",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
     ],
 )
 
@@ -76,17 +122,18 @@ torch_tpu_cc_library(
     hdrs = ["nonzero_indices.h"],
     deps = [
         ":kernel_utils",
-        ":mosaic_custom_call",
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
         "//csrc/common:compilation_spec",
         "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
         "//csrc/common:error_utils",
-        "//csrc/common:layout_utils",
         "//csrc/common:shape",
         "//csrc/common:unbounded_dynamic_kernel_registry",
+        "//csrc/internal/mosaic:kiln_utils",
         "//csrc/internal/mosaic/kiln",
         "//csrc/ops:op_names",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -94,9 +141,6 @@ torch_tpu_cc_library(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/client:executable_build_options",
-        "@xla//xla/hlo/builder:xla_computation",
-        "@xla//xla/hlo/ir:hlo",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
     ],
@@ -110,8 +154,10 @@ torch_tpu_cc_library(
     name = "kernel_registration",
     srcs = ["kernel_registration.cc"],
     deps = [
+        ":matmul",
         ":nonzero_indices",
         "//csrc/common:unbounded_dynamic_kernel_registry",
+        "//csrc/experimental/precompiled_kernels/sort",
         "@com_google_absl//absl/log:absl_check",
     ],
     alwayslink = True,
@@ -155,6 +201,7 @@ torch_tpu_cc_test(
         "//csrc/common:dimension_types",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )

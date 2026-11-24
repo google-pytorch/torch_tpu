@@ -668,6 +668,7 @@ _RETRY_TRANSIENT_IO = gcp_retry.Retry(
     maximum=2.0,
     timeout=5.0,
 )
+_CACHE_IO_ERRORS = (OSError, gcp_exceptions.RetryError)
 
 
 def _download_gcs_blob(
@@ -1012,8 +1013,8 @@ class BaseProvider(abc.ABC):
 
   def __init__(self, base_path: str | None = None, subdir: str | None = None):
     self._subdir = subdir
-
-    if base_path is None:
+    is_default_base_path = base_path is None
+    if is_default_base_path:
       base_path = _WEIGHTS_BASE_PATH.value
 
     # If base_path is empty, assume no local cache is available
@@ -1023,8 +1024,27 @@ class BaseProvider(abc.ABC):
       self._base_path = epath.Path(base_path)
       if subdir:
         self._base_path = self._base_path / subdir
-      if not _RETRY_TRANSIENT_IO(self._base_path.exists)():
-        raise FileNotFoundError(f"Base path does not exist: {self._base_path}")
+      try:
+        path_exists = _RETRY_TRANSIENT_IO(self._base_path.exists)()
+      except _CACHE_IO_ERRORS as exc:
+        if is_default_base_path:
+          logging.warning(
+              "Default weights base path %s is unreachable (%s); disabling"
+              " cache directory.",
+              self._base_path,
+              exc,
+          )
+          path_exists = False
+        else:
+          raise
+      if not path_exists:
+        if is_default_base_path:
+          self.has_cache_dir = False
+          self._base_path = None
+        else:
+          raise FileNotFoundError(
+              f"Base path does not exist: {self._base_path}"
+          )
     else:
       self._base_path = None
 
@@ -1889,11 +1909,13 @@ def _load_transformers_preprocessor(
   def _loader() -> Any:
     exists = lambda p: _RETRY_TRANSIENT_IO(p.exists)()
     path = epath.Path(model_path_str)
-    if exists(path) and _RETRY_TRANSIENT_IO(path.is_dir)():
-      has_processor = exists(path / "preprocessor_config.json") or exists(
+    def _has_processor() -> bool:
+      return exists(path / "preprocessor_config.json") or exists(
           path / "processor_config.json"
       )
-      has_tokenizer = (
+
+    def _has_tokenizer() -> bool:
+      return (
           exists(path / "tokenizer_config.json")
           or exists(path / "tokenizer.json")
           or exists(path / "spiece.model")
@@ -1901,22 +1923,28 @@ def _load_transformers_preprocessor(
           or exists(path / "vocab.txt")
           or exists(path / "merges.txt")
       )
-      if prefer_tokenizer and has_tokenizer:
-        load_fn = transformers.AutoTokenizer.from_pretrained
-      elif not prefer_tokenizer and has_processor:
-        load_fn = transformers.AutoProcessor.from_pretrained
-      elif has_processor:
-        load_fn = transformers.AutoProcessor.from_pretrained
-      elif has_tokenizer:
-        load_fn = transformers.AutoTokenizer.from_pretrained
-      elif prefer_tokenizer:
-        load_fn = transformers.AutoTokenizer.from_pretrained
-      else:
-        load_fn = transformers.AutoProcessor.from_pretrained
-    elif prefer_tokenizer:
-      load_fn = transformers.AutoTokenizer.from_pretrained
-    else:
-      load_fn = transformers.AutoProcessor.from_pretrained
+
+    load_fn = (
+        transformers.AutoTokenizer.from_pretrained
+        if prefer_tokenizer
+        else transformers.AutoProcessor.from_pretrained
+    )
+    is_local_path = isinstance(model_dir_or_repo_id, os.PathLike)
+    try:
+      if exists(path) and _RETRY_TRANSIENT_IO(path.is_dir)():
+        if prefer_tokenizer:
+          if not _has_tokenizer() and _has_processor():
+            load_fn = transformers.AutoProcessor.from_pretrained
+        else:
+          if not _has_processor() and _has_tokenizer():
+            load_fn = transformers.AutoTokenizer.from_pretrained
+      elif is_local_path:
+        return None
+    except _CACHE_IO_ERRORS as exc:
+      logging.debug(
+          "Could not stat preprocessor directory %s: %s", model_path_str, exc
+      )
+      return None
 
     try:
       return load_fn(model_path_str)
@@ -2836,10 +2864,11 @@ def _load_and_sanitize_transformers_config(
     (or config dictionary for unregistered custom model types).
   """
   path = epath.Path(config_path)
-  cfg_file = (
-      path / "config.json" if _RETRY_TRANSIENT_IO(path.is_dir)() else path
-  )
-  raw_dict = json.loads(_RETRY_TRANSIENT_IO(cfg_file.read_text)())
+  if path.name == "config.json" or not _RETRY_TRANSIENT_IO(path.is_dir)():
+    cfg_file = path
+  else:
+    cfg_file = path / "config.json"
+  raw_dict = json.loads(_RETRY_TRANSIENT_IO(cfg_file.read_text)("utf-8"))
 
   config_dict = _sanitize_transformers_config_dict(
       raw_dict, load_weights=load_weights
@@ -3321,11 +3350,12 @@ class TransformersProvider(BaseProvider):
     """Stage 1: Deterministically resolves the config path across storage tiers.
 
     What this stage does:
-      Locates `config.json` and the optional model directory across three
-      storage tiers: bundled package resources (`_FILES`, checked first when
-      `load_weights=False` to avoid remote filesystem I/O), the shared weights
-      cache (`{base_path}/transformers/{name}/config.json`), or a GCS bucket
-      download (`fetch_gcs_file`).
+      Locates `config.json` and the optional model directory across storage
+      tiers: when `load_weights=False`, bundled package resources (`_FILES`)
+      are prioritized first before probing the shared weights cache
+      (`{base_path}/transformers/{name}/config.json`) or a GCS bucket download
+      (`fetch_gcs_file`); when `load_weights=True`, pretrained weights require
+      the local cache directory.
 
     Why this is needed as a separate stage:
       Separating file location discovery from JSON parsing and config
@@ -3357,9 +3387,11 @@ class TransformersProvider(BaseProvider):
       ValueError: If `load_weights=True` without a cached model directory, or if
         `config.json` is not found in any storage tier.
     """
-    default_model_dir: epath.Path | None = None
-    if self.has_cache_dir and self._base_path is not None:
-      default_model_dir = self._base_path / name
+    default_model_dir: epath.Path | None = (
+        self._base_path / name
+        if (self.has_cache_dir and self._base_path is not None)
+        else None
+    )
 
     if not load_weights:
       traversable = self.in_tree_config(name)
@@ -3375,11 +3407,13 @@ class TransformersProvider(BaseProvider):
         if _RETRY_TRANSIENT_IO(cfg_file.exists)():
           yield cfg_file, default_model_dir
           return
-      except (OSError, gcp_exceptions.RetryError) as exc:
+      except _CACHE_IO_ERRORS as exc:
         if load_weights:
           raise
         logging.warning(
-            "Falling back to GCS for %s after cache check error: %s", name, exc
+            "Failed to stat %s on cache filesystem (%s); falling back to GCS.",
+            cfg_file,
+            exc,
         )
 
     if load_weights:
@@ -3410,9 +3444,29 @@ class TransformersProvider(BaseProvider):
       with self._resolve_transformers_config_path(
           name, load_weights=load_weights
       ) as (cfg_path, model_dir_or_repo_id):
-        config = _load_and_sanitize_transformers_config(
-            cfg_path, load_weights=load_weights
-        )
+        try:
+          config = _load_and_sanitize_transformers_config(
+              cfg_path, load_weights=load_weights
+          )
+        except _CACHE_IO_ERRORS as exc:
+          is_cache_cfg = (
+              self._base_path is not None
+              and cfg_path == self._base_path / name / "config.json"
+          )
+          if load_weights or not is_cache_cfg:
+            raise
+          logging.warning(
+              "Failed to read config %s (%s); falling back to GCS.",
+              cfg_path,
+              exc,
+          )
+          dest_config = self.fetch_gcs_file(f"{name}/config.json")
+          if dest_config is None or not dest_config.exists():
+            raise
+          model_dir_or_repo_id = epath.Path(dest_config.parent)
+          config = _load_and_sanitize_transformers_config(
+              epath.Path(dest_config), load_weights=load_weights
+          )
         return module_cache.ConfigCacheEntry(
             config=config,
             path=model_dir_or_repo_id,
@@ -3536,18 +3590,23 @@ class TransformersProvider(BaseProvider):
         model_dir_or_repo_id, modality=modality
     )
 
+    is_bundled = not load_weights and self.in_tree_config(name) is not None
+
     def _input_fn(
         shape=None, device="cpu"
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-      model_dir = (
-          str(model_dir_or_repo_id)
-          if (
-              modality == Modality.VISION  # Only VISION uses model_dir.
-              and model_dir_or_repo_id is not None
-              and _RETRY_TRANSIENT_IO(model_dir_or_repo_id.exists)()
-          )
-          else None
-      )
+      model_dir: str | None = None
+      if (
+          modality == Modality.VISION  # Only VISION uses model_dir.
+          and model_dir_or_repo_id is not None
+          and not is_bundled
+      ):
+        try:
+          if _RETRY_TRANSIENT_IO(model_dir_or_repo_id.exists)():
+            model_dir = str(model_dir_or_repo_id)
+        except _CACHE_IO_ERRORS:
+          if load_weights:
+            raise
       input_kwargs = transformers_inputs.generate_transformers_inputs(
           config,
           modality,
@@ -3575,13 +3634,21 @@ _DIFFUSERS_SUBFOLDER_PRIORITY: tuple[str, ...] = (
     "vqvae",
 )
 
-_DEFAULT_DIFFUSERS_SUBFOLDERS: tuple[str | None, ...] = (
+_PRIMARY_DIFFUSERS_SUBFOLDERS: tuple[str, ...] = (
     "transformer",
     "unet",
+)
+
+_FALLBACK_DIFFUSERS_SUBFOLDERS: tuple[str | None, ...] = (
     None,
     "vae",
     "vqvae",
     "movq",
+)
+
+_DEFAULT_DIFFUSERS_SUBFOLDERS: tuple[str | None, ...] = (
+    *_PRIMARY_DIFFUSERS_SUBFOLDERS,
+    *_FALLBACK_DIFFUSERS_SUBFOLDERS,
 )
 
 
@@ -3673,61 +3740,30 @@ class DiffusersProvider(BaseProvider):
     def _loader() -> module_cache.ConfigCacheEntry:
       raw_config = None
       resolved_subfolder = subfolder
-      model_path = None
+      model_path = (
+          self._base_path / name
+          if (self.has_cache_dir and self._base_path is not None)
+          else None
+      )
+      candidate_subfolders: list[str | None] = (
+          [subfolder] if subfolder else list(_DEFAULT_DIFFUSERS_SUBFOLDERS)
+      )
 
-      if subfolder:
-        candidate_subfolders: list[str | None] = [subfolder]
-      else:
-        candidate_subfolders = []
-        if self.has_cache_dir and self._base_path is not None:
-          model_path = self._base_path / name
-          if model_path.exists() and model_path.is_dir():
-            index_path = model_path / "model_index.json"
-            if index_path.exists():
-              with index_path.open("r", encoding="utf-8") as fp:
-                candidate_subfolders.extend(
-                    _extract_diffusers_subfolder_candidates(json.load(fp))
-                )
-            for sub_dir in model_path.iterdir():
-              if sub_dir.is_dir():
-                for sub_target in ("transformer", "unet"):
-                  if (sub_dir / sub_target / "config.json").exists():
-                    nested_cand = f"{sub_dir.name}/{sub_target}"
-                    if nested_cand not in candidate_subfolders:
-                      candidate_subfolders.append(nested_cand)
-        for cand in _DEFAULT_DIFFUSERS_SUBFOLDERS:
-          if cand not in candidate_subfolders:
-            candidate_subfolders.append(cand)
-
-      if self.has_cache_dir and self._base_path is not None:
-        model_path = self._base_path / name
-        if model_path.exists() and model_path.is_dir():
-          for cand in candidate_subfolders:
-            cfg_file = (
-                model_path / cand / "config.json"
-                if cand
-                else model_path / "config.json"
-            )
-            if cfg_file.exists():
-              raw_config = auto_model.AutoModel.load_config(
-                  str(model_path), subfolder=cand
-              )
-              resolved_subfolder = cand
-              break
-
-      if raw_config is None and not load_weights:
+      if not load_weights:
         model_dir = pathlib.Path(name)
-        local_candidates = list(candidate_subfolders)
-        index_file = self._FILES.joinpath(str(model_dir / "model_index.json"))
-        if index_file.is_file():
-          with resources.as_file(index_file) as f:
-            if f.is_file():
-              with open(f, "r", encoding="utf-8") as fp:
-                for key in _extract_diffusers_subfolder_candidates(
-                    json.load(fp)
-                ):
-                  if key not in local_candidates:
-                    local_candidates.insert(0, key)
+        local_candidates: list[str | None] = list(candidate_subfolders)
+        if not subfolder:
+          index_file = self._FILES.joinpath(str(model_dir / "model_index.json"))
+          if index_file.is_file():
+            with resources.as_file(index_file) as f:
+              if f.is_file():
+                with open(f, "r", encoding="utf-8") as fp:
+                  local_candidates = list(
+                      _extract_diffusers_subfolder_candidates(json.load(fp))
+                  )
+                  for cand in candidate_subfolders:
+                    if cand not in local_candidates:
+                      local_candidates.append(cand)
 
         for cand in local_candidates:
           target_rel = (
@@ -3742,6 +3778,96 @@ class DiffusersProvider(BaseProvider):
                 raw_config = auto_model.AutoModel.load_config(str(f.parent))
                 resolved_subfolder = cand
                 break
+
+      if raw_config is None and model_path is not None:
+        exists = lambda p: _RETRY_TRANSIENT_IO(p.exists)()
+        is_dir = lambda p: _RETRY_TRANSIENT_IO(p.is_dir)()
+        read_text = lambda p: _RETRY_TRANSIENT_IO(p.read_text)("utf-8")
+        try:
+          if exists(model_path) and is_dir(model_path):
+            cache_candidates: list[str | None] = []
+            if subfolder:
+              cache_candidates.append(subfolder)
+            else:
+              index_path = model_path / "model_index.json"
+              if exists(index_path):
+                cache_candidates.extend(
+                    _extract_diffusers_subfolder_candidates(
+                        json.loads(read_text(index_path))
+                    )
+                )
+              for cand in _PRIMARY_DIFFUSERS_SUBFOLDERS:
+                if cand not in cache_candidates:
+                  cache_candidates.append(cand)
+
+            def _try_load_cache_candidates(
+                candidates: Sequence[str | None],
+            ) -> tuple[Any, str | None]:
+              for cand in candidates:
+                cfg_file = (
+                    model_path / cand / "config.json"
+                    if cand
+                    else model_path / "config.json"
+                )
+                if exists(cfg_file):
+                  if not load_weights:
+                    return json.loads(read_text(cfg_file)), cand
+                  return (
+                      auto_model.AutoModel.load_config(
+                          str(model_path), subfolder=cand
+                      ),
+                      cand,
+                  )
+              return None, subfolder
+
+            raw_config, resolved_subfolder = _try_load_cache_candidates(
+                cache_candidates
+            )
+            if raw_config is None and not subfolder:
+              nested_candidates: list[str | None] = []
+              skip_dirs = {
+                  c for c in _DEFAULT_DIFFUSERS_SUBFOLDERS if c is not None
+              }
+              sub_dirs = _RETRY_TRANSIENT_IO(
+                  lambda: list(model_path.iterdir())
+              )()
+              for sub_dir in sub_dirs:
+                if (
+                    sub_dir.name.startswith(".")
+                    or sub_dir.name in skip_dirs
+                    or not is_dir(sub_dir)
+                ):
+                  continue
+                for sub_target in _PRIMARY_DIFFUSERS_SUBFOLDERS:
+                  nested_cand = f"{sub_dir.name}/{sub_target}"
+                  if nested_cand not in cache_candidates:
+                    nested_candidates.append(nested_cand)
+              raw_config, resolved_subfolder = _try_load_cache_candidates(
+                  nested_candidates
+              )
+              for cand in nested_candidates:
+                if cand not in cache_candidates:
+                  cache_candidates.append(cand)
+            if raw_config is None and not subfolder:
+              fallback_candidates: list[str | None] = [
+                  c
+                  for c in _FALLBACK_DIFFUSERS_SUBFOLDERS
+                  if c not in cache_candidates
+              ]
+              raw_config, resolved_subfolder = _try_load_cache_candidates(
+                  fallback_candidates
+              )
+              cache_candidates.extend(fallback_candidates)
+            candidate_subfolders = cache_candidates
+        except _CACHE_IO_ERRORS as exc:
+          if load_weights:
+            raise
+          logging.warning(
+              "Failed to load Diffusers config for %s from cache filesystem"
+              " (%s); falling back to GCS.",
+              name,
+              exc,
+          )
 
       if raw_config is None and not load_weights:
         gcs_candidates: list[str | None] = []
@@ -4489,9 +4615,6 @@ class ModuleRegistry:
       base_path: The base directory for model weights. Defaults to the value of
         `_WEIGHTS_BASE_PATH`.
     """
-    if base_path is None:
-      base_path = _WEIGHTS_BASE_PATH.value
-
     self._providers: dict[str, BaseProvider] = {}
     if _HAS_TORCHVISION:
       self._providers["torchvision"] = TorchvisionProvider(base_path=base_path)

@@ -71,8 +71,6 @@ UNREGISTERED_OPS = frozenset([
     '_histogramdd_from_bin_cts',
     '_histogramdd_from_bin_tensors',
     '_indices',
-    '_int_mm',
-    '_int_mm.out',
     '_linalg_det.result',
     '_linalg_eigh.eigenvalues',
     '_linalg_eigvals',
@@ -81,7 +79,6 @@ UNREGISTERED_OPS = frozenset([
     '_make_dep_token',
     '_make_per_channel_quantized_tensor',
     '_make_per_tensor_quantized_tensor',
-    '_masked_scale',
     '_mixed_dtypes_linear',
     '_mkldnn_reshape',
     '_mkldnn_transpose',
@@ -110,6 +107,9 @@ UNREGISTERED_OPS = frozenset([
     '_philox_normal_',
     '_philox_randint_',
     '_philox_uniform_',
+    '_philox_uniform_.Tensor',
+    '_quantize_tensor',
+    '_quantize_tensor_dual',
     '_resize_output_',
     '_sample_dirichlet',
     '_scaled_addmm.out',
@@ -287,7 +287,6 @@ UNREGISTERED_OPS = frozenset([
     'mode',
     'mps_convolution_backward',
     'mps_convolution_transpose_backward',
-    'mse_loss_backward.grad_input',
     'multi_margin_loss',
     'multi_margin_loss.out',
     'multi_margin_loss_backward',
@@ -422,6 +421,12 @@ REGISTRATION_OVERRIDES = frozenset([
     # pooling lowering on TPU, overriding the default PyTorch decomposition.
     'avg_pool1d',
     'avg_pool1d.out',
+    # bernoulli and bernoulli.p are registered to sample with `self` as an
+    # operand, so the result keeps the bounded dynamic dimensions of `self`,
+    # instead of the composite empty_like + bernoulli_ sampling into a static
+    # tensor.
+    'bernoulli',
+    'bernoulli.p',
     # constant_pad_nd is registered to lower directly to StableHLO Concatenate
     # instead of empty + fill_ + slice.copy_ (DynamicUpdateSlice).
     'constant_pad_nd',

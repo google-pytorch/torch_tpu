@@ -14,7 +14,7 @@
 
 # Domain experts for this package:
 # pganssle-google
-# zhanyong-wan
+# chizhang529
 
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 

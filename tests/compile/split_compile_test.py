@@ -98,6 +98,36 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     expected = torch.full((8, 1, 6, 1), 5.0, device="cpu")
     utils.assert_close(res.cpu(), expected)
 
+  def test_split_graph_with_compound_symint_in_backward(self):
+    """Verifies backward split when a partition only receives a compound SymInt.
+
+    AOTAutograd saves `s0 // 2` from forward as a backward placeholder.
+    Splitting backward on `mul` leaves the upstream partition (`(-y).sum()`
+    grad) with only scalar `grad_out` and `s0 // 2`, while `s0` is only used
+    downstream in `slice_backward`.
+    """
+
+    def f(x):
+      y = x[: x.shape[0] // 2] * 2.0
+      return (-y).sum()
+
+    x_ref = (
+        torch.arange(32, dtype=torch.float32).reshape(8, 4).requires_grad_(True)
+    )
+    out_ref = f(x_ref)
+    out_ref.backward()
+
+    with self._assert_splits_on_mul():
+      compiled_f = torch.compile(f, backend="tpu")
+
+      x = x_ref.detach().to("tpu").requires_grad_(True)
+      torch._dynamo.mark_dynamic(x, 0, min=8, max=16)
+      out = compiled_f(x)
+      out.backward()
+
+    utils.assert_close(out.detach().cpu(), out_ref.detach())
+    utils.assert_close(x.grad.cpu(), x_ref.grad)
+
   def test_split_graph_with_embedded_constants(self):
     def f(x):
       y = x * 2

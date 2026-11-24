@@ -31,7 +31,6 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/synchronization/mutex.h"
 #include "csrc/common/utils.h"
-#include "csrc/internal/profiler/xprof_callback_handler.h"
 #include "tsl/profiler/lib/profiler_session.h"
 #include "tsl/profiler/protobuf/xplane.pb.h"
 
@@ -73,7 +72,6 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
   std::vector<std::string> errors_ ABSL_GUARDED_BY(mutex_);
   const libkineto::Config& config_;
   std::set<libkineto::ActivityType> activity_types_;
-  std::unique_ptr<XProfCallbackHandler> callback_handler_;
   std::string run_dir_ ABSL_GUARDED_BY(mutex_);
   std::optional<std::string> worker_rank_ ABSL_GUARDED_BY(mutex_);
   uint64_t start_time_ns_ = 0;

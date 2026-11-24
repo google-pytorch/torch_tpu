@@ -220,7 +220,7 @@ custom JAX/Pallas kernel wrapper under `torch.tpu.pallas`. See
 | :--- | :--- |
 | `torch.tpu.ops.max_pool{1,2,3}d(...)` | Applies 1D, 2D, or 3D max pooling on TPU without materializing an index tensor. |
 | `torch.tpu.ops.max_pool{1,2,3}d_backward(...)` | Computes the backward pass for `max_pool{1,2,3}d` without an index tensor. |
-| `torch.tpu.ops.optimization_barrier(inputs)` | Prevents XLA from moving, fusing, or deduplicating computations across the barrier. |
+| `torch.tpu.ops.optimization_barrier(inputs)` | Prevents XLA from moving, fusing, or deduplicating computations across the barrier; gradients flow through it. |
 | `torch.tpu.ops.splash_sdpa(q, k, v, ...)` | Scaled dot-product attention backed by the TPU Pallas Splash Attention kernel. |
 | `torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes, ...)` | Grouped matrix multiplication for Mixture-of-Experts (MoE) workloads. |
 | `torch.tpu.ops.ragged_dot_weight_grad(lhs, grad_output, group_sizes)` | Computes the weight gradient for `ragged_dot`. |
