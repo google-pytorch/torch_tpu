@@ -1886,6 +1886,64 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
       )
       self.assertIn("MLIR lowering failed", str(ctx.exception))
 
+  @parameterized.named_parameters(
+      ("int64", torch.int64),
+      ("float32", torch.float32),
+  )
+  def test_zero_element_dynamic_input_is_rejected(self, dtype: torch.dtype):
+    def fn(x):
+      return x * 2 + 1
+
+    device = torch.accelerator.current_accelerator()
+    x0 = torch.zeros((0, 6), device=device, dtype=dtype)
+    compiled_static = torch.compile(
+        fn, backend="tpu", dynamic=False, fullgraph=True
+    )
+    utils.assert_close(compiled_static(x0).cpu(), fn(x0.cpu()))
+
+    torch._dynamo.mark_dynamic(x0, 1, min=2, max=8)
+    compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Python backend error.
+        (NotImplementedError, torch._dynamo.exc.BackendCompilerFailed),
+        r"Zero-element dynamic input tensor at position.*\(shape \[0,"
+        r" s.*torch\.compile\(\.\.\., dynamic=False, \.\.\.\)",
+    ):
+      compiled(x0)
+
+  @parameterized.named_parameters(
+      ("int64", torch.int64),
+      ("float32", torch.float32),
+  )
+  def test_runtime_zero_derived_dynamic_input_is_rejected(
+      self, dtype: torch.dtype
+  ):
+    def fn(x, w):
+      y = x[3:]
+      return (y.to(w.dtype) @ w).sum()
+
+    device = torch.accelerator.current_accelerator()
+    with torch.fx.experimental._config.patch(backed_size_oblivious=True):  # pylint: disable=protected-access
+      w = torch.ones(
+          (4, 2), device=device, dtype=torch.float32, requires_grad=True
+      )
+      x5 = torch.ones((5, 4), device=device, dtype=dtype)
+      torch._dynamo.mark_dynamic(x5, 0, min=3, max=8)
+      compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+
+      # Compile forward and backward at s0=5 where saved activation y is (2, 4).
+      compiled(x5, w).backward()
+
+      # At s0=3 (within [3, 8]), saved y enters backward with a zero dimension.
+      w.grad = None
+      x3 = torch.ones((3, 4), device=device, dtype=dtype)
+      loss3 = compiled(x3, w)
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Python backend error.
+          NotImplementedError,
+          r"Zero-element dynamic input tensor.*shape \[(?:0, 4|4,"
+          r" 0)\].*dynamic=False",
+      ):
+        loss3.backward()
+
   def test_dynamic_compiler_options(self):
     def simple(x):
       return x + 1.0

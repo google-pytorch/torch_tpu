@@ -27,6 +27,7 @@ from torch._logging import LazyString
 from torch.fx.passes.graph_transform_observer import GraphTransformObserver
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.dynamic import dynamic_executable
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.dynamic_executable import BucketCompilationSpec
@@ -263,6 +264,10 @@ class DynamicCompiler(compiler.Compiler):
         " inputs: %s",
         example_inputs,
     )
+
+    # Check and raise on unsupported dynamic inputs (such as zero-element
+    # tensors) before SymBoundsManager installs guards.
+    dynamic_executable.validate_dynamic_example_inputs(example_inputs)
 
     # Create a SymInt bounds manager.
     sym_bounds_manager = SymBoundsManager(example_inputs)

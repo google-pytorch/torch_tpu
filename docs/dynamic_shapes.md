@@ -249,6 +249,10 @@ in mind when applying it to your models:
     shapes yet.
 *   **Views as model inputs:** Support for passing tensor views directly as
     inputs to the compiled model is limited.
+*   **Zero-element dynamic inputs:** Passing a dynamic input tensor with a
+    zero-sized dimension (such as an empty `(0, S)` cache with `S` dynamic, or a
+    slice that becomes empty at runtime) raises `NotImplementedError`. Compile
+    such calls with `dynamic=False`.
 *   **Data-dependent dynamism:** Operations whose output shapes depend on
     runtime tensor values (such as `torch.nonzero`) are not supported.
 *   **Custom kernels:** Bounded dynamic shapes are not supported with custom TPU

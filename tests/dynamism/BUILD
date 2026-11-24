@@ -180,6 +180,23 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "dynamic_compiler_test",
+    srcs = ["dynamic_compiler_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
+        "//src/torch_tpu/_internal/compile/dynamic:dynamic_executable",
+        "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "jagged_dynamism_test",
     srcs = ["jagged_dynamism_test.py"],
     tags = [
