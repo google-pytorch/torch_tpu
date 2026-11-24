@@ -6440,6 +6440,257 @@ Supported combinations for non-constant padding:
     ):
       torch._foreach_addcdiv(self_list, tensor1_list, tensor2_list)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="addcmul",
+          op=torch._foreach_addcmul,
+          op_name="foreach_addcmul",
+      ),
+      dict(
+          testcase_name="addcmul_inplace",
+          op=torch._foreach_addcmul_,
+          op_name="foreach_addcmul_",
+      ),
+      dict(
+          testcase_name="addcdiv",
+          op=torch._foreach_addcdiv,
+          op_name="foreach_addcdiv",
+      ),
+      dict(
+          testcase_name="addcdiv_inplace",
+          op=torch._foreach_addcdiv_,
+          op_name="foreach_addcdiv_",
+      ),
+  )
+  def test_foreach_addc_tensor_scalars_not_on_cpu(self, op, op_name: str):
+    self_list = [torch.tensor([1.0, 2.0], device=et.device()) for _ in range(2)]
+    tensor1_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    tensor2_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    scalars = torch.tensor([10.0, 20.0], device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected scalars to be on CPU, got tpu:0""",
+        gpu="""Expected scalars to be on CPU, got cuda:0 instead.""",
+    ):
+      op(self_list, tensor1_list, tensor2_list, scalars)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="addcmul",
+          op=torch._foreach_addcmul,
+          op_name="foreach_addcmul",
+      ),
+      dict(
+          testcase_name="addcmul_inplace",
+          op=torch._foreach_addcmul_,
+          op_name="foreach_addcmul_",
+      ),
+      dict(
+          testcase_name="addcdiv",
+          op=torch._foreach_addcdiv,
+          op_name="foreach_addcdiv",
+      ),
+      dict(
+          testcase_name="addcdiv_inplace",
+          op=torch._foreach_addcdiv_,
+          op_name="foreach_addcdiv_",
+      ),
+  )
+  def test_foreach_addc_tensor_scalars_not_contiguous(self, op, op_name: str):
+    self_list = [torch.tensor([1.0, 2.0], device=et.device()) for _ in range(2)]
+    tensor1_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    tensor2_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    scalars = torch.tensor([10.0, 0.0, 20.0, 0.0])[::2]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected scalars to be contiguous, got non-contiguous tensor""",
+        gpu="""Expected scalars to be contiguous.""",
+    ):
+      op(self_list, tensor1_list, tensor2_list, scalars)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="addcmul",
+          op=torch._foreach_addcmul,
+          op_name="foreach_addcmul",
+      ),
+      dict(
+          testcase_name="addcmul_inplace",
+          op=torch._foreach_addcmul_,
+          op_name="foreach_addcmul_",
+      ),
+      dict(
+          testcase_name="addcdiv",
+          op=torch._foreach_addcdiv,
+          op_name="foreach_addcdiv",
+      ),
+      dict(
+          testcase_name="addcdiv_inplace",
+          op=torch._foreach_addcdiv_,
+          op_name="foreach_addcdiv_",
+      ),
+  )
+  def test_foreach_addc_tensor_scalars_not_1d(self, op, op_name: str):
+    self_list = [torch.tensor([1.0, 2.0], device=et.device()) for _ in range(2)]
+    tensor1_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    tensor2_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    scalars = torch.tensor([[10.0], [20.0]])
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected scalars to be a 1D tensor, got 2D""",
+        gpu="""Expected packed scalar Tensor to be of dimension 1. Got 2 instead.""",
+    ):
+      op(self_list, tensor1_list, tensor2_list, scalars)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="addcmul",
+          op=torch._foreach_addcmul,
+          op_name="foreach_addcmul",
+      ),
+      dict(
+          testcase_name="addcmul_inplace",
+          op=torch._foreach_addcmul_,
+          op_name="foreach_addcmul_",
+      ),
+      dict(
+          testcase_name="addcdiv",
+          op=torch._foreach_addcdiv,
+          op_name="foreach_addcdiv",
+      ),
+      dict(
+          testcase_name="addcdiv_inplace",
+          op=torch._foreach_addcdiv_,
+          op_name="foreach_addcdiv_",
+      ),
+  )
+  def test_foreach_addc_tensor_scalars_length_mismatch(self, op, op_name: str):
+    self_list = [torch.tensor([1.0, 2.0], device=et.device()) for _ in range(2)]
+    tensor1_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    tensor2_list = [torch.ones(2, device=et.device()) for _ in range(2)]
+    scalars = torch.tensor([10.0, 20.0, 30.0])
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected scalars to have the same number of elements as the self list, got 3 and 2""",
+        gpu="""Expected length of scalars to match input of length 2 but got 3 instead.""",
+    ):
+      op(self_list, tensor1_list, tensor2_list, scalars)
+
+  @parameterized.product(
+      (
+          dict(op=torch._foreach_addcmul, op_name="foreach_addcmul"),
+          dict(op=torch._foreach_addcmul_, op_name="foreach_addcmul_"),
+          dict(op=torch._foreach_addcdiv, op_name="foreach_addcdiv"),
+          dict(op=torch._foreach_addcdiv_, op_name="foreach_addcdiv_"),
+      ),
+      (
+          dict(num_self=0, num_t1=1, num_t2=1, num_scalars=0),
+          dict(num_self=1, num_t1=0, num_t2=1, num_scalars=1),
+          dict(num_self=1, num_t1=1, num_t2=0, num_scalars=1),
+      ),
+  )
+  def test_foreach_addc_tensor_scalars_empty_tensor_list(
+      self,
+      op,
+      op_name: str,
+      num_self: int,
+      num_t1: int,
+      num_t2: int,
+      num_scalars: int,
+  ):
+    self_list = [
+        torch.tensor([1.0, 2.0], device=et.device()) for _ in range(num_self)
+    ]
+    tensor1_list = [torch.ones(2, device=et.device()) for _ in range(num_t1)]
+    tensor2_list = [torch.ones(2, device=et.device()) for _ in range(num_t2)]
+    scalars = torch.ones(num_scalars)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected tensor list to have at least one tensor, got an empty list""",
+        gpu="""Tensor list must have at least one tensor.""",
+    ):
+      op(self_list, tensor1_list, tensor2_list, scalars)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="addcmul",
+          op=torch._foreach_addcmul,
+          op_name="foreach_addcmul",
+      ),
+      dict(
+          testcase_name="addcmul_inplace",
+          op=torch._foreach_addcmul_,
+          op_name="foreach_addcmul_",
+      ),
+      dict(
+          testcase_name="addcdiv",
+          op=torch._foreach_addcdiv,
+          op_name="foreach_addcdiv",
+      ),
+      dict(
+          testcase_name="addcdiv_inplace",
+          op=torch._foreach_addcdiv_,
+          op_name="foreach_addcdiv_",
+      ),
+  )
+  def test_foreach_addc_tensor_scalars_empty_self_with_nonempty_scalars(
+      self, op, op_name: str
+  ):
+    tensor1_list = [torch.ones(2, device=et.device())]
+    tensor2_list = [torch.ones(2, device=et.device())]
+    scalars = torch.tensor([1.0])
+
+    # CUDA unpacks `scalars` against `len(self)` before checking for empty
+    # lists, whereas TPU validates the tensor lists first.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected tensor list to have at least one tensor, got an empty list""",
+        gpu="""Expected length of scalars to match input of length 0 but got 1 instead.""",
+    ):
+      op([], tensor1_list, tensor2_list, scalars)
+
+  @parameterized.product(
+      (
+          dict(op=torch._foreach_addcmul, op_name="foreach_addcmul"),
+          dict(op=torch._foreach_addcmul_, op_name="foreach_addcmul_"),
+          dict(op=torch._foreach_addcdiv, op_name="foreach_addcdiv"),
+          dict(op=torch._foreach_addcdiv_, op_name="foreach_addcdiv_"),
+      ),
+      (
+          dict(num_self=2, num_t1=1, num_t2=2, mismatched=1),
+          dict(num_self=1, num_t1=2, num_t2=1, mismatched=2),
+          dict(num_self=2, num_t1=2, num_t2=1, mismatched=1),
+          dict(num_self=1, num_t1=1, num_t2=2, mismatched=2),
+      ),
+  )
+  def test_foreach_addc_tensor_scalars_list_length_mismatch(
+      self,
+      op,
+      op_name: str,
+      num_self: int,
+      num_t1: int,
+      num_t2: int,
+      mismatched: int,
+  ):
+    self_list = [
+        torch.tensor([1.0, 2.0], device=et.device()) for _ in range(num_self)
+    ]
+    tensor1_list = [torch.ones(2, device=et.device()) for _ in range(num_t1)]
+    tensor2_list = [torch.ones(2, device=et.device()) for _ in range(num_t2)]
+    scalars = torch.ones(num_self)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected tensor lists to have the same number of tensors, got {num_self} and {mismatched}""",
+        gpu=f"""Tensor lists must have the same number of tensors, got {num_self} and {mismatched}""",
+    ):
+      op(self_list, tensor1_list, tensor2_list, scalars)
+
   def test_foreach_pow_scalar_and_tensor_bool_rejected(self):
     t = torch.tensor([True, False], dtype=torch.bool, device=et.device())
     with et.assert_raises_message(

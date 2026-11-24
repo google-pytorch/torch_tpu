@@ -12175,6 +12175,91 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(foreach_div_inplace_inside_fn)
 
+  @parameterized.named_parameters(
+      ("addcmul", torch._foreach_addcmul),
+      ("addcdiv", torch._foreach_addcdiv),
+  )
+  def test_foreach_addc_tensor_scalars(self, op):
+    """Tests the overloads that take the per-tensor scalars as a CPU tensor."""
+
+    def foreach_addc_inside_fn(device):
+      self_list = [
+          torch.tensor([1.0, 2.0], dtype=torch.float32, device=device),
+          torch.tensor([4.0, 5.0], dtype=torch.float32, device=device),
+      ]
+      tensor1_list = [
+          torch.tensor([2.0, 4.0], dtype=torch.float32, device=device),
+          torch.tensor([3.0, 6.0], dtype=torch.float32, device=device),
+      ]
+      tensor2_list = [
+          torch.tensor([0.5, 2.0], dtype=torch.float32, device=device),
+          torch.tensor([4.0, 0.25], dtype=torch.float32, device=device),
+      ]
+      # One scalar per tensor. It stays on CPU whatever the device of the lists.
+      scalars = torch.tensor([10.0, 20.0])
+      return op(self_list, tensor1_list, tensor2_list, scalars)
+
+    self.assert_close_tpu_vs_cpu(foreach_addc_inside_fn)
+
+  @parameterized.named_parameters(
+      ("addcmul", torch._foreach_addcmul_),
+      ("addcdiv", torch._foreach_addcdiv_),
+  )
+  def test_foreach_addc_inplace_tensor_scalars(self, op):
+    """Tests the in-place overloads that take the scalars as a CPU tensor."""
+
+    def foreach_addc_inplace_inside_fn(device):
+      self_list = [
+          torch.tensor([1.0, 2.0], dtype=torch.float32, device=device),
+          torch.tensor([4.0, 5.0], dtype=torch.float32, device=device),
+      ]
+      tensor1_list = [
+          torch.tensor([2.0, 4.0], dtype=torch.float32, device=device),
+          torch.tensor([3.0, 6.0], dtype=torch.float32, device=device),
+      ]
+      tensor2_list = [
+          torch.tensor([0.5, 2.0], dtype=torch.float32, device=device),
+          torch.tensor([4.0, 0.25], dtype=torch.float32, device=device),
+      ]
+      scalars = torch.tensor([10.0, 20.0])
+      op(self_list, tensor1_list, tensor2_list, scalars)
+      return self_list
+
+    self.assert_close_tpu_vs_cpu(foreach_addc_inplace_inside_fn)
+
+  @parameterized.named_parameters(
+      ("addcmul", torch._foreach_addcmul),
+      ("addcdiv", torch._foreach_addcdiv),
+  )
+  def test_foreach_addc_tensor_scalars_dtypes_and_shapes(self, op):
+    """Tests integer scalars with lists of various dtypes and shapes."""
+
+    def foreach_addc_inside_fn(device):
+      self_list = [
+          torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64),
+          torch.tensor(5.0, dtype=torch.bfloat16),
+          torch.empty((0, 3), dtype=torch.float16),
+      ]
+      tensor1_list = [
+          torch.tensor([[2.0, 4.0], [6.0, 8.0]], dtype=torch.float64),
+          torch.tensor(3.0, dtype=torch.bfloat16),
+          torch.empty((0, 3), dtype=torch.float16),
+      ]
+      tensor2_list = [
+          torch.tensor([[0.5, 2.0], [4.0, 0.25]], dtype=torch.float64),
+          torch.tensor(2.0, dtype=torch.bfloat16),
+          torch.empty((0, 3), dtype=torch.float16),
+      ]
+      scalars = torch.tensor([2, -3, 4], dtype=torch.int64)
+      return op(
+          [t.to(device) for t in self_list],
+          [t.to(device) for t in tensor1_list],
+          [t.to(device) for t in tensor2_list],
+          scalars,
+      )
+
+    self.assert_close_tpu_vs_cpu(foreach_addc_inside_fn)
+
   @absltest.skip("b/535216136")
   def test_arange_large_int_with_float_step(self):
     """Tests arange with large integer bounds and a float step.

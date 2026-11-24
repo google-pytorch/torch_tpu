@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/native/ForeachUtils.h"
 #include "ATen/ops/result_type.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
@@ -759,6 +760,72 @@ std::vector<DeviceBufferRef> ForeachAddList(
   return result_buffers;
 }
 
+// Returns `shared_op_name` as the op name override that kernels sharing one
+// lowering pass to DispatchOp(), or std::nullopt if `shared_op_name` already
+// is the op of the active TT_KERNEL() context, as DispatchOp() rejects an
+// override that repeats it.
+[[nodiscard]] std::optional<OpName> SharedOpNameOverride(
+    const OpName shared_op_name) {
+  if (internal::OpNameStack::MaybeTop() == shared_op_name) {
+    return std::nullopt;
+  }
+  return shared_op_name;
+}
+
+// Validates that `self`, `tensor1`, and `tensor2` are non-empty and have the
+// same number of tensors, matching PyTorch's `check_foreach_api_restrictions`.
+// Kept local to avoid conflicting with the sibling refactor that hoists
+// `ValidateForeachTensorLists`; can be deduplicated with it once that lands.
+absl::Status ValidateForeachAddcTensorLists(at::TensorList self,
+                                            at::TensorList tensor1,
+                                            at::TensorList tensor2) {
+  for (const at::TensorList other : {tensor1, tensor2}) {
+    for (const at::TensorList tensors : {self, other}) {
+      TT_RET_CHECK(!tensors.empty(), error::kInvalidArgument)
+          << "expected tensor list to have at least one tensor, got an empty "
+             "list";
+    }
+    TT_RET_CHECK(self.size() == other.size(), error::kInvalidArgument)
+        << "expected tensor lists to have the same number of tensors, got "
+        << self.size() << " and " << other.size();
+  }
+  return absl::OkStatus();
+}
+
+// Converts `scalars`, the last argument of the Tensor overloads of
+// _foreach_addcdiv and _foreach_addcmul, to one 0D tensor per tensor in `self`,
+// each on TPU and of the computation dtype of that tensor. As on GPU,
+// `scalars` has to be a contiguous 1D CPU tensor with one element per tensor
+// in `self`. Callers validate that `self` is non-empty.
+absl::StatusOr<std::vector<at::Tensor>> MakeValueTensors(
+    const at::Tensor& scalars, at::TensorList self) {
+  TT_RET_CHECK(IsCpuDevice(scalars), error::kInvalidArgument)
+      << "expected scalars to be on CPU, got " << scalars.device();
+  TT_RET_CHECK(scalars.is_contiguous(), error::kInvalidArgument)
+      << "expected scalars to be contiguous, got non-contiguous tensor";
+  TT_RET_CHECK(scalars.dim() == 1, error::kInvalidArgument)
+      << "expected scalars to be a 1D tensor, got " << scalars.dim() << "D";
+  const int64_t num_tensors = self.size();
+  TT_RET_CHECK(scalars.size(0) == num_tensors, error::kInvalidArgument)
+      << "expected scalars to have the same number of elements as the self "
+         "list, got "
+      << scalars.size(0) << " and " << num_tensors;
+
+  // The upstream helper of the CPU and GPU kernels. Beyond what is validated
+  // above, it rejects the dtypes of `scalars` that those kernels reject.
+  const std::vector<at::Scalar> values =
+      at::native::convert_tensor_to_scalar_list(scalars, num_tensors);
+  std::vector<at::Tensor> value_list;
+  value_list.reserve(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    TT_ASSIGN_OR_RETURN(at::Tensor value_tensor,
+                        PromoteScalar(values[i]).GetTensor(
+                            InferComputationDtype(self[i].scalar_type())));
+    value_list.push_back(std::move(value_tensor));
+  }
+  return value_list;
+}
+
 std::vector<DeviceBufferRef> ForeachAddcdiv(at::TensorList self,
                                             at::TensorList tensor1,
                                             at::TensorList tensor2,
@@ -794,7 +861,7 @@ std::vector<DeviceBufferRef> ForeachAddcdiv(at::TensorList self,
   DispatchOpOptions<kDynamicSize> options = {
       // Share the same OpName for all ForeachAddcdiv() calls, as the underlying
       // Shlo is the same.
-      .op_name = OpName::kForeachAddcdivTensor,
+      .op_name = SharedOpNameOverride(OpName::kForeachAddcdivTensor),
       .out_dtypes = out_dtypes,
       .out_dims_list = out_dims_list,
       .op_param_cache_keys = OpParamCacheKeys::Empty(),
@@ -841,7 +908,7 @@ std::vector<DeviceBufferRef> ForeachAddcmul(at::TensorList self,
   DispatchOpOptions<kDynamicSize> options = {
       // Share the same OpName for all calls ForeachAddcmul(), as the
       // underlying Shlo is the same.
-      .op_name = OpName::kForeachAddcmulTensor,
+      .op_name = SharedOpNameOverride(OpName::kForeachAddcmulTensor),
       .out_dtypes = out_dtypes,
       .out_dims_list = out_dims_list,
       .op_param_cache_keys = OpParamCacheKeys::Empty(),
@@ -2093,12 +2160,15 @@ std::vector<at::Tensor> AtenForeachAddcdivTensor(at::TensorList self,
                                                  const at::Tensor& scalars) {
   TT_KERNEL(
       OpName::kForeachAddcdivTensor, _, (self, tensor1, tensor2, scalars), {
+        TT_THROW_IF_ERROR(
+            ValidateForeachAddcTensorLists(self, tensor1, tensor2));
         // _foreach_div supports two integral tensors, but _foreach_addcdiv
         // doesn't.
         TT_THROW_IF_ERROR(
             ValidatePairwiseAddcdivAtLeastOneNotIntegral(tensor1, tensor2));
         TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
-        std::vector<at::Tensor> value_list(self.size(), scalars);
+        TT_ASSIGN_OR_THROW(const std::vector<at::Tensor> value_list,
+                           MakeValueTensors(scalars, self));
         return ForeachConvertToTensor(
             ForeachAddcdiv(self, tensor1, tensor2, value_list, out_dtypes),
             out_dtypes);
@@ -2162,12 +2232,15 @@ void AtenForeachAddcdiv_Tensor(at::TensorList self, at::TensorList tensor1,
                                const at::Tensor& scalars) {
   TT_KERNEL(
       OpName::kForeachAddcdiv_Tensor, _, (self, tensor1, tensor2, scalars), {
+        TT_THROW_IF_ERROR(
+            ValidateForeachAddcTensorLists(self, tensor1, tensor2));
         // _foreach_div supports two integral tensors, but _foreach_addcdiv
         // doesn't.
         TT_THROW_IF_ERROR(
             ValidatePairwiseAddcdivAtLeastOneNotIntegral(tensor1, tensor2));
         TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
-        std::vector<at::Tensor> value_list(self.size(), scalars);
+        TT_ASSIGN_OR_THROW(const std::vector<at::Tensor> value_list,
+                           MakeValueTensors(scalars, self));
         TT_THROW_IF_ERROR(ForeachAssignToTensor(
             ForeachAddcdiv(self, tensor1, tensor2, value_list, out_dtypes),
             self, out_dtypes));
@@ -2233,11 +2306,14 @@ std::vector<at::Tensor> AtenForeachAddcmulTensor(at::TensorList self,
                                                  const at::Tensor& scalars) {
   TT_KERNEL(
       OpName::kForeachAddcmulTensor, _, (self, tensor1, tensor2, scalars), {
+        TT_THROW_IF_ERROR(
+            ValidateForeachAddcTensorLists(self, tensor1, tensor2));
         // _foreach_mul and _foreach_add supports bool tensors, but
         // _foreach_addcmul doesn't.
         TT_THROW_IF_ERROR(ValidateNotBool(self, /* arg_name= */ "self"));
         TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
-        std::vector<at::Tensor> value_list(self.size(), scalars);
+        TT_ASSIGN_OR_THROW(const std::vector<at::Tensor> value_list,
+                           MakeValueTensors(scalars, self));
         return ForeachConvertToTensor(
             ForeachAddcmul(self, tensor1, tensor2, value_list, out_dtypes),
             out_dtypes);
@@ -2299,11 +2375,14 @@ void AtenForeachAddcmul_Tensor(at::TensorList self, at::TensorList tensor1,
                                const at::Tensor& scalars) {
   TT_KERNEL(
       OpName::kForeachAddcmul_Tensor, _, (self, tensor1, tensor2, scalars), {
+        TT_THROW_IF_ERROR(
+            ValidateForeachAddcTensorLists(self, tensor1, tensor2));
         // _foreach_mul and _foreach_add supports bool tensors, but
         // _foreach_addcmul doesn't.
         TT_THROW_IF_ERROR(ValidateNotBool(self, /* arg_name= */ "self"));
         TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
-        std::vector<at::Tensor> value_list(self.size(), scalars);
+        TT_ASSIGN_OR_THROW(const std::vector<at::Tensor> value_list,
+                           MakeValueTensors(scalars, self));
         TT_THROW_IF_ERROR(ForeachAssignToTensor(
             ForeachAddcmul(self, tensor1, tensor2, value_list, out_dtypes),
             self, out_dtypes));
