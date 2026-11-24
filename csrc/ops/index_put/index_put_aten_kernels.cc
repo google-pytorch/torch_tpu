@@ -22,7 +22,6 @@
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/ops/nonzero.h"
 #include "ATen/ops/permute.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
@@ -32,7 +31,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
-#include "c10/core/Device.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -43,7 +41,6 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/index_utils.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/nonzero/nonzero_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/Builders.h"
@@ -334,55 +331,6 @@ absl::StatusOr<mlir::MlirOp> BuildIndexPutSelectShlo(
   return ApplySelect(self, mask, index_start_dim, values, accumulate);
 }
 
-// Returns the positions of the non-zero elements of `mask` on `device`, with
-// shape (L, mask.dim()). A CPU `mask` is evaluated on the host, which avoids a
-// TPU nonzero and its device-to-host sync for the data-dependent output size.
-// Calling `at::nonzero` on a CPU `mask` is fine here since it only runs the CPU
-// kernel and never dispatches a TPU op.
-absl::StatusOr<at::Tensor> GetNonzeroPositionsOnDevice(
-    const at::Tensor& mask, const c10::Device& device) {
-  if (mask.is_cpu()) {
-    return MoveIndexToDevice(at::nonzero(mask), device);
-  }
-  return AtenNonzero(mask);
-}
-
-// Converts the parsed `entries` (see `ParseIndexEntries`) into purely integer
-// index entries on the device of `self`.
-//
-// A boolean mask of rank `k` that covers dimensions {d, ..., d+k-1} of `self`
-// is converted with `AtenNonzero()` (or `at::nonzero()` on the host for a CPU
-// mask) into a tensor of shape (L, k), where L is the number of True elements.
-// Its j-th column (0 <= j < k) becomes a 1D integer index entry of shape (L,)
-// that indexes dimension d+j of `self`.
-absl::StatusOr<std::vector<IndexEntry>> ConvertBooleanIndicesToPositional(
-    const at::Tensor& self, absl::Span<const IndexEntry> entries) {
-  std::vector<IndexEntry> positional_entries;
-  for (const IndexEntry& entry : entries) {
-    if (entry.is_mask) {
-      TT_ASSIGN_OR_RETURN(
-          at::Tensor nonzero_result,  // Shape (L, mask_ndim)
-          GetNonzeroPositionsOnDevice(entry.tensor, self.device()));
-      // Decompose the columns of the non-zero result, with each column becoming
-      // a separate 1D integer tensor. Each dimension of the mask indexes a
-      // dimension of `self` in the same order.
-      for (int64_t i = 0; i < entry.tensor.dim(); ++i) {
-        positional_entries.push_back(
-            {.tensor = nonzero_result.select(/*dim=*/1, /*index=*/i),
-             .indexed_dim = entry.indexed_dim + i,
-             .is_mask = false});
-      }
-    } else {
-      TT_ASSIGN_OR_RETURN(at::Tensor tpu_index,
-                          MoveIndexToDevice(entry.tensor, self.device()));
-      positional_entries.push_back({.tensor = std::move(tpu_index),
-                                    .indexed_dim = entry.indexed_dim,
-                                    .is_mask = false});
-    }
-  }
-  return positional_entries;
-}
-
 // Returns whether `entries` index consecutive dimensions of `self`, in order.
 bool AreIndicesContiguous(absl::Span<const IndexEntry> entries) {
   for (int64_t i = 1; i < entries.size(); ++i) {
@@ -552,7 +500,8 @@ bool CanUseSelectWithValues(const at::Tensor& self, const at::Tensor& values,
 absl::Status IndexPutWithBooleanMask(const at::Tensor& self,
                                      const IndexEntry& mask_entry,
                                      const at::Tensor& values,
-                                     const bool accumulate, at::Tensor& out) {
+                                     const bool accumulate,
+                                     const at::Tensor& out) {
   const int64_t index_start_dim = mask_entry.indexed_dim;
   TT_ASSIGN_OR_RETURN(at::Tensor mask,
                       MoveIndexToDevice(mask_entry.tensor, self.device()));
@@ -576,9 +525,13 @@ absl::Status IndexPutWithBooleanMask(const at::Tensor& self,
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
-absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
+// Takes `self` and `out` by value so `MoveIndicesToFront` rebinds only local
+// view handles (which `DispatchOpOut` writes back into the base storage via
+// view inversion) without mutating the caller's `self` shape in
+// `TpuAtenIndexPutImpl_`.
+absl::Status IndexPut(at::Tensor self, absl::Span<const IndexEntry> entries,
                       const at::Tensor& values, const bool accumulate,
-                      at::Tensor& out) {
+                      at::Tensor out) {
   TT_ASSIGN_OR_RETURN(std::vector<IndexEntry> positional_entries,
                       ConvertBooleanIndicesToPositional(self, entries));
   ABSL_VLOG(1) << "[IndexPut] indexed_dims: "
@@ -586,12 +539,6 @@ absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
 
   TT_RETURN_IF_ERROR(
       ResolveNegativeIndices(absl::MakeSpan(positional_entries), self.sizes()));
-
-  // `ParseIndexEntries` guarantees at least one defined index, but 0-d masks
-  // expand to no index tensors. This is reached when every defined index is a
-  // 0-d mask and the `IndexPutWithBooleanMask` path was not taken.
-  TT_RET_CHECK(!positional_entries.empty(), error::kInvalidArgument)
-      << "indices must be specified";
 
   if (!AreIndicesContiguous(positional_entries)) {
     self = MoveIndicesToFront(self, positional_entries);
@@ -656,9 +603,9 @@ absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
 }
 
 absl::Status IndexPutHelper(
-    at::Tensor& self,
+    const at::Tensor& self,
     const c10::List<std::optional<at::Tensor>>& indices_list_opt,
-    const at::Tensor& values, const bool accumulate, at::Tensor& out) {
+    const at::Tensor& values, const bool accumulate, const at::Tensor& out) {
   ABSL_VLOG(1) << "[IndexPut] self: " << self.sizes();
   ABSL_VLOG(1) << "[IndexPut] values: " << values.sizes();
   ABSL_VLOG(1) << "[IndexPut] indices_list_opt: " << indices_list_opt.size();

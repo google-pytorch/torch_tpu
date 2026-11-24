@@ -37,6 +37,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/index_utils.h"
 #include "csrc/ops/macros/kernel.h"
@@ -75,6 +76,67 @@ bool AreConsecutive(const Indices& indexed_dims) {
 
 namespace stablehlo = mlir::stablehlo;
 
+absl::StatusOr<std::vector<mlir::MlirOp>> PromoteAndBroadcastIndices(
+    mlir::ArrayRef<mlir::MlirOp> indices) {
+  const bool has_i64 = absl::c_any_of(indices, [](const mlir::MlirOp& op) {
+    return GetElementTypeOrDie(op) == mlir::ElementType::I64;
+  });
+  const mlir::ElementType common_type =
+      has_i64 ? mlir::ElementType::I64 : mlir::ElementType::I32;
+
+  std::vector<mlir::MlirOp> typed_indices;
+  typed_indices.reserve(indices.size());
+  for (const mlir::MlirOp& index_op : indices) {
+    typed_indices.push_back(
+        GetElementTypeOrDie(index_op) == common_type
+            ? index_op
+            : stablehlo::ConvertElementType(index_op, common_type));
+  }
+  return ApplyBroadcastIfNeeded(typed_indices);
+}
+
+absl::StatusOr<mlir::MlirOp> PackBroadcastedIndices(
+    mlir::MlirBuilder& builder,
+    absl::Span<const mlir::MlirOp> broadcasted_indices,
+    int64_t broadcasted_rank) {
+  std::vector<mlir::MlirOp> reshaped_indices;
+  reshaped_indices.reserve(broadcasted_indices.size());
+  for (const mlir::MlirOp& broadcasted_index : broadcasted_indices) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp reshaped_index,
+                        Unsqueeze(broadcasted_index, broadcasted_rank));
+    reshaped_indices.push_back(reshaped_index);
+  }
+  return mlir::stablehlo::Concatenate(builder, reshaped_indices,
+                                      broadcasted_rank);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildZeroSizedIndexResult(
+    mlir::MlirOp self, mlir::Type element_type,
+    const mlir::stablehlo::Dimensions& self_dims, const Indices& indexed_dims,
+    const Indices& offset_dims,
+    const mlir::stablehlo::Dimensions& broadcasted_dims,
+    const bool index_dims_consecutive) {
+  const int64_t broadcasted_rank = broadcasted_dims.size();
+  const int64_t insertion_dim = index_dims_consecutive ? indexed_dims[0] : 0;
+  mlir::stablehlo::Dimensions output_dims(
+      self_dims.size() - indexed_dims.size() + broadcasted_rank,
+      mlir::stablehlo::DimensionInfo{0});
+  for (size_t k = 0, i = 0, j = 0; i < self_dims.size(); ++i) {
+    if (j < indexed_dims.size() && indexed_dims[j] == i) {
+      ++j;
+    } else {
+      output_dims[offset_dims[k++]] = self_dims[i];
+    }
+  }
+  for (int64_t b = 0; b < broadcasted_rank; ++b) {
+    output_dims[insertion_dim + b] = broadcasted_dims[b];
+  }
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp empty_result,
+                      MakeZeroSizedTensor(self.getBuilder(), element_type,
+                                          GetStaticShape(output_dims)));
+  return BroadcastIfNeeded(empty_result, output_dims);
+}
+
 // Builds StableHLO for tensor indexing with integer index tensors.
 // `input_ops[0]` is `self`, and `input_ops[1..]` are the index tensors
 // corresponding to `indexed_dims`.
@@ -106,22 +168,13 @@ absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
     return self;
   }
 
-  // Indexing tensors need to be broadcastable together.
+  // Indexing tensors need to share an integer type and broadcast together.
   TT_ASSIGN_OR_RETURN(std::vector<mlir::MlirOp> broadcasted_indices,
-                      ApplyBroadcastIfNeeded(indices));
+                      PromoteAndBroadcastIndices(indices));
 
-  const int64_t broadcasted_rank =
-      GetTensorTypeOrDie(broadcasted_indices[0]).getRank();
-
-  std::vector<mlir::MlirOp> reshaped_indices;
-  reshaped_indices.reserve(broadcasted_indices.size());
-  for (const mlir::MlirOp& broadcasted_index : broadcasted_indices) {
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp reshaped_index,
-                        Unsqueeze(broadcasted_index, broadcasted_rank));
-    reshaped_indices.push_back(reshaped_index);
-  }
-  mlir::MlirOp index = mlir::stablehlo::Concatenate(
-      self.getBuilder(), reshaped_indices, broadcasted_rank);
+  const mlir::stablehlo::Dimensions broadcasted_dims =
+      GetDimensions(broadcasted_indices[0]);
+  const int64_t broadcasted_rank = broadcasted_dims.size();
 
   // Dynamism in Gather:
   // - `gather_slice_sizes` is a static attribute in StableHLO and must contain
@@ -136,43 +189,60 @@ absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
   // - For unindexed dimensions, the slice size extracts the full upper-bound
   //   extent from `self`. If an unindexed dimension is dynamic, we re-attach
   //   its dynamic runtime bound onto the Gather output via `SetDimensionSize`.
-  mlir::stablehlo::Dimensions self_dims = GetDimensions(self);
+  const mlir::stablehlo::Dimensions self_dims = GetDimensions(self);
   Dimensions gather_slice_sizes;
   gather_slice_sizes.reserve(self_dims.size());
   Indices offset_dims;
 
-  bool index_dims_consecutive = AreConsecutive(indexed_dims);
+  const bool index_dims_consecutive = AreConsecutive(indexed_dims);
+  bool has_zero_indexed_dim = false;
 
   std::vector<DynamicUnindexedDim> dynamic_unindexed_dims;
 
   for (size_t i = 0, j = 0; i < self_dims.size(); ++i) {
     if (j < indexed_dims.size() && indexed_dims[j] == i) {
+      has_zero_indexed_dim = has_zero_indexed_dim || self_dims[i].size == 0;
       gather_slice_sizes.push_back(1);
       ++j;
-    } else {
-      gather_slice_sizes.push_back(self_dims[i].size);
-      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=AtenIndexTensorOut (caller) creates
-                     // `indexed_dims`, making sure they are always increasing,
-                     // non-negative, and distinct.
-          j >= indexed_dims.size() || i < indexed_dims[j],
-          error::kInvalidArgument)
-          << "[BuildIndexShlo]: indexed dimensions must be >= 0, increasing, "
-             "and distinct";
-      // If the indexed dimensions are consecutive, the indexed dimensions will
-      // be inserted at the position of the first indexed dimension. Otherwise,
-      // they will be inserted at the beginning of the output tensor shape.
-      // offset_dims contains the positions of the non-indexed dimensions in the
-      // output tensor shape.
-      // See
-      // https://numpy.org/devdocs/user/basics.indexing.html#combining-advanced-and-basic-indexing
-      int64_t out_dim =
-          index_dims_consecutive && j == 0 ? i : broadcasted_rank + i - j;
-      offset_dims.push_back(out_dim);
-      if (self_dims[i].boundOp.has_value()) {
-        dynamic_unindexed_dims.push_back({self_dims[i], out_dim});
-      }
+      continue;
+    }
+    gather_slice_sizes.push_back(self_dims[i].size);
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=AtenIndexTensorOut (caller) creates
+                   // `indexed_dims`, making sure they are always increasing,
+                   // non-negative, and distinct.
+        j >= indexed_dims.size() || i < indexed_dims[j],
+        error::kInvalidArgument)
+        << "[BuildIndexShlo]: indexed dimensions must be >= 0, increasing, "
+           "and distinct";
+    // If the indexed dimensions are consecutive, the indexed dimensions will
+    // be inserted at the position of the first indexed dimension. Otherwise,
+    // they will be inserted at the beginning of the output tensor shape.
+    // offset_dims contains the positions of the non-indexed dimensions in the
+    // output tensor shape.
+    // See
+    // https://numpy.org/devdocs/user/basics.indexing.html#combining-advanced-and-basic-indexing
+    const int64_t out_dim =
+        index_dims_consecutive && j == 0 ? i : broadcasted_rank + i - j;
+    offset_dims.push_back(out_dim);
+    if (self_dims[i].boundOp.has_value()) {
+      dynamic_unindexed_dims.push_back({self_dims[i], out_dim});
     }
   }
+
+  // `stablehlo.gather` requires `slice_sizes[d] == 1 <= operand.dim(d)` on
+  // collapsed slice dimensions. When an indexed dimension of `self` has size 0,
+  // `GetOutputDims` has already verified that the broadcasted index shape also
+  // has size 0, so the output tensor has zero elements.
+  if (has_zero_indexed_dim) {
+    return BuildZeroSizedIndexResult(self, self_type.getElementType(),
+                                     self_dims, indexed_dims, offset_dims,
+                                     broadcasted_dims, index_dims_consecutive);
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp index,
+      PackBroadcastedIndices(self.getBuilder(), broadcasted_indices,
+                             broadcasted_rank));
 
   ABSL_VLOG(2) << "[BuildIndexShlo]: gather_slice_sizes = "
                << absl::StrJoin(gather_slice_sizes, ",");
@@ -189,9 +259,9 @@ absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
   ABSL_VLOG(2) << "[BuildIndexShlo]: GatherDimensionNumbers = "
                << mlir::debugString(gather_dimension_numbers);
 
-  auto result = stablehlo::Gather(self, index, gather_dimension_numbers,
-                                  gather_slice_sizes,
-                                  /*indices_are_sorted=*/false);
+  mlir::MlirOp result = stablehlo::Gather(self, index, gather_dimension_numbers,
+                                          gather_slice_sizes,
+                                          /*indices_are_sorted=*/false);
   for (const auto& [dim_info, out_dim] : dynamic_unindexed_dims) {
     mlir::MlirOp bound_op_mlir(self.getBuilder(), *dim_info.boundOp);
     mlir::MlirOp dim_size =
@@ -317,48 +387,88 @@ absl::StatusOr<int64_t> GetNumNonZeroElements(const at::Tensor& mask) {
 }
 
 // Converts the parsed `entries` of `self` (see `ParseIndexEntries`) into
-// `IndicesInfo`, with all index tensors moved to the device of `self`. Only
-// checks the `index`-specific rule that a boolean mask is the only defined
-// index.
+// `IndicesInfo`, with all index tensors moved to the device of `self`. A single
+// boolean mask uses the fused `BuildBooleanMaskIndexShlo` path; multiple or
+// mixed boolean masks are expanded into 1D integer index tensors via
+// `ConvertBooleanIndicesToPositional`.
 absl::StatusOr<IndicesInfo> GetIndicesInfo(const at::Tensor& self,
                                            std::vector<IndexEntry> entries) {
+  IndicesInfo info;
+  if (entries.size() == 1 && entries[0].is_mask) {
+    // Compute the number of `True` elements for the output shape, and store
+    // the unflattened mask along with its first indexed dimension so that all
+    // reshapes, nonzero extraction, and gathering happen inside a single
+    // StableHLO `op_builder` lowering (`BuildBooleanMaskIndexShlo`).
+    // An M-D mask consumes M dimensions of `self` (a 0D mask consumes 0
+    // dimensions and inserts a new dimension at its first indexed dimension).
+    // The count is computed before moving a CPU mask to TPU so that it can
+    // be done on the host.
+    TT_ASSIGN_OR_RETURN(info.num_non_zero_elements,
+                        GetNumNonZeroElements(entries[0].tensor));
+    TT_ASSIGN_OR_RETURN(entries[0].tensor,
+                        MoveIndexToDevice(entries[0].tensor, self.device()));
+    info.entries = std::move(entries);
+    return info;
+  }
+
   const bool has_bool_mask = absl::c_any_of(
       entries, [](const IndexEntry& entry) { return entry.is_mask; });
-  // TODO(b/567574040): Add support for more than one bool index tensor.
-  TT_RET_CHECK(!has_bool_mask || entries.size() == 1,
-               error::kPythonNotImplementedError)
-      << "indexing with more than one bool tensor is not yet supported";
-
-  IndicesInfo info;
   for (IndexEntry& entry : entries) {
-    if (entry.is_mask) {
-      // Compute the number of `True` elements for the output shape, and store
-      // the unflattened mask along with its first indexed dimension so that all
-      // reshapes, nonzero extraction, and gathering happen inside a single
-      // StableHLO `op_builder` lowering (`BuildBooleanMaskIndexShlo`).
-      // An M-D mask consumes M dimensions of `self` (a 0D mask consumes 0
-      // dimensions and inserts a new dimension at its first indexed dimension).
-      // The count is computed before moving a CPU mask to TPU so that it can
-      // be done on the host.
-      TT_ASSIGN_OR_RETURN(info.num_non_zero_elements,
-                          GetNumNonZeroElements(entry.tensor));
+    if (!entry.is_mask) {
+      TT_ASSIGN_OR_RETURN(entry.tensor,
+                          MoveIndexToDevice(entry.tensor, self.device()));
     }
-    TT_ASSIGN_OR_RETURN(entry.tensor,
-                        MoveIndexToDevice(entry.tensor, self.device()));
   }
-  info.entries = std::move(entries);
 
   // Negative integer indices are wrapped on TPU by adding the size of the
   // indexed dimension (no bounds checking is done; see
-  // `ResolveNegativeIndices`). This is skipped for boolean masks, whose
-  // positions are generated on-device by `BuildNonzeroShlo` and are guaranteed
-  // to be non-negative `[0, dim_size)`.
-  if (!has_bool_mask) {
-    TT_RETURN_IF_ERROR(
-        ResolveNegativeIndices(absl::MakeSpan(info.entries), self.sizes()));
-  }
+  // `ResolveNegativeIndices`). Boolean masks are skipped here because their
+  // positions are generated by `nonzero` and are guaranteed to be in
+  // `[0, dim_size)`.
+  TT_RETURN_IF_ERROR(
+      ResolveNegativeIndices(absl::MakeSpan(entries), self.sizes()));
 
+  if (has_bool_mask) {
+    TT_ASSIGN_OR_RETURN(entries,
+                        ConvertBooleanIndicesToPositional(self, entries));
+  }
+  info.entries = std::move(entries);
   return info;
+}
+
+Dimensions GetBooleanMaskOutputDims(const at::Tensor& self,
+                                    const IndexEntry& mask_entry,
+                                    int64_t num_non_zero_elements) {
+  const int64_t dim_indexed = mask_entry.indexed_dim;
+  const int64_t dims_consumed = mask_entry.tensor.dim();
+  Dimensions output_dims;
+  output_dims.reserve(self.dim() - dims_consumed + 1);
+  for (int64_t i = 0; i < dim_indexed; ++i) {
+    output_dims.push_back(self.size(i));
+  }
+  output_dims.push_back(num_non_zero_elements);
+  for (int64_t i = dim_indexed + dims_consumed; i < self.dim(); ++i) {
+    output_dims.push_back(self.size(i));
+  }
+  return output_dims;
+}
+
+absl::StatusOr<Dimensions> InferIndexBroadcastShape(
+    absl::Span<const IndexEntry> entries) {
+  Dimensions broadcasted_shape = CopyIntVector(entries[0].tensor.sizes());
+  for (size_t j = 1; j < entries.size(); ++j) {
+    absl::StatusOr<Dimensions> inferred =
+        InferSize(broadcasted_shape, entries[j].tensor.sizes());
+    if (!inferred.ok()) {
+      return TT_ERROR(error::kIndexError)
+             << "expected index tensors to be broadcastable, got shapes "
+             << ToString(broadcasted_shape) << " and "
+             << ToString(entries[j].tensor.sizes()) << ": "
+             << inferred.status().message();
+    }
+    broadcasted_shape = *std::move(inferred);
+  }
+  return broadcasted_shape;
 }
 
 absl::StatusOr<Dimensions> GetOutputDims(const at::Tensor& self,
@@ -369,18 +479,8 @@ absl::StatusOr<Dimensions> GetOutputDims(const at::Tensor& self,
   // `dims_consumed == 0`, so a new dimension is inserted at `dim_indexed`),
   // while leading and trailing unindexed dimensions are preserved.
   if (info.num_non_zero_elements.has_value()) {
-    const int64_t dim_indexed = info.entries[0].indexed_dim;
-    const int64_t dims_consumed = info.entries[0].tensor.dim();
-    Dimensions output_dims;
-    output_dims.reserve(self.dim() - dims_consumed + 1);
-    for (int64_t i = 0; i < dim_indexed; ++i) {
-      output_dims.push_back(self.size(i));
-    }
-    output_dims.push_back(*info.num_non_zero_elements);
-    for (int64_t i = dim_indexed + dims_consumed; i < self.dim(); ++i) {
-      output_dims.push_back(self.size(i));
-    }
-    return output_dims;
+    return GetBooleanMaskOutputDims(self, info.entries[0],
+                                    *info.num_non_zero_elements);
   }
 
   // The shape of the output tensor is the combination of the shape of the
@@ -388,28 +488,30 @@ absl::StatusOr<Dimensions> GetOutputDims(const at::Tensor& self,
   // the input tensor. Unless the indexed dimensions are consecutive, they will
   // be mapped to the first dimension of the output. See
   // https://numpy.org/devdocs/user/basics.indexing.html#combining-advanced-and-basic-indexing.
-  Dimensions broadcasted_index_shape;
-  Dimensions unindexed_dims_shape;
-
-  bool indexed_dimensions_consecutive = true;
-
   const std::vector<IndexEntry>& entries = info.entries;
+  TT_ASSIGN_OR_RETURN(Dimensions broadcasted_index_shape,
+                      InferIndexBroadcastShape(entries));
+
+  Dimensions unindexed_dims_shape;
+  bool indexed_dimensions_consecutive = true;
+  bool has_zero_indexed_dim = false;
+
   for (int i = 0, j = 0; i < self.dim(); ++i) {
     if (j < entries.size() && i == entries[j].indexed_dim) {
-      if (j > 0 && indexed_dimensions_consecutive &&
-          entries[j - 1].indexed_dim != i - 1) {
-        indexed_dimensions_consecutive = false;
-      }
-
-      TT_ASSIGN_OR_RETURN(
-          broadcasted_index_shape,
-          InferSize(broadcasted_index_shape, entries[j].tensor.sizes()));
-
-      j++;
+      indexed_dimensions_consecutive =
+          indexed_dimensions_consecutive &&
+          (j == 0 || entries[j - 1].indexed_dim == i - 1);
+      has_zero_indexed_dim = has_zero_indexed_dim || self.size(i) == 0;
+      ++j;
     } else {
       unindexed_dims_shape.push_back(self.size(i));
     }
   }
+
+  TT_RET_CHECK(!has_zero_indexed_dim ||
+                   absl::c_linear_search(broadcasted_index_shape, 0),
+               error::kIndexError)
+      << "index is out of bounds for dimension with size 0";
 
   Dimensions output_dims;
   output_dims.reserve(broadcasted_index_shape.size() +
@@ -442,6 +544,8 @@ at::Tensor& AtenIndexTensorOut(
                         "This is being tracked by the dimensions variable"),
        out),
       {
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
         TT_ASSIGN_OR_THROW(std::vector<IndexEntry> entries,
                            ParseIndexEntries(self, indices_list_opt));
         TT_ASSIGN_OR_THROW(IndicesInfo info,

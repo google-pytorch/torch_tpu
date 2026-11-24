@@ -100,6 +100,18 @@ absl::StatusOr<std::vector<IndexEntry>> ParseIndexEntries(
 absl::StatusOr<at::Tensor> MoveIndexToDevice(const at::Tensor& index,
                                              const c10::Device& device);
 
+// Converts the parsed `entries` (see `ParseIndexEntries`) into purely integer
+// index entries on the device of `self`.
+//
+// A boolean mask of rank `k` that covers dimensions {d, ..., d+k-1} of `self`
+// is converted with `AtenNonzero()` (or `at::nonzero()` on the host for a CPU
+// mask) into a tensor of shape (L, k), where L is the number of True elements.
+// Its j-th column (0 <= j < k) becomes a 1D integer index entry of shape (L,)
+// that indexes dimension d+j of `self`. Returns an error if all masks are 0D
+// and no integer index entries remain.
+absl::StatusOr<std::vector<IndexEntry>> ConvertBooleanIndicesToPositional(
+    const at::Tensor& self, absl::Span<const IndexEntry> entries);
+
 absl::StatusOr<int64_t> ValidateIndexInputsAndGetDim(const at::Tensor& self,
                                                      int64_t dim,
                                                      const at::Tensor& index,

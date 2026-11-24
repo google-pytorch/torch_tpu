@@ -4008,6 +4008,165 @@ def _sample_inputs_mm_dtype(
     )
 
 
+def _index_tensor_wrapper(
+    self: torch.Tensor,
+    indices: Sequence[torch.Tensor | None],
+    *,
+    out: torch.Tensor | None = None,
+) -> torch.Tensor:
+  """Invokes aten.index.Tensor or aten.index.Tensor_out."""
+  if out is not None:
+    return torch.ops.aten.index.Tensor_out(self, list(indices), out=out)
+  return torch.ops.aten.index.Tensor(self, list(indices))
+
+
+def _sample_inputs_index_tensor(
+    op_info: OpInfo,
+    device: torch.device | str,
+    dtype: torch.dtype,
+    requires_grad: bool = False,
+    **kwargs: Any,
+) -> Iterator[SampleInput]:
+  """Yields sample inputs for aten.index.Tensor multi-mask and mixed indexing."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      common_utils.make_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+
+  # 1. Multiple 1D boolean masks with matching True counts.
+  yield SampleInput(
+      make_arg((3, 4)),
+      args=(
+          [
+              torch.tensor([True, False, True], device=device),
+              torch.tensor([False, True, False, True], device=device),
+          ],
+      ),
+      name="two_1d_bool_masks",
+  )
+
+  # 2. Multiple 1D boolean masks where a singleton True count broadcasts.
+  yield SampleInput(
+      make_arg((3, 4)),
+      args=(
+          [
+              torch.tensor([False, True, False], device=device),
+              torch.tensor([True, False, True, True], device=device),
+          ],
+      ),
+      name="two_1d_bool_masks_singleton_broadcast",
+  )
+
+  # 3. Non-consecutive 1D boolean masks separated by None slices.
+  yield SampleInput(
+      make_arg((2, 3, 4, 5)),
+      args=(
+          [
+              None,
+              torch.tensor([True, False, True], device=device),
+              None,
+              torch.tensor([False, True, False, False, True], device=device),
+          ],
+      ),
+      name="non_consecutive_bool_masks_with_slices",
+  )
+
+  # 4. Consecutive 1D boolean masks surrounded by None slices.
+  yield SampleInput(
+      make_arg((2, 3, 4, 5)),
+      args=(
+          [
+              None,
+              torch.tensor([True, False, True], device=device),
+              torch.tensor([False, True, True, False], device=device),
+              None,
+          ],
+      ),
+      name="consecutive_bool_masks_between_slices",
+  )
+
+  # 5. Multi-dimensional (2D) boolean mask combined with a slice and 1D mask.
+  yield SampleInput(
+      make_arg((2, 3, 4, 5)),
+      args=(
+          [
+              torch.tensor(
+                  [[True, False, True], [False, True, False]], device=device
+              ),
+              None,
+              torch.tensor([True, False, True, False, True], device=device),
+          ],
+      ),
+      name="2d_and_1d_bool_masks_with_slice",
+  )
+
+  # 6. Boolean mask followed by a 2D int64 index tensor with negative indices.
+  yield SampleInput(
+      make_arg((3, 4, 5)),
+      args=(
+          [
+              torch.tensor([True, False, True], device=device),
+              torch.tensor(
+                  [[3, -1], [-4, 1]], dtype=torch.int64, device=device
+              ),
+              None,
+          ],
+      ),
+      name="bool_mask_then_2d_int64_index",
+  )
+
+  # 7. Negative int32 index tensor separated by a slice from a 2D boolean mask.
+  yield SampleInput(
+      make_arg((3, 2, 3, 4)),
+      args=(
+          [
+              torch.tensor([-1, 0], dtype=torch.int32, device=device),
+              None,
+              torch.tensor(
+                  [
+                      [False, True, False, False],
+                      [False, False, False, False],
+                      [False, False, True, False],
+                  ],
+                  device=device,
+              ),
+          ],
+      ),
+      name="int32_index_slice_then_2d_bool_mask",
+  )
+
+  # 8. All-False multiple boolean masks producing a zero-element output.
+  yield SampleInput(
+      make_arg((3, 4, 2)),
+      args=(
+          [
+              torch.zeros(3, dtype=torch.bool, device=device),
+              torch.zeros(4, dtype=torch.bool, device=device),
+              None,
+          ],
+      ),
+      name="all_false_bool_masks",
+  )
+
+  # 9. Zero-sized indexed dimension paired with empty and singleton True masks.
+  yield SampleInput(
+      torch.empty(
+          (0, 4, 2), device=device, dtype=dtype, requires_grad=requires_grad
+      ),
+      args=(
+          [
+              torch.zeros(0, dtype=torch.bool, device=device),
+              torch.tensor([False, True, False, False], device=device),
+              None,
+          ],
+      ),
+      name="zero_sized_indexed_dim_with_empty_and_singleton_masks",
+  )
+
+
 # Ops not included in the list of tested ops for pytorch.
 _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
     OpInfo(
@@ -4534,6 +4693,19 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
         sample_inputs_func=_sample_inputs_gru_input,
         supports_out=False,
         supports_autograd=True,
+    ),
+    OpInfo(
+        "index.Tensor",
+        op=_index_tensor_wrapper,
+        aten_name="index.Tensor",
+        dtypes=common_dtype.all_types_and_complex_and(
+            torch.bool, torch.float16, torch.bfloat16
+        ),
+        sample_inputs_func=_sample_inputs_index_tensor,
+        supports_out=True,
+        supports_autograd=True,
+        supports_forward_ad=True,
+        supports_fwgrad_bwgrad=True,
     ),
     OpInfo(
         "lstm.input",

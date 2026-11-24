@@ -25,6 +25,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/List.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/nonzero.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -44,6 +45,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
+#include "csrc/ops/nonzero/nonzero_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/to_copy/to_copy_aten_kernels.h"
@@ -107,7 +109,55 @@ absl::Status ValidateIndexDtypesAndDevices(
   return absl::OkStatus();
 }
 
+// Returns the positions of the non-zero elements of `mask` on `device`, with
+// shape (L, mask.dim()). A CPU `mask` is evaluated on the host, which avoids a
+// TPU nonzero and its device-to-host sync for the data-dependent output size.
+// Calling `at::nonzero` on a CPU `mask` is fine here since it only runs the CPU
+// kernel and never dispatches a TPU op.
+absl::StatusOr<at::Tensor> GetNonzeroPositionsOnDevice(
+    const at::Tensor& mask, const c10::Device& device) {
+  if (mask.is_cpu()) {
+    return MoveIndexToDevice(at::nonzero(mask), device);
+  }
+  return AtenNonzero(mask);
+}
+
 }  // namespace
+
+absl::StatusOr<std::vector<IndexEntry>> ConvertBooleanIndicesToPositional(
+    const at::Tensor& self, const absl::Span<const IndexEntry> entries) {
+  std::vector<IndexEntry> positional_entries;
+  for (const IndexEntry& entry : entries) {
+    if (entry.is_mask) {
+      if (entry.tensor.dim() == 0) {
+        continue;
+      }
+      TT_ASSIGN_OR_RETURN(
+          at::Tensor nonzero_result,  // Shape (L, mask_ndim)
+          GetNonzeroPositionsOnDevice(entry.tensor, self.device()));
+      // Decompose the columns of the non-zero result, with each column becoming
+      // a separate 1D integer tensor. Each dimension of the mask indexes a
+      // dimension of `self` in the same order.
+      for (int64_t i = 0; i < entry.tensor.dim(); ++i) {
+        positional_entries.push_back(
+            {.tensor = nonzero_result.select(/*dim=*/1, /*index=*/i),
+             .indexed_dim = entry.indexed_dim + i,
+             .is_mask = false});
+      }
+    } else {
+      TT_ASSIGN_OR_RETURN(at::Tensor tpu_index,
+                          MoveIndexToDevice(entry.tensor, self.device()));
+      positional_entries.push_back({.tensor = std::move(tpu_index),
+                                    .indexed_dim = entry.indexed_dim,
+                                    .is_mask = false});
+    }
+  }
+  // `ParseIndexEntries` guarantees at least one defined index, but 0D masks
+  // expand to no index tensors.
+  TT_RET_CHECK(!positional_entries.empty(), error::kInvalidArgument)
+      << "indices must be specified";
+  return positional_entries;
+}
 
 absl::StatusOr<std::vector<IndexEntry>> ParseIndexEntries(
     const at::Tensor& self,

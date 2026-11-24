@@ -8637,12 +8637,52 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     index = index_fn()
     self.assert_close_tpu_vs_cpu(lambda device: index_op(x.to(device), index))
 
-  def test_index_with_mixed_cpu_and_device_indices(self):
-    x = torch.randn(4, 5, 3)
-    cpu_index = torch.tensor([3, 0, -1])
-    device_index = torch.tensor([1, 4, 2])
+  @parameterized.named_parameters(
+      (
+          "cpu_int_and_device_int",
+          lambda: torch.randn(4, 5, 3),
+          lambda d: (
+              torch.tensor([3, 0, -1]),
+              torch.tensor([1, 4, 2], device=d),
+          ),
+      ),
+      (
+          "cpu_bool_and_device_bool",
+          lambda: torch.randn(3, 4, 2),
+          lambda d: (
+              torch.tensor([True, False, True]),
+              torch.tensor([False, True, False, True], device=d),
+          ),
+      ),
+      (
+          "cpu_2d_bool_and_device_int32",
+          lambda: torch.randn(2, 3, 4),
+          lambda d: (
+              torch.tensor([[True, False, True], [False, True, False]]),
+              torch.tensor([-1, 0, 2], dtype=torch.int32, device=d),
+          ),
+      ),
+      (
+          "non_contiguous_self_and_transposed_2d_bool_with_cpu_int",
+          lambda: torch.arange(48.0).reshape(4, 3, 4).transpose(0, 1),
+          lambda d: (
+              torch.tensor(
+                  [
+                      [True, False, True],
+                      [False, False, False],
+                      [False, True, False],
+                      [False, False, False],
+                  ],
+                  device=d,
+              ).t(),
+              torch.tensor([-1, 1, 0]),
+          ),
+      ),
+  )
+  def test_index_with_mixed_cpu_and_device_indices(self, x_fn, indices_fn):
+    x = x_fn()
     self.assert_close_tpu_vs_cpu(
-        lambda device: x.to(device)[cpu_index, device_index.to(device)]
+        lambda device: x.to(device)[indices_fn(device)]
     )
 
   @parameterized.named_parameters(

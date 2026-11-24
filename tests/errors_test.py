@@ -9465,13 +9465,8 @@ Note: this function is intended to be used with the output produced by torch.lin
       torch.ops.aten.index.Tensor_out(t, indices, out=out)
 
   def test_index_no_indices(self):
-    if et.is_on_gpu():
-      # On TPU, passing [None] indices raises a clean RuntimeError
-      # ("at least one index tensor must be defined"). On GPU, empty
-      # indices trigger an internal C++ assertion in OffsetCalculator.cuh
-      # instead of a standard Python error.
-      self.skipTest("GPU behavior difference")
     t = torch.ones(2, device=et.device())
+    out = torch.empty(2, device=et.device())
 
     with et.assert_raises_message(
         RuntimeError,
@@ -9479,6 +9474,25 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu=_INDEX_INTERNAL_ASSERTION_ERROR_RE,
     ):
       torch.ops.aten.index.Tensor(t, [None])
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index(): expected at least one index tensor to be defined, got 0""",
+        gpu=_INDEX_INTERNAL_ASSERTION_ERROR_RE,
+    ):
+      torch.ops.aten.index.Tensor_out(t, [None], out=out)
+
+  def test_index_out_dtype_mismatch(self):
+    t = torch.ones(2, dtype=torch.float32, device=et.device())
+    idx = torch.tensor([0], dtype=torch.int64, device=et.device())
+    out = torch.empty(1, dtype=torch.float64, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index(): expected the output dtype to be float32, got float64""",
+        gpu="""index_out: self (Float) and result (Double) must have the same scalar type""",
+    ):
+      torch.ops.aten.index.Tensor_out(t, [idx], out=out)
 
   @parameterized.named_parameters(
       dict(
@@ -9535,47 +9549,45 @@ Note: this function is intended to be used with the output produced by torch.lin
           gpu_msg="""too many indices for tensor of dimension 2 (got 4)""",
       ),
       dict(
-          testcase_name="multiple_bool_masks",
-          t_shape=(3, 3),
+          testcase_name="non_broadcastable_bool_masks",
+          t_shape=(3, 4),
           indices_fn=lambda d: [
-              torch.ones(3, dtype=torch.bool, device=d),
-              torch.ones(3, dtype=torch.bool, device=d),
+              torch.tensor([True, False, True], device=d),
+              torch.tensor([True, True, False, True], device=d),
           ],
-          tpu_error=NotImplementedError,
-          tpu_msg="""index(): indexing with more than one bool tensor is not yet supported""",
-          gpu_error=None,
-          gpu_msg="""""",
+          tpu_error=IndexError,
+          tpu_msg="""index(): expected index tensors to be broadcastable, got shapes [2] and [3]: the size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+          gpu_error=IndexError,
+          gpu_msg="""shape mismatch: indexing tensors could not be broadcast together with shapes [2], [3]""",
       ),
       dict(
-          testcase_name="bool_then_int_index",
-          t_shape=(3, 3),
+          testcase_name="zero_sized_indexed_dim_out_of_bounds",
+          t_shape=(0, 4),
           indices_fn=lambda d: [
-              torch.ones(3, dtype=torch.bool, device=d),
               torch.tensor([0], device=d),
+              torch.tensor([False, True, False, False], device=d),
           ],
-          tpu_error=NotImplementedError,
-          tpu_msg="""index(): indexing with more than one bool tensor is not yet supported""",
-          gpu_error=None,
-          gpu_msg="""""",
+          tpu_error=IndexError,
+          tpu_msg="""index(): index is out of bounds for dimension with size 0""",
+          gpu_error=IndexError,
+          gpu_msg="""index is out of bounds for dimension with size 0""",
       ),
       dict(
-          testcase_name="int_then_bool_index",
-          t_shape=(3, 3),
+          testcase_name="multiple_0d_bool_masks",
+          t_shape=(2, 3),
           indices_fn=lambda d: [
-              torch.tensor([0], device=d),
-              torch.ones(3, dtype=torch.bool, device=d),
+              torch.tensor(True, device=d),
+              torch.tensor(True, device=d),
           ],
-          tpu_error=NotImplementedError,
-          tpu_msg="""index(): indexing with more than one bool tensor is not yet supported""",
-          gpu_error=None,
-          gpu_msg="""""",
+          tpu_error=RuntimeError,
+          tpu_msg="""index(): indices must be specified""",
+          gpu_error=RuntimeError,
+          gpu_msg=_INDEX_INTERNAL_ASSERTION_ERROR_RE,
       ),
   )
   def test_index_boolean_mask(
       self, t_shape, indices_fn, tpu_error, tpu_msg, gpu_error, gpu_msg
   ):
-    if et.is_on_gpu() and gpu_error is None:
-      self.skipTest("GPU supports multiple or mixed boolean index tensors")
     t = torch.randn(*t_shape, device=et.device())
     indices = indices_fn(et.device())
     out = torch.empty(1, device=et.device())

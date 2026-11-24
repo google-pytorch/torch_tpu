@@ -3037,6 +3037,9 @@ class TestOps(op_testing.OpInfoTestBase):
         check_value=CheckValueMode.SKIP,
     )
 
+  def test_index_Tensor(self):
+    self.do_test_op("index.Tensor")
+
   def test_index_add(self):
     self.do_test_op("index_add")
 
