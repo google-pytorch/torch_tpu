@@ -21,11 +21,18 @@
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 
-absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(mlir::MlirOp input_op);
+// Builds StableHLO ops for `sigmoid(input_op)` converted to `out_dtype`.
+// Integral and boolean inputs are promoted to the real component of
+// `InferComputationDtype(out_dtype)`. Floating-point and complex inputs
+// preserve intermediate rounding to `input_op`'s element type before
+// converting to `out_dtype`. `out_dtype` must be floating-point or complex.
+absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(mlir::MlirOp input_op,
+                                              mlir::ElementType out_dtype);
 
 at::Tensor& AtenSigmoidOut(const at::Tensor& self, at::Tensor& out);
 
