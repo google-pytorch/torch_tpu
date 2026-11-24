@@ -27,7 +27,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/DebugStringHelper.h"
-#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -36,44 +35,86 @@
 namespace torch_tpu {
 
 absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
-    mlir::MlirOp rng_input_state, mlir::MlirOp input, double p) {
+    mlir::MlirOp rng_input_state, mlir::MlirOp input, double p,
+    DropoutProbabilityType prob_type, DropoutMaskType mask_type) {
   ABSL_VLOG(1) << "[BuildDropoutTrainShlo] input: "
                << mlir::debugString(input.getValue()) << ", p: " << p;
   ABSL_CHECK(p >= 0.0 && p <= 1.0)  // CRASH_OK=Caller validates p.
       << "expected p to be in the range [0, 1], got " << p;
 
-  auto& builder = input.getBuilder();
-  auto& op_builder = builder.getOpBuilder();
+  const mlir::ElementType mask_elem_type =
+      (mask_type == DropoutMaskType::kUInt8) ? mlir::ElementType::UI8
+                                             : mlir::ElementType::PRED;
 
-  if (p <= 0.0) {
-    auto mask_op = MakeConstantLike(input, true, op_builder.getI1Type());
+  const bool keep_all = (prob_type == DropoutProbabilityType::kDropProbability)
+                            ? (p <= 0.0)
+                            : (p >= 1.0);
+  const bool drop_all = (prob_type == DropoutProbabilityType::kDropProbability)
+                            ? (p >= 1.0)
+                            : (p <= 0.0);
+
+  if (keep_all) {
+    mlir::MlirOp mask_op = MakeConstantLike(input, true, mask_elem_type);
     return {{input, mask_op}};
   }
-  if (p >= 1.0) {
-    auto zero_const = MakeConstantLike(input, 0.0);
-    auto mask_op = MakeConstantLike(input, false, op_builder.getI1Type());
+  // Return all zeros on drop_all (including _fused_dropout at p == 0.0),
+  // matching native_dropout(p=1.0) and avoiding CUDA's 1.0 / 0.0 -> nan.
+  if (drop_all) {
+    mlir::MlirOp zero_const = MakeConstantLike(input, 0.0);
+    mlir::MlirOp mask_op = MakeConstantLike(input, false, mask_elem_type);
     return {{zero_const, mask_op}};
   }
 
   mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  mlir::RankedTensorType rand_type = input_type;
-  if (auto complex_type =
-          mlir::dyn_cast<mlir::ComplexType>(input_type.getElementType())) {
-    rand_type = input_type.clone(complex_type.getElementType());
-  }
   TT_ASSIGN_OR_RETURN(
-      auto rand_op, BuildUniformShlo(rng_input_state, /*from=*/0.0, /*to=*/1.0,
-                                     rand_type, input));
+      const mlir::ElementType elem_type,
+      ConvertTo<mlir::ElementType>(input_type.getElementType()));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_elem_type,
+                      InferComputationDtype(elem_type));
+  const mlir::ElementType rand_elem_type = RealComponentOf(compute_elem_type);
+  const mlir::Type rand_mlir_type =
+      mlir::getElementType(input.getContext(), rand_elem_type);
+  const mlir::RankedTensorType rand_type = input_type.clone(rand_mlir_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp rand_op,
+                      BuildUniformShlo(rng_input_state, /*from=*/0.0,
+                                       /*to=*/1.0, rand_type, input));
 
-  auto p_const = MakeConstantLike(rand_op, p);
-  auto mask_op = mlir::stablehlo::Compare(
-      rand_op, p_const, mlir::stablehlo::ComparisonDirection::GE);
-  auto zero_const = MakeConstantLike(input, 0.0);
-  auto masked_input_op = mlir::stablehlo::Select(mask_op, input, zero_const);
+  mlir::MlirOp p_const = MakeConstantLike(rand_op, p);
+  const mlir::stablehlo::ComparisonDirection comparison_dir =
+      (prob_type == DropoutProbabilityType::kKeepProbability)
+          ? mlir::stablehlo::ComparisonDirection::LT
+          : mlir::stablehlo::ComparisonDirection::GE;
+  mlir::MlirOp mask_op =
+      mlir::stablehlo::Compare(rand_op, p_const, comparison_dir);
 
-  double scale = 1.0 / (1.0 - p);
-  auto scale_const = MakeConstantLike(input, scale);
-  auto output = mlir::stablehlo::Mul(masked_input_op, scale_const);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp cast_input,
+                      CastIfNeeded(input, compute_elem_type));
+
+  const double scale = (prob_type == DropoutProbabilityType::kKeepProbability)
+                           ? (1.0 / p)
+                           : (1.0 / (1.0 - p));
+  mlir::MlirOp scaled;
+  if (IsComplexType(GetTensorTypeOrDie(cast_input))) {
+    mlir::MlirOp real = mlir::stablehlo::Real(cast_input);
+    mlir::MlirOp imag = mlir::stablehlo::Imag(cast_input);
+    mlir::MlirOp real_scale = MakeConstantLike(real, scale);
+    mlir::MlirOp scaled_real = mlir::stablehlo::Mul(real, real_scale);
+    mlir::MlirOp scaled_imag = mlir::stablehlo::Mul(imag, real_scale);
+    scaled = mlir::stablehlo::Complex(scaled_real, scaled_imag);
+  } else {
+    mlir::MlirOp scale_const = MakeConstantLike(cast_input, scale);
+    scaled = mlir::stablehlo::Mul(cast_input, scale_const);
+  }
+  mlir::MlirOp zero_const = MakeConstantLike(scaled, 0.0);
+  mlir::MlirOp output = mlir::stablehlo::Select(mask_op, scaled, zero_const);
+
+  if (compute_elem_type != elem_type) {
+    TT_ASSIGN_OR_RETURN(output, CastIfNeeded(output, elem_type));
+  }
+  if (mask_type == DropoutMaskType::kUInt8) {
+    mask_op =
+        mlir::stablehlo::ConvertElementType(mask_op, mlir::ElementType::UI8);
+  }
 
   return {{output, mask_op}};
 }

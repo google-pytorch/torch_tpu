@@ -10463,6 +10463,16 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.ops.aten._fused_dropout(x, 0.5)
 
+  def test_fused_dropout_fp8_invalid_dtype(self):
+    x = torch.empty((2, 3), device=et.device(), dtype=torch.float8_e4m3fn)
+    err_type = RuntimeError if et.is_on_tpu() else NotImplementedError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""fused_dropout(): expected input to be floating point or complex, got float8_e4m3fn""",
+        gpu=""""fused_dropout" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten._fused_dropout(x, 0.5)
+
   def test_native_dropout_backward_invalid_mask_dtype(self):
     grad_output = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
     mask = torch.ones((2, 3), device=et.device(), dtype=torch.int32)

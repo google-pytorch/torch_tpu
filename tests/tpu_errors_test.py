@@ -47,6 +47,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._subclasses import fake_tensor
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
@@ -5483,6 +5484,61 @@ module {
         tpu="""random_(): expected the input dtype to be integral, floating point, or bool, got complex64""",
     ):
       empty_complex.random_()
+
+  @parameterized.named_parameters(
+      ("negative_p", -0.5),
+      ("p_greater_than_one", 1.5),
+  )
+  @et.why_tpu_only(
+      "Testing TPU Meta _fused_dropout probability range validation."
+  )
+  def test_fused_dropout_meta_invalid_p(self, p: float):
+    with fake_tensor.FakeTensorMode():
+      x = torch.empty((2, 3), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""fused_dropout(): expected p to be in the range [0, 1], got {p}""",
+      ):
+        torch.ops.aten._fused_dropout(x, p=p)
+
+  @parameterized.named_parameters(
+      ("int32", torch.int32, "int32"),
+      ("bool", torch.bool, "bool"),
+      ("float8_e4m3fn", torch.float8_e4m3fn, "float8_e4m3fn"),
+  )
+  @et.why_tpu_only(
+      "Testing TPU Meta _fused_dropout unsupported input dtype validation."
+  )
+  def test_fused_dropout_meta_unsupported_dtype(
+      self, dtype: torch.dtype, expected_dtype: str
+  ):
+    with fake_tensor.FakeTensorMode():
+      x = torch.empty((2, 3), device=et.device(), dtype=dtype)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""fused_dropout(): expected input to be floating point or complex, got {expected_dtype}""",
+      ):
+        torch.ops.aten._fused_dropout(x, p=0.5)
+
+  @parameterized.named_parameters(
+      ("p_zero", (2, 3), 0.0),
+      ("p_one", (2, 3), 1.0),
+      ("empty", (0, 3), 0.5),
+  )
+  @et.why_tpu_only(
+      "Testing TPU _fused_dropout generator device validation before"
+      " short-circuit returns."
+  )
+  def test_fused_dropout_wrong_device_generator_short_circuits(
+      self, shape: tuple[int, ...], p: float
+  ):
+    x = torch.empty(shape, device=et.device(), dtype=torch.float32)
+    cpu_gen = torch.Generator(device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Expected a 'tpu' device type for generator but found 'cpu'""",
+    ):
+      torch.ops.aten._fused_dropout(x, p=p, generator=cpu_gen)
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
