@@ -24925,6 +24925,59 @@ class UnaryOpsErrorTest(et.ErrorTestBase):
         ):
           op(t, out=out)
 
+  def test_generator_set_state_invalid_tensor_type(self):
+    gen = torch.Generator(device=et.device())
+    bad_dtype = torch.zeros(16, dtype=torch.int32)
+    bad_device = torch.zeros(16, dtype=torch.uint8, device=et.device())
+    exc_type = RuntimeError if et.is_on_tpu() else TypeError
+
+    with et.assert_raises_message(
+        exc_type,
+        tpu="""set_state(): expected rng state to be a CPU ByteTensor (uint8, strided), got CPU int32 (strided)""",
+        gpu="""RNG state must be a torch.ByteTensor""",
+    ):
+      gen.set_state(bad_dtype)
+
+    with et.assert_raises_message(
+        exc_type,
+        tpu="""set_state(): expected rng state to be a CPU ByteTensor (uint8, strided), got TPU uint8 (strided)""",
+        gpu="""RNG state must be a torch.ByteTensor""",
+    ):
+      gen.set_state(bad_device)
+
+  def test_generator_set_state_non_contiguous(self):
+    gen = torch.Generator(device=et.device())
+    non_contig = torch.zeros(32, dtype=torch.uint8)[::2]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_state(): expected rng state to be contiguous, got non-contiguous tensor with strides [2]""",
+        gpu="""RNG state must be contiguous""",
+    ):
+      gen.set_state(non_contig)
+
+  def test_generator_set_state_invalid_shape(self):
+    gen = torch.Generator(device=et.device())
+    bad_shape = torch.zeros(3, dtype=torch.uint8)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_state(): expected rng state to have shape [16], got [3]""",
+        gpu="""RNG state is wrong size""",
+    ):
+      gen.set_state(bad_shape)
+
+  def test_generator_graphsafe_set_state_invalid_type(self):
+    dev_gen = torch.Generator(device=et.device())
+    cpu_gen = torch.Generator(device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""graphsafe_set_state(): expected a TPU generator, got CPU generator""",
+        gpu="""Expected a CUDA Generator""",
+    ):
+      dev_gen.graphsafe_set_state(cpu_gen)
+
 
 class OpsErrorCoverageTest(et.ErrorTestBase):
   """Tests error messages for ops across TPU and GPU."""

@@ -84,7 +84,8 @@ absl::Status InvalidNodeOutputsError(
   } else {
     outputs_error_stream << "<no outputs>";
   }
-  return TT_ERROR(error::kInternal)
+  return TT_ERROR(error::kInternal)  // ERROR_COV_INFEASIBLE=internal #ifndef
+                                     // NDEBUG invariant on output ordering
          << "execution task must have sequential, non-duplicate node "
             "outputs.\nActual outputs:"
          << outputs_error_stream.str();
@@ -256,7 +257,9 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
 #ifndef NDEBUG
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_placeholder()) {
-      return TT_ERROR(error::kInternal)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=internal #ifndef NDEBUG check;
+                        // placeholders are caught earlier
+                 error::kInternal)
              << "materialize was called on a placeholder tensor. This "
                 "should never happen.\nkPlaceholder tensors should only "
                 "appear in compiled mode, which should never try to "
@@ -372,7 +375,9 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
 #ifndef NDEBUG
   for (const auto& argument : arguments) {
     if (argument.is_placeholder()) {
-      return TT_ERROR(error::kInternal)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=internal #ifndef NDEBUG check;
+                        // placeholders are caught earlier
+                 error::kInternal)
              << "ExecutionTask::FromExecutable was called on a placeholder "
                 "tensor. This should never happen.\nkPlaceholder tensors "
                 "should only appear at compile time, not at execution time.\n"
@@ -585,7 +590,9 @@ ExecutionTask::GetArgumentBuffers() {
                           argument.AwaitBuffer());
       root_args.push_back(pjrt_buffer);
     } else if (argument.is_materializing()) {
-      return TT_ERROR(error::kFailedPrecondition)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=requires cross-stream
+                        // materialization race; non-materializing case covered
+                 error::kFailedPrecondition)
              << "detected an out of order execution; an earlier execution task "
                 "depends on an argument which will be materialized by a later "
                 "execution task.\nIf you are using multiple streams, please "
@@ -593,14 +600,18 @@ ExecutionTask::GetArgumentBuffers() {
     } else if (argument.is_placeholder()) {
       // This should already have been checked in MaterializeImpl, but we can
       // return the same error here if that check was somehow bypassed.
-      return TT_ERROR(error::kInternal)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=already checked in
+                        // MaterializeSpan before ExecutionTask runs
+                 error::kInternal)
              << "cannot Materialize() a placeholder tensor or a tensor that "
                 "depends on a placeholder. \nPlaceholder tensors should only "
                 "appear in compiled mode, which should never try to "
                 "materialize tensors."
              << argument.DebugString();
     } else {
-      return TT_ERROR(error::kFailedPrecondition)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=requires internal unscheduled
+                        // buffer or cross-stream materialization race.
+                 error::kFailedPrecondition)
              << "detected an out of order execution; an execution task "
                 "depends on an argument is not scheduled for "
                 "materialization.\nIf you are using multiple streams, please "
@@ -640,7 +651,9 @@ absl::Status ExecutionTask::SetOutputNodesAsMaterialized(
           << "[AssignMaterializedBuffers] Not enough results to materialize "
              "node "
           << node;
-      return TT_ERROR(error::kFailedPrecondition)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=internal invariant; executable
+                        // always returns one result per output
+                 error::kFailedPrecondition)
              << "Not enough results to materialize node " << node;
     }
     for (size_t j = 0; j < node_size; ++j) {
