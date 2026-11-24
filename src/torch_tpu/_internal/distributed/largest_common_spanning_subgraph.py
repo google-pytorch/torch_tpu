@@ -16,7 +16,7 @@
 
 import bisect
 import collections
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, MutableSet, Sequence, Set
 import graphlib
 from typing import Any, TypeAlias
 
@@ -31,6 +31,11 @@ _NodePerGraph: TypeAlias = tuple[fx.Node, ...]
 _PartitionMap: TypeAlias = dict[fx.Node, int]
 # Maps each partition ID to its member tuples.
 _Partitions: TypeAlias = dict[int, list[_NodePerGraph]]
+# A partition ID representing a partitioned vertex in the run-order graph.
+_PartitionedVertex: TypeAlias = int
+# `(graph_index, node)` for an unpartitioned vertex in the run-order graph.
+_UnpartitionedVertex: TypeAlias = tuple[int, fx.Node]
+_Vertex: TypeAlias = _PartitionedVertex | _UnpartitionedVertex
 
 
 def is_partitionable(node: fx.Node) -> bool:
@@ -235,6 +240,9 @@ def _is_valid_partition(
       submodule input, while `add(x, y)` reads two.
   *   Outputs, which `_outputs_match` checks.
   """
+  # TODO(b/553332536): Re-checking the whole partition for each candidate makes
+  # growth quadratic. Only the new member's edges can change the submodule, so
+  # check just those.
   index_per_graph: list[dict[fx.Node, int]] = []
   reads_per_graph: list[list[tuple[bool, int]]] = []
   for graph_index, node_positions in enumerate(node_positions_in_graph):
@@ -307,33 +315,64 @@ def _partition_order(
   return order
 
 
-def _assign_if_valid(
-    graphs: Sequence[fx.Graph],
-    node_positions_in_graph: Sequence[dict[fx.Node, int]],
-    partition_maps: Sequence[_PartitionMap],
-    partition_id: int,
-    members: list[_NodePerGraph],
-    candidate: _NodePerGraph,
-) -> list[_PartitionMap] | None:
-  """Returns `partition_maps` with `candidate` in `partition_id`, if valid.
+def _vertex(
+    partition_maps: Sequence[_PartitionMap], graph_index: int, node: fx.Node
+) -> _Vertex:
+  return partition_maps[graph_index].get(node, (graph_index, node))
 
-  Valid means `split_module` builds the same submodule for `members` on every
-  graph, and one run order of all partitions still fits every graph. Returns
-  `None` otherwise. Assumes `candidate` is in `members` and all other tuples in
-  `members` are already in `partition_id` in `partition_maps`. Does not modify
-  `partition_maps`.
+
+def _extend_reachable(
+    partition_maps: Sequence[_PartitionMap],
+    partitions: _Partitions,
+    partition_id: int,
+    seeds: _NodePerGraph,
+    reachable: MutableSet[_Vertex],
+    *,
+    forward: bool,
+) -> None:
+  """Adds vertices reachable from `seeds` outside `partition_id` to `reachable`.
+
+  Walks forward along `node.users` when `forward` is true, or backward along
+  `node.all_input_nodes` otherwise, crossing between graphs whenever traversal
+  reaches an earlier partition.
   """
-  # TODO(b/553332536): Re-checking the whole partition and re-sorting every
-  # graph for each candidate makes growth quadratic. Only the new member's
-  # edges can change the submodule or the run order, so check just those.
-  if not _is_valid_partition(members, node_positions_in_graph):
-    return None
-  new_partition_maps = [dict(partition_map) for partition_map in partition_maps]
-  for partition_map, node in zip(new_partition_maps, candidate, strict=True):
-    partition_map[node] = partition_id
-  if _partition_order(graphs, new_partition_maps) is None:
-    return None
-  return new_partition_maps
+  stack = list(enumerate(seeds))
+  while stack:
+    graph_index, node = stack.pop()
+    neighbors = node.users if forward else node.all_input_nodes
+    for neighbor in neighbors:
+      vertex = _vertex(partition_maps, graph_index, neighbor)
+      if vertex != partition_id and vertex not in reachable:
+        reachable.add(vertex)
+        if isinstance(vertex, int):
+          for member in partitions[vertex]:
+            stack.extend(enumerate(member))
+        else:
+          stack.append(vertex)
+
+
+def _preserves_run_order(
+    partition_maps: Sequence[_PartitionMap],
+    descendants: Set[_Vertex],
+    ancestors: Set[_Vertex],
+    candidate: _NodePerGraph,
+) -> bool:
+  """Returns whether adding `candidate` keeps one shared partition run order.
+
+  `descendants` and `ancestors` are vertices downstream and upstream of the
+  active partition. Assumes `candidate` is an input of the partition on every
+  graph, or a user of it on every graph.
+  """
+  for graph_index, node in enumerate(candidate):
+    if any(
+        _vertex(partition_maps, graph_index, input_node) in descendants
+        for input_node in node.all_input_nodes
+    ) or any(
+        _vertex(partition_maps, graph_index, user) in ancestors
+        for user in node.users
+    ):
+      return False
+  return True
 
 
 def _grow_partitions(
@@ -378,17 +417,35 @@ def _grow_partitions(
         for partition_map, node in zip(partition_maps, anchor, strict=True)
     ):
       continue
-    new_partition_maps = _assign_if_valid(
-        graphs,
-        node_positions_in_graph,
-        partition_maps,
-        partition_id,
-        [anchor],
-        anchor,
-    )
-    if new_partition_maps is None:
+    if not _is_valid_partition([anchor], node_positions_in_graph):
       continue
-    partition_maps = new_partition_maps
+    # Check reachability before assigning `partition_id` so paths between
+    # `anchor`'s nodes are not collapsed into self-loops.
+    descendants: set[_Vertex] = set()
+    _extend_reachable(
+        partition_maps,
+        partitions,
+        partition_id,
+        anchor,
+        descendants,
+        forward=True,
+    )
+    if any(
+        (graph_index, node) in descendants
+        for graph_index, node in enumerate(anchor)
+    ):
+      continue
+    for partition_map, node in zip(partition_maps, anchor, strict=True):
+      partition_map[node] = partition_id
+    ancestors: set[_Vertex] = set()
+    _extend_reachable(
+        partition_maps,
+        partitions,
+        partition_id,
+        anchor,
+        ancestors,
+        forward=False,
+    )
     partitions[partition_id] = [anchor]
     queue: collections.deque[_NodePerGraph] = collections.deque([anchor])
     while queue:
@@ -412,6 +469,10 @@ def _grow_partitions(
         }
         if len(candidate_anchor_indices) > 1:
           continue
+        if not _preserves_run_order(
+            partition_maps, descendants, ancestors, candidate
+        ):
+          continue
         first_graph_positions = node_positions_in_graph[0]
         members = list(partitions[partition_id])
         bisect.insort(
@@ -419,18 +480,28 @@ def _grow_partitions(
             candidate,
             key=lambda member: first_graph_positions[member[0]],
         )
-        new_partition_maps = _assign_if_valid(
-            graphs,
-            node_positions_in_graph,
+        if not _is_valid_partition(members, node_positions_in_graph):
+          continue
+        for partition_map, node in zip(partition_maps, candidate, strict=True):
+          partition_map[node] = partition_id
+        _extend_reachable(
             partition_maps,
+            partitions,
             partition_id,
-            members,
             candidate,
+            descendants,
+            forward=True,
         )
-        if new_partition_maps is not None:
-          partition_maps = new_partition_maps
-          partitions[partition_id] = members
-          queue.append(candidate)
+        _extend_reachable(
+            partition_maps,
+            partitions,
+            partition_id,
+            candidate,
+            ancestors,
+            forward=False,
+        )
+        partitions[partition_id] = members
+        queue.append(candidate)
   return partition_maps, partitions
 
 
@@ -464,8 +535,11 @@ def largest_common_spanning_subgraph(
   if _debug_checks_enabled():
     _validate_inputs(graphs, anchors)
   partition_maps, partitions = _grow_partitions(graphs, anchors)
-  # `_grow_partitions` keeps a valid order at every step, so this is not `None`.
-  order = _partition_order(graphs, partition_maps) or []
+  order = _partition_order(graphs, partition_maps)
+  if order is None:
+    raise RuntimeError(
+        "Partition growth produced a cyclic partition run order."
+    )
   result: list[dict[str, int]] = [{} for _ in graphs]
   for run_index, partition_id in enumerate(order):
     for member in partitions[partition_id]:
