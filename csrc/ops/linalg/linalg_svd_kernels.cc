@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -954,6 +955,9 @@ absl::StatusOr<MlirOpResults<2>> BuildSortEigenPairs(
   return MlirOpResults<2>{{s_sorted, v_sorted}};
 }
 
+constexpr double kTallMatrixQrThreshold = 1.15;
+constexpr int64_t kQdwhMaxIterations = 10;
+
 struct SvdPreprocessResult {
   mlir::MlirOp a_svd;
   std::optional<mlir::MlirOp> q_op;
@@ -987,7 +991,7 @@ absl::StatusOr<SvdPreprocessResult> BuildSvdPreprocess(mlir::MlirOp a,
     TT_ASSIGN_OR_RETURN(u_out_null, BuildMaybeSlice(q_full, rank - 1, -n, 0));
     // Extract the top 'n' rows of R_full (shape n x n) to form R.
     TT_ASSIGN_OR_RETURN(a_svd, BuildMaybeSlice(r_full, rank - 2, 0, n - m));
-  } else if (m > 1.15 * n) {
+  } else if (m > kTallMatrixQrThreshold * n) {
     // The constant 1.15 is the same as in JAX's linalg.svd.
     TT_ASSIGN_OR_RETURN(const auto qr_results, BuildQrShlo(a, "reduced"));
     q_op = qr_results[0];
@@ -1311,47 +1315,44 @@ absl::StatusOr<MlirOpResults<2>> BuildEighWithDiagonalShift(mlir::MlirOp h) {
   return MlirOpResults<2>{{v, s}};
 }
 
-absl::StatusOr<MlirOpResults<3>> BuildSvdTallAndSquare(mlir::MlirOp input,
-                                                       bool compute_uv) {
-  TT_ASSIGN_OR_RETURN(const auto qdwh_results,
-                      // 10 iterations matches JAX's default.
-                      BuildQdwhShlo(input, /*max_iterations=*/10));
-  const mlir::MlirOp h = qdwh_results[1];
+// Stage 2: QDWH polar decomposition (A = U_polar @ H).
+absl::StatusOr<MlirOpResults<2>> BuildSvdStage2Qdwh(mlir::MlirOp a_svd) {
+  // 10 iterations matches JAX's default.
+  return BuildQdwhShlo(a_svd, kQdwhMaxIterations);
+}
 
+// Stage 3 (values only): Regularized Eigh on H + descending singular value
+// sort.
+absl::StatusOr<mlir::MlirOp> BuildSvdStage3EighVals(mlir::MlirOp h) {
   TT_ASSIGN_OR_RETURN(const auto eigh_results, BuildEighWithDiagonalShift(h));
-  const mlir::MlirOp v = eigh_results[0];
-  const mlir::MlirOp s = eigh_results[1];
+  mlir::MlirOp s = eigh_results[1];
+  const int64_t s_rank = GetTensorTypeOrDie(s).getRank();
+  return BuildSortShlo(s, /*stable=*/true, /*dim=*/s_rank - 1,
+                       /*descending=*/true)
+      .values;
+}
 
-  if (!compute_uv) {
-    const int64_t s_rank = GetTensorTypeOrDie(s).getRank();
-    const SortShloOutputs sorted_s_outputs = BuildSortShlo(
-        s, /*stable=*/true, /*dim=*/s_rank - 1, /*descending=*/true);
-    const mlir::MlirOp s_sorted = sorted_s_outputs.values;
-
-    const int64_t rank = GetTensorTypeOrDie(input).getRank();
-    TT_ASSIGN_OR_RETURN(const mlir::MlirOp u_dummy,
-                        MakeEmptySlice(input, rank - 1));
-    TT_ASSIGN_OR_RETURN(const mlir::MlirOp v_dummy,
-                        MakeEmptySlice(v, rank - 1));
-    return MlirOpResults<3>{{u_dummy, s_sorted, v_dummy}};
-  }
-
+// Stage 3 (UV): Regularized Eigh on H + eigenpair sort + U_svd = U_polar @ V.
+absl::StatusOr<MlirOpResults<3>> BuildSvdStage3EighUv(mlir::MlirOp u_polar,
+                                                      mlir::MlirOp h) {
+  TT_ASSIGN_OR_RETURN(const auto eigh_results, BuildEighWithDiagonalShift(h));
   TT_ASSIGN_OR_RETURN(const mlir::ElementType element_type,
-                      GetElementType(input));
-  TT_ASSIGN_OR_RETURN(const auto sort_results,
-                      BuildSortEigenPairs(s, v, element_type));
-  const mlir::MlirOp s_sorted = sort_results[0];
-  const mlir::MlirOp v_sorted = sort_results[1];
-
-  const mlir::MlirOp u_polar = qdwh_results[0];
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp u_svd,
-                      BuildMatMulShlo(u_polar, v_sorted));
-
+                      GetElementType(u_polar));
   TT_ASSIGN_OR_RETURN(
-      const mlir::MlirOp u_corrected,
-      BuildCorrectRankDeficiency(u_svd, s_sorted, element_type));
+      const auto sort_results,
+      BuildSortEigenPairs(eigh_results[1], eigh_results[0], element_type));
+  mlir::MlirOp s_sorted = sort_results[0];
+  mlir::MlirOp v_sorted = sort_results[1];
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp u_svd, BuildMatMulShlo(u_polar, v_sorted));
+  return MlirOpResults<3>{{u_svd, s_sorted, v_sorted}};
+}
 
-  return MlirOpResults<3>{{u_corrected, s_sorted, v_sorted}};
+// Stage 4: Rank-deficiency QR orthogonalization on core U_svd.
+absl::StatusOr<mlir::MlirOp> BuildSvdStage4RankCorrection(
+    mlir::MlirOp u_svd, mlir::MlirOp s_sorted) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType element_type,
+                      GetElementType(u_svd));
+  return BuildCorrectRankDeficiency(u_svd, s_sorted, element_type);
 }
 
 /// Returns an element-wise boolean mask indicating which elements of the input
@@ -1414,62 +1415,88 @@ absl::StatusOr<mlir::MlirOp> PropagateNanIfNeeded(mlir::MlirOp output,
       is_finite_bcast.getValue(), output.getValue(), nan_output.getValue());
 }
 
+// Stage 5 (values only): NaN propagation + empty U/Vh placeholders.
+absl::StatusOr<MlirOpResults<3>> BuildSvdStage5FinalizeVals(
+    mlir::MlirOp s_sorted, mlir::MlirOp orig_input, bool check_finite = true) {
+  mlir::MlirOp s_final = s_sorted;
+  if (check_finite) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp is_finite, BuildAllFinite(orig_input));
+    TT_ASSIGN_OR_RETURN(s_final, PropagateNanIfNeeded(s_sorted, is_finite));
+  }
+  const int64_t rank = GetTensorTypeOrDie(orig_input).getRank();
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp u_dummy,
+                      MakeEmptySlice(orig_input, rank - 1));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp vh_dummy,
+                      MakeEmptySlice(orig_input, rank - 2));
+  return MlirOpResults<3>{{u_dummy, s_final, vh_dummy}};
+}
+
+// Stage 5 (UV): Reconstruct outer U, swap U/Vh if transposed, and propagate
+// NaN if `orig_input` is provided (omitted for always-finite integer inputs).
+absl::StatusOr<MlirOpResults<3>> BuildSvdStage5FinalizeUv(
+    mlir::MlirOp u_corrected, mlir::MlirOp s_sorted, mlir::MlirOp v_sorted,
+    std::optional<mlir::MlirOp> q_op, std::optional<mlir::MlirOp> u_null_op,
+    bool transpose_input, std::optional<mlir::MlirOp> orig_input) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp u_reconstructed,
+                      BuildSvdUReconstruction(u_corrected, q_op, u_null_op));
+  TT_ASSIGN_OR_RETURN(
+      const SvdPostprocessResult post,
+      BuildSvdPostprocess(u_reconstructed, v_sorted, transpose_input));
+  if (!orig_input.has_value()) {
+    return MlirOpResults<3>{{post.u, s_sorted, post.vh}};
+  }
+  // NaN propagation logic (matching JAX).
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp is_finite, BuildAllFinite(*orig_input));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp u_final,
+                      PropagateNanIfNeeded(post.u, is_finite));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp s_final,
+                      PropagateNanIfNeeded(s_sorted, is_finite));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp vh_final,
+                      PropagateNanIfNeeded(post.vh, is_finite));
+  return MlirOpResults<3>{{u_final, s_final, vh_final}};
+}
+
 absl::StatusOr<MlirOpResults<3>> BuildSvdShlo(mlir::MlirOp input,
                                               bool full_matrices,
                                               bool compute_uv) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   const int64_t rank = input_type.getRank();
   const llvm::ArrayRef<int64_t> input_shape = input_type.getShape();
+  const bool transpose_input = input_shape[rank - 2] < input_shape[rank - 1];
 
-  const int64_t m = input_shape[rank - 2];
-  const int64_t n = input_shape[rank - 1];
-
-  const bool transpose_input = m < n;
+  // Stage 1: Preprocess (conjugate-transpose wide inputs and optional QR).
   mlir::MlirOp a = input;
   if (transpose_input) {
     TT_ASSIGN_OR_RETURN(a, BuildConjugateTransposeShlo(input));
   }
-
   TT_ASSIGN_OR_RETURN(const SvdPreprocessResult preprocess_result,
                       BuildSvdPreprocess(a, full_matrices));
 
-  TT_ASSIGN_OR_RETURN(
-      const auto svd_results,
-      BuildSvdTallAndSquare(preprocess_result.a_svd, compute_uv));
-  const mlir::MlirOp u = svd_results[0];
-  const mlir::MlirOp s = svd_results[1];
-  const mlir::MlirOp v = svd_results[2];
+  // Stage 2: Core QDWH polar decomposition.
+  TT_ASSIGN_OR_RETURN(const MlirOpResults<2> qdwh_results,
+                      BuildSvdStage2Qdwh(preprocess_result.a_svd));
+  mlir::MlirOp u_polar = qdwh_results[0];
+  mlir::MlirOp h = qdwh_results[1];
 
   if (!compute_uv) {
-    TT_ASSIGN_OR_RETURN(const mlir::MlirOp is_finite, BuildAllFinite(input));
-    TT_ASSIGN_OR_RETURN(const mlir::MlirOp s_final,
-                        PropagateNanIfNeeded(s, is_finite));
-
-    TT_ASSIGN_OR_RETURN(const mlir::MlirOp u_dummy,
-                        MakeEmptySlice(input, rank - 1));
-    TT_ASSIGN_OR_RETURN(const mlir::MlirOp vh_dummy,
-                        MakeEmptySlice(input, rank - 2));
-    return MlirOpResults<3>{{u_dummy, s_final, vh_dummy}};
+    // Stage 3 (values only): Regularized Eigh + descending sort.
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp s_sorted, BuildSvdStage3EighVals(h));
+    // Stage 4 (rank-deficiency QR) is skipped when U/Vh are not computed.
+    // Stage 5 (values only): NaN propagation + empty U/Vh placeholders.
+    return BuildSvdStage5FinalizeVals(s_sorted, input);
   }
 
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp u_reconstructed,
-                      BuildSvdUReconstruction(u, preprocess_result.q_op,
-                                              preprocess_result.u_out_null));
-
-  TT_ASSIGN_OR_RETURN(const auto postprocess_result,
-                      BuildSvdPostprocess(u_reconstructed, v, transpose_input));
-
-  // NaN propagation logic (matching JAX).
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp is_finite, BuildAllFinite(input));
-
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp u_final,
-                      PropagateNanIfNeeded(postprocess_result.u, is_finite));
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp s_final,
-                      PropagateNanIfNeeded(s, is_finite));
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp vh_final,
-                      PropagateNanIfNeeded(postprocess_result.vh, is_finite));
-
-  return MlirOpResults<3>{{u_final, s_final, vh_final}};
+  // Stage 3 (UV): Regularized Eigh + eigenpair sort + U_polar @ V_sorted.
+  TT_ASSIGN_OR_RETURN(const MlirOpResults<3> eigh_results,
+                      BuildSvdStage3EighUv(u_polar, h));
+  // Stage 4: Rank-deficiency QR orthogonalization on core U_svd.
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp u_corrected,
+      BuildSvdStage4RankCorrection(eigh_results[0], eigh_results[1]));
+  // Stage 5 (UV): Reconstruct outer U, swap U/Vh if transposed, propagate NaN.
+  return BuildSvdStage5FinalizeUv(
+      u_corrected, eigh_results[1], eigh_results[2], preprocess_result.q_op,
+      preprocess_result.u_out_null, transpose_input, input);
 }
 
 struct SvdOutDims {
@@ -1571,6 +1598,457 @@ absl::StatusOr<DeviceBufferRefArray<3>> UpcastComplexDoubleOutputs(
   return DeviceBufferRefArray<3>{u_buf, s_buf, vh_buf};
 }
 
+enum class SvdMatricesMode {
+  kReduced,
+  kFull,
+};
+
+enum class SvdUvMode {
+  kValuesOnly,
+  kComputeUv,
+};
+
+struct SvdF64PreprocessTensors {
+  at::Tensor a_svd;  // UNINITIALIZED_TENSOR_OK
+  std::optional<at::Tensor> q;
+  std::optional<at::Tensor> u_out_null;
+};
+
+struct SvdF64InputTransform {
+  bool transpose_input;
+  bool input_is_integer;
+};
+
+struct SvdF64PrepInfo {
+  at::IntArrayRef batch_dims;
+  int64_t m_tall;
+  int64_t n_tall;
+  SvdF64InputTransform transform;
+};
+
+absl::StatusOr<OpParamCacheKeys> MakeStage1CacheKeys(
+    const std::string_view stage, const SvdF64InputTransform transform) {
+  const bool transpose_input = transform.transpose_input;
+  const bool input_is_integer = transform.input_is_integer;
+  return TT_MAKE_OP_PARAM_CACHE_KEYS(stage, transpose_input, input_is_integer);
+}
+
+// Helper for Stage 1 MLIR builders: casts integer inputs to F64 and transposes
+// wide matrices so m >= n.
+absl::StatusOr<mlir::MlirOp> PrepareTallF64Input(
+    mlir::MlirOp self_op, const SvdF64InputTransform transform) {
+  mlir::MlirOp a = MaybeCastInput(self_op, transform.input_is_integer);
+  if (transform.transpose_input) {
+    return BuildTransposeShlo(a);
+  }
+  return a;
+}
+
+// F64-only Stage 1 QR (complete): used for rectangular inputs (m_tall > n_tall)
+// when full_matrices and compute_uv are true. Runs complete QR in a cached
+// DispatchOp and returns square core `a_svd`, `q`, and null-space `u_out_null`.
+absl::StatusOr<SvdF64PreprocessTensors> DispatchCompleteQrF64(
+    const at::Tensor& self, const SvdF64PrepInfo& info) {
+  const std::string_view stage = "svd_f64_prep_complete";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys prep_keys,
+                      MakeStage1CacheKeys(stage, info.transform));
+  const Dimensions a_svd_dims =
+      ConcatBatchAndDims(info.batch_dims, info.n_tall, info.n_tall);
+  const Dimensions q_dims =
+      ConcatBatchAndDims(info.batch_dims, info.m_tall, info.n_tall);
+  const Dimensions u_null_dims = ConcatBatchAndDims(
+      info.batch_dims, info.m_tall, info.m_tall - info.n_tall);
+  auto prep_builder =
+      [transform = info.transform](
+          mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<3>> {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp a,
+                        PrepareTallF64Input(self_op, transform));
+    TT_ASSIGN_OR_RETURN(const SvdPreprocessResult res,
+                        BuildSvdPreprocess(a, /*full_matrices=*/true));
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PreprocessSvdF64 enforces
+                   // m_tall > n_tall.
+        res.q_op.has_value() && res.u_out_null.has_value(), error::kInternal)
+        << "complete QR preprocess expected q_op and u_out_null";
+    return MlirOpResults<3>{{res.a_svd, *res.q_op, *res.u_out_null}};
+  };
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRefArray<3> bufs,
+      (DispatchOp<1, 3>(
+          std::move(prep_builder), self,
+          {.out_dtypes = {mlir::ElementType::F64, mlir::ElementType::F64,
+                          mlir::ElementType::F64},
+           .out_dims_list = {a_svd_dims, q_dims, u_null_dims},
+           .op_param_cache_keys = std::move(prep_keys),
+           .split_mode = OpSplitMode::kSplitBoth})));
+  const int64_t device_index = self.device().index();
+  return SvdF64PreprocessTensors{
+      .a_svd = MakeTensor(bufs[0], device_index),
+      .q = MakeTensor(bufs[1], device_index),
+      .u_out_null = MakeTensor(bufs[2], device_index),
+  };
+}
+
+// F64-only Stage 1 QR (reduced): used for tall inputs (m > 1.15 * n) when
+// complete QR is not needed. Runs reduced QR in a cached DispatchOp and
+// returns square core `a_svd` (plus `q` when compute_uv is true; `u_out_null`
+// is empty).
+absl::StatusOr<SvdF64PreprocessTensors> DispatchReducedQrF64(
+    const at::Tensor& self, const SvdF64PrepInfo& info,
+    const SvdUvMode uv_mode) {
+  const Dimensions a_svd_dims =
+      ConcatBatchAndDims(info.batch_dims, info.n_tall, info.n_tall);
+  const int64_t device_index = self.device().index();
+  if (uv_mode == SvdUvMode::kComputeUv) {
+    const std::string_view stage = "svd_f64_prep_reduced";
+    TT_ASSIGN_OR_RETURN(OpParamCacheKeys prep_keys,
+                        MakeStage1CacheKeys(stage, info.transform));
+    const Dimensions q_dims =
+        ConcatBatchAndDims(info.batch_dims, info.m_tall, info.n_tall);
+    auto prep_builder =
+        [transform = info.transform](
+            mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
+      TT_ASSIGN_OR_RETURN(mlir::MlirOp a,
+                          PrepareTallF64Input(self_op, transform));
+      TT_ASSIGN_OR_RETURN(const SvdPreprocessResult res,
+                          BuildSvdPreprocess(a, /*full_matrices=*/false));
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PreprocessSvdF64 enforces
+                     // m_tall > 1.15 * n_tall.
+          res.q_op.has_value(), error::kInternal)
+          << "reduced QR preprocess expected q_op";
+      return MlirOpResults<2>{{res.a_svd, *res.q_op}};
+    };
+    TT_ASSIGN_OR_RETURN(
+        const DeviceBufferRefArray<2> bufs,
+        (DispatchOp<1, 2>(
+            std::move(prep_builder), self,
+            {.out_dtypes = {mlir::ElementType::F64, mlir::ElementType::F64},
+             .out_dims_list = {a_svd_dims, q_dims},
+             .op_param_cache_keys = std::move(prep_keys),
+             .split_mode = OpSplitMode::kSplitBoth})));
+    return SvdF64PreprocessTensors{
+        .a_svd = MakeTensor(bufs[0], device_index),
+        .q = MakeTensor(bufs[1], device_index),
+        .u_out_null = std::nullopt,
+    };
+  }
+
+  const std::string_view stage = "svd_f64_prep_r_only";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys prep_keys,
+                      MakeStage1CacheKeys(stage, info.transform));
+  auto prep_builder =
+      [transform = info.transform](
+          mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp a,
+                        PrepareTallF64Input(self_op, transform));
+    TT_ASSIGN_OR_RETURN(const MlirOpResults<2> qr_results, BuildQrShlo(a, "r"));
+    return qr_results[1];
+  };
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRef buf,
+      DispatchOp<1>(std::move(prep_builder), self,
+                    {.out_dtype = mlir::ElementType::F64,
+                     .out_dims = a_svd_dims,
+                     .op_param_cache_keys = std::move(prep_keys),
+                     .split_mode = OpSplitMode::kSplitBoth}));
+  return SvdF64PreprocessTensors{
+      .a_svd = MakeTensor(buf, device_index),
+      .q = std::nullopt,
+      .u_out_null = std::nullopt,
+  };
+}
+
+// F64-only Stage 1 router: casts integer inputs to F64, transposes wide
+// inputs so m >= n, and dispatches complete QR, reduced QR, cast/transpose,
+// or a no-op depending on shape and SVD mode.
+absl::StatusOr<SvdF64PreprocessTensors> PreprocessSvdF64(
+    const at::Tensor& self, const SvdMatricesMode matrices_mode,
+    const SvdUvMode uv_mode) {
+  const int64_t rank = self.dim();
+  const int64_t m = self.size(rank - 2);
+  const int64_t n = self.size(rank - 1);
+  const bool transpose_input = m < n;
+  const SvdF64PrepInfo info = {
+      .batch_dims = self.sizes().slice(0, rank - 2),
+      .m_tall = transpose_input ? n : m,
+      .n_tall = transpose_input ? m : n,
+      .transform =
+          {
+              .transpose_input = transpose_input,
+              .input_is_integer = IsInteger(self),
+          },
+  };
+  const bool need_complete_qr = (matrices_mode == SvdMatricesMode::kFull) &&
+                                (uv_mode == SvdUvMode::kComputeUv) &&
+                                (info.m_tall > info.n_tall);
+
+  if (need_complete_qr) {
+    return DispatchCompleteQrF64(self, info);
+  }
+  if (info.m_tall > kTallMatrixQrThreshold * info.n_tall) {
+    return DispatchReducedQrF64(self, info, uv_mode);
+  }
+  if (!info.transform.input_is_integer && !info.transform.transpose_input) {
+    return SvdF64PreprocessTensors{
+        .a_svd = self,
+        .q = std::nullopt,
+        .u_out_null = std::nullopt,
+    };
+  }
+
+  const std::string_view stage = "svd_f64_prep_cast_t";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys prep_keys,
+                      MakeStage1CacheKeys(stage, info.transform));
+  const Dimensions a_svd_dims =
+      ConcatBatchAndDims(info.batch_dims, info.m_tall, info.n_tall);
+  auto prep_builder =
+      [transform = info.transform](
+          mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
+    return PrepareTallF64Input(self_op, transform);
+  };
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRef buf,
+      DispatchOp<1>(std::move(prep_builder), self,
+                    {.out_dtype = mlir::ElementType::F64,
+                     .out_dims = a_svd_dims,
+                     .op_param_cache_keys = std::move(prep_keys),
+                     .split_mode = OpSplitMode::kSplitBoth}));
+  return SvdF64PreprocessTensors{
+      .a_svd = MakeTensor(buf, self.device().index()),
+      .q = std::nullopt,
+      .u_out_null = std::nullopt,
+  };
+}
+
+struct SvdF64QdwhTensors {
+  at::Tensor u_polar;  // UNINITIALIZED_TENSOR_OK
+  at::Tensor h;        // UNINITIALIZED_TENSOR_OK
+};
+
+// F64-only Stage 2: dispatches QDWH polar decomposition on core `a_svd`
+// (shared across all outer shapes with the same core dimensions).
+absl::StatusOr<SvdF64QdwhTensors> DispatchQdwhF64(const at::Tensor& a_svd,
+                                                  const Dimensions& h_dims) {
+  const std::string_view qdwh_stage = "svd_f64_qdwh";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys qdwh_keys,
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(qdwh_stage));
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRefArray<2> qdwh_bufs,
+      (DispatchOp<1, 2>(
+          BuildSvdStage2Qdwh, a_svd,
+          {.out_dtypes = {mlir::ElementType::F64, mlir::ElementType::F64},
+           .out_dims_list = {a_svd.sizes(), h_dims},
+           .op_param_cache_keys = std::move(qdwh_keys),
+           .split_mode = OpSplitMode::kSplitBoth})));
+  const int64_t device_index = a_svd.device().index();
+  return SvdF64QdwhTensors{
+      .u_polar = MakeTensor(qdwh_bufs[0], device_index),
+      .h = MakeTensor(qdwh_bufs[1], device_index),
+  };
+}
+
+// F64-only Stage 3 (values only): dispatches regularized Eigh + descending sort
+// on core `h`.
+absl::StatusOr<at::Tensor> DispatchEighValsF64(const at::Tensor& h,
+                                               const Dimensions& s_dims) {
+  const std::string_view eigh_stage = "svd_f64_eigh_vals";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys eigh_keys,
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(eigh_stage));
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRef s_sorted_buf,
+      DispatchOp<1>(BuildSvdStage3EighVals, h,
+                    {.out_dtype = mlir::ElementType::F64,
+                     .out_dims = s_dims,
+                     .op_param_cache_keys = std::move(eigh_keys),
+                     .split_mode = OpSplitMode::kSplitBoth}));
+  return MakeTensor(s_sorted_buf, h.device().index());
+}
+
+// F64-only Stage 5 (values only): dispatches NaN propagation and empty U/Vh
+// placeholders.
+absl::StatusOr<DeviceBufferRefArray<3>> DispatchFinalizeValsF64(
+    const at::Tensor& s_sorted, const at::Tensor& self,
+    const SvdOutDims& expected_dims) {
+  const bool input_is_integer = IsInteger(self);
+  const std::string_view fin_stage = "svd_f64_finalize_vals";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys fin_keys,
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(fin_stage, input_is_integer));
+  auto fin_vals_builder =
+      [input_is_integer](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<MlirOpResults<3>> {
+    mlir::MlirOp orig_self_op = MaybeCastInput(inputs[1], input_is_integer);
+    return BuildSvdStage5FinalizeVals(inputs[0], orig_self_op,
+                                      /*check_finite=*/!input_is_integer);
+  };
+  return DispatchOp<2, 3>(
+      std::move(fin_vals_builder), {s_sorted, self},
+      {.out_dtypes = {mlir::ElementType::F64, mlir::ElementType::F64,
+                      mlir::ElementType::F64},
+       .out_dims_list = {expected_dims.u, expected_dims.s, expected_dims.vh},
+       .op_param_cache_keys = std::move(fin_keys),
+       .split_mode = OpSplitMode::kSplitBoth});
+}
+
+struct SvdF64EighUvTensors {
+  at::Tensor u_svd;     // UNINITIALIZED_TENSOR_OK
+  at::Tensor s_sorted;  // UNINITIALIZED_TENSOR_OK
+  at::Tensor v_sorted;  // UNINITIALIZED_TENSOR_OK
+};
+
+// F64-only Stage 3 (UV): dispatches regularized Eigh, eigenpair sort, and
+// `u_polar @ v_sorted` on the core `(..., k, k)` tensors.
+absl::StatusOr<SvdF64EighUvTensors> DispatchEighUvF64(
+    const at::Tensor& u_polar, const at::Tensor& h, const Dimensions& s_dims,
+    const Dimensions& h_dims) {
+  const std::string_view eigh_stage = "svd_f64_eigh_uv";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys eigh_keys,
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(eigh_stage));
+  auto eigh_uv_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<MlirOpResults<3>> {
+    return BuildSvdStage3EighUv(inputs[0], inputs[1]);
+  };
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRefArray<3> eigh_bufs,
+      (DispatchOp<2, 3>(
+          std::move(eigh_uv_builder), {u_polar, h},
+          {.out_dtypes = {mlir::ElementType::F64, mlir::ElementType::F64,
+                          mlir::ElementType::F64},
+           .out_dims_list = {u_polar.sizes(), s_dims, h_dims},
+           .op_param_cache_keys = std::move(eigh_keys),
+           .split_mode = OpSplitMode::kSplitBoth})));
+  const int64_t device_index = u_polar.device().index();
+  return SvdF64EighUvTensors{
+      .u_svd = MakeTensor(eigh_bufs[0], device_index),
+      .s_sorted = MakeTensor(eigh_bufs[1], device_index),
+      .v_sorted = MakeTensor(eigh_bufs[2], device_index),
+  };
+}
+
+// F64-only Stage 4: dispatches rank-deficiency QR orthogonalization on core
+// `u_svd`.
+absl::StatusOr<at::Tensor> DispatchRankCorrectionF64(
+    const at::Tensor& u_svd, const at::Tensor& s_sorted) {
+  const std::string_view corr_stage = "svd_f64_rank_corr";
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys corr_keys,
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(corr_stage));
+  auto corr_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    return BuildSvdStage4RankCorrection(inputs[0], inputs[1]);
+  };
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRef u_corr_buf,
+      DispatchOp<2>(std::move(corr_builder), {u_svd, s_sorted},
+                    {.out_dtype = mlir::ElementType::F64,
+                     .out_dims = u_svd.sizes(),
+                     .op_param_cache_keys = std::move(corr_keys),
+                     .split_mode = OpSplitMode::kSplitBoth}));
+  return MakeTensor(u_corr_buf, u_svd.device().index());
+}
+
+// F64-only Stage 5 (UV): dispatches outer U reconstruction, transpose swap,
+// and NaN propagation.
+absl::StatusOr<DeviceBufferRefArray<3>> DispatchFinalizeUvF64(
+    const at::Tensor& u_corrected, const at::Tensor& s_sorted,
+    const at::Tensor& v_sorted, const SvdF64PreprocessTensors& prep,
+    const at::Tensor& self, const bool transpose_input,
+    const SvdOutDims& expected_dims) {
+  const bool has_q = prep.q.has_value();
+  const bool has_u_null = prep.u_out_null.has_value();
+  const bool check_finite = !IsInteger(self);
+  std::vector<at::Tensor> finalize_inputs = {u_corrected, s_sorted, v_sorted};
+  if (has_q) {
+    finalize_inputs.push_back(*prep.q);
+  }
+  if (has_u_null) {
+    finalize_inputs.push_back(*prep.u_out_null);
+  }
+  if (check_finite) {
+    finalize_inputs.push_back(self);
+  }
+
+  const std::string_view fin_stage = "svd_f64_finalize_uv";
+  TT_ASSIGN_OR_RETURN(
+      OpParamCacheKeys fin_keys,
+      TT_MAKE_OP_PARAM_CACHE_KEYS(fin_stage, transpose_input, has_q, has_u_null,
+                                  check_finite));
+  auto finalize_builder =
+      [transpose_input, has_q, has_u_null, check_finite](
+          absl::Span<mlir::MlirOp> inputs,
+          mlir::MlirBuilder&) -> absl::StatusOr<MlirOpResults<3>> {
+    size_t idx = 0;
+    mlir::MlirOp u_corr_op = inputs[idx++];
+    mlir::MlirOp s_op = inputs[idx++];
+    mlir::MlirOp v_op = inputs[idx++];
+    std::optional<mlir::MlirOp> q_op;
+    if (has_q) {
+      q_op = inputs[idx++];
+    }
+    std::optional<mlir::MlirOp> u_null_op;
+    if (has_u_null) {
+      u_null_op = inputs[idx++];
+    }
+    std::optional<mlir::MlirOp> orig_self_op;
+    if (check_finite) {
+      orig_self_op = inputs[idx++];
+    }
+    return BuildSvdStage5FinalizeUv(u_corr_op, s_op, v_op, q_op, u_null_op,
+                                    transpose_input, orig_self_op);
+  };
+  return DispatchOp<kDynamicSize, 3>(
+      std::move(finalize_builder), finalize_inputs,
+      {.out_dtypes = {mlir::ElementType::F64, mlir::ElementType::F64,
+                      mlir::ElementType::F64},
+       .out_dims_list = {expected_dims.u, expected_dims.s, expected_dims.vh},
+       .op_param_cache_keys = std::move(fin_keys),
+       .split_mode = OpSplitMode::kSplitBoth});
+}
+
+// F64-only SVD: decomposes SVD into 5 modular cached DispatchOp stages
+// (1. Preprocess QR -> 2. Core QDWH -> 3. Core Jacobi Eigh + Sort ->
+// 4. Rank-Deficiency QR -> 5. Finalize) so peak HLO module size drops ~2.7x
+// and shapes that QR-reduce to the same (..., k, k) core share compiled
+// executables.
+absl::StatusOr<DeviceBufferRefArray<3>> SvdF64(
+    const at::Tensor& self, const SvdMatricesMode matrices_mode,
+    const SvdUvMode uv_mode, const SvdOutDims& expected_dims) {
+  const int64_t rank = self.dim();
+  const int64_t m = self.size(rank - 2);
+  const int64_t n = self.size(rank - 1);
+  const int64_t k = std::min(m, n);
+  const bool transpose_input = m < n;
+  const Dimensions h_dims =
+      ConcatBatchAndDims(self.sizes().slice(0, rank - 2), k, k);
+
+  // Stage 1: Preprocess (cast, transpose, and optional QR).
+  TT_ASSIGN_OR_RETURN(const SvdF64PreprocessTensors prep,
+                      PreprocessSvdF64(self, matrices_mode, uv_mode));
+
+  // Stage 2: Core QDWH polar decomposition.
+  TT_ASSIGN_OR_RETURN(const SvdF64QdwhTensors qdwh,
+                      DispatchQdwhF64(prep.a_svd, h_dims));
+
+  if (uv_mode == SvdUvMode::kValuesOnly) {
+    // Stage 3 (values only): Regularized Eigh + descending sort.
+    TT_ASSIGN_OR_RETURN(const at::Tensor s_sorted,
+                        DispatchEighValsF64(qdwh.h, expected_dims.s));
+    // Stage 4 (rank-deficiency QR) is skipped when U/Vh are not computed.
+    // Stage 5 (values only): NaN propagation + empty U/Vh placeholders.
+    return DispatchFinalizeValsF64(s_sorted, self, expected_dims);
+  }
+
+  // Stage 3 (UV): Regularized Eigh + eigenpair sort + U_polar @ V_sorted.
+  TT_ASSIGN_OR_RETURN(
+      const SvdF64EighUvTensors eigh,
+      DispatchEighUvF64(qdwh.u_polar, qdwh.h, expected_dims.s, h_dims));
+
+  // Stage 4: Rank-deficiency QR orthogonalization on core U_svd.
+  TT_ASSIGN_OR_RETURN(const at::Tensor u_corrected,
+                      DispatchRankCorrectionF64(eigh.u_svd, eigh.s_sorted));
+
+  // Stage 5: Reconstruct outer U, swap U/Vh if transposed, and propagate NaN.
+  return DispatchFinalizeUvF64(u_corrected, eigh.s_sorted, eigh.v_sorted, prep,
+                               self, transpose_input, expected_dims);
+}
+
 absl::StatusOr<DeviceBufferRefArray<3>> Svd(const at::Tensor& self,
                                             bool full_matrices, bool compute_uv,
                                             OpParamCacheKeys param_keys) {
@@ -1589,6 +2067,22 @@ absl::StatusOr<DeviceBufferRefArray<3>> Svd(const at::Tensor& self,
                                       self.device().index());
   }
 
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
+  // For F64 only, split SVD into smaller cached executables. Without splitting,
+  // F64 compiles all stages into one large HLO module, making compile time the
+  // bottleneck. Splitting cuts peak HLO by ~2.7x and reuses cached core
+  // executables across shapes, while the extra launch overhead is negligible
+  // compared to software-emulated F64 compute.
+  if (out_dtype == mlir::ElementType::F64) {
+    const SvdMatricesMode matrices_mode =
+        full_matrices ? SvdMatricesMode::kFull : SvdMatricesMode::kReduced;
+    const SvdUvMode uv_mode =
+        compute_uv ? SvdUvMode::kComputeUv : SvdUvMode::kValuesOnly;
+    return SvdF64(self, matrices_mode, uv_mode, expected_dims);
+  }
+
+  // Faster dtypes (F32, BF16, F16, COMPLEXF32) compile quickly in one module,
+  // so keep them in a single executable to avoid extra launch overhead.
   const bool input_is_integer = IsInteger(self);
   const auto op_builder =
       [full_matrices, compute_uv, input_is_integer](
@@ -1596,8 +2090,6 @@ absl::StatusOr<DeviceBufferRefArray<3>> Svd(const at::Tensor& self,
     const mlir::MlirOp cast_self_op = MaybeCastInput(self_op, input_is_integer);
     return BuildSvdShlo(cast_self_op, full_matrices, compute_uv);
   };
-
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
 
   return DispatchOp<1, 3>(
       std::move(op_builder), {self},

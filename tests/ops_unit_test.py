@@ -13269,7 +13269,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ],
       full_matrices=[True, False],
   )
-  @utils.skip_if_asan("b/585143567: Slow / times out in ASAN mode.")
   def test_linalg_svd_float64(self, shape, full_matrices):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     self._test_svd_helper(input_tensor, full_matrices=full_matrices)
@@ -13281,6 +13280,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ],
       dtype=[
           torch.float32,
+          torch.float64,
           torch.complex64,
       ],
       full_matrices=[True, False],
@@ -13289,6 +13289,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     input_tensor = torch.randn(shape, dtype=dtype)
     tolerances = {
         torch.float32: (1.4e-02, 1.6e-02),
+        torch.float64: (None, None),
         torch.complex64: (2.3e-02, 2.2e-02),
     }
     rtol, atol = tolerances[dtype]
@@ -13298,7 +13299,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       {"some": True},
       {"some": False},
   )
-  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_torch_legacy_svd(self, some):
     input_tensor = torch.randn(5, 3, dtype=torch.float64)
 
@@ -13450,7 +13450,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ],
       zero_dims=[1, 2],
   )
-  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_rank_deficient(self, shape, zero_dims):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     m, n = shape
@@ -13464,7 +13463,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
   @parameterized.product(
       zero_dims_batch=[(0, 1), (2, 1)],
   )
-  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_rank_deficient_batched(self, zero_dims_batch):
     shape = (2, 5, 3)
     input_tensor = torch.randn(shape, dtype=torch.float64)
@@ -13485,7 +13483,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           (2, 1000),  # Large wide, QR preprocess
       ]
   )
-  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_large(self, shape):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     self._test_svd_helper(input_tensor, full_matrices=False)
@@ -13508,7 +13505,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
-  @utils.skip_if_asan("b/585143567: Slow in ASAN mode.")
   def test_linalg_svd_variants(self):
     dtype = torch.float64
     shape = (5, 3)
