@@ -79,21 +79,6 @@ bool HasAsymmetricPadding(absl::Span<const int64_t> padding_vals) {
   return false;
 }
 
-// Divides `dividend` by the per-window `divisor`, which comes from the input.
-// In the backward, `dividend` is grad_output, whose bounded dimensions can
-// differ from those of `divisor` (e.g. a static grad_output of a bounded
-// input); their runtime sizes agree, so match `divisor` to `dividend` first.
-mlir::MlirOp DivideByDivisor(mlir::MlirOp dividend, mlir::MlirOp divisor) {
-  const mlir::RankedTensorType dividend_type = GetTensorTypeOrDie(dividend);
-  if (GetTensorTypeOrDie(divisor) != dividend_type) {
-    mlir::MlirOp one = MakeScalarConstant(dividend.getBuilder(), 1,
-                                          dividend_type.getElementType());
-    divisor = PadAndSliceLike(divisor, one, dividend,
-                              Dimensions(dividend_type.getRank(), 0));
-  }
-  return mlir::stablehlo::Div(dividend, divisor);
-}
-
 // Dynamically computes the `count_include_pad=true` divisor when `ceil_mode`
 // introduces extra out-of-bounds right padding: explicit padding counts as 1s,
 // whereas implicit `ceil_mode` padding counts as 0s.
@@ -160,7 +145,7 @@ absl::StatusOr<mlir::MlirOp> ScaleByCeilModeCountIncludePadDivisor(
       reduce_window_attributes.window_strides,
       reduce_window_attributes.base_dilations,
       reduce_window_attributes.window_dilations, reduce_padding_attr)[0];
-  return DivideByDivisor(dividend, divisor);
+  return mlir::stablehlo::Div(dividend, divisor);
 }
 
 // Scales the output of the pooling reduction (sum) by the divisor.
@@ -245,7 +230,7 @@ absl::StatusOr<mlir::MlirOp> ScaleAvgPoolOutput(
       reduce_window_attributes.base_dilations,
       reduce_window_attributes.window_dilations,
       reduce_window_attributes.padding)[0];
-  return DivideByDivisor(dividend, divisor);
+  return mlir::stablehlo::Div(dividend, divisor);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
@@ -374,21 +359,54 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
 //    The result of the full convolution corresponds to the gradient of the
 //    padded input. We must slice this result to remove the regions
 //    corresponding to the forward padding, returning a tensor matching
-//    the original input shape.
+//    the original input shape. Bounded dimensions of the input are cropped at
+//    their upper bounds, and the result gets the input's runtime sizes.
 mlir::MlirOp SliceBackwardResult(
     mlir::MlirOp full_conv_result, mlir::MlirOp init_value,
     mlir::MlirOp batch_input,
     const std::vector<PaddingParams>& ceil_padding_pairs, int64_t num_dims,
     int64_t spatial_dim_count) {
-  // Batch and channel dimensions start at 0, and spatial dimensions after
-  // their forward low padding.
+  const StaticAtBounds static_input = MakeStaticAtBounds(batch_input);
+  const Dimensions input_shape = GetStaticShape(static_input.op);
   Dimensions start_indices(num_dims, 0);
-  for (int64_t i = num_dims - spatial_dim_count; i < num_dims; ++i) {
-    start_indices[i] =
-        ceil_padding_pairs[i - (num_dims - spatial_dim_count)].left;
+  Dimensions limit_indices(num_dims, 0);
+  Dimensions slice_strides(num_dims, 1);
+
+  const auto conv_shape = GetTensorTypeOrDie(full_conv_result).getShape();
+  Dimensions result_pad_high(num_dims, 0);
+  bool needs_padding = false;
+
+  for (int i = 0; i < num_dims; ++i) {
+    if (i < num_dims - spatial_dim_count) {  // Batch/Channel dims
+      start_indices[i] = 0;
+      limit_indices[i] = input_shape[i];
+    } else {  // Spatial dims
+      const int spatial_idx = i - (num_dims - spatial_dim_count);
+      const int64_t fwd_pad_low = ceil_padding_pairs[spatial_idx].left;
+      start_indices[i] = fwd_pad_low;
+      limit_indices[i] = fwd_pad_low + input_shape[i];
+
+      // If the limit is out of bounds, we need to pad the result.
+      if (limit_indices[i] > conv_shape[i]) {
+        result_pad_high[i] = limit_indices[i] - conv_shape[i];
+        needs_padding = true;
+      }
+    }
   }
-  return PadAndSliceLike(full_conv_result, init_value, batch_input,
-                         start_indices);
+
+  mlir::MlirOp slicable_result = full_conv_result;
+  if (needs_padding) {
+    // Pad the high dimension to accommodate the slice limit
+    slicable_result =
+        mlir::stablehlo::Pad(full_conv_result, init_value,
+                             /*low=*/Dimensions(num_dims, 0),
+                             /*high=*/result_pad_high,
+                             /*interior=*/Dimensions(num_dims, 0));
+  }
+
+  mlir::MlirOp sliced = mlir::stablehlo::Slice(slicable_result, start_indices,
+                                               limit_indices, slice_strides);
+  return RestoreDynamicDimSizes(sliced, static_input.runtime_sizes);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
@@ -453,13 +471,6 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
                          reduce_window_attributes, window_params,
                          count_include_pad, divisor_override));
 
-  // The ReduceWindow below reads across the bounded dimensions of
-  // normalized_grad_output, so run it at the upper bounds with zeros past the
-  // runtime sizes.
-  mlir::MlirOp init_value = MakeScalarConstant(builder, 0, element_type);
-  normalized_grad_output =
-      MakeStaticAndFillPastRuntimeSizes(normalized_grad_output, init_value);
-
   // 6. Perform transposed convolution with interior/edge padding
   const mlir::DenseI64ArrayAttr bw_window_dimensions =
       reduce_window_attributes.window_dimensions;
@@ -481,6 +492,17 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
       bw_padding_flat.push_back(k - 1);
     }
   }
+
+  mlir::MlirOp init_value = MakeScalarConstant(builder, 0, element_type);
+
+  // The ReduceWindow reads across the bounded dimensions of
+  // normalized_grad_output, so run it at their upper bounds with zeros past
+  // their runtime sizes. SliceBackwardResult restores the runtime sizes of the
+  // input.
+  const StaticAtBounds static_grad_output =
+      MakeStaticAtBounds(normalized_grad_output);
+  normalized_grad_output = FillPastRuntimeSizes(
+      static_grad_output.op, init_value, static_grad_output.runtime_sizes);
 
   auto add_reduce_builder = [element_type](mlir::RegionBuilder& rb) {
     mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
