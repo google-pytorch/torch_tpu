@@ -7299,6 +7299,55 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         golden_result=expected_grad, torch_tpu_result=grad_in.cpu()
     )
 
+  @parameterized.named_parameters(
+      ("native_bf16", False, 0.2, "GE", torch.bfloat16),
+      ("fused_f64", True, 0.25, "LT", torch.float64),
+  )
+  def test_dropout_ui32_threshold_lowering(self, is_fused, p, cmp_dir, dtype):
+    x = torch.ones((16, 16), dtype=dtype, device="tpu")
+    debugs = []
+    fn = (
+        (lambda inp: torch.ops.aten._fused_dropout(inp, p=p))
+        if is_fused
+        else (lambda inp: torch.ops.aten.native_dropout(inp, p=p, train=True))
+    )
+    compiled_fn = torch.compile(
+        fn,
+        backend="tpu",
+        dynamic=False,
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    out, _ = compiled_fn(x)
+    self.assertEqual((out.shape, out.dtype), ((16, 16), dtype))
+    text = "\n".join(
+        t for debug in debugs for t in debug.stablehlo_forward_text
+    )
+    self.assertIn("stablehlo.rng_bit_generator", text)
+    self.assertIn("tensor<16x16xui32>", text)
+    self.assertIn(f"stablehlo.compare {cmp_dir}", text)
+    self.assertIn(f"dense<{round(p * (1 << 32))}>", text)
+    self.assertNotIn("stablehlo.bitcast_convert", text)
+
+  @parameterized.parameters(torch.bfloat16, torch.float64)
+  def test_fused_dropout_ui32_generator_offset(self, dtype):
+    n = 256
+    x = torch.ones(n, dtype=dtype, device="tpu")
+    expected_step = (n * 32 + 127) // 128
+
+    for p in (0.0, 1.0):
+      g = torch.Generator(device="tpu").manual_seed(42)
+      torch.ops.aten._fused_dropout(x, p=p, generator=g)
+      self.assertEqual(g.get_offset(), 0)
+
+    for p in (0.2, 1e-4):
+      g = torch.Generator(device="tpu").manual_seed(42)
+      _, mask1 = torch.ops.aten._fused_dropout(x, p=p, generator=g)
+      self.assertEqual(g.get_offset(), expected_step)
+      _, mask2 = torch.ops.aten._fused_dropout(x, p=p, generator=g)
+      self.assertEqual(g.get_offset(), 2 * expected_step)
+      if p == 0.2:
+        self.assertFalse(torch.equal(mask1, mask2))
+
   def test_exponential(self):
     """Tests the exponential_ op."""
     tpu_device = torch.device("tpu")

@@ -140,10 +140,8 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
   }
 
   const int64_t num_elements = input.numel();
-  TT_ASSIGN_OR_THROW(const mlir::ElementType compute_elem_type,
-                     InferComputationDtype(output_dtype));
-  const mlir::ElementType rand_elem_type = RealComponentOf(compute_elem_type);
-  const int64_t bit_width = TorchEquivalentBitwidth(rand_elem_type);
+  // BuildDropoutTrainShlo always draws 32-bit unsigned PRNG words.
+  constexpr int64_t kDropoutRngBitWidth = 32;
 
   auto dropout_builder = [p, prob_type,
                           mask_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
@@ -163,7 +161,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
                                 .out_dims_list = {input.sizes(), input.sizes()},
                                 .op_param_cache_keys = std::move(param_keys)});
                          },
-                         RngUsage{num_elements, bit_width}));
+                         RngUsage{num_elements, kDropoutRngBitWidth}));
 
   // [output, mask]
   return {MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};

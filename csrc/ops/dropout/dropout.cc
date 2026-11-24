@@ -16,6 +16,11 @@
 
 #include "csrc/ops/dropout/dropout.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
@@ -23,9 +28,9 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
-#include "csrc/ops/uniform/uniform.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Value.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -33,6 +38,12 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+namespace {
+
+constexpr unsigned kDropoutRngBits = 32;
+constexpr uint64_t kU32Cardinality = uint64_t{1} << kDropoutRngBits;
+
+}  // namespace
 
 absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
     mlir::MlirOp rng_input_state, mlir::MlirOp input, double p,
@@ -66,27 +77,35 @@ absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
   }
 
   mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  TT_ASSIGN_OR_RETURN(
-      const mlir::ElementType elem_type,
-      ConvertTo<mlir::ElementType>(input_type.getElementType()));
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_elem_type,
-                      InferComputationDtype(elem_type));
-  const mlir::ElementType rand_elem_type = RealComponentOf(compute_elem_type);
-  const mlir::Type rand_mlir_type =
-      mlir::getElementType(input.getContext(), rand_elem_type);
-  const mlir::RankedTensorType rand_type = input_type.clone(rand_mlir_type);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp rand_op,
-                      BuildUniformShlo(rng_input_state, /*from=*/0.0,
-                                       /*to=*/1.0, rand_type, input));
+  mlir::MlirBuilder& builder = input.getBuilder();
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
 
-  mlir::MlirOp p_const = MakeConstantLike(rand_op, p);
+  const int64_t rounded_threshold =
+      std::llround(p * static_cast<double>(kU32Cardinality));
+  const uint64_t threshold = static_cast<uint64_t>(std::clamp<int64_t>(
+      rounded_threshold, 0, std::numeric_limits<uint32_t>::max()));
+  const mlir::Type uint32_type =
+      op_builder.getIntegerType(kDropoutRngBits, /*isSigned=*/false);
+  const mlir::RankedTensorType rng_bits_type = input_type.clone(uint32_type);
+  const auto rng_alg = mlir::stablehlo::RngAlgorithmAttr::get(
+      op_builder.getContext(), mlir::stablehlo::RngAlgorithm::DEFAULT);
+  mlir::MlirOp rng_bits =
+      RngBitGeneratorLike(rng_input_state, rng_bits_type, rng_alg, input)
+          .output;
+  mlir::MlirOp thresh_const = MakeConstantLike(rng_bits, threshold);
   const mlir::stablehlo::ComparisonDirection comparison_dir =
       (prob_type == DropoutProbabilityType::kKeepProbability)
           ? mlir::stablehlo::ComparisonDirection::LT
           : mlir::stablehlo::ComparisonDirection::GE;
-  mlir::MlirOp mask_op =
-      mlir::stablehlo::Compare(rand_op, p_const, comparison_dir);
+  const mlir::Value mask_val = mlir::stablehlo::CompareOp::create(
+      op_builder, input.getValue().getLoc(), rng_bits.getValue(),
+      thresh_const.getValue(), comparison_dir,
+      mlir::stablehlo::ComparisonType::UNSIGNED);
+  mlir::MlirOp mask_op(builder, mask_val);
 
+  const mlir::ElementType elem_type = GetElementTypeOrDie(input);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_elem_type,
+                      InferComputationDtype(elem_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp cast_input,
                       CastIfNeeded(input, compute_elem_type));
 
