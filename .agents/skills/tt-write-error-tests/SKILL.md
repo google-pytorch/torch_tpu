@@ -79,6 +79,15 @@ unless the error condition is known to be TPU-only.
     -   Every test method must be decorated with `@et.why_tpu_only("reason")`.
     -   Never use `gpu=...` kwargs here.
 
+Do not guess test target names from filenames (a single `*_errors_test.py` file
+can back multiple targets with different `--test_mode=` flags, e.g., TPU vs. GPU
+vs. coverage). Look up the exact target in the package's `BUILD.bazel` file by
+searching for the filename in `srcs`.
+
+Keep `tests/error_coverage_data.yaml` in sync (verified by the error-coverage
+test target in `tests/BUILD.bazel`) and delete obsolete entries in
+`tpu_errors_test.py` when enabling previously unsupported behavior.
+
 --------------------------------------------------------------------------------
 
 ## 2. Test Structure
@@ -103,7 +112,8 @@ unless the error condition is known to be TPU-only.
     `with et.assert_raises_message(...)`.
 -   **Use `et.assert_raises_message`**: Never use `assertRaisesRegex` (banned).
 -   **Kwargs**:
-    -   `errors_test.py`: Specify both `tpu="""..."""` and `gpu="""..."""`.
+    -   `errors_test.py`: Specify `tpu="""..."""` and `gpu="""..."""` (`gpu`
+        defaults to `tpu` when omitted).
     -   `tpu_errors_test.py`: Specify only `tpu="""..."""`.
 -   **Device**: In `errors_test.py`, always use `device=et.device()`. In
     `tpu_errors_test.py`, use `device=et.device()` or `"tpu"`.
