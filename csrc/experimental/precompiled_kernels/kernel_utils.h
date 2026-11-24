@@ -25,6 +25,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/shape.h"
+#include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -48,7 +49,7 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
     xla::PjRtClient& client, UniqueCompileOptions compile_options,
     kiln::Kernel kernel, absl::Span<const xla::Shape> inputs,
     const xla::Shape& output, absl::Span<const int64_t> operand_to_metadata,
-    int aliased_parameter = -1);
+    int aliased_parameter = -1, OperandsTransform operands_transform = nullptr);
 
 // Returns an unbounded dynamic shape of rank `rank` with a row-major layout
 // tiled by `tiles`.

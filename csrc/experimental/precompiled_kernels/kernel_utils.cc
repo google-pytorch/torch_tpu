@@ -55,13 +55,14 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
     xla::PjRtClient& client, UniqueCompileOptions compile_options,
     kiln::Kernel kernel, absl::Span<const xla::Shape> inputs,
     const xla::Shape& output, absl::Span<const int64_t> operand_to_metadata,
-    int aliased_parameter) {
+    int aliased_parameter, OperandsTransform operands_transform) {
   TT_ASSIGN_OR_RETURN(const std::string serialized_kernel,
                       std::move(kernel).Serialize());
   TT_ASSIGN_OR_RETURN(
       const std::unique_ptr<xla::HloModule> hlo,
       BuildMosaicCustomCall(serialized_kernel, inputs, output,
-                            operand_to_metadata, aliased_parameter));
+                            operand_to_metadata, aliased_parameter,
+                            std::move(operands_transform)));
   xla::ExecutableBuildOptions& build =
       compile_options->executable_build_options;
   build.set_run_backend_only(true);

@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
@@ -40,13 +41,28 @@ namespace torch_tpu {
 absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildMosaicCustomCall(
     std::string_view serialized_kernel, absl::Span<const xla::Shape> parameters,
     const xla::Shape& result, absl::Span<const int64_t> operand_to_metadata,
-    int aliased_parameter) {
+    int aliased_parameter, OperandsTransform operands_transform) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by mosaic_custom_call_test.
+      aliased_parameter < static_cast<int>(parameters.size()),
+      error::kInvalidArgument)
+      << "aliased parameter " << aliased_parameter << " is out of range for "
+      << parameters.size() << " parameters";
   xla::HloComputation::Builder builder("main");
   std::vector<xla::HloInstruction*> operands;
-  for (const auto& shape : parameters) {
-    int p = operands.size();
+  operands.reserve(parameters.size());
+  for (const xla::Shape& shape : parameters) {
+    const int p = operands.size();
     operands.push_back(builder.AddInstruction(
         xla::HloInstruction::CreateParameter(p, shape, absl::StrCat("p", p))));
+  }
+  const xla::HloInstruction* aliased =
+      aliased_parameter >= 0 ? operands[aliased_parameter] : nullptr;
+  if (operands_transform != nullptr) {
+    operands_transform(builder, absl::MakeSpan(operands));
+  }
+  if (aliased != nullptr) {
+    ABSL_CHECK_EQ(  // CRASH_OK=cannot rewrite aliased parameter
+        operands[aliased_parameter], aliased);
   }
   auto* call = builder.AddInstruction(xla::HloInstruction::CreateCustomCall(
       result, operands, "tpu_custom_call"));
