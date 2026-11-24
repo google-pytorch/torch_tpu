@@ -82,6 +82,41 @@ absl::StatusOr<mlir::MlirOp> PadFP4(mlir::MlirOp input) {
                               interior_padding);
 }
 
+// Returns the op builder of a TPU-to-TPU copy into `out_dtype`: an identity
+// when the dtypes match, or a dtype conversion (with FP4 packing adjustments).
+auto MakeCopyOpBuilder(mlir::ElementType out_dtype, bool is_src_fp4,
+                       bool is_dest_fp4) {
+  return [out_dtype, is_src_fp4,
+          is_dest_fp4](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+    auto formatted = input;
+
+    // 1. If only the source is FP4, it is physically 2N. Slice it to logical
+    //    shape N before any broadcasting. (An FP4 -> FP4 copy is an identity
+    //    on the packed representation.)
+    if (is_src_fp4 && !is_dest_fp4) {
+      TT_ASSIGN_OR_RETURN(formatted, SliceFP4(formatted));
+    }
+
+    // 2. Cast complex -> bool as "either part is non-zero", since
+    //    ConvertElementType() would keep only the real part.
+    //    Every other dtype needs no explicit cast here: DispatchOp casts each
+    //    op's outputs to their out_dtype in CastOutputs()
+    //    (eager/device_buffer_utils.cc).
+    if (out_dtype == mlir::ElementType::PRED &&
+        IsComplexType(GetTensorTypeOrDie(formatted))) {
+      formatted = GetNonzeroMask(formatted);
+    }
+
+    // 3. If only the destination is FP4, it must be physically 2M. Pad it from
+    //    logical shape M to physical shape 2M.
+    if (is_dest_fp4 && !is_src_fp4) {
+      TT_ASSIGN_OR_RETURN(formatted, PadFP4(formatted));
+    }
+
+    return formatted;
+  };
+}
+
 }  // namespace
 
 absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
@@ -104,9 +139,6 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
   ABSL_CHECK(viewed_src.sizes() == viewed_dest.sizes());  // CRASH_OK
 
   if (src.dtype() == dest.dtype()) {
-    // Shape and type match, can simply reuse the existing DeviceBufferRef
-    // from src for dest.
-    //
     // If both src and dest are pure reinterpretations of all the bytes of
     // src's base buffer, dest can share src's base buffer directly, regardless
     // of its element type.
@@ -116,12 +148,20 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
         IsFullStorageReinterpretView(viewed_dest, src_base_buf)) {
       return AssignBufferAsStorageBase(std::move(src_base_buf), viewed_dest);
     }
-    TT_ASSIGN_OR_RETURN(const DeviceBufferRef src_buf, GetBuffer(viewed_src));
-    return AssignBufferToAtTensor(src_buf, viewed_dest);
+
+    // Otherwise, dest can reuse src's buffer without dispatching an op, unless
+    // DispatchOpOut can donate dest's base buffer to its view write-back
+    // (avoiding a new base buffer).
+    TT_ASSIGN_OR_RETURN(const auto dest_dtype,
+                        ConvertTo<mlir::ElementType>(dest.scalar_type()));
+    if (!internal::CanDonateBaseToWriteBack(viewed_dest, dest_dtype)) {
+      TT_ASSIGN_OR_RETURN(const DeviceBufferRef src_buf, GetBuffer(viewed_src));
+      return AssignBufferToAtTensor(src_buf, viewed_dest);
+    }
   }
 
-  // If the dtype is different or shape is different, then we need to dispatch
-  // a StableHLO op.
+  // Otherwise, dispatch a StableHLO copy (a dtype conversion, or an identity
+  // that donates dest's base) and write the result into dest via DispatchOpOut.
   const bool is_dest_fp4 = dest.scalar_type() == at::kFloat4_e2m1fn_x2;
   const bool is_src_fp4 = src.scalar_type() == at::kFloat4_e2m1fn_x2;
 
@@ -134,49 +174,21 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(dest.scalar_type()));
 
-  auto copy_op_builder =
-      [out_dtype, is_src_fp4,
-       is_dest_fp4](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-    auto formatted = input;
-
-    // 1. If source is FP4, it is physically 2N. Slice it to logical shape N
-    //    before any broadcasting.
-    if (is_src_fp4) {
-      TT_ASSIGN_OR_RETURN(formatted, SliceFP4(formatted));
-    }
-
-    // 2. Cast complex -> bool as "either part is non-zero", since
-    //    ConvertElementType() would keep only the real part.
-    //    Every other dtype needs no explicit cast here: DispatchOp casts each
-    //    op's outputs to their out_dtype in CastOutputs()
-    //    (eager/device_buffer_utils.cc).
-    if (out_dtype == mlir::ElementType::PRED &&
-        IsComplexType(GetTensorTypeOrDie(formatted))) {
-      formatted = GetNonzeroMask(formatted);
-    }
-
-    // 3. If destination is FP4, it must be physically 2M. Pad it from logical
-    //    shape M to physical shape 2M.
-    if (is_dest_fp4) {
-      TT_ASSIGN_OR_RETURN(formatted, PadFP4(formatted));
-    }
-
-    return formatted;
-  };
+  auto copy_op_builder = MakeCopyOpBuilder(out_dtype, is_src_fp4, is_dest_fp4);
 
   Dimensions out_dims = CopyIntVector(viewed_dest.sizes());
-  if (is_dest_fp4) {
-    out_dims.back() *= 2;
+  if (IsPackedSubByteType(out_dtype)) {
+    out_dims.back() *= TorchPackingFactor(out_dtype);
   }
 
-  TT_ASSIGN_OR_RETURN(
-      auto new_buf,
-      DispatchOp<1>(std::move(copy_op_builder), viewed_src,
-                    {.out_dtype = out_dtype,
-                     .out_dims = out_dims,
-                     .op_param_cache_keys = OpParamCacheKeys::Empty()}),
-      _.SetPrepend() << "failed to copy from 'tpu' to 'tpu' device: ");
-  return AssignBufferToAtTensor(new_buf, viewed_dest);
+  TT_RETURN_IF_ERROR(
+      DispatchOpOut<1>(std::move(copy_op_builder), viewed_src, viewed_dest,
+                       {.out_dtype = out_dtype,
+                        .out_dims = out_dims,
+                        .op_param_cache_keys = OpParamCacheKeys::Empty()}))
+          .SetPrepend()
+      << "failed to copy from 'tpu' to 'tpu' device: ";
+  return absl::OkStatus();
 }
 
 }  // namespace torch_tpu

@@ -545,6 +545,19 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         fn()
 
+  @et.why_tpu_only(
+      "TPU stores each float4_e2m1fn_x2 element as two unpacked values along"
+      " a packed dimension, so it needs at least one dimension; GPU stores the"
+      " packed bytes."
+  )
+  def test_empty_float4_0d(self):
+    """Tests that creating a 0D float4_e2m1fn_x2 tensor fails."""
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""empty(): expected float4_e2m1fn_x2 tensors to be at least 1D, got 0D""",
+    ):
+      torch.empty((), dtype=torch.float4_e2m1fn_x2, device=et.device())
+
   @parameterized.named_parameters(
       {"testcase_name": "eq", "op_name": "eq", "op": torch.eq},
       {"testcase_name": "ne", "op_name": "ne", "op": torch.ne},

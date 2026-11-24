@@ -222,6 +222,50 @@ class FP4Test(seed_test_utils.RepeatableTest):
         dest.to("cpu").view(torch.uint8).tolist(), [[17, 34], [85, 102]]
     )
 
+  def test_fp4_tpu_to_tpu_copy_into_empty_tensor_from_float32(self):
+    device = torch.device("tpu")
+    src_cpu = torch.tensor(
+        [[0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 0.0]], dtype=torch.float32
+    )
+    dest = torch.empty(1, 8, dtype=torch.float4_e2m1fn_x2, device=device)
+    dest.copy_(src_cpu.to(device))
+    utils.assert_close(
+        dest.to("cpu"), quantize_utils.quantize_to_float4_e2m1fn_x2(src_cpu)
+    )
+
+  def test_fp4_tpu_to_tpu_copy_into_empty_tensor_from_fp4(self):
+    device = torch.device("tpu")
+    src_cpu = torch.tensor(
+        [[0x11, 0x22], [0x33, 0x44]], dtype=torch.uint8
+    ).view(torch.float4_e2m1fn_x2)
+    dest = torch.empty(2, 2, dtype=torch.float4_e2m1fn_x2, device=device)
+    dest.copy_(src_cpu.to(device))
+    self.assertEqual(
+        dest.to("cpu").view(torch.uint8).tolist(), [[0x11, 0x22], [0x33, 0x44]]
+    )
+
+  def test_fp4_tpu_to_tpu_copy_keeps_single_element_packed_dim(self):
+    """Tests copies into an FP4 tensor whose packed dimension is one element.
+
+    The [2, 1] destination holds a [2, 2] device buffer; the copy must keep its
+    trailing size-1 dimension rather than drop or resize it.
+    """
+    device = torch.device("tpu")
+    fp4_src_cpu = torch.tensor([[0x21], [0x43]], dtype=torch.uint8).view(
+        torch.float4_e2m1fn_x2
+    )
+    dest = torch.empty(2, 1, dtype=torch.float4_e2m1fn_x2, device=device)
+    dest.copy_(fp4_src_cpu.to(device))
+    self.assertEqual(dest.shape, torch.Size([2, 1]))
+    self.assertEqual(
+        dest.to("cpu").view(torch.uint8).tolist(), [[0x21], [0x43]]
+    )
+
+    # A cross-dtype copy pads each value to a [2, 2] device buffer, and must
+    # also keep the [2, 1] shape.
+    dest.copy_(torch.ones(2, 1, dtype=torch.float32, device=device))
+    self.assertEqual(dest.shape, torch.Size([2, 1]))
+
   def test_fp4_eq_and_ne(self):
     device = torch.device("tpu")
     a_u8 = torch.tensor([[0x11, 0x22], [0x33, 0x44]], dtype=torch.uint8)
