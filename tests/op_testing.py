@@ -4556,6 +4556,192 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
         supports_autograd=False,
     ),
 ]
+
+
+def _make_zero_norm_tensor(
+    values: Sequence[Any],
+    *,
+    device: torch.device | str,
+    dtype: torch.dtype,
+    requires_grad: bool,
+) -> torch.Tensor:
+  """Builds a floating-point sample tensor preserving float64 precision."""
+  src_dtype = torch.float64 if dtype == torch.float64 else torch.float32
+  return (
+      torch.tensor(values, dtype=src_dtype, device=device)
+      .to(dtype)
+      .requires_grad_(requires_grad)
+  )
+
+
+def _sample_inputs_cdist_zero_norm(
+    op_info: OpInfo,
+    device: torch.device | str,
+    dtype: torch.dtype,
+    requires_grad: bool = False,
+    **kwargs: Any,
+) -> Iterator[SampleInput]:
+  """Yields p=0.0 sample inputs for torch.cdist, including NaN and Inf cases."""
+  del op_info, kwargs
+  if not dtype.is_floating_point:
+    make_arg = functools.partial(
+        common_utils.make_tensor,
+        device=device,
+        dtype=dtype,
+        requires_grad=requires_grad,
+    )
+    yield SampleInput(make_arg((2, 3)), args=(make_arg((2, 3)), 0.0))
+    return
+
+  make_fp = functools.partial(
+      _make_zero_norm_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  nan = float("nan")
+  inf = float("inf")
+
+  # 1. NaN in x1, NaN in x2, exact matches, and signed-zero differences.
+  yield SampleInput(
+      make_fp([[nan, 1.0, 2.0], [0.0, 1.0, -0.0], [3.0, 4.0, 5.0]]),
+      args=(make_fp([[0.0, 1.0, 2.0], [0.0, 5.0, 0.0], [3.0, nan, 5.0]]), 0.0),
+      name="nan_and_signed_zero",
+  )
+
+  # 2. Same-sign infinities (inf - inf -> NaN) vs finite/opposite infinities.
+  yield SampleInput(
+      make_fp([[inf, 1.0, -inf], [0.0, inf, 2.0]]),
+      args=(make_fp([[inf, 1.0, 0.0], [-inf, 3.0, 2.0]]), 0.0),
+      name="inf_differences",
+  )
+
+  # 3. 4D broadcast batch dimensions with NaN and explicit compute_mode.
+  yield SampleInput(
+      make_fp([
+          [[[nan, 1.0, 2.0], [0.0, 1.0, 2.0]]],
+          [[[1.0, 2.0, 3.0], [1.0, 0.0, 3.0]]],
+      ]),
+      args=(
+          make_fp([[
+              [[0.0, 1.0, 2.0], [1.0, 2.0, 3.0]],
+              [[1.0, nan, 3.0], [1.0, 2.0, 3.0]],
+          ]]),
+          0.0,
+          "donot_use_mm_for_euclid_dist",
+      ),
+      name="batched_broadcast_nan",
+  )
+
+  # 4–5. Empty-tensor edge cases (omitted in compiled mode, where
+  # `_compiled_supports_op` skips the whole test method on 0-element inputs).
+  if not is_compiled_mode():
+    yield SampleInput(
+        torch.empty(
+            (2, 0), device=device, dtype=dtype, requires_grad=requires_grad
+        ),
+        args=(
+            torch.empty(
+                (3, 0), device=device, dtype=dtype, requires_grad=requires_grad
+            ),
+            0.0,
+        ),
+        name="zero_columns",
+    )
+    yield SampleInput(
+        torch.empty(
+            (0, 3), device=device, dtype=dtype, requires_grad=requires_grad
+        ),
+        args=(make_fp([[nan, 1.0, 2.0], [0.0, 1.0, 2.0]]), 0.0),
+        name="empty_rows_with_nan",
+    )
+
+
+def _sample_inputs_pdist_zero_norm(
+    op_info: OpInfo,
+    device: torch.device | str,
+    dtype: torch.dtype,
+    requires_grad: bool = False,
+    **kwargs: Any,
+) -> Iterator[SampleInput]:
+  """Yields p=0.0 sample inputs for torch.nn.functional.pdist."""
+  del op_info, kwargs
+  if not dtype.is_floating_point:
+    yield SampleInput(
+        common_utils.make_tensor(
+            (3, 3), device=device, dtype=dtype, requires_grad=requires_grad
+        ),
+        kwargs={"p": 0.0},
+    )
+    return
+
+  make_fp = functools.partial(
+      _make_zero_norm_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  nan = float("nan")
+  inf = float("inf")
+
+  # 1. NaN row, non-zero differences, and signed-zero exact match.
+  yield SampleInput(
+      make_fp([
+          [nan, 1.0, 2.0],
+          [0.0, 1.0, -0.0],
+          [0.0, 5.0, 0.0],
+          [0.0, 1.0, 0.0],
+      ]),
+      kwargs={"p": 0.0},
+      name="nan_and_signed_zero",
+  )
+
+  # 2. Same-sign infinities (inf - inf -> NaN) vs opposite-sign infinities.
+  yield SampleInput(
+      make_fp([[inf, 1.0, 2.0], [inf, 1.0, 5.0], [-inf, 1.0, 2.0]]),
+      kwargs={"p": 0.0},
+      name="inf_differences",
+  )
+
+  # 3. Single row (0 pairs) containing NaN.
+  yield SampleInput(
+      make_fp([[nan, 1.0, 2.0]]),
+      kwargs={"p": 0.0},
+      name="single_row_with_nan",
+  )
+
+  # 4. Zero-length feature dimension (m == 0; omitted in compiled mode, where
+  # `_compiled_supports_op` skips the whole test method on 0-element inputs).
+  if not is_compiled_mode():
+    yield SampleInput(
+        torch.empty(
+            (3, 0), device=device, dtype=dtype, requires_grad=requires_grad
+        ),
+        kwargs={"p": 0.0},
+        name="zero_columns",
+    )
+
+
+# Variant OpInfos for upstream PyTorch ops, appended after upstream op_db so
+# `_get_op(name)` with `variant_test_name=None` still resolves the base OpInfo.
+_ADDITIONAL_TORCH_TPU_OP_VARIANTS: tuple[OpInfo, ...] = (
+    OpInfo(
+        "cdist",
+        variant_test_name="zero_norm",
+        op=torch.cdist,
+        dtypes=common_dtype.floating_types(),
+        supports_out=False,
+        sample_inputs_func=_sample_inputs_cdist_zero_norm,
+    ),
+    OpInfo(
+        "nn.functional.pdist",
+        variant_test_name="zero_norm",
+        op=torch.nn.functional.pdist,
+        dtypes=common_dtype.floating_types(),
+        supports_out=False,
+        sample_inputs_func=_sample_inputs_pdist_zero_norm,
+    ),
+)
 for _op_info in _ADDITIONAL_TORCH_TPU_OPS:
   if _op_info.name in (
       "_thnn_fused_lstm_cell",
@@ -4805,6 +4991,7 @@ _KNOWN_OPS: Final[Sequence[OpInfo]] = (
     + fft.op_db
     + hop_db.hop_db
     + linalg.op_db
+    + list(_ADDITIONAL_TORCH_TPU_OP_VARIANTS)
 )
 
 
