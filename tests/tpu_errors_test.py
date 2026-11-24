@@ -1181,12 +1181,45 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     inp = torch.ones(2, 3, 4, device=et.device())
     dim = 0
     index = torch.ones(2, 3, 4, device=et.device(), dtype=torch.int64)
+    empty_index = torch.empty(0, 3, 4, device=et.device(), dtype=torch.int64)
+    out = torch.empty(1, 1, 1, device=et.device())
 
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""gather(): sparse_grad is not yet supported""",
     ):
       torch.gather(inp, dim, index, sparse_grad=True)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""gather(): sparse_grad is not yet supported""",
+    ):
+      torch.gather(inp, dim, empty_index, sparse_grad=True)
+
+    for idx in (index, empty_index):
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""gather(): sparse_grad is not yet supported""",
+      ):
+        torch.gather(inp, dim, idx, sparse_grad=True, out=out)
+      self.assertEqual(out.shape, (1, 1, 1))
+
+  @et.why_tpu_only(
+      "Redispatching gather.out to PrivateUse1 with CPU tensors is TPU-only."
+  )
+  def test_gather_out_other_device_tensor(self):
+    dk = torch._C._parse_dispatch_key("PrivateUse1")
+    inp = torch.ones(2, 2, device="cpu")
+    index = torch.zeros(2, 2, dtype=torch.int64, device="cpu")
+    out = torch.empty(2, 2, device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gather(): expected out tensor to be on tpu, got cpu""",
+    ):
+      torch.ops.aten.gather.out.redispatch(
+          torch._C.DispatchKeySet(dk), inp, 0, index, sparse_grad=False, out=out
+      )
 
   @et.why_tpu_only("Can only test device mismatch on TPU.")
   def test_copy_from_other_device_inputs(self):

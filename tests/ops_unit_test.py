@@ -2595,6 +2595,185 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(out_buf_tpu.shape, out_buf_cpu.shape)
     utils.assert_close(out_buf_tpu.cpu(), out_buf_cpu)
 
+  def test_gather_out_preserves_out_on_error(self):
+    device = torch.device("tpu")
+    inp = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=device)
+
+    error_cases = (
+        (
+            "sparse_grad_non_empty",
+            NotImplementedError,
+            r"sparse_grad is not yet supported",
+            inp,
+            1,
+            torch.zeros((1, 2), dtype=torch.int64, device=device),
+            True,
+        ),
+        (
+            "sparse_grad_empty",
+            NotImplementedError,
+            r"sparse_grad is not yet supported",
+            inp,
+            1,
+            torch.empty((0, 2), dtype=torch.int64, device=device),
+            True,
+        ),
+        (
+            "invalid_index_dtype",
+            RuntimeError,
+            r"expected the index dtype to be int32 or int64",
+            inp,
+            1,
+            torch.zeros((1, 2), dtype=torch.float32, device=device),
+            False,
+        ),
+        (
+            "rank_mismatch",
+            RuntimeError,
+            r"same number of dimensions",
+            inp,
+            1,
+            torch.zeros((3, 3, 3), dtype=torch.int64, device=device),
+            False,
+        ),
+        (
+            "oob_dim_non_empty",
+            IndexError,
+            r"expected dimension to be in range",
+            inp,
+            5,
+            torch.zeros((1, 2), dtype=torch.int64, device=device),
+            False,
+        ),
+        (
+            "oob_dim_empty",
+            IndexError,
+            r"expected dimension to be in range",
+            inp,
+            5,
+            torch.empty((0, 2), dtype=torch.int64, device=device),
+            False,
+        ),
+        (
+            "size_mismatch",
+            RuntimeError,
+            r"size less than or equal to the input tensor",
+            inp,
+            0,
+            torch.zeros((1, 4), dtype=torch.int64, device=device),
+            False,
+        ),
+    )
+
+    for name, err_type, err_regex, src, dim, idx, sparse_grad in error_cases:
+      with self.subTest(case=name):
+        out = torch.full((4, 4), 7.0, dtype=torch.float32, device=device)
+        with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifying out tensor is not mutated on error.
+            err_type, err_regex
+        ):
+          torch.gather(src, dim, idx, sparse_grad=sparse_grad, out=out)
+        self.assertEqual(out.shape, (4, 4))
+        self.assertEqual(out.stride(), (4, 1))
+        utils.assert_close(out.cpu(), torch.full((4, 4), 7.0))
+
+    # Aliasing out=self with mismatched index shape must not mutate self.shape.
+    aliased_inp = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=device)
+    smaller_idx = torch.tensor([[1], [0]], dtype=torch.int64, device=device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifying out tensor is not mutated on error.
+        RuntimeError, r"single memory location"
+    ):
+      torch.gather(aliased_inp, 1, smaller_idx, out=aliased_inp)
+    self.assertEqual(aliased_inp.shape, (2, 2))
+    utils.assert_close(
+        aliased_inp.cpu(), torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    )
+
+    # Post-resize slice overlap must not mutate out.shape before throwing.
+    base = torch.arange(6, dtype=torch.float32, device=device)
+    inp_slice = base[2:6]
+    out_empty_slice = base[:0]
+    idx_1d = torch.tensor([0, 1, 2, 3], dtype=torch.int64, device=device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifying out tensor is not mutated on error.
+        RuntimeError, r"single memory location"
+    ):
+      torch.gather(inp_slice, 0, idx_1d, out=out_empty_slice)
+    self.assertEqual(out_empty_slice.shape, (0,))
+    utils.assert_close(base.cpu(), torch.arange(6, dtype=torch.float32))
+
+  def test_gather_out_resize_donation_and_full_index_overlap(self):
+    device = torch.device("tpu")
+    inp_cpu = torch.tensor([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]])
+    idx_cpu = torch.tensor([[2, 0], [1, 2]], dtype=torch.int64)
+    expected = torch.gather(inp_cpu, 1, idx_cpu)
+    inp_tpu = inp_cpu.to(device)
+    idx_tpu = idx_cpu.to(device)
+
+    # Shrinking a larger non-empty out tensor and growing an empty out tensor.
+    for init_shape in ((4, 5), (0,), (1,)):
+      with self.subTest(init_shape=init_shape):
+        out_tpu = torch.zeros(init_shape, dtype=torch.float32, device=device)
+        ret = torch.gather(inp_tpu, 1, idx_tpu, out=out_tpu)
+        self.assertIs(ret, out_tpu)
+        self.assertEqual(out_tpu.shape, (2, 2))
+        utils.assert_close(out_tpu.cpu(), expected)
+
+    # Empty index resizes out to the empty index shape, including 0D input.
+    out_empty_res = torch.ones((3, 3), dtype=torch.float32, device=device)
+    empty_idx = torch.empty((0, 2), dtype=torch.int64, device=device)
+    torch.gather(inp_tpu, 0, empty_idx, out=out_empty_res)
+    self.assertEqual(out_empty_res.shape, (0, 2))
+
+    scalar_inp = torch.tensor(5.0, device=device)
+    out_scalar_empty = torch.ones((2, 2), dtype=torch.float32, device=device)
+    torch.gather(
+        scalar_inp,
+        0,
+        torch.empty((0,), dtype=torch.int64, device=device),
+        out=out_scalar_empty,
+    )
+    self.assertEqual(out_scalar_empty.shape, (0,))
+
+    # Pre-sized slice view write-back with buffer donation and CoW clone safety.
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+      base_tpu = torch.zeros((4, 2), dtype=torch.float32, device=device)
+      out_slice = base_tpu[1:3]
+      torch.gather(inp_tpu, 1, idx_tpu, out=out_slice)
+      expected_base = torch.zeros((4, 2), dtype=torch.float32)
+      expected_base[1:3] = expected
+      utils.assert_close(base_tpu.cpu(), expected_base)
+
+      # Shallow clone before write-back must remain unmutated.
+      cloned_base = base_tpu.clone()
+      torch.gather(
+          inp_tpu * 2.0,
+          1,
+          idx_tpu,
+          out=base_tpu[1:3],
+      )
+      utils.assert_close(cloned_base.cpu(), expected_base)
+
+      # Exact full overlap between out and index (allowed by
+      # assert_no_partial_overlap) donates index's buffer in-place.
+      for idx_dtype in (torch.int64, torch.int32):
+        inp_int_cpu = torch.tensor(
+            [[100, 200, 300], [400, 500, 600]], dtype=idx_dtype
+        )
+        idx_inplace_cpu = torch.tensor([[2, 0], [1, 2]], dtype=idx_dtype)
+        expected_int = torch.gather(
+            inp_int_cpu, 1, idx_inplace_cpu, out=idx_inplace_cpu
+        )
+        inp_int_tpu = inp_int_cpu.to(device)
+        idx_inplace_tpu = torch.tensor(
+            [[2, 0], [1, 2]], dtype=idx_dtype, device=device
+        )
+        idx_view = idx_inplace_tpu.view_as(idx_inplace_tpu)
+        ret_int = torch.gather(
+            inp_int_tpu, 1, idx_inplace_tpu, out=idx_inplace_tpu
+        )
+        self.assertIs(ret_int, idx_inplace_tpu)
+        utils.assert_close(idx_inplace_tpu.cpu(), expected_int)
+        utils.assert_close(idx_view.cpu(), expected_int)
+
   def test_gather_scatter_zero_stride_and_size1_broadcast(self):
     """Tests eager and compiled gather/scatter_add on expanded broadcast indices."""
     for dtype in (torch.float32, torch.bfloat16):

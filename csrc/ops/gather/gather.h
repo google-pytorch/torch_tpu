@@ -27,6 +27,9 @@
 
 namespace torch_tpu {
 
+// Returns NotImplementedError when `sparse_grad` is true.
+absl::Status ValidateGatherSparseGrad(bool sparse_grad);
+
 absl::Status ValidateGatherInputs(absl::Span<const int64_t> self, int64_t dim,
                                   absl::Span<const int64_t> index,
                                   bool sparse_grad);

@@ -20761,13 +20761,172 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
   def test_gather_out_dtype_mismatch(self):
     inp = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     index = torch.zeros(2, 2, device=et.device(), dtype=torch.int64)
-    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    out = torch.empty(4, 4, device=et.device(), dtype=torch.float64)
     with et.assert_raises_message(
         RuntimeError,
         tpu="""gather(): expected the output dtype to be float32, got float64""",
         gpu="""Expected out tensor to have dtype float, but got double instead""",
     ):
       torch.gather(inp, 0, index, out=out)
+    self.assertEqual(out.shape, (4, 4))
+
+  def test_gather_out_cpu_tensor(self):
+    inp = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(2, 2, device=et.device(), dtype=torch.int64)
+    empty_index = torch.empty(0, 2, device=et.device(), dtype=torch.int64)
+    out = torch.empty(2, 2, device="cpu", dtype=torch.float32)
+
+    for case_name, idx in (("non_empty", index), ("empty", empty_index)):
+      with self.subTest(index=case_name):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""gather(): expected out tensor to be on tpu, got cpu""",
+            gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_gather_out_out)""",
+        ):
+          torch.gather(inp, 0, idx, out=out)
+
+  def test_gather_cpu_input_tensors(self):
+    inp_cpu = torch.ones(2, 2, device="cpu", dtype=torch.float32)
+    inp_dev = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index_dev = torch.zeros(2, 2, device=et.device(), dtype=torch.int64)
+    empty_index_dev = torch.empty(0, 2, device=et.device(), dtype=torch.int64)
+    empty_index_cpu = torch.empty(0, 2, device="cpu", dtype=torch.int64)
+    out_dev = torch.empty(2, 2, device=et.device(), dtype=torch.float32)
+
+    for case_name, idx in (
+        ("non_empty", index_dev),
+        ("empty", empty_index_dev),
+    ):
+      with self.subTest(cpu_self_index=case_name):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""gather(): expected tensor to be on tpu, got cpu""",
+            gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_gather_out_out)""",
+        ):
+          torch.gather(inp_cpu, 0, idx, out=out_dev)
+
+    with self.subTest(cpu_empty_index_out=True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""gather(): expected tensor to be on tpu, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got index is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_gather_out_out)""",
+      ):
+        torch.gather(inp_dev, 0, empty_index_cpu, out=out_dev)
+
+    with self.subTest(non_out_cpu_self_empty_index=True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""gather(): expected tensor to be on tpu, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got index is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_gather)""",
+      ):
+        torch.gather(inp_cpu, 0, empty_index_dev)
+
+    with self.subTest(non_out_cpu_empty_index=True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""gather(): expected tensor to be on tpu, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got index is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_gather)""",
+      ):
+        torch.gather(inp_dev, 0, empty_index_cpu)
+
+  def test_gather_dim_out_of_bounds(self):
+    inp = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(2, 3, device=et.device(), dtype=torch.int64)
+    empty_index = torch.empty(0, 3, device=et.device(), dtype=torch.int64)
+    out = torch.empty(4, 4, device=et.device(), dtype=torch.float32)
+
+    for case_name, idx in (("non_empty", index), ("empty", empty_index)):
+      with self.subTest(index=case_name):
+        with et.assert_raises_message(
+            IndexError,
+            tpu="""gather(): expected dimension to be in range [-2, 1], got 2""",
+            gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+        ):
+          torch.gather(inp, 2, idx, out=out)
+        self.assertEqual(out.shape, (4, 4))
+
+  def test_gather_out_internal_memory_overlap(self):
+    inp = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=et.device())
+    index = torch.tensor(
+        [[0, 1], [1, 0]], dtype=torch.int64, device=et.device()
+    )
+    out = torch.empty(1, device=et.device()).expand(2, 2)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.gather(inp, 1, index, out=out)
+
+  def test_gather_out_self_memory_overlap(self):
+    inp = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=et.device())
+    index = torch.tensor(
+        [[1, 0], [0, 1]], dtype=torch.int64, device=et.device()
+    )
+    empty_index = torch.empty((0, 2), dtype=torch.int64, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.gather(inp, 1, index, out=inp)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.gather(inp, 0, empty_index, out=inp)
+
+    base = torch.ones(6, device=et.device())
+    inp_slice = base[:4]
+    out_slice = base[2:]
+    idx_1d = torch.tensor([0, 1, 2, 3], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.gather(inp_slice, 0, idx_1d, out=out_slice)
+
+    base_resized = torch.ones(6, device=et.device())
+    inp_resized = base_resized[2:6]
+    out_empty_slice = base_resized[:0]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.gather(inp_resized, 0, idx_1d, out=out_empty_slice)
+
+  def test_gather_out_index_partial_memory_overlap(self):
+    inp = torch.tensor([10, 20, 30, 40], dtype=torch.int64, device=et.device())
+    idx_base = torch.tensor(
+        [0, 1, 2, 3, 0, 1], dtype=torch.int64, device=et.device()
+    )
+    idx_slice = idx_base[:4]
+    out_slice = idx_base[2:]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.gather(inp, 0, idx_slice, out=out_slice)
+
+    inp_2d = torch.tensor(
+        [[10, 20], [30, 40]], dtype=torch.int64, device=et.device()
+    )
+    idx_2d = torch.tensor(
+        [[0, 1], [1, 0]], dtype=torch.int64, device=et.device()
+    )
+    out_transposed = idx_2d.t()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.gather(inp_2d, 1, idx_2d, out=out_transposed)
 
   def test_scatter_out_dtype_mismatch(self):
     self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)

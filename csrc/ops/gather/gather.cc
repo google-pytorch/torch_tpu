@@ -237,12 +237,17 @@ mlir::MlirOp EmitBroadcastGatherDot(mlir::MlirOp self, int64_t dim,
 
 }  // namespace
 
+absl::Status ValidateGatherSparseGrad(bool sparse_grad) {
+  TT_RET_CHECK(!sparse_grad, error::kPythonNotImplementedError)
+      << "sparse_grad is not yet supported";
+  return absl::OkStatus();
+}
+
 absl::Status ValidateGatherInputs(absl::Span<const int64_t> self_dims,
                                   int64_t dim,
                                   absl::Span<const int64_t> index_dims,
                                   bool sparse_grad) {
-  TT_RET_CHECK(sparse_grad == false, error::kPythonNotImplementedError)
-      << "sparse_grad is not yet supported";
+  TT_RETURN_IF_ERROR(ValidateGatherSparseGrad(sparse_grad));
 
   const int64_t self_rank = self_dims.size();
   const int64_t index_rank = index_dims.size();
