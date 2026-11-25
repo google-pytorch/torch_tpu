@@ -36,6 +36,7 @@ namespace {
 
 using absl_testing::IsOkAndHolds;
 using absl_testing::StatusIs;
+using testing::AllOf;
 using testing::ExitedWithCode;
 using testing::HasSubstr;
 
@@ -86,6 +87,70 @@ TEST(PjRtInitDeathTest,
         unsetenv(kTorchTpuSlicebuilderAddressesEnvVar);
         unsetenv(kTorchTpuTopologyEnvVar);
         VerifySingleDevicePjRtInit();
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(PjRtInitDeathTest, EnsureInitializedReregistersTpuPluginAfterShutdown) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kWorldSizeEnvVar);
+        // The second initialization registers the already registered TPU PJRT
+        // plugin again.
+        VerifySingleDevicePjRtInit();
+        VerifySingleDevicePjRtInit();
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(PjRtInitDeathTest, EnsureInitializedFailsWithHintWhenLibtpuIsMissing) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kWorldSizeEnvVar);
+        setenv(kTpuLibraryPathEnvVar, "/nonexistent/libtpu.so",
+               /*overwrite=*/1);
+        PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+            {.device_type = "tpu"});
+        EXPECT_THAT(
+            PjrtBackend::GetInstance().EnsureInitialized(),
+            StatusIs(testing::_, AllOf(HasSubstr("failed to load libtpu from "
+                                                 "/nonexistent/libtpu.so"),
+                                       HasSubstr("TPU_LIBRARY_PATH"))));
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(PjRtInitDeathTest, EnsureInitializedFailsWhenTpuLibraryPathIsUnset) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kWorldSizeEnvVar);
+        unsetenv(kTpuLibraryPathEnvVar);
+        PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+            {.device_type = "tpu"});
+        EXPECT_THAT(PjrtBackend::GetInstance().EnsureInitialized(),
+                    StatusIs(error::kFailedPrecondition,
+                             HasSubstr("TPU_LIBRARY_PATH environment variable "
+                                       "must be set")));
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(PjRtInitDeathTest, EnsureInitializedFailsForUnresolvedRelativeLibtpuPath) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kWorldSizeEnvVar);
+        setenv(kTpuLibraryPathEnvVar, "nonexistent/libtpu.so",
+               /*overwrite=*/1);
+        PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+            {.device_type = "tpu"});
+        EXPECT_THAT(PjrtBackend::GetInstance().EnsureInitialized(),
+                    StatusIs(error::kFailedPrecondition,
+                             HasSubstr("must be an absolute path or a path "
+                                       "relative to the runfiles directory")));
         _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");

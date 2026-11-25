@@ -34,10 +34,11 @@ load(
     "//build_files:rbe.bzl",
     "rbe_tpu_exec_properties_for_testing",
 )
+load("//shims/build_files:build_defs.bzl", "LIBTPU_TARGET")
 
 _TagsInfo = provider(
     "Provider for extracting rule attributes during analysis tests.",
-    fields = ["tags", "rule_kind", "env", "exec_properties", "shard_count"],
+    fields = ["tags", "rule_kind", "env", "exec_properties", "shard_count", "args", "data"],
 )
 
 def _tags_aspect_impl(_target, ctx):
@@ -47,6 +48,8 @@ def _tags_aspect_impl(_target, ctx):
         env = getattr(ctx.rule.attr, "env", {}),
         exec_properties = getattr(ctx.rule.attr, "exec_properties", {}),
         shard_count = getattr(ctx.rule.attr, "shard_count", -1),
+        args = getattr(ctx.rule.attr, "args", []),
+        data = [str(t.label) for t in getattr(ctx.rule.attr, "data", [])],
     )]
 
 tags_aspect = aspect(
@@ -61,6 +64,7 @@ def _test_macro_tags(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         nobuild = "Analysis test subject",
         nolocal = "Analysis test subject",
         notap = "Analysis test subject",
@@ -328,6 +332,7 @@ def _test_requires_libtpu_inferred(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         tags = ["requires-tpu-v5lite"],
         nobuild = "Analysis test subject",
         nolocal = "Analysis test subject",
@@ -347,7 +352,24 @@ def _test_requires_libtpu_explicit_true_impl(env, targets):
     # even when no 'requires-tpu' hardware tags are present on the target.
     info = targets.subject[_TagsInfo]
     env.expect.that_str(info.rule_kind).equals("sh_test" if is_oss() else "cc_test")
-    env.expect.that_dict(info.env).contains_exactly({"TEST_ENV": "1"})
+
+    # In Google3, torch_tpu_cc_test automatically injects the dynamic libtpu
+    # runtime environment variables into the cc_test env attribute, pointing
+    # TPU_LIBRARY_PATH to the runfiles location of LIBTPU_TARGET.
+    # In OSS, these environment variables are not injected into the Bazel rule's
+    # env attribute because libtpu is loaded from python site-packages or
+    # configured via the sh_test test wrapper script rather than a Google3
+    # runfiles target.
+    expected_env = (
+        {"TEST_ENV": "1"} if is_oss() else {
+            "ALLOW_MULTIPLE_LIBTPU_LOAD": "1",
+            "TEST_ENV": "1",
+            "TPU_LIBRARY_PATH": "$(rootpath %s)" % LIBTPU_TARGET,
+            "TPU_LOAD_LIBRARY": "1",
+            "TPU_SKIP_MDS_QUERY": "true",
+        }
+    )
+    env.expect.that_dict(info.env).contains_exactly(expected_env)
 
     # In OSS (when rule_kind is sh_test), cpp_link.mem is filtered out from exec_properties
     # so that sh_test does not crash with non-existent exec group errors.
@@ -360,6 +382,7 @@ def _test_requires_libtpu_explicit_true(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         requires_libtpu = True,
         env = {"TEST_ENV": "1"},
         exec_properties = {"cpp_link.mem": "20g", "test.pool": "tpu-pool"},
@@ -381,11 +404,13 @@ def _test_requires_libtpu_explicit_false_impl(env, targets):
     # ensuring the top-level rule remains a cc_test across both OSS and internal builds.
     rule_kind = targets.subject[_TagsInfo].rule_kind
     env.expect.that_str(rule_kind).equals("cc_test")
+    _expect_no_internal_libtpu(env, targets.subject[_TagsInfo])
 
 def _test_requires_libtpu_explicit_false(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         requires_libtpu = False,
         tags = ["requires-tpu-v5lite"],
         nobuild = "Analysis test subject",
@@ -397,6 +422,108 @@ def _test_requires_libtpu_explicit_false(name):
         impl = _test_requires_libtpu_explicit_false_impl,
         targets = {"subject": name + "_subject"},
         attrs = {"subject": {"aspects": [tags_aspect]}},
+    )
+
+_INTERNAL_LIBTPU_ENV = {
+    "ALLOW_MULTIPLE_LIBTPU_LOAD": "1",
+    "TPU_LIBRARY_PATH": "$(rootpath %s)" % LIBTPU_TARGET,
+    "TPU_LOAD_LIBRARY": "1",
+    "TPU_SKIP_MDS_QUERY": "true",
+}
+
+_DISABLE_GWP_ASAN_ARG = "--tcmalloc_guarded_sample_parameter=-1"
+
+def _expect_no_internal_libtpu(env, info):
+    """Expects that the test described by `info` doesn't load Google3 libtpu.
+
+    Only meaningful in Google3, where LIBTPU_TARGET is set.
+    """
+    if is_oss():
+        return
+    for name in _INTERNAL_LIBTPU_ENV:
+        env.expect.that_collection(info.env.keys()).not_contains(name)
+    env.expect.that_collection(info.args).not_contains(_DISABLE_GWP_ASAN_ARG)
+    env.expect.that_collection(info.data).not_contains(str(Label(LIBTPU_TARGET)))
+
+def _expect_internal_libtpu(env, info):
+    """Expects that the test described by `info` loads Google3 libtpu.
+
+    Only meaningful in Google3, where LIBTPU_TARGET is set.
+    """
+    if is_oss():
+        return
+    env.expect.that_dict(info.env).contains_at_least(_INTERNAL_LIBTPU_ENV)
+    env.expect.that_collection(info.args).contains(_DISABLE_GWP_ASAN_ARG)
+    env.expect.that_collection(info.data).contains(str(Label(LIBTPU_TARGET)))
+
+def _test_libtpu_env_impl(env, targets):
+    """Verifies that only tests that may load libtpu get its env, data and args."""
+    _expect_no_internal_libtpu(env, targets.cc_cpu[_TagsInfo])
+    _expect_no_internal_libtpu(env, targets.cc_gpu[_TagsInfo])
+    _expect_internal_libtpu(env, targets.cc_tpu[_TagsInfo])
+
+    # Python tests import torch_tpu, which may load libtpu in any test that
+    # doesn't run on GPUs. (Wheel tests get the libtpu env from the wheel.)
+    if not is_oss():
+        env.expect.that_collection(targets.py_cpu[_TagsInfo].args).contains(_DISABLE_GWP_ASAN_ARG)
+    env.expect.that_collection(targets.py_gpu[_TagsInfo].args).not_contains(_DISABLE_GWP_ASAN_ARG)
+    _expect_internal_libtpu(env, targets.py_local_cpu[_TagsInfo])
+    _expect_no_internal_libtpu(env, targets.py_local_gpu[_TagsInfo])
+
+def _test_libtpu_env(name):
+    for suffix, tags in [("_cc_cpu", []), ("_cc_gpu", ["requires-gpu-sm90"]), ("_cc_tpu", ["requires-tpu-v5lite"])]:
+        torch_tpu_cc_test(
+            name = name + suffix,
+            srcs = [],
+            deps = ["//csrc/common:oss_test_main"],
+            tags = tags,
+            nobuild = "Analysis test subject",
+            nolocal = "Analysis test subject",
+            notap = "Analysis test subject",
+        )
+    for suffix, tags in [("_py_cpu", []), ("_py_gpu", ["requires-gpu-sm90"])]:
+        torch_tpu_py_test(
+            name = name + suffix,
+            srcs = ["build_defs_test.py"],
+            main = "build_defs_test.py",
+            is_wheel_test = True,
+            tags = tags,
+            nobuild = "Analysis test subject",
+            nolocal = "Analysis test subject",
+            notap = "Analysis test subject",
+        )
+    for suffix, tags in [("_py_local_cpu", []), ("_py_local_gpu", ["requires-gpu-sm90"])]:
+        torch_tpu_py_test(
+            name = name + suffix,
+            srcs = ["build_defs_test.py"],
+            main = "build_defs_test.py",
+            deps = ["//src/torch_tpu"],
+            tags = tags,
+            nobuild = "Analysis test subject",
+            nolocal = "Analysis test subject",
+            notap = "Analysis test subject",
+        )
+    analysis_test(
+        name = name,
+        impl = _test_libtpu_env_impl,
+        targets = {
+            "cc_cpu": name + "_cc_cpu",
+            "cc_gpu": name + "_cc_gpu",
+            "cc_tpu": name + "_cc_tpu",
+            "py_cpu": name + "_py_cpu",
+            "py_gpu": name + "_py_gpu",
+            "py_local_cpu": name + "_py_local_cpu",
+            "py_local_gpu": name + "_py_local_gpu",
+        },
+        attrs = {
+            "cc_cpu": {"aspects": [tags_aspect]},
+            "cc_gpu": {"aspects": [tags_aspect]},
+            "cc_tpu": {"aspects": [tags_aspect]},
+            "py_cpu": {"aspects": [tags_aspect]},
+            "py_gpu": {"aspects": [tags_aspect]},
+            "py_local_cpu": {"aspects": [tags_aspect]},
+            "py_local_gpu": {"aspects": [tags_aspect]},
+        },
     )
 
 def _test_is_backend_dep(env):
@@ -988,6 +1115,12 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
         _V5_RBE_EXEC_PROPERTIES | {"test.Pool": "custom_pool", "test.mem": "32g"}
     ) if is_oss() else {"cpp_link.mem": "20g", "test.Pool": "custom_pool", "test.mem": "32g"}
     caller_env = {"CUSTOM_VAR": "1", "TPU_ACCELERATOR_TYPE": "custom"}
+    internal_cc_tpu_env = {
+        "ALLOW_MULTIPLE_LIBTPU_LOAD": "1",
+        "TPU_LIBRARY_PATH": "$(rootpath %s)" % LIBTPU_TARGET,
+        "TPU_LOAD_LIBRARY": "1",
+        "TPU_SKIP_MDS_QUERY": "true",
+    }
 
     env.expect.that_dict(targets.py_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
     env.expect.that_dict(targets.py_v5[_TagsInfo].env).contains_exactly({})
@@ -1015,13 +1148,17 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
     env.expect.that_dict(targets.py_v7[_TagsInfo].env).contains_exactly({})
 
     env.expect.that_dict(targets.cc_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
-    env.expect.that_dict(targets.cc_v5[_TagsInfo].env).contains_exactly({})
+    env.expect.that_dict(targets.cc_v5[_TagsInfo].env).contains_exactly(
+        {} if is_oss() else internal_cc_tpu_env,
+    )
     env.expect.that_int(targets.cc_v5[_TagsInfo].shard_count).equals(1 if is_oss() else 4)
 
     env.expect.that_dict(targets.cc_override[_TagsInfo].exec_properties).contains_exactly(
         expected_cc_override,
     )
-    env.expect.that_dict(targets.cc_override[_TagsInfo].env).contains_exactly(caller_env)
+    env.expect.that_dict(targets.cc_override[_TagsInfo].env).contains_exactly(
+        caller_env if is_oss() else (internal_cc_tpu_env | caller_env),
+    )
 
     if not is_oss():
         return
@@ -1101,6 +1238,7 @@ def _test_rbe_macro_exec_properties(name):
     torch_tpu_cc_test(
         name = name + "_cc_v5",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         tags = ["exclusive", "requires-tpu-v5lite"],
         shard_count = 4,
         nobuild = "Analysis test subject",
@@ -1110,6 +1248,7 @@ def _test_rbe_macro_exec_properties(name):
     torch_tpu_cc_test(
         name = name + "_cc_override",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         tags = ["requires-tpu-v5lite"],
         env = caller_env,
         exec_properties = {"cpp_link.mem": "20g", "test.Pool": "custom_pool", "test.mem": "32g"},
@@ -1167,6 +1306,7 @@ def build_defs_test_suite(name):
         name = name + "_rules_testing",
         tests = [
             # go/keep-sorted start
+            _test_libtpu_env,
             _test_macro_tags,
             _test_py_test_multi_tpu_targets,
             _test_py_test_multi_tpu_targets_existing_fails_on,

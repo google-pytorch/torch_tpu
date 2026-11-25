@@ -47,7 +47,6 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt/c_api_client:pjrt_c_api_client",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
 
@@ -76,6 +75,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@tsl//tsl/profiler/lib:profiler_factory",

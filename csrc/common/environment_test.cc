@@ -29,6 +29,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "csrc/common/device_utils.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "gtest/gtest.h"

@@ -104,6 +104,7 @@ bzl_library(
     deps = [
         ":build_defs_bzl",
         ":rbe_bzl",
+        "//shims/build_files:build_defs_bzl",
         "@rules_testing//lib:analysis_test_bzl",
         "@rules_testing//lib:test_suite_bzl",
     ],
