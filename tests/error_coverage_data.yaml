@@ -67,7 +67,7 @@ csrc/internal/mosaic/kiln/core/kernel.cc: {remaining: 7, total: 7, infeasible: 0
 csrc/internal/mosaic/kiln/mlir/stablehlo_splice.cc: {remaining: 10, total: 11, infeasible: 1}
 csrc/internal/mosaic/kiln_utils.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/internal/profiler/profiler_api.cc: {remaining: 5, total: 5, infeasible: 0}
-csrc/internal/profiler/tpu_profiler_plugin.cc: {remaining: 6, total: 6, infeasible: 0}
+csrc/internal/profiler/tpu_profiler_plugin.cc: {remaining: 5, total: 6, infeasible: 0}
 csrc/internal/sync/sync.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/internal/sync/sync_py.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/internal/testing.cc: {remaining: 0, total: 3, infeasible: 0}

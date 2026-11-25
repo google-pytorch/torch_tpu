@@ -31,6 +31,7 @@ from torch.autograd import profiler
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import sync as tpu_sync
+from torch_tpu._internal.profiler import _impl as profiler_impl
 from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
 from torch_tpu._internal.utils import utils
@@ -1108,35 +1109,48 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         xplane_files, "Should have a .xplane.pb file in fallback directory"
     )
 
-  @unittest.skip(
-      "TODO(b/585659501): Re-enable once upstream PyTorch enableProfiler rolls"
-      " back ProfilerStateBase when startTrace throws."
-  )
-  def test_invalid_profiler_config(self):
-    """Tests that invalid profiler configuration raises a Python exception."""
+  def test_profiler_usable_after_tpu_profiler_start_failure(self):
+    """Tests that a failed TPU profiler start does not leak profiler state."""
     device = torch.device("tpu")
-    output_dir = self.create_tempdir("invalid_config").full_path
-
-    _cleanup_profile_dir()
-
-    bad_config = torch.profiler._ExperimentalConfig(
-        custom_profiler_config="invalid_option_missing_colon"
+    activities = [
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.TPU,  # type: ignore
+    ]
+    outer_dir = self.create_tempdir("outer_trace").full_path
+    output_dir = pathlib.Path(
+        self.create_tempdir("after_start_failure").full_path
     )
 
-    with self.assertRaisesRegex(
-        RuntimeError,
-        r"expected the config item to be in the 'key:value' format, got"
-        r" 'invalid_option_missing_colon'",
+    # An active XProf session holds the profiler lock, so the TPU profiler
+    # session started by `torch.profiler.profile` fails with "Another profiling
+    # session active.". The failure must be logged, not raised.
+    profiler_impl.start_trace(outer_dir)
+    try:
+      with torch.profiler.profile(activities=activities):
+        c = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
+        tpu_sync.synchronize(c)
+    finally:
+      profiler_impl.stop_trace()
+
+    self.assertFalse(torch.autograd._profiler_enabled())
+
+    # `custom_compiler_options` pushes thread-local debug info on top of any
+    # leaked profiler state, which made the next profile fail with "Expected
+    # debug info of type PROFILER_STATE".
+    _cleanup_profile_dir()
+    with torch.tpu.compiler.custom_compiler_options(
+        {"xla_enable_custom_call_region_trace": "true"}
     ):
       with torch.profiler.profile(
-          activities=[
-              torch.profiler.ProfilerActivity.CPU,
-              torch.profiler.ProfilerActivity.TPU,  # type: ignore
-          ],
-          on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
-          experimental_config=bad_config,
+          activities=activities,
+          on_trace_ready=torch.profiler.tensorboard_trace_handler(
+              str(output_dir)
+          ),
       ):
-        _ = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
+        c = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
+        tpu_sync.synchronize(c)
+
+    self._get_and_copy_xplane(output_dir / "xplane.pb")
 
   def test_tpu_profiler_config_experimental_options(self):
     device = torch.device("tpu")
@@ -1193,7 +1207,9 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
 
   @unittest.skip(
       "Skipped until new libtpu wheel containing BrokenProfiler is rolled into"
-      " google3 (bootstrap dependency)."
+      " google3 (bootstrap dependency). TODO(b/585659501): runtime TPU"
+      " profiler start failures are now logged instead of raised, so update"
+      " this test's expectations before re-enabling it."
   )
   def test_tpu_profiler_config_invalid_experimental_option(self):
     device = torch.device("tpu")

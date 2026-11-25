@@ -281,8 +281,10 @@ absl::StatusOr<ProfilerOption> SplitConfigItem(std::string_view item) {
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
                                   std::string& out_run_dir,
-                                  std::optional<std::string>& out_worker_rank) {
+                                  std::optional<std::string>& out_worker_rank,
+                                  bool& out_python_tracer_level_set) {
   out_worker_rank = std::nullopt;
+  out_python_tracer_level_set = false;
   if (!std::all_of(custom_config.begin(), custom_config.end(), [](char c) {
         return absl::ascii_isascii(static_cast<unsigned char>(c));
       })) {
@@ -317,6 +319,9 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
       continue;
     }
     TT_RETURN_IF_ERROR(UpdateProfileOption(opts, name, val));
+    if (name == kPythonTracerLevel) {
+      out_python_tracer_level_set = true;
+    }
   }
   return absl::OkStatus();
 }
@@ -325,8 +330,9 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
                                   std::string& out_run_dir) {
   std::optional<std::string> dummy_worker_rank;
+  bool dummy_python_tracer_level_set = false;
   return UpdateProfileOptions(custom_config, opts, out_run_dir,
-                              dummy_worker_rank);
+                              dummy_worker_rank, dummy_python_tracer_level_set);
 }
 
 // Resolves the base output directory for profiling artifacts.
@@ -405,7 +411,10 @@ absl::StatusOr<std::string> GetXPlaneOutputPath(
 TpuKinetoProfilerSession::TpuKinetoProfilerSession(
     const libkineto::Config& config,
     std::set<libkineto::ActivityType> activity_types)
-    : config_(config), activity_types_(std::move(activity_types)) {}
+    : activity_types_(std::move(activity_types)),
+      parsed_config_(ParseCustomConfig(config.getCustomConfig())),
+      with_stack_(config.isWithStackEnabled()),
+      activities_log_file_(config.activitiesLogFile()) {}
 
 void TpuKinetoProfilerSession::start() {
   absl::MutexLock lock(mutex_);
@@ -413,22 +422,22 @@ void TpuKinetoProfilerSession::start() {
     ABSL_LOG(WARNING) << "TpuKinetoProfilerSession already started";
     return;
   }
-  worker_rank_ = std::nullopt;
-  tensorflow::ProfileOptions opts = tsl::ProfilerSession::DefaultOptions();
-  opts.set_device_type(tensorflow::ProfileOptions::TPU);
-  opts.set_raise_error_on_start_failure(true);
+  // An explicit `python_tracer_level` in the custom config takes precedence
+  // over `with_stack`. The PyTorch profiler config is only available here,
+  // after `enableProfiler()` has pushed it.
+  const bool enable_python_tracer =
+      !parsed_config_.python_tracer_level_set &&
+      (with_stack_ ||
+       (torch::autograd::profiler::profilerEnabled() &&
+        torch::autograd::profiler::getProfilerConfig().with_stack));
 
-  bool with_stack = config_.isWithStackEnabled();
-  if (!with_stack && torch::autograd::profiler::profilerEnabled()) {
-    with_stack = torch::autograd::profiler::getProfilerConfig().with_stack;
+  std::optional<tensorflow::ProfileOptions> modified_opts;
+  if (enable_python_tracer && parsed_config_.opts.python_tracer_level() != 1) {
+    modified_opts = parsed_config_.opts;
+    modified_opts->set_python_tracer_level(1);
   }
-
-  if (with_stack) {
-    opts.set_python_tracer_level(1);
-  }
-
-  TT_THROW_IF_ERROR(UpdateProfileOptions(config_.getCustomConfig(), opts,
-                                         run_dir_, worker_rank_));
+  const tensorflow::ProfileOptions& opts =
+      modified_opts.has_value() ? *modified_opts : parsed_config_.opts;
 
   start_time_ns_ = absl::GetCurrentTimeNanos();
 
@@ -444,7 +453,6 @@ void TpuKinetoProfilerSession::start() {
     errors_.push_back(err);
     status_ = libkineto::TraceStatus::ERROR;
     session_.reset();
-    TT_THROW_IF_ERROR(status);
   } else {
     ABSL_LOG(INFO) << "Successfully created Tpu ProfilerSession!";
     status_ = libkineto::TraceStatus::RECORDING;
@@ -505,20 +513,20 @@ void TpuKinetoProfilerSession::stop() {
       session_.reset();
       return;
     }
-    if (worker_rank_.has_value()) {
+    if (parsed_config_.worker_rank.has_value()) {
       for (std::string& hostname : *xspace_.mutable_hostnames()) {
-        absl::StrAppend(&hostname, "_", *worker_rank_);
+        absl::StrAppend(&hostname, "_", *parsed_config_.worker_rank);
       }
     }
     status_ = libkineto::TraceStatus::READY;
 
     std::string run_dir =
-        !run_dir_.empty()
-            ? run_dir_
-            : std::string(tsl::io::Dirname(config_.activitiesLogFile()));
+        !parsed_config_.run_dir.empty()
+            ? parsed_config_.run_dir
+            : std::string(tsl::io::Dirname(activities_log_file_));
 
     absl::StatusOr<std::string> resolved_path =
-        GetXPlaneOutputPath(run_dir, worker_rank_);
+        GetXPlaneOutputPath(run_dir, parsed_config_.worker_rank);
     if (!resolved_path.ok()) {
       errors_.push_back(absl::StrCat("Failed to get XPlane output path: ",
                                      resolved_path.status().ToString()));
@@ -778,6 +786,18 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
     plane.Clear();  // Clear the proto after processing to reclaim memory
   }
   xspace_.Clear();
+}
+
+TpuKinetoProfilerSession::ParsedCustomConfig
+TpuKinetoProfilerSession::ParseCustomConfig(std::string_view custom_config) {
+  ParsedCustomConfig parsed;
+  parsed.opts = tsl::ProfilerSession::DefaultOptions();
+  parsed.opts.set_device_type(tensorflow::ProfileOptions::TPU);
+  parsed.opts.set_raise_error_on_start_failure(true);
+  TT_THROW_IF_ERROR(UpdateProfileOptions(custom_config, parsed.opts,
+                                         parsed.run_dir, parsed.worker_rank,
+                                         parsed.python_tracer_level_set));
+  return parsed;
 }
 
 namespace {

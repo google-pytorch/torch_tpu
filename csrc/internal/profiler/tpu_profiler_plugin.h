@@ -25,13 +25,16 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "csrc/common/utils.h"
 #include "tsl/profiler/lib/profiler_session.h"
+#include "tsl/profiler/protobuf/profiler_options.pb.h"
 #include "tsl/profiler/protobuf/xplane.pb.h"
 
 namespace torch_tpu {
@@ -40,9 +43,22 @@ namespace torch_tpu {
 // It manages a single profiling session, interacting with tensorflow::profiler.
 class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
  public:
+  // Parses the Kineto config into the session's profiler options. Throws if
+  // the custom profiler config is invalid. Validating here, during
+  // `prepare_trace`, raises the error before PyTorch's `enableProfiler()`
+  // pushes any profiler state.
   TpuKinetoProfilerSession(const libkineto::Config& config,
                            std::set<libkineto::ActivityType> activity_types);
+  TpuKinetoProfilerSession(const TpuKinetoProfilerSession&) = delete;
+  TpuKinetoProfilerSession& operator=(const TpuKinetoProfilerSession&) = delete;
+  TpuKinetoProfilerSession(TpuKinetoProfilerSession&&) = delete;
+  TpuKinetoProfilerSession& operator=(TpuKinetoProfilerSession&&) = delete;
 
+  // Must not throw or emit `TORCH_WARN`/`TT_WARN` (which `-W error` turns into
+  // an exception): PyTorch's `enableProfiler()` calls this after pushing
+  // `PROFILER_STATE` and registering `RecordFunction` callbacks, and does not
+  // unwind them on failure. Start failures are logged and recorded in
+  // `errors_` instead, like CUDA Kineto's activity profilers.
   void start() override ABSL_LOCKS_EXCLUDED(mutex_);
   void stop() override ABSL_LOCKS_EXCLUDED(mutex_);
   std::vector<std::string> errors() override ABSL_LOCKS_EXCLUDED(mutex_) {
@@ -66,14 +82,32 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
   }
 
  private:
+  struct ParsedCustomConfig {
+    // Profiler options parsed from the Kineto custom config.
+    tensorflow::ProfileOptions opts;
+    // Custom output directory from `run_dir`, or empty to fall back to
+    // `activities_log_file_`.
+    std::string run_dir;
+    // Optional worker rank suffix from `worker_rank` for XPlane hostnames.
+    std::optional<std::string> worker_rank;
+    // Whether the custom config explicitly set `python_tracer_level`, which
+    // then takes precedence over `with_stack_`.
+    bool python_tracer_level_set = false;
+  };
+
+  static ParsedCustomConfig ParseCustomConfig(std::string_view custom_config);
+
   mutable absl::Mutex mutex_;
   std::unique_ptr<tsl::ProfilerSession> session_;
   tensorflow::profiler::XSpace xspace_;
   std::vector<std::string> errors_ ABSL_GUARDED_BY(mutex_);
-  const libkineto::Config& config_;
-  std::set<libkineto::ActivityType> activity_types_;
-  std::string run_dir_ ABSL_GUARDED_BY(mutex_);
-  std::optional<std::string> worker_rank_ ABSL_GUARDED_BY(mutex_);
+  const std::set<libkineto::ActivityType> activity_types_;
+  const ParsedCustomConfig parsed_config_;
+  // Whether Kineto's `with_stack` option was enabled in the config.
+  const bool with_stack_;
+  // Trace output file path configured in Kineto, whose directory is used as a
+  // fallback when `parsed_config_.run_dir` is empty.
+  const std::string activities_log_file_;
   uint64_t start_time_ns_ = 0;
   std::vector<libkineto::ResourceInfo> resource_infos_;
 };
@@ -112,10 +146,14 @@ class TpuProfiler : public libkineto::IActivityProfiler {
 // TMPDIR, or defaulting to "/tmp".
 [[nodiscard]] std::string GetProfilerBaseOutputDir(std::string_view run_dir);
 
+// Parses `custom_config` into `opts`, `out_run_dir`, and `out_worker_rank`,
+// and sets `out_python_tracer_level_set` to whether `custom_config` explicitly
+// sets `python_tracer_level`.
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
                                   std::string& out_run_dir,
-                                  std::optional<std::string>& out_worker_rank);
+                                  std::optional<std::string>& out_worker_rank,
+                                  bool& out_python_tracer_level_set);
 
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,

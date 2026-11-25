@@ -83,6 +83,25 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsValid) {
   EXPECT_TRUE(run_dir.empty());
 }
 
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsPythonTracerLevelSet) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+  std::optional<std::string> worker_rank;
+  bool python_tracer_level_set = true;
+
+  EXPECT_TRUE(UpdateProfileOptions("host_tracer_level:3", opts, run_dir,
+                                   worker_rank, python_tracer_level_set)
+                  .ok());
+  EXPECT_FALSE(python_tracer_level_set);
+
+  // An explicit value is detected even if it equals the default.
+  EXPECT_TRUE(UpdateProfileOptions("python_tracer_level:0", opts, run_dir,
+                                   worker_rank, python_tracer_level_set)
+                  .ok());
+  EXPECT_TRUE(python_tracer_level_set);
+  EXPECT_EQ(opts.python_tracer_level(), 0);
+}
+
 TEST(TpuProfilerPluginTest, UpdateProfileOptionsRunDir) {
   tensorflow::ProfileOptions opts;
   std::string run_dir;
@@ -328,11 +347,13 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsWorkerRank) {
   tensorflow::ProfileOptions opts;
   std::string run_dir;
   std::optional<std::string> worker_rank;
+  bool python_tracer_level_set = false;
 
   // 1. worker_rank present as integer (unquoted)
   EXPECT_TRUE(UpdateProfileOptions("device_tracer_level:3,worker_rank:2,"
                                    "host_tracer_level:3",
-                                   opts, run_dir, worker_rank)
+                                   opts, run_dir, worker_rank,
+                                   python_tracer_level_set)
                   .ok());
   EXPECT_EQ(opts.device_tracer_level(), 3);
   EXPECT_EQ(opts.host_tracer_level(), 3);
@@ -343,7 +364,7 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsWorkerRank) {
   EXPECT_TRUE(
       UpdateProfileOptions("device_tracer_level:3,worker_rank:\"worker_A\","
                            "host_tracer_level:3",
-                           opts, run_dir, worker_rank)
+                           opts, run_dir, worker_rank, python_tracer_level_set)
           .ok());
   EXPECT_EQ(opts.device_tracer_level(), 3);
   EXPECT_EQ(opts.host_tracer_level(), 3);
@@ -351,14 +372,15 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsWorkerRank) {
   EXPECT_EQ(*worker_rank, "worker_A");
 
   // 3. worker_rank missing
-  EXPECT_TRUE(
-      UpdateProfileOptions("device_tracer_level:1", opts, run_dir, worker_rank)
-          .ok());
+  EXPECT_TRUE(UpdateProfileOptions("device_tracer_level:1", opts, run_dir,
+                                   worker_rank, python_tracer_level_set)
+                  .ok());
   EXPECT_FALSE(worker_rank.has_value());
 
   // 4. worker_rank as raw string (unquoted)
-  EXPECT_TRUE(
-      UpdateProfileOptions("worker_rank:abc", opts, run_dir, worker_rank).ok());
+  EXPECT_TRUE(UpdateProfileOptions("worker_rank:abc", opts, run_dir,
+                                   worker_rank, python_tracer_level_set)
+                  .ok());
   EXPECT_TRUE(worker_rank.has_value());
   EXPECT_EQ(*worker_rank, "abc");
 }
