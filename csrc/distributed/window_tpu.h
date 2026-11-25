@@ -194,14 +194,12 @@ class WindowTpu : public c10d::Window {
 
  private:
   // Internal helper methods for the 3 distinct Put transfer modalities.
-  c10::intrusive_ptr<c10d::Work> PutDeviceToHostDma(const at::Tensor& tensor,
-                                                    int64_t targetOffsetNelems,
-                                                    bool asyncOp);
-  c10::intrusive_ptr<c10d::Work> PutHostToDeviceDma(const at::Tensor& tensor,
-                                                    int64_t targetOffsetNelems,
-                                                    bool asyncOp);
-  c10::intrusive_ptr<c10d::Work> PutPeerP2P(const at::Tensor& tensor,
-                                            int64_t dstRank, bool asyncOp);
+  [[nodiscard]] c10::intrusive_ptr<c10d::Work> PutDeviceToHostDma(
+      const at::Tensor& tensor, int64_t targetOffsetNelems, bool asyncOp);
+  [[nodiscard]] c10::intrusive_ptr<c10d::Work> PutHostToDeviceDma(
+      const at::Tensor& tensor, int64_t targetOffsetNelems, bool asyncOp);
+  [[nodiscard]] c10::intrusive_ptr<c10d::Work> PutPeerP2P(
+      const at::Tensor& tensor, int64_t dstRank, bool asyncOp);
 
   c10::intrusive_ptr<c10d::Backend> backend_;
   int64_t local_rank_{0};

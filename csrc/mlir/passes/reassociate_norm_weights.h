@@ -24,7 +24,7 @@
 
 namespace torch_tpu {
 
-std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
+[[nodiscard]] std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
 createReassociateNormWeightsPass();
 
 }  // namespace torch_tpu

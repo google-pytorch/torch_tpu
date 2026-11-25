@@ -40,13 +40,15 @@ inline constexpr llvm::StringLiteral kZeroOperandCustomCallGuardAttr =
 // `createUnguardZeroOperandCustomCallsPass()` immediately after it, in the same
 // `func.func` pass manager, so other passes can still DCE unused calls. See
 // guard_zero_operand_custom_calls.cc for details.
-std::unique_ptr<mlir::Pass> createGuardZeroOperandCustomCallsPass();
+[[nodiscard]] std::unique_ptr<mlir::Pass>
+createGuardZeroOperandCustomCallsPass();
 
 // Creates a `func.func` pass that undoes
 // `createGuardZeroOperandCustomCallsPass()`, restoring the original
 // (side-effect-free) `has_side_effect` state so that unused calls can be
 // dead-code-eliminated again.
-std::unique_ptr<mlir::Pass> createUnguardZeroOperandCustomCallsPass();
+[[nodiscard]] std::unique_ptr<mlir::Pass>
+createUnguardZeroOperandCustomCallsPass();
 
 }  // namespace torch_tpu
 

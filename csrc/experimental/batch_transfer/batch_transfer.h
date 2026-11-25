@@ -41,7 +41,7 @@ class TransferFuture {
                std::vector<at::Tensor> other_tensors);
 
   void SetTag(std::string tag) { tag_ = std::move(tag); }
-  const std::string& GetTag() const { return tag_; }
+  [[nodiscard]] const std::string& GetTag() const { return tag_; }
 
  private:
   std::vector<xla::Future<>> futures_;

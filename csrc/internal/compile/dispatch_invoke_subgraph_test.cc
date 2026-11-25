@@ -415,9 +415,13 @@ TEST_F(DispatchInvokeSubgraphTest, ZeroOutputsReturnsEmpty) {
   EXPECT_THAT(results, IsEmpty());
 
   const at::Tensor bad_x = MakePlaceholder({3}, mlir::ElementType::I32);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({bad_x}, zero_out); },
-              Throws<TtError>(Property(&TtError::what,
-                                       HasSubstr("shape to be [2], got [3]"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {bad_x}, zero_out);
+      },
+      Throws<TtError>(
+          Property(&TtError::what, HasSubstr("shape to be [2], got [3]"))));
 }
 
 TEST_F(DispatchInvokeSubgraphTest, SupportsZeroDimScalarTensor) {
@@ -865,13 +869,21 @@ TEST_F(DispatchInvokeSubgraphTest, InvalidSubgraphModuleArgumentsThrow) {
   const std::shared_ptr<ContextedModule> subgraph =
       CreateSubgraphModule(kAddSubgraphMlir);
 
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({x, y}, nullptr); },
-              Throws<TtError>(Property(&TtError::what, HasSubstr("null"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {x, y}, nullptr);
+      },
+      Throws<TtError>(Property(&TtError::what, HasSubstr("null"))));
 
   const std::shared_ptr<ContextedModule> no_main =
       CreateSubgraphModule(kNoMainSubgraphMlir);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({x}, no_main); },
-              Throws<TtError>(Property(&TtError::what, HasSubstr("@main"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {x}, no_main);
+      },
+      Throws<TtError>(Property(&TtError::what, HasSubstr("@main"))));
 
   constexpr std::string_view kDeclMainSubgraphMlir = R"mlir(
     module {
@@ -880,16 +892,27 @@ TEST_F(DispatchInvokeSubgraphTest, InvalidSubgraphModuleArgumentsThrow) {
   )mlir";
   const std::shared_ptr<ContextedModule> decl_main =
       CreateSubgraphModule(kDeclMainSubgraphMlir);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({x}, decl_main); },
-              Throws<TtError>(Property(&TtError::what, HasSubstr("@main"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {x}, decl_main);
+      },
+      Throws<TtError>(Property(&TtError::what, HasSubstr("@main"))));
 
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({x}, subgraph); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {x}, subgraph);
+      },
       Throws<TtError>(Property(&TtError::what, HasSubstr("expected 2"))));
 
   const at::Tensor cpu_tensor = at::zeros({2, 3}, at::kFloat);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({cpu_tensor, y}, subgraph); },
-              Throws<TtError>());
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {cpu_tensor, y}, subgraph);
+      },
+      Throws<TtError>());
 }
 
 TEST_F(DispatchInvokeSubgraphTest, InvalidStaticInputTypesThrow) {
@@ -900,25 +923,38 @@ TEST_F(DispatchInvokeSubgraphTest, InvalidStaticInputTypesThrow) {
 
   const at::Tensor bad_dtype = MakePlaceholder({2, 3}, mlir::ElementType::I32);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({x, bad_dtype}, subgraph); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {x, bad_dtype}, subgraph);
+      },
       Throws<TtError>(Property(&TtError::what, HasSubstr("dtype to be"))));
 
   const at::Tensor bad_rank = MakePlaceholder({6}, mlir::ElementType::F32);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({x, bad_rank}, subgraph); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {x, bad_rank}, subgraph);
+      },
       Throws<TtError>(Property(&TtError::what, HasSubstr("rank to be"))));
 
   const at::Tensor bad_shape = MakePlaceholder({3, 2}, mlir::ElementType::F32);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({x, bad_shape}, subgraph); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {x, bad_shape}, subgraph);
+      },
       Throws<TtError>(Property(&TtError::what, HasSubstr("shape to be"))));
 
   const at::Tensor dyn_for_static = MakeBoundedDynamicPlaceholder(
       {2, 3}, mlir::ElementType::F32,
       {{.dimension = 0, .lower_bound = 2, .upper_bound = 2}});
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({dyn_for_static, y}, subgraph); },
-              Throws<TtError>(
-                  Property(&TtError::what, HasSubstr("shape to be static"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {dyn_for_static, y}, subgraph);
+      },
+      Throws<TtError>(
+          Property(&TtError::what, HasSubstr("shape to be static"))));
 }
 
 TEST_F(DispatchInvokeSubgraphTest, InvalidBoundedDynamicInputsThrow) {
@@ -930,20 +966,30 @@ TEST_F(DispatchInvokeSubgraphTest, InvalidBoundedDynamicInputsThrow) {
       {{.dimension = 0, .lower_bound = 2, .upper_bound = 4},
        {.dimension = 1, .lower_bound = 2, .upper_bound = 3}});
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({dyn_on_static_axis}, partial_sub); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {dyn_on_static_axis}, partial_sub);
+      },
       Throws<TtError>(
           Property(&TtError::what, HasSubstr("dimension 1 to be static"))));
 
   const at::Tensor bad_static_axis =
       MakePlaceholder({2, 2}, mlir::ElementType::I32);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({bad_static_axis}, partial_sub); },
-              Throws<TtError>(Property(
-                  &TtError::what, HasSubstr("dimension 1 to be 3, got 2"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {bad_static_axis}, partial_sub);
+      },
+      Throws<TtError>(
+          Property(&TtError::what, HasSubstr("dimension 1 to be 3, got 2"))));
 
   const at::Tensor too_big_static =
       MakePlaceholder({5, 3}, mlir::ElementType::I32);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({too_big_static}, partial_sub); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {too_big_static}, partial_sub);
+      },
       Throws<TtError>(Property(
           &TtError::what, HasSubstr("dimension 0 to be at most 4, got 5"))));
 
@@ -951,7 +997,10 @@ TEST_F(DispatchInvokeSubgraphTest, InvalidBoundedDynamicInputsThrow) {
       {2, 3}, mlir::ElementType::I32,
       {{.dimension = 0, .lower_bound = 2, .upper_bound = 5}});
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({too_big_dyn_bound}, partial_sub); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {too_big_dyn_bound}, partial_sub);
+      },
       Throws<TtError>(Property(
           &TtError::what, HasSubstr("dimension 0 to be at most 4, got 5"))));
 }
@@ -968,9 +1017,13 @@ TEST_F(DispatchInvokeSubgraphTest, UnboundedDynamicArgThrows) {
   const at::Tensor vec = MakePlaceholder({2}, mlir::ElementType::F32);
   const std::shared_ptr<ContextedModule> unbounded =
       CreateSubgraphModule(kUnboundedArgMlir);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({vec}, unbounded); },
-              Throws<TtError>(
-                  Property(&TtError::what, HasSubstr("unbounded dynamic"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {vec}, unbounded);
+      },
+      Throws<TtError>(
+          Property(&TtError::what, HasSubstr("unbounded dynamic"))));
 }
 
 TEST_F(DispatchInvokeSubgraphTest, PartiallyBoundedDynamicArgThrows) {
@@ -987,9 +1040,13 @@ TEST_F(DispatchInvokeSubgraphTest, PartiallyBoundedDynamicArgThrows) {
   const std::shared_ptr<ContextedModule> partially_bounded =
       CreateSubgraphModule(kPartiallyBoundedArgMlir);
   const at::Tensor mat = MakePlaceholder({2, 2}, mlir::ElementType::F32);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({mat}, partially_bounded); },
-              Throws<TtError>(
-                  Property(&TtError::what, HasSubstr("unbounded dynamic"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {mat}, partially_bounded);
+      },
+      Throws<TtError>(
+          Property(&TtError::what, HasSubstr("unbounded dynamic"))));
 }
 
 TEST_F(DispatchInvokeSubgraphTest, DynamicResultThrows) {
@@ -1017,7 +1074,10 @@ TEST_F(DispatchInvokeSubgraphTest, DynamicResultThrows) {
   const std::shared_ptr<ContextedModule> unbounded_result =
       CreateSubgraphModule(kUnboundedResultMlir);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({vec, shape_arg}, unbounded_result); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {vec, shape_arg}, unbounded_result);
+      },
       Throws<TtError>(Property(
           &TtError::what,
           HasSubstr("has dynamic dimensions, which are not supported"))));
@@ -1025,7 +1085,10 @@ TEST_F(DispatchInvokeSubgraphTest, DynamicResultThrows) {
   const std::shared_ptr<ContextedModule> bounded_result =
       CreateSubgraphModule(kBoundedResultMlir);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({vec}, bounded_result); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {vec}, bounded_result);
+      },
       Throws<TtError>(Property(
           &TtError::what,
           HasSubstr("has dynamic dimensions, which are not supported"))));
@@ -1043,7 +1106,10 @@ TEST_F(DispatchInvokeSubgraphTest, UnrankedArgThrows) {
   const std::shared_ptr<ContextedModule> unranked =
       CreateSubgraphModule(kUnrankedArgMlir);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({vec}, unranked); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {vec}, unranked);
+      },
       Throws<TtError>(Property(&TtError::what, HasSubstr("ranked tensor"))));
 }
 
@@ -1060,7 +1126,10 @@ TEST_F(DispatchInvokeSubgraphTest, UnrankedResultThrows) {
   const std::shared_ptr<ContextedModule> unranked_result =
       CreateSubgraphModule(kUnrankedResultMlir);
   EXPECT_THAT(
-      [&] { PyCreateInvokeSubgraphOp({vec}, unranked_result); },
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {vec}, unranked_result);
+      },
       Throws<TtError>(Property(&TtError::what, HasSubstr("ranked tensor"))));
 }
 
@@ -1078,9 +1147,13 @@ TEST_F(DispatchInvokeSubgraphTest, BoundedDynamicUpperBoundLessThanTwoThrows) {
   const at::Tensor vec = MakePlaceholder({1}, mlir::ElementType::F32);
   const std::shared_ptr<ContextedModule> small_bound =
       CreateSubgraphModule(kSmallBoundArgMlir);
-  EXPECT_THAT([&] { PyCreateInvokeSubgraphOp({vec}, small_bound); },
-              Throws<TtError>(
-                  Property(&TtError::what, HasSubstr("to be >= 2, got 1"))));
+  EXPECT_THAT(
+      [&] {
+        (void)PyCreateInvokeSubgraphOp(  // VOID_CAST_OK=expects a throw
+            {vec}, small_bound);
+      },
+      Throws<TtError>(
+          Property(&TtError::what, HasSubstr("to be >= 2, got 1"))));
 }
 
 TEST_F(DispatchInvokeSubgraphTest,

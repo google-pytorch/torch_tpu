@@ -35,7 +35,7 @@ namespace torch_tpu {
 // allocates and donates, all have the row-major layout {1,0:T(8,128)}
 // ({1,0:T(8,128)(2,1)} for BF16), with M, K, N >= 1. XLA defaults to another
 // layout if that pads less, e.g. to a column-major one for F32[1000,48].
-std::vector<UnboundedDynamicKernelRegistration>
+[[nodiscard]] std::vector<UnboundedDynamicKernelRegistration>
 GetMatmulUnboundedDynamicKernels();
 
 }  // namespace torch_tpu

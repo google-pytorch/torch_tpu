@@ -24,7 +24,8 @@
 
 namespace torch_tpu {
 
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createDummyPass();
+[[nodiscard]] std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createDummyPass();
 
 }  // namespace torch_tpu
 

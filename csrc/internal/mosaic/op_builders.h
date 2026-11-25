@@ -49,49 +49,51 @@ struct MatmulOptions {
 };
 
 // Creates a matmul for two 2D vectors.
-mlir::Value CreateMatmul(mlir::ImplicitLocOpBuilder& builder, mlir::Value lhs,
-                         mlir::Value rhs,
-                         const MatmulOptions& options = MatmulOptions());
+[[nodiscard]] mlir::Value CreateMatmul(
+    mlir::ImplicitLocOpBuilder& builder, mlir::Value lhs, mlir::Value rhs,
+    const MatmulOptions& options = MatmulOptions());
 
 // Helper to build a tpu::IotaOp.
-mlir::Value CreateIotaOp(mlir::ImplicitLocOpBuilder& builder, mlir::Type type,
-                         int32_t dimension);
+[[nodiscard]] mlir::Value CreateIotaOp(mlir::ImplicitLocOpBuilder& builder,
+                                       mlir::Type type, int32_t dimension);
 
 // Helper to build a tpu::RepeatOp.
-mlir::Value CreateRepeatOp(mlir::ImplicitLocOpBuilder& builder,
-                           mlir::Value input, int64_t dimension,
-                           int64_t target_dim_size);
+[[nodiscard]] mlir::Value CreateRepeatOp(mlir::ImplicitLocOpBuilder& builder,
+                                         mlir::Value input, int64_t dimension,
+                                         int64_t target_dim_size);
 
-mlir::Value CreateReciprocal(mlir::ImplicitLocOpBuilder& b, mlir::Value input);
+[[nodiscard]] mlir::Value CreateReciprocal(mlir::ImplicitLocOpBuilder& b,
+                                           mlir::Value input);
 
 // Helper to build a memref type with vmem tpu::Vmem memory space.
-mlir::MemRefType GetVmemMemRefType(mlir::MLIRContext* context,
-                                   mlir::ArrayRef<int64_t> shape,
-                                   mlir::Type element_type);
+[[nodiscard]] mlir::MemRefType GetVmemMemRefType(mlir::MLIRContext* context,
+                                                 mlir::ArrayRef<int64_t> shape,
+                                                 mlir::Type element_type);
 
 // Helper to build a memref type with smem tpu::Smem memory space.
-mlir::MemRefType GetSmemMemRefType(mlir::MLIRContext* context,
-                                   mlir::ArrayRef<int64_t> shape,
-                                   mlir::Type element_type);
+[[nodiscard]] mlir::MemRefType GetSmemMemRefType(mlir::MLIRContext* context,
+                                                 mlir::ArrayRef<int64_t> shape,
+                                                 mlir::Type element_type);
 
 // Helper to build a memref type with hbm tpu::MemorySpace::kHbm memory space.
-mlir::MemRefType GetHbmMemRefType(mlir::MLIRContext* context,
-                                  mlir::ArrayRef<int64_t> shape,
-                                  mlir::Type element_type);
+[[nodiscard]] mlir::MemRefType GetHbmMemRefType(mlir::MLIRContext* context,
+                                                mlir::ArrayRef<int64_t> shape,
+                                                mlir::Type element_type);
 
 // Helper to build a memref type with semaphore_mem
 // tpu::MemorySpace::kSemaphoreMem memory space.
-mlir::MemRefType GetSemaphoreMemRefType(mlir::MLIRContext* context,
-                                        mlir::ArrayRef<int64_t> shape,
-                                        mlir::Type element_type);
+[[nodiscard]] mlir::MemRefType GetSemaphoreMemRefType(
+    mlir::MLIRContext* context, mlir::ArrayRef<int64_t> shape,
+    mlir::Type element_type);
 
 // Helper to build a tpu:: dimension semantics attribute.
-mlir::Attribute GetDimensionSemanticsAttr(mlir::MLIRContext* context,
-                                          DimensionSemantics semantics);
+[[nodiscard]] mlir::Attribute GetDimensionSemanticsAttr(
+    mlir::MLIRContext* context, DimensionSemantics semantics);
 
 // Helper to create an MLIR context with the dialects needed for TorchTPU
 // kernels.
-std::unique_ptr<mlir::MLIRContext> CreateMlirContextWithDialects();
+[[nodiscard]] std::unique_ptr<mlir::MLIRContext>
+CreateMlirContextWithDialects();
 
 // Add tpu.core_type = #tpu.core_type<kTc> attribute to the function.
 void SetTcCoreTypeAttr(mlir::func::FuncOp fn);

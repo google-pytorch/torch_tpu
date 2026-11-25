@@ -74,7 +74,7 @@ absl::StatusOr<mlir::MlirOp> ConcatenateTensorsAlongDim0(
 
 // Slices a concatenated tensor along dimension 0 into individual tensors
 // matching `split_sizes`.
-mlir::SmallVector<mlir::MlirOp> SliceTensorsAlongDim0(
+[[nodiscard]] mlir::SmallVector<mlir::MlirOp> SliceTensorsAlongDim0(
     mlir::MlirOp tensor, absl::Span<const int32_t> split_sizes);
 
 }  // namespace torch_tpu

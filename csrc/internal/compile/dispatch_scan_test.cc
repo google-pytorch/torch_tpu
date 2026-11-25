@@ -593,8 +593,10 @@ TEST_F(DispatchScanTest, CpuTensorInputsError) {
   const auto [input, carry_init, dummy_output, body_module] = params;
 
   auto create_scan_op = [carry_init, input, body_module, dummy_output] {
-    PyCreateScanOp({carry_init}, {input}, body_module, ScanDirection::kForward,
-                   {dummy_output}, /*num_scan_inputs=*/1);
+    (void)PyCreateScanOp(  // VOID_CAST_OK=expects a throw
+        {carry_init}, {input}, body_module, ScanDirection::kForward,
+        {dummy_output},
+        /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(create_scan_op,
               Throws<TtError>(Property(&TtError::what,
@@ -610,8 +612,10 @@ TEST_F(DispatchScanTest, InvalidMlirModuleError) {
   const auto [input, carry_init, dummy_output, body_module] = params;
 
   auto create_scan_op = [carry_init, input, body_module, dummy_output] {
-    PyCreateScanOp({carry_init}, {input}, body_module, ScanDirection::kForward,
-                   {dummy_output}, /*num_scan_inputs=*/1);
+    (void)PyCreateScanOp(  // VOID_CAST_OK=expects a throw
+        {carry_init}, {input}, body_module, ScanDirection::kForward,
+        {dummy_output},
+        /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(create_scan_op,
               Throws<TtError>(
@@ -623,8 +627,10 @@ TEST_F(DispatchScanTest, MissingMainError) {
       GetStandard1DInputs(kNoMainStepMlir);
 
   auto create_scan_op = [carry_init, input, body_module, dummy_output] {
-    PyCreateScanOp({carry_init}, {input}, body_module, ScanDirection::kForward,
-                   {dummy_output}, /*num_scan_inputs=*/1);
+    (void)PyCreateScanOp(  // VOID_CAST_OK=expects a throw
+        {carry_init}, {input}, body_module, ScanDirection::kForward,
+        {dummy_output},
+        /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(create_scan_op,
               Throws<TtError>(Property(
@@ -638,8 +644,9 @@ TEST_F(DispatchScanTest, EmptyInputsError) {
   (void)unused_input;
 
   auto create_scan_op = [carry_init, body_module, dummy_output] {
-    PyCreateScanOp({carry_init}, {}, body_module, ScanDirection::kForward,
-                   {dummy_output}, /*num_scan_inputs=*/0);
+    (void)PyCreateScanOp(  // VOID_CAST_OK=expects a throw
+        {carry_init}, {}, body_module, ScanDirection::kForward, {dummy_output},
+        /*num_scan_inputs=*/0);
   };
   EXPECT_THAT(
       create_scan_op,
@@ -656,8 +663,9 @@ TEST_F(DispatchScanTest, MismatchedDummyOutputsError) {
 
   auto create_scan_op = [carry_init, input, body_module, dummy_output1,
                          dummy_output2] {
-    PyCreateScanOp({carry_init}, {input}, body_module, ScanDirection::kForward,
-                   {dummy_output1, dummy_output2}, /*num_scan_inputs=*/1);
+    (void)PyCreateScanOp(  // VOID_CAST_OK=expects a throw
+        {carry_init}, {input}, body_module, ScanDirection::kForward,
+        {dummy_output1, dummy_output2}, /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(
       create_scan_op,
@@ -675,9 +683,10 @@ TEST_F(DispatchScanTest, TooFewResultsError) {
 
   auto create_scan_op = [carry1, carry2, carry3, input, body_module,
                          dummy_output] {
-    PyCreateScanOp({carry1, carry2, carry3}, {input}, body_module,
-                   ScanDirection::kForward, {dummy_output},
-                   /*num_scan_inputs=*/1);
+    (void)PyCreateScanOp(  // VOID_CAST_OK=expects a throw
+        {carry1, carry2, carry3}, {input}, body_module, ScanDirection::kForward,
+        {dummy_output},
+        /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(
       create_scan_op,
@@ -755,8 +764,9 @@ TEST_P(DispatchScanNumScanInputsTest, InvalidNumScanInputs) {
   const int64_t num_scan_inputs = param.num_scan_inputs;
   auto create_scan_op = [carry_init, input, body_module, dummy_output,
                          num_scan_inputs] {
-    PyCreateScanOp({carry_init}, {input}, body_module, ScanDirection::kForward,
-                   {dummy_output}, num_scan_inputs);
+    (void)PyCreateScanOp(  // VOID_CAST_OK=expects a throw
+        {carry_init}, {input}, body_module, ScanDirection::kForward,
+        {dummy_output}, num_scan_inputs);
   };
   EXPECT_THAT(create_scan_op,
               Throws<TtError>(
@@ -1195,41 +1205,44 @@ TEST_F(DispatchScanTest, AssociativeScanErrorValidation) {
 
   EXPECT_THAT(
       ([&] {
-        PyCreateAssociativeScanOp({}, body_module, ScanDirection::kForward,
-                                  /*dim=*/0, /*num_scan_inputs=*/1);
+        (void)PyCreateAssociativeScanOp(  // VOID_CAST_OK=expects a throw
+            {}, body_module, ScanDirection::kForward,
+            /*dim=*/0, /*num_scan_inputs=*/1);
       }),
       Throws<TtError>(Property(&TtError::what,
                                HasSubstr("expected at least 1 input tensor"))));
 
-  EXPECT_THAT(([&] {
-                PyCreateAssociativeScanOp({input}, body_module,
-                                          ScanDirection::kForward,
-                                          /*dim=*/0, /*num_scan_inputs=*/0);
-              }),
-              Throws<TtError>(Property(
-                  &TtError::what,
-                  HasSubstr("expected num_scan_inputs to be greater than 0"))));
+  EXPECT_THAT(
+      ([&] {
+        (void)PyCreateAssociativeScanOp(  // VOID_CAST_OK=expects a throw
+            {input}, body_module, ScanDirection::kForward,
+            /*dim=*/0, /*num_scan_inputs=*/0);
+      }),
+      Throws<TtError>(Property(
+          &TtError::what,
+          HasSubstr("expected num_scan_inputs to be greater than 0"))));
 
   EXPECT_THAT(
       ([&] {
-        PyCreateAssociativeScanOp({input, input}, body_module,
-                                  ScanDirection::kForward,
-                                  /*dim=*/0, /*num_scan_inputs=*/2);
+        (void)PyCreateAssociativeScanOp(  // VOID_CAST_OK=expects a throw
+            {input, input}, body_module, ScanDirection::kForward,
+            /*dim=*/0, /*num_scan_inputs=*/2);
       }),
       Throws<TtError>(Property(
           &TtError::what,
           HasSubstr("expected associative combine function to have 2 result "
                     "types, but it has 1"))));
 
-  EXPECT_THAT(([&] {
-                PyCreateAssociativeScanOp({input, input}, body_module,
-                                          ScanDirection::kForward,
-                                          /*dim=*/0, /*num_scan_inputs=*/1);
-              }),
-              Throws<TtError>(Property(
-                  &TtError::what,
-                  HasSubstr("expected associative combine function to have 3 "
-                            "arguments, but it has 2"))));
+  EXPECT_THAT(
+      ([&] {
+        (void)PyCreateAssociativeScanOp(  // VOID_CAST_OK=expects a throw
+            {input, input}, body_module, ScanDirection::kForward,
+            /*dim=*/0, /*num_scan_inputs=*/1);
+      }),
+      Throws<TtError>(
+          Property(&TtError::what,
+                   HasSubstr("expected associative combine function to have 3 "
+                             "arguments, but it has 2"))));
 }
 
 }  // namespace

@@ -48,7 +48,7 @@ namespace torch_tpu {
 // Returns:
 //   A list of tensors containing the final carries followed by the stacked loop
 //   outputs.
-std::vector<at::Tensor> PyCreateScanOp(
+[[nodiscard]] std::vector<at::Tensor> PyCreateScanOp(
     const std::vector<at::Tensor>& inits, const std::vector<at::Tensor>& inputs,
     const std::shared_ptr<ContextedModule>& body_module,
     ScanDirection scan_direction, const std::vector<at::Tensor>& dummy_outputs,
@@ -78,7 +78,7 @@ std::vector<at::Tensor> PyCreateScanOp(
 //
 // Returns:
 //   A list of tensors containing the stacked associative scan outputs.
-std::vector<at::Tensor> PyCreateAssociativeScanOp(
+[[nodiscard]] std::vector<at::Tensor> PyCreateAssociativeScanOp(
     const std::vector<at::Tensor>& inputs,
     const std::shared_ptr<ContextedModule>& body_module,
     ScanDirection scan_direction, int64_t dim, int64_t num_scan_inputs);
