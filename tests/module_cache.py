@@ -203,6 +203,27 @@ def _detach_non_leaf_tensors(model: torch.nn.Module) -> None:
           mapping[k] = v.detach()
 
 
+def _copy_model_config(model: torch.nn.Module) -> None:
+  """Gives `model` its own copy of `model.config`, shared by its submodules.
+
+  The copy keeps later changes to the config the model was built from (e.g. a
+  cached `spec.config`) out of the model. Submodules that hold the config or one
+  of its sub-configs (e.g. the layers of a Transformers model) are pointed at
+  the copy too, so that config changes made through `model.config`, such as
+  `set_experts_implementation`, still reach them.
+
+  Args:
+    model: The model to update in place.
+  """
+  copies: dict[int, Any] = {}
+  model.config = copy.deepcopy(model.config, copies)
+  for submodule in model.modules():
+    config = getattr(submodule, "config", None)
+    if id(config) in copies:
+      with contextlib.suppress(AttributeError, TypeError):
+        submodule.config = copies[id(config)]
+
+
 class ModuleFactory(Protocol):
   """Constructs a model, optionally in a given dtype."""
 
@@ -262,7 +283,7 @@ class ModuleFactoryCache:
       _detach_non_leaf_tensors(model)
     if getattr(model, "config", None) is not None:
       with contextlib.suppress(Exception):
-        model.config = copy.deepcopy(model.config)
+        _copy_model_config(model)
     self._pristine_cpu_models[dtype] = model
 
   def __call__(self, dtype: torch.dtype | None = None) -> Any:

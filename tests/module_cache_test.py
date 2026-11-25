@@ -29,8 +29,11 @@ from tests import seed_test_utils
 
 class DummyConfig:
 
-  def __init__(self, hidden_size: int = 4):
+  def __init__(
+      self, hidden_size: int = 4, text_config: "DummyConfig | None" = None
+  ):
     self.hidden_size = hidden_size
+    self.text_config = text_config
 
 
 class DummyModel(torch.nn.Module):
@@ -42,6 +45,27 @@ class DummyModel(torch.nn.Module):
     self.fc2 = torch.nn.Linear(self.config.hidden_size, self.config.hidden_size)
     # Tie weights
     self.fc2.weight = self.fc1.weight
+
+
+class DummyLayer(torch.nn.Module):
+
+  def __init__(self, config: DummyConfig):
+    super().__init__()
+    self.config = config
+
+
+class DummyModelWithLayers(torch.nn.Module):
+  """Like a Transformers model, whose layers hold the model's config."""
+
+  def __init__(self, config: DummyConfig):
+    super().__init__()
+    self.config = config
+    self.layers = torch.nn.ModuleList([DummyLayer(config), DummyLayer(config)])
+    self.text_layer = (
+        DummyLayer(config.text_config)
+        if config.text_config is not None
+        else None
+    )
 
 
 class ModuleCacheTest(seed_test_utils.RepeatableTest):
@@ -174,6 +198,31 @@ class ModuleCacheTest(seed_test_utils.RepeatableTest):
     # Clear releases reference
     cached_factory.clear()
     self.assertFalse(cached_factory.is_cached)
+
+  def test_cached_module_factory_keeps_config_shared_with_layers(self):
+    source_text_config = DummyConfig(hidden_size=8)
+    source_config = DummyConfig(text_config=source_text_config)
+    cached_factory = module_cache.ModuleFactoryCache(
+        lambda: DummyModelWithLayers(source_config)
+    )
+
+    cached_factory.preload()
+    source_config.hidden_size = 999
+    source_text_config.hidden_size = 888
+    model = cached_factory()
+
+    for layer in model.layers:
+      self.assertIs(layer.config, model.config)
+    self.assertIsNotNone(model.text_layer)
+    self.assertIs(model.text_layer.config, model.config.text_config)
+    self.assertEqual(model.config.hidden_size, 4)
+    self.assertEqual(model.config.text_config.hidden_size, 8)
+
+    model.config.hidden_size = 16
+    model.config.text_config.hidden_size = 32
+    next_model = cached_factory()
+    self.assertEqual(next_model.config.hidden_size, 4)
+    self.assertEqual(next_model.config.text_config.hidden_size, 8)
 
   def test_cached_module_factory_caches_a_template_for_each_dtype(self):
     def _factory(dtype: torch.dtype | None = None) -> DummyModel:
