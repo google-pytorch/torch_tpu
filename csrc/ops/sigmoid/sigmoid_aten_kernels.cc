@@ -40,6 +40,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -84,8 +85,10 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
 
   auto op_builder =
       [](mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
-    TT_ASSIGN_OR_RETURN(self_op,
-                        ConvertIfInteger(self_op, mlir::ElementType::F32));
+    const mlir::ElementType orig_dtype = GetElementTypeOrDie(self_op);
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                        InferComputationDtype(orig_dtype));
+    TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, compute_dtype));
 
     // Stable formula for log_sigmoid:
     // log_sigmoid(x) = -softplus(-x) = -(max(-x, 0) + log1p(exp(-|x|)))
@@ -101,7 +104,7 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
     auto exp_val = mlir::stablehlo::Exp(neg_abs);
 
     mlir::MlirOp log1p_val;
-    if (GetElementTypeOrDie(self_op) == mlir::ElementType::F32) {
+    if (compute_dtype == mlir::ElementType::F32) {
       // Evaluate log1p(z) = 2 * artanh(s)
       // = s * (2 + 2/3*s^2 + 2/5*s^4 + ... + 2/13*s^12)
       // via Horner's scheme, where z = exp(-|x|) in [0, 1] and
@@ -138,6 +141,8 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
     auto res = mlir::stablehlo::Select(is_nan, neg_self_op, sum_val);
     auto output = mlir::stablehlo::Neg(res);
 
+    TT_ASSIGN_OR_RETURN(output, CastIfNeeded(output, orig_dtype));
+    TT_ASSIGN_OR_RETURN(exp_val, CastIfNeeded(exp_val, orig_dtype));
     return MlirOpResults<2>{output, exp_val};
   };
 
@@ -157,36 +162,46 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
 
 absl::Status LogSigmoidBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
-                                const at::Tensor& buffer,
+                                const at::Tensor& /*buffer*/,
                                 at::Tensor& grad_input) {
   TT_RET_CHECK(self.is_floating_point(), error::kInvalidArgument)
       << "expected the input dtype to be floating point, got "
       << ToString(self.scalar_type());
 
-  auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+  auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
-    auto& [grad_output_op, self_op, buffer_op] = inputs;
+    auto& [grad_output_op, self_op] = inputs;
 
-    mlir::MlirOp float_self_op = self_op;
-    TT_ASSIGN_OR_RETURN(
-        float_self_op, ConvertIfInteger(float_self_op, mlir::ElementType::F32));
+    const mlir::ElementType orig_dtype = GetElementTypeOrDie(self_op);
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                        InferComputationDtype(orig_dtype));
+    TT_ASSIGN_OR_RETURN(grad_output_op,
+                        CastIfNeeded(grad_output_op, compute_dtype));
+    TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, compute_dtype));
 
-    auto zero = MakeConstantLike(float_self_op, 0.0);
-    auto one = MakeConstantLike(float_self_op, 1.0);
-    auto neg_one = MakeConstantLike(float_self_op, -1.0);
+    mlir::MlirOp zero = MakeConstantLike(self_op, 0.0);
+    mlir::MlirOp one = MakeConstantLike(self_op, 1.0);
+    mlir::MlirOp neg_one = MakeConstantLike(self_op, -1.0);
 
-    auto self_lt_zero = mlir::stablehlo::Compare(
-        float_self_op, zero, mlir::stablehlo::ComparisonDirection::LT);
+    mlir::MlirOp self_lt_zero = mlir::stablehlo::Compare(
+        self_op, zero, mlir::stablehlo::ComparisonDirection::LT);
 
-    auto max_deriv = mlir::stablehlo::Select(self_lt_zero, one, zero);
-    auto sign = mlir::stablehlo::Select(self_lt_zero, one, neg_one);
+    mlir::MlirOp max_deriv = mlir::stablehlo::Select(self_lt_zero, one, zero);
+    mlir::MlirOp sign = mlir::stablehlo::Select(self_lt_zero, one, neg_one);
 
-    auto one_plus_buffer = mlir::stablehlo::Add(one, buffer_op);
-    auto buffer_div = mlir::stablehlo::Div(buffer_op, one_plus_buffer);
-    auto sign_mul = mlir::stablehlo::Mul(sign, buffer_div);
-    auto deriv = mlir::stablehlo::Subtract(max_deriv, sign_mul);
+    // Recompute z = exp(-|self|) in compute_dtype (matching CUDA) rather than
+    // reading `buffer`, which is quantized to low precision in forward.
+    mlir::MlirOp abs_self = mlir::stablehlo::Abs(self_op);
+    mlir::MlirOp neg_abs_self = mlir::stablehlo::Neg(abs_self);
+    mlir::MlirOp z = mlir::stablehlo::Exp(neg_abs_self);
 
-    return mlir::stablehlo::Mul(grad_output_op, deriv);
+    mlir::MlirOp one_plus_z = mlir::stablehlo::Add(one, z);
+    mlir::MlirOp z_div = mlir::stablehlo::Div(z, one_plus_z);
+    mlir::MlirOp sign_mul = mlir::stablehlo::Mul(sign, z_div);
+    mlir::MlirOp deriv = mlir::stablehlo::Subtract(max_deriv, sign_mul);
+    mlir::MlirOp result = mlir::stablehlo::Mul(grad_output_op, deriv);
+
+    return CastIfNeeded(result, orig_dtype);
   };
 
   c10::ScalarType out_scalar_type = grad_output.scalar_type();
@@ -198,7 +213,7 @@ absl::Status LogSigmoidBackward(const at::Tensor& grad_output,
       .out_dims = grad_output.sizes(),
       .op_param_cache_keys = OpParamCacheKeys::Empty(),
   };
-  return DispatchOpOut<3>(std::move(op_builder), {grad_output, self, buffer},
+  return DispatchOpOut<2>(std::move(op_builder), {grad_output, self},
                           grad_input, std::move(options));
 }
 

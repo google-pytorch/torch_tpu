@@ -2248,6 +2248,86 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     utils.assert_close(op(x).cpu(), expected, rtol=0, atol=0)
 
+  @parameterized.parameters(torch.bfloat16, torch.float16)
+  def test_log_sigmoid_low_precision_uses_float32_opmath(self, dtype):
+    bits = torch.arange(-32768, 32768, dtype=torch.int16).view(dtype)
+    x_cpu = bits[torch.isfinite(bits) & (bits >= -20.0) & (bits <= 20.0)]
+    grad_tpu = torch.ones_like(x_cpu, device="tpu")
+
+    # Compute the float32 opmath reference on TPU so hardware float32 rounding
+    # matches before the final downcast to bfloat16/float16.
+    x_ref = x_cpu.to(device="tpu", dtype=torch.float32).requires_grad_(True)
+    y_ref = torch.nn.functional.logsigmoid(x_ref)
+    y_ref.backward(grad_tpu.float())
+    expected_fwd = y_ref.detach().to(dtype).cpu()
+    expected_bwd = x_ref.grad.to(dtype).cpu()
+
+    x_tpu = x_cpu.to("tpu").requires_grad_(True)
+    y_tpu = torch.nn.functional.logsigmoid(x_tpu)
+    y_tpu.backward(grad_tpu)
+    utils.assert_close(y_tpu.detach().cpu(), expected_fwd, rtol=0, atol=0)
+    utils.assert_close(x_tpu.grad.cpu(), expected_bwd, rtol=0, atol=0)
+
+    out_tpu = torch.empty_like(x_tpu)
+    torch.nn.functional.logsigmoid(x_tpu.detach(), out=out_tpu)
+    utils.assert_close(out_tpu.cpu(), expected_fwd, rtol=0, atol=0)
+
+    fwd_out, fwd_buf = torch.ops.aten.log_sigmoid_forward(x_tpu.detach())
+    expected_buf = torch.exp(-x_ref.detach().abs()).to(dtype).cpu()
+    utils.assert_close(fwd_out.cpu(), expected_fwd, rtol=0, atol=0)
+    utils.assert_close(fwd_buf.cpu(), expected_buf, rtol=0, atol=0)
+
+    # Accelerator backward ignores `buffer` and recomputes exp(-|self|) in f32.
+    empty_buf = torch.empty(0, dtype=dtype, device="tpu")
+    grad_in = torch.ops.aten.log_sigmoid_backward(
+        grad_tpu, x_tpu.detach(), empty_buf
+    )
+    utils.assert_close(grad_in.cpu(), expected_bwd, rtol=0, atol=0)
+
+    grad_in_out = torch.empty_like(x_tpu)
+    torch.ops.aten.log_sigmoid_backward.grad_input(
+        grad_tpu, x_tpu.detach(), empty_buf, grad_input=grad_in_out
+    )
+    utils.assert_close(grad_in_out.cpu(), expected_bwd, rtol=0, atol=0)
+
+  @parameterized.parameters(
+      torch.float32, torch.float64, torch.float16, torch.bfloat16
+  )
+  def test_log_sigmoid_edge_cases(self, dtype):
+    x_init = torch.tensor(
+        [
+            -float("inf"),
+            -100.0,
+            -20.0,
+            -0.0,
+            0.0,
+            20.0,
+            100.0,
+            float("inf"),
+            float("nan"),
+        ],
+        dtype=dtype,
+    )
+    grad_out = torch.ones_like(x_init)
+
+    def compute(device):
+      x = to(x_init.clone(), device=device).requires_grad_(True)
+      out = torch.nn.functional.logsigmoid(x)
+      out.backward(to(grad_out, device=device))
+
+      scalar_x = to(torch.tensor(-0.5, dtype=dtype), device=device)
+      scalar_x.requires_grad_(True)
+      scalar_out = torch.nn.functional.logsigmoid(scalar_x)
+      scalar_out.backward(to(torch.tensor(1.0, dtype=dtype), device=device))
+
+      empty_x = to(torch.empty((0, 3), dtype=dtype), device=device)
+      empty_x.requires_grad_(True)
+      empty_out = torch.nn.functional.logsigmoid(empty_x)
+      empty_out.backward(to(torch.empty((0, 3), dtype=dtype), device=device))
+      return out, x.grad, scalar_out, scalar_x.grad, empty_out, empty_x.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   @parameterized.parameters(torch.float32, torch.float16, torch.bfloat16)
   def test_tanh_edge_cases(self, dtype):
     small_val = 1e-15 if dtype == torch.float32 else 1e-3
