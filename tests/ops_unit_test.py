@@ -12738,6 +12738,59 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
               golden_result=t_sorted.cpu(), torch_tpu_result=expected.cpu()
           )
 
+  @parameterized.named_parameters(
+      ("empty_out", (0,), 10, torch.int64),
+      ("smaller_out", (3,), 10, torch.int64),
+      ("larger_out", (20,), 10, torch.int64),
+      ("wrong_rank_out", (2, 5), 10, torch.int64),
+      ("matching_out", (10,), 10, torch.int64),
+      ("int32_out", (0,), 10, torch.int32),
+      ("float32_out", (20,), 10, torch.float32),
+      ("zero_n_empty_out", (0,), 0, torch.int64),
+      ("zero_n_nonempty_out", (5,), 0, torch.int64),
+  )
+  def test_randperm_out_is_resized(self, out_shape, n, dtype):
+    out = torch.empty(out_shape, dtype=dtype, device="tpu")
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+      warnings.simplefilter("always", UserWarning)
+      result = torch.randperm(n, out=out)
+
+    self.assertIs(result, out)
+    self.assertEqual(out.shape, (n,))
+    self.assertEqual(out.dtype, dtype)
+    self.assertTrue(out.is_contiguous())
+    self.assertEmpty(
+        [w for w in caught_warnings if "resized" in str(w.message).lower()]
+    )
+    # The permutation is random, so compare its sorted values.
+    self.assertEqual(out.cpu().sort().values, torch.arange(n, dtype=dtype))
+
+  def test_randperm_out_strided_view(self):
+    base = torch.full((20,), -1, dtype=torch.int64, device="tpu")
+    out = base[::2]
+
+    result = torch.randperm(10, out=out)
+
+    self.assertIs(result, out)
+    self.assertEqual(out.shape, (10,))
+    self.assertEqual(out.stride(), (2,))
+    self.assertEqual(base.cpu()[::2].sort().values, torch.arange(10))
+    self.assertEqual(base.cpu()[1::2], torch.full((10,), -1))
+
+  def test_randperm_out_resized_matches_generator(self):
+    gen_expected = torch.Generator(device="tpu").manual_seed(42)
+    expected = torch.randperm(10, generator=gen_expected, device="tpu")
+
+    gen_actual = torch.Generator(device="tpu").manual_seed(42)
+    out = torch.empty((0,), dtype=torch.int64, device="tpu")
+    result = torch.randperm(10, generator=gen_actual, out=out)
+
+    self.assertIs(result, out)
+    self.assertEqual(out.shape, (10,))
+    self.assertEqual(out.cpu(), expected.cpu())
+    self.assertEqual(gen_actual.get_state(), gen_expected.get_state())
+
   def test_fft_out_resizing(self):
     device = torch.device("tpu")
 

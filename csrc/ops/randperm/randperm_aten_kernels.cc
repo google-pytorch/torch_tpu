@@ -19,16 +19,15 @@
 #include <cstdint>
 #include <optional>
 #include <utility>
-#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/eager/device_buffer.h"
-#include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -105,23 +104,20 @@ at::Tensor& AtenRandpermGeneratorOut(c10::SymInt n,
 
     const int64_t num_elements = n_int;
     const int64_t bit_width = 64;
+    const Dimensions out_dims = {n_int};
 
-    TT_THROW_IF_ERROR(DispatchRngOp(
-        out, generator,
-        [n_int, output_dtype, out, &param_keys](at::Tensor rng_input_state)
-            -> absl::StatusOr<std::vector<DeviceBufferRef>> {
-          TT_ASSIGN_OR_RETURN(
-              auto buf,
-              DispatchOp<1>(
-                  [n_int, output_dtype](mlir::MlirOp rng_input_state) {
-                    return BuildRandpermShlo(rng_input_state, n_int,
-                                             output_dtype);
-                  },
-                  {rng_input_state},
-                  {.out_dtype = output_dtype,
-                   .out_dims = out.sizes(),
-                   .op_param_cache_keys = std::move(param_keys)}));
-          return std::vector<DeviceBufferRef>{std::move(buf)};
+    TT_THROW_IF_ERROR(DispatchRngOpOut(
+        out, generator, output_dtype,
+        [n_int, output_dtype, &out, &out_dims,
+         &param_keys](at::Tensor rng_input_state) -> absl::Status {
+          return DispatchOpOut<1>(
+              [n_int, output_dtype](mlir::MlirOp rng_input_state) {
+                return BuildRandpermShlo(rng_input_state, n_int, output_dtype);
+              },
+              {rng_input_state}, out,
+              {.out_dtype = output_dtype,
+               .out_dims = out_dims,
+               .op_param_cache_keys = std::move(param_keys)});
         },
         RngUsage{num_elements, bit_width}));
     return out;
