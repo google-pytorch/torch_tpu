@@ -88,7 +88,7 @@ absl::Status UnaryOpOut(const at::Tensor& self, at::Tensor& out,
   at::Tensor& func_name##Out(const at::Tensor& self, at::Tensor& out)
 
 // Relu requires both an in-place and out-of-place kernel.
-at::Tensor AtenRelu(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenRelu(const at::Tensor& self);
 at::Tensor& AtenRelu_(at::Tensor& self);
 
 // go/keep-sorted start

@@ -45,8 +45,8 @@ struct UnexpandedZeroStrideIndex {
 // backing storage buffer so `DispatchOp` does not launch an ephemeral
 // `tt_jit_execute_as_strided` kernel and `BuildGatherShlo`/`BuildScatterShlo`
 // sees the broadcast.
-std::optional<UnexpandedZeroStrideIndex> TryUnexpandZeroStrideIndex(
-    const at::Tensor& index);
+[[nodiscard]] std::optional<UnexpandedZeroStrideIndex>
+TryUnexpandZeroStrideIndex(const at::Tensor& index);
 
 // One defined index tensor of an advanced-indexing indices list, as used by
 // `index` and `index_put_`.
@@ -62,7 +62,7 @@ struct IndexEntry {
 };
 
 // Returns the `indexed_dim` of each of `entries`.
-Indices GetIndexedDims(absl::Span<const IndexEntry> entries);
+[[nodiscard]] Indices GetIndexedDims(absl::Span<const IndexEntry> entries);
 
 // Resolves negative integer indices in `entries` by adding the size of the
 // dimension of `self` (of shape `sizes`) they index. Bool masks are skipped.

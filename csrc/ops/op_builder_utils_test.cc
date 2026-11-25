@@ -1425,9 +1425,9 @@ TEST(DynamicReshapeWithRuntimeSizesDeathTest, RankZeroResult) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
   mlir::MlirOp input = MakeBoundedArg(fb, {1}, /*bound_dims=*/{0});
-  EXPECT_DEATH(
-      DynamicReshapeWithRuntimeSizes(input, mlir::stablehlo::Dimensions{}, {}),
-      "rank at least 1");
+  EXPECT_DEATH((void)DynamicReshapeWithRuntimeSizes(  // VOID_CAST_OK=death test
+                   input, mlir::stablehlo::Dimensions{}, {}),
+               "rank at least 1");
 }
 
 TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {

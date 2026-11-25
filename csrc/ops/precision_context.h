@@ -33,7 +33,7 @@ namespace torch_tpu {
 void PySetGlobalPrecision(mlir::stablehlo::Precision precision);
 
 // Returns the current global float32 matmul precision.
-mlir::stablehlo::Precision PyGetGlobalPrecision();
+[[nodiscard]] mlir::stablehlo::Precision PyGetGlobalPrecision();
 
 // Pushes the given precision context state onto the stack.
 void PyPushPrecision(mlir::stablehlo::Precision precision);
@@ -48,7 +48,7 @@ void PyPopPrecision();
 // 2. ATen `at::NoTF32Guard` (`HIGHEST` when active, e.g., in linalg ops and
 //    backward formulas)
 // 3. Global precision setting (`torch.set_float32_matmul_precision`)
-mlir::stablehlo::Precision GetAndAddPrecisionTo(
+[[nodiscard]] mlir::stablehlo::Precision GetAndAddPrecisionTo(
     OpParamCacheKeys& param_keys, std::string_view param_name = "precision");
 
 // Returns the current thread-local precision if explicitly set via a

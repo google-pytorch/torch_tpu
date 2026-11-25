@@ -159,11 +159,12 @@ using MlirOpResults = internal::MlirOpResultsTraits<kNumOutputs>::type;
 using DynamicMlirOpResults = MlirOpResults<kDynamicSize>;
 
 // Gets the tensor type of the input op. Crashes if the input is not a tensor.
-mlir::RankedTensorType GetTensorTypeOrDie(const mlir::MlirOp& input);
+[[nodiscard]] mlir::RankedTensorType GetTensorTypeOrDie(
+    const mlir::MlirOp& input);
 
 // Gets the element type if ranked type, otherwise returns self.
-mlir::Type GetElementTypeOrSelf(mlir::Type type);
-mlir::Type GetElementTypeOrSelf(mlir::MlirOp type);
+[[nodiscard]] mlir::Type GetElementTypeOrSelf(mlir::Type type);
+[[nodiscard]] mlir::Type GetElementTypeOrSelf(mlir::MlirOp type);
 
 // Convert from absl::Span to mlir::ArrayRef for interop with MLIR builder
 // methods.
@@ -181,18 +182,19 @@ enum class DebugStringOptions {
 };
 
 // Returns the dimensions of the value with bounded information if present.
-mlir::stablehlo::Dimensions GetDimensions(mlir::Value value);
+[[nodiscard]] mlir::stablehlo::Dimensions GetDimensions(mlir::Value value);
 
 // Returns the dimensions of the input op with bounded information if present.
-mlir::stablehlo::Dimensions GetDimensions(mlir::MlirOp input);
+[[nodiscard]] mlir::stablehlo::Dimensions GetDimensions(mlir::MlirOp input);
 
 // Returns the static shape of `dims`, with its bounded dynamic dimensions at
 // their upper bounds.
-Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims);
+[[nodiscard]] Dimensions GetStaticShape(
+    const mlir::stablehlo::Dimensions& dims);
 
 // Returns the static shape of the input op. For bounded dynamic dimensions, the
 // upper bound is returned.
-Dimensions GetStaticShape(mlir::MlirOp input);
+[[nodiscard]] Dimensions GetStaticShape(mlir::MlirOp input);
 
 // An operand made static at its upper bounds.
 struct StaticAtBounds {
@@ -203,18 +205,18 @@ struct StaticAtBounds {
 
 // Makes `input` static at its upper bounds, keeping the runtime sizes of its
 // bounded dimensions.
-StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input);
+[[nodiscard]] StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input);
 
 // Restores bounded dynamic dimension sizes on `operand` for each non-nullopt
 // entry in `runtime_sizes`.
-mlir::MlirOp RestoreDynamicDimSizes(
+[[nodiscard]] mlir::MlirOp RestoreDynamicDimSizes(
     mlir::MlirOp operand,
     absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
 
 // Replaces elements of static `input` at indices >= `runtime_sizes[dim]`
 // with `fill_value` across every non-nullopt dimension in `runtime_sizes`.
 // `fill_value` may be a scalar tensor or match the shape of `input`.
-mlir::MlirOp FillPastRuntimeSizes(
+[[nodiscard]] mlir::MlirOp FillPastRuntimeSizes(
     mlir::MlirOp input, mlir::MlirOp fill_value,
     absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
 
@@ -251,7 +253,7 @@ absl::StatusOr<std::string> SerializePortableArtifact(mlir::ModuleOp module);
 // Returns the element type of the input op. Requires that the input op is a
 // tensor.
 absl::StatusOr<mlir::ElementType> GetElementType(mlir::MlirOp op);
-mlir::ElementType GetElementTypeOrDie(mlir::MlirOp op);
+[[nodiscard]] mlir::ElementType GetElementTypeOrDie(mlir::MlirOp op);
 
 // Shorthand for `ToElementType -> getElementType`.
 absl::StatusOr<mlir::Type> GetMlirType(mlir::MLIRContext& ctx,
@@ -457,7 +459,7 @@ absl::StatusOr<mlir::MlirOp> MakeConstantLike(mlir::MlirOp input,
 // bf16 stays divergent. Its subnormals are f32 subnormals too, so that same
 // widening flushes them before any op of the computation runs and no lowering
 // can see them. See b/562066667.
-mlir::MlirOp GetNonzeroMask(mlir::MlirOp input);
+[[nodiscard]] mlir::MlirOp GetNonzeroMask(mlir::MlirOp input);
 
 struct RngBitGeneratorResults {
   mlir::MlirOp output_state;
@@ -479,7 +481,7 @@ struct RngBitGeneratorResults {
 //   rng_alg: RngAlgorithmAttr (e.g. DEFAULT or PHILOX).
 //   shape_reference: Required for dynamic shapes; reference tensor from which
 //                    runtime dimension sizes are extracted.
-RngBitGeneratorResults RngBitGeneratorLike(
+[[nodiscard]] RngBitGeneratorResults RngBitGeneratorLike(
     mlir::MlirOp rng_input_state, mlir::RankedTensorType output_type,
     mlir::stablehlo::RngAlgorithmAttr rng_alg,
     std::optional<mlir::MlirOp> shape_reference = std::nullopt);
@@ -529,8 +531,8 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
 // must have the type of operand, and this emits the equivalent
 // stablehlo.maximum and stablehlo.minimum, because stablehlo.clamp infers a
 // result type without the bounds of operand.
-mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
-                       mlir::MlirOp max);
+[[nodiscard]] mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
+                                     mlir::MlirOp max);
 
 // Returns an mlir::MlirOp representing the number of elements in the input
 // tensor with the given element type, only counting the dimensions specified.
@@ -540,11 +542,12 @@ mlir::MlirOp ClampLike(mlir::MlirOp min, mlir::MlirOp operand,
 // If bounded dynamic, creates a computation to calculate the num elements:
 //   i.e. `stablehlo.mul(get_dim_size, cst_dim_size))`
 //
-mlir::MlirOp GetNumElements(mlir::MlirOp input, mlir::Type element_type,
-                            mlir::ArrayRef<int64_t> dims = {});
+[[nodiscard]] mlir::MlirOp GetNumElements(mlir::MlirOp input,
+                                          mlir::Type element_type,
+                                          mlir::ArrayRef<int64_t> dims = {});
 
 // Returns the current ModuleOp a builder is operating in.
-mlir::ModuleOp GetModuleOp(mlir::MlirBuilder& builder);
+[[nodiscard]] mlir::ModuleOp GetModuleOp(mlir::MlirBuilder& builder);
 
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(mlir::MlirOp input,
                                                absl::Span<const int64_t> shape);
@@ -597,7 +600,7 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
 // size of each result dimension as an i32 scalar. XLA's dynamic padder
 // handles the padding of the bounded dimensions. `output_dims` must not be
 // empty (a rank-0 result has no bounded dimension).
-mlir::MlirOp DynamicReshapeWithRuntimeSizes(
+[[nodiscard]] mlir::MlirOp DynamicReshapeWithRuntimeSizes(
     mlir::MlirOp op, const mlir::stablehlo::Dimensions& output_dims,
     absl::Span<const mlir::MlirOp> output_sizes);
 
@@ -605,16 +608,16 @@ mlir::MlirOp DynamicReshapeWithRuntimeSizes(
 // size of its `boundOp` at `boundOpDim` (which must be set) if bounded, or a
 // constant `size` if static. E.g. for the `output_sizes` of
 // `DynamicReshapeWithRuntimeSizes`.
-std::vector<mlir::MlirOp> GetRuntimeSizes(
+[[nodiscard]] std::vector<mlir::MlirOp> GetRuntimeSizes(
     mlir::MlirBuilder& builder, const mlir::stablehlo::Dimensions& dims);
 
 // Flattens the input tensor to a single dimension.
 // Supports bounded dynamic flatten.
-mlir::MlirOp Flatten(mlir::MlirOp input);
+[[nodiscard]] mlir::MlirOp Flatten(mlir::MlirOp input);
 
 // Consumes the diagnostics of `diag_handler` and returns them formatted for an
 // error message. Never returns an empty string.
-std::string ConsumeMlirDiagnostics(
+[[nodiscard]] std::string ConsumeMlirDiagnostics(
     mlir::BaseScopedDiagnosticHandler& diag_handler);
 
 // Applies Numpy's broadcasting rules, if needed. See
@@ -845,7 +848,7 @@ absl::StatusOr<mlir::stablehlo::Dimensions> InferBroadcastDimensions(
 // the file-line-column-function info will be elided and the module name will
 // just be the op name that triggered the materialization, resulting with a name
 // of `tt_jit` with an op_call_chain if available.
-std::string BuildModuleNameFromPyContext(
+[[nodiscard]] std::string BuildModuleNameFromPyContext(
     mlir::MLIRContext& mlir_context,
     const PythonContext* absl_nullable python_context);
 
@@ -873,9 +876,9 @@ absl::Status BuildReduceBody(mlir::RegionBuilder& rb, mlir::Type element_type,
 // std::numeric_limits<scalar_t>::quiet_NaN() for float types (or maximum finite
 // value for finite-only float formats without NaN) and
 // std::numeric_limits<scalar_t>::max() for integers and boolean types.
-mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
-                                    mlir::ElementType tensor_element_type,
-                                    absl::Span<const int64_t> shape = {});
+[[nodiscard]] mlir::MlirOp BuildFillUninitialized(
+    mlir::MlirBuilder& builder, mlir::ElementType tensor_element_type,
+    absl::Span<const int64_t> shape = {});
 
 // Slice if left_pad or right_pad is negative to truncate the tensor in the
 // dimension specified, otherwise return op.
@@ -888,15 +891,15 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
                                              int64_t right_pad);
 
 // Returns a vector containing all dimensions of the given MlirOp.
-Dimensions GetAllDimensions(mlir::MlirOp op);
+[[nodiscard]] Dimensions GetAllDimensions(mlir::MlirOp op);
 
 // Returns the batching dimensions for a tensor of rank `rank` excluding `dim`.
-Dimensions GetBatchDimensions(int64_t rank, int64_t dim);
+[[nodiscard]] Dimensions GetBatchDimensions(int64_t rank, int64_t dim);
 
 // Slices batch dimensions of `self` (dimensions other than `dim`) to match the
 // corresponding dimension sizes of `index_type` if `self` is larger.
-mlir::MlirOp SliceBatchDimensions(mlir::MlirOp self, int64_t dim,
-                                  const mlir::RankedTensorType& index_type);
+[[nodiscard]] mlir::MlirOp SliceBatchDimensions(
+    mlir::MlirOp self, int64_t dim, const mlir::RankedTensorType& index_type);
 
 // Converts the data type of given float op to the given type if it has a lower
 // precision. If given op is not a float op, it is returned unmodified.
@@ -957,7 +960,8 @@ struct ReshapeReassociation {
 };
 
 // String representation of the reshape reassociation.
-std::string ReassociationToString(const ReshapeReassociation& reassociation);
+[[nodiscard]] std::string ReassociationToString(
+    const ReshapeReassociation& reassociation);
 
 // Returns the reassociation indices for the given input and output shapes.
 // See ReshapeFromStaticDimensions for more details on reassociation storage.
