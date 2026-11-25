@@ -20,6 +20,7 @@ import dataclasses
 import gc
 import math
 import random
+import resource
 import time
 import urllib.parse
 
@@ -82,6 +83,16 @@ PIPELINED_STEPS = flags.DEFINE_bool(  # PYTHON_FLAG_OK=benchmark
 # steady state for three steps, then settle. A fixed count runs the same steps
 # on every rank of a distributed run and in every run.
 _POST_WARMUP_UNTIMED_STEPS = 4
+# Number of isolated single-step peak-memory probes run after a long
+# synchronized timing window (> _PEAK_MEMORY_SHORT_WINDOW_MAX_STEPS) and
+# strictly before pipelined steps. Taking the median across isolated resets
+# decouples peak_device_memory_mb from rare host preemption stalls that deepen
+# async execution queues across multi-hundred-step windows. Short windows run 1
+# isolated step instead so slow models do not pay a 5-step wall-time tax.
+_PEAK_MEMORY_PROBE_STEPS = 5
+_PEAK_MEMORY_SHORT_WINDOW_MAX_STEPS = 15
+_SYNC_WINDOW_PEAK_MEMORY_KEY = "sync_window_peak_device_memory_mb"
+_ALLOCATED_MEMORY_DRIFT_KEY = "allocated_memory_drift_mb"
 # Windows of up to this many timed steps log every step time at the default
 # verbosity.
 _MAX_LOGGED_TIMINGS = 50
@@ -624,7 +635,7 @@ def _run_pipelined_window(
     stepper: The stepper, whose post-warmup hook runs after each step.
     device_ops: The device operations to use.
     expected_compile_count: The compile count that the steps must not change.
-    synchronized_step_seconds: The mean synchronized step time.
+    synchronized_step_seconds: The median synchronized step time.
     clock: Returns the current time in seconds; used to time each round.
 
   Returns:
@@ -649,12 +660,9 @@ def _run_pipelined_window(
     elapsed = clock() - start_time
     device_ops.check_result(out)
     del out
-    step_compile_count = device_ops.compile_count()
-    if step_compile_count != expected_compile_count:
-      raise PostWarmupRecompileError(
-          "Recompilation happened inside the pipelined post warmup steps."
-          f" Expected {expected_compile_count}, got {step_compile_count}"
-      )
+    _check_no_recompile(
+        device_ops, expected_compile_count, "the pipelined post warmup steps"
+    )
     return [elapsed / steps] * steps
 
   initial_steps = None
@@ -670,215 +678,119 @@ def _run_pipelined_window(
   return float(np.mean(timings)), int(timings.size)
 
 
-def _post_warmup_run(
+def _check_no_recompile(
+    device_ops: device_ops_lib.DeviceOps,
+    expected_compile_count: int,
+    phase: str = "the post warmup loop",
+) -> None:
+  """Raises `PostWarmupRecompileError` if `compile_count()` changed."""
+  step_compile_count = device_ops.compile_count()
+  if step_compile_count != expected_compile_count:
+    raise PostWarmupRecompileError(
+        f"Recompilation happened inside {phase}. Expected"
+        f" {expected_compile_count}, got {step_compile_count}"
+    )
+
+
+def _run_single_step(
+    step_fn: step_lib.StepFn,
+    stepper: step_lib.Stepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    expected_compile_count: int,
+    clock: Callable[[], float],
+    run_post_hook: bool = True,
+    trace_step_num: int | None = None,
+    phase: str = "the post warmup loop",
+) -> float:
+  """Runs one synchronized step and returns its wall time in seconds."""
+  trace_ctx = (
+      xprof_adapter.TraceMe("post_warmup_step", step_num=trace_step_num)
+      if trace_step_num is not None
+      else contextlib.nullcontext()
+  )
+  with trace_ctx:
+    start_time = clock()
+    out = step_fn()
+    device_ops.await_result(out)
+    elapsed = clock() - start_time
+  # Outside the timed region: fail instead of timing a failed step.
+  device_ops.check_result(out)
+  del out
+  if run_post_hook:
+    stepper.post_warmup_hook()
+  _check_no_recompile(device_ops, expected_compile_count, phase)
+  return elapsed
+
+
+def _measure_sync_step_time(
+    step_fn: step_lib.StepFn,
     stepper: step_lib.Stepper,
     device_ops: device_ops_lib.DeviceOps,
     *,
     name: str,
-    enable_xprof: bool = False,
-    profiling_time: _ProfilingTime | None = None,
-    clock: Callable[[], float] = time.perf_counter,
-    capture_xprof: bool | None = None,
-) -> metrics.PostWarmupRunResult:
-  """Runs the model once after the warmup is complete.
+    expected_compile_count: int,
+    clock: Callable[[], float],
+) -> tuple[float, int, dict[str, float]]:
+  """Measures median synchronized step latency and timed-window diagnostics.
 
   Args:
-    stepper: The stepper to run.
+    step_fn: The step function.
+    stepper: The stepper, whose post-warmup hook runs after each step.
     device_ops: The device operations to use.
-    name: The name of the benchmark.
-    enable_xprof: Whether to run the profiled steps. Must be the same on every
-      rank: all ranks run the profiled steps in lockstep.
-    profiling_time: If set, accumulates the wall time of the profiled steps,
-      including starting and ending their xprof session.
-    clock: Returns the current time in seconds; used to time each step.
-    capture_xprof: Whether this process opens the xprof session and emits the
-      TraceMe step scopes. Defaults to `enable_xprof`; ignored when
-      `enable_xprof` is False.
+    name: The name of the benchmark, used in logs.
+    expected_compile_count: The compile count that the steps must not change.
+    clock: Returns the current time in seconds.
 
   Returns:
-    A PostWarmupRunResult instance containing the average step time and peak
-    device memory usage.
+    `(median_step_time_seconds, num_timed_steps, diagnostics)`, where
+    `diagnostics` records sync-window `mean`, `p10`, `p90`, `max`, the
+    process-wide (`resource.RUSAGE_SELF`) involuntary context switch delta
+    (`ru_nivcsw`), and (when supported by `device_ops`) the timed-window peak
+    memory (`sync_window_peak_device_memory_mb`) and live allocation drift
+    (`allocated_memory_drift_mb`).
   """
-
-  capture_xprof = enable_xprof and capture_xprof is not False
-  xprof_timings = np.zeros(XPROF_STEPS.value, dtype=np.float64)
   # gc is explicitly disabled below to prevent GC pauses from affecting the
-  # measurements. Collect garbage once before the timed loop.
+  # measurements. Collect garbage and reset peak memory once before the window.
   gc.collect()
   device_ops.reset_peak_memory()
-  # The first agreement on a step count compiles its collective (on TPU), so
-  # run one before reading the compile count that the steps must not change.
-  device_ops.agree_on_step_count(POST_WARMUP_STEPS.value)
-
-  compile_count_before = device_ops.compile_count()
-
-  step_fn = stepper.get_step_fn()
-
-  def _run_single_step(
-      expected_compile_count: int,
-      *,
-      run_post_hook: bool = True,
-      trace_step_num: int | None = None,
-  ) -> float:
-    trace_ctx = (
-        xprof_adapter.TraceMe("post_warmup_step", step_num=trace_step_num)
-        if trace_step_num is not None
-        else contextlib.nullcontext()
-    )
-    with trace_ctx:
-      start_time = clock()
-      out = step_fn()
-      device_ops.await_result(out)
-      elapsed = clock() - start_time
-    # Outside the timed region: fail instead of timing a failed step.
-    device_ops.check_result(out)
-    del out
-    if run_post_hook:
-      stepper.post_warmup_hook()
-
-    step_compile_count = device_ops.compile_count()
-    if step_compile_count != expected_compile_count:
-      raise PostWarmupRecompileError(
-          "Recompilation happened inside the post warmup loop. Expected"
-          f" {expected_compile_count}, got {step_compile_count}"
-      )
-    return elapsed
-
-  def _run_single_event_timed_step(expected_compile_count: int) -> float:
-    device_elapsed = device_ops.measure_step_device_time(step_fn)
-    stepper.post_warmup_hook()
-
-    step_compile_count = device_ops.compile_count()
-    if step_compile_count != expected_compile_count:
-      raise PostWarmupRecompileError(
-          "Recompilation happened inside the post warmup loop. Expected"
-          f" {expected_compile_count}, got {step_compile_count}"
-      )
-    return device_elapsed
-
+  alloc_before = device_ops.allocated_memory_mb()
   with gc_disabled():
     # A pause of a few tenths of a second in the step stream, such as a full
     # garbage collection, lets the host's caches lose the step's working set,
     # so that host-bound steps run slower for a few steps. Run a fixed number
     # of untimed steps first, so that the timed steps start warm. They count
-    # towards the peak memory, as the timed steps do.
+    # towards the sync-window peak memory, as the timed steps do.
     for _ in range(_POST_WARMUP_UNTIMED_STEPS):
-      _run_single_step(compile_count_before)
+      _run_single_step(
+          step_fn,
+          stepper,
+          device_ops,
+          expected_compile_count=expected_compile_count,
+          clock=clock,
+      )
+    ru_nivcsw_before = resource.getrusage(resource.RUSAGE_SELF).ru_nivcsw
     timings = _run_timed_window(
         lambda steps: [
-            _run_single_step(compile_count_before) for _ in range(steps)
+            _run_single_step(
+                step_fn,
+                stepper,
+                device_ops,
+                expected_compile_count=expected_compile_count,
+                clock=clock,
+            )
+            for _ in range(steps)
         ],
         device_ops,
     )
+    ru_nivcsw_after = resource.getrusage(resource.RUSAGE_SELF).ru_nivcsw
 
-  # The peak memory is that of the synchronized steps: the pipelined steps can
-  # have several steps' outputs in flight.
-  memory_usage = device_ops.peak_memory_mb()
+  sync_window_peak_mb = device_ops.peak_memory_mb()
+  gc.collect()
+  alloc_after = device_ops.allocated_memory_mb()
 
-  pipelined_step_time = -1.0
-  num_pipelined_steps = 0
-  supports_pipelined_steps = stepper.supports_pipelined_steps
-  if PIPELINED_STEPS.value and supports_pipelined_steps and timings.size:
-    # Best effort: the synchronized results stand even if the pipelined steps
-    # run out of memory, e.g. because the device's runtime keeps more steps'
-    # buffers in flight.
-    try:
-      with gc_disabled():
-        pipelined_step_time, num_pipelined_steps = _run_pipelined_window(
-            step_fn,
-            stepper,
-            device_ops,
-            expected_compile_count=compile_count_before,
-            synchronized_step_seconds=float(np.mean(timings)),
-            clock=clock,
-        )
-    except Exception as e:  # pylint: disable=broad-except
-      if not common.is_out_of_memory(e):
-        raise
-      logging.warning(
-          "Pipelined post warmup steps for %s ran out of memory; not"
-          " reporting the pipelined step time nor the throughput: %s",
-          name,
-          e,
-      )
-      del e
-      _release_device_memory(device_ops)
-    else:
-      # Only the whole pipelined window is timed, not its steps.
-      logging.info(
-          "Post Warmup pipelined step time for %s: %.6gs over %d steps in"
-          " %.6gs (synchronized: %.6gs)",
-          name,
-          pipelined_step_time,
-          num_pipelined_steps,
-          pipelined_step_time * num_pipelined_steps,
-          np.mean(timings),
-      )
-
-  # The throughput comes from the pipelined steps, which overlap the host's
-  # dispatch with the device's execution as a training or serving loop does.
-  # A stepper that supports them but has no pipelined time (disabled by
-  # --pipelined_steps, or out of memory) reports no throughput rather than a
-  # synchronized one. Steppers that do not support them yet (decode, torchax)
-  # keep the throughput of the synchronized steps.
-  if pipelined_step_time > 0:
-    throughput_step_time = pipelined_step_time
-  elif supports_pipelined_steps:
-    throughput_step_time = None
-  elif timings.size:
-    throughput_step_time = float(np.mean(timings))
-  else:
-    throughput_step_time = None
-
-  post_warmup_run_session_xprof_url = None
-  xspace = None
-  avg_device_time = -1.0
-  if device_ops.supports_event_device_time() and XPROF_STEPS.value > 0:
-    profiling_start_time = clock()
-    event_device_timings = np.zeros(XPROF_STEPS.value, dtype=np.float64)
-    with gc_disabled():
-      for xprof_step in range(XPROF_STEPS.value):
-        event_device_timings[xprof_step] = _run_single_event_timed_step(
-            compile_count_before
-        )
-    if profiling_time is not None:
-      profiling_time.seconds += clock() - profiling_start_time
-    valid_event_timings = event_device_timings[event_device_timings >= 0.0]
-    if valid_event_timings.size == XPROF_STEPS.value:
-      avg_device_time = float(np.mean(valid_event_timings))
-    logging.info(
-        "Post Warmup Event Device Timings for %s: %s",
-        name,
-        event_device_timings,
-    )
-  elif enable_xprof and XPROF_STEPS.value > 0:
-    profiling_start_time = clock()
-    with gc_disabled():
-      with XprofContext(
-          name="post_warmup_run",
-          enable_xprof=capture_xprof,
-          trace_only_host=False,
-          clock=clock,
-      ) as xprof_context:
-        for xprof_step in range(XPROF_STEPS.value):
-          xprof_timings[xprof_step] = _run_single_step(
-              compile_count_before,
-              run_post_hook=(xprof_step < XPROF_STEPS.value - 1),
-              trace_step_num=xprof_step if capture_xprof else None,
-          )
-      stepper.post_warmup_hook()
-    if profiling_time is not None:
-      profiling_time.seconds += clock() - profiling_start_time
-
-    if capture_xprof:
-      xspace = xprof_context.xspace
-      if xprof_context.session_id:
-        post_warmup_run_session_xprof_url = (
-            f"http://xprof/?session_id={xprof_context.session_id}"
-        )
-      avg_device_time = _calculate_avg_device_time(
-          device_ops, xspace, XPROF_STEPS.value
-      )
+  if not timings.size:
+    return 0.0, 0, {}
 
   logging.info(
       "Post Warmup Timings summary for %s: %s", name, _timings_summary(timings)
@@ -894,18 +806,420 @@ def _post_warmup_run(
         name,
         " ".join(f"{t:.6g}" for t in timings),
     )
-  if enable_xprof and not device_ops.supports_event_device_time():
-    logging.info("Post Warmup Xprof Timings for %s: %s", name, xprof_timings)
+
+  median_step_time = float(np.median(timings))
+  p10, p90 = np.percentile(timings, [10, 90])
+  diagnostics = {
+      "post_warmup_step_time_mean_seconds": float(np.mean(timings)),
+      "post_warmup_step_time_p10_seconds": float(p10),
+      "post_warmup_step_time_p90_seconds": float(p90),
+      "post_warmup_step_time_max_seconds": float(np.max(timings)),
+      "ru_nivcsw": float(ru_nivcsw_after - ru_nivcsw_before),
+  }
+  if sync_window_peak_mb is not None:
+    diagnostics[_SYNC_WINDOW_PEAK_MEMORY_KEY] = float(sync_window_peak_mb)
+  if alloc_before is not None and alloc_after is not None:
+    diagnostics[_ALLOCATED_MEMORY_DRIFT_KEY] = float(alloc_after - alloc_before)
+  return median_step_time, int(timings.size), diagnostics
+
+
+def _measure_peak_memory(
+    step_fn: step_lib.StepFn,
+    stepper: step_lib.Stepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    expected_compile_count: int,
+    num_synchronized_steps: int,
+    clock: Callable[[], float],
+) -> float | None:
+  """Measures steady-state single-step peak device memory across isolated steps.
+
+  Runs strictly before pipelined steps, resetting the peak-memory counter before
+  each step, reading `peak_memory_mb()` strictly before
+  `stepper.post_warmup_hook()`, and returning the median peak across the probe
+  steps. Short synchronized windows (`<= _PEAK_MEMORY_SHORT_WINDOW_MAX_STEPS`)
+  run 1 isolated step; longer windows run `_PEAK_MEMORY_PROBE_STEPS` steps.
+  Because `num_synchronized_steps` comes from `agree_on_step_count()`, all ranks
+  run the same number of probe steps so distributed collectives stay in
+  lockstep.
+
+  Note: Per-step isolation requires backend `reset_peak_memory()` support; on
+  backends whose runtime cannot reset peak stats (e.g. JAX PJRT without
+  `reset_memory_stats`), each probe read repeats the process high-water mark.
+
+  Args:
+    step_fn: The step function.
+    stepper: The stepper, whose post-warmup hook runs after each step peak read.
+    device_ops: The device operations to use.
+    expected_compile_count: The compile count that the steps must not change.
+    num_synchronized_steps: Agreed number of timed synchronized steps completed.
+    clock: Returns the current time in seconds.
+
+  Returns:
+    Median single-step peak device memory in MB across the probe steps, or None
+    if `device_ops.peak_memory_mb()` is unsupported on any probe step.
+  """
+  probe_steps = (
+      1
+      if num_synchronized_steps <= _PEAK_MEMORY_SHORT_WINDOW_MAX_STEPS
+      else _PEAK_MEMORY_PROBE_STEPS
+  )
+  probe_peaks: list[float | None] = []
+  for probe_idx in range(probe_steps):
+    # _measure_sync_step_time already collected garbage right before returning,
+    # so skip a back-to-back collection before the first probe step.
+    if probe_idx > 0:
+      gc.collect()
+    device_ops.reset_peak_memory()
+    with gc_disabled():
+      _run_single_step(
+          step_fn,
+          stepper,
+          device_ops,
+          expected_compile_count=expected_compile_count,
+          clock=clock,
+          run_post_hook=False,
+          phase="the peak-memory probe",
+      )
+    probe_peaks.append(device_ops.peak_memory_mb())
+    stepper.post_warmup_hook()
+    _check_no_recompile(
+        device_ops, expected_compile_count, "the peak-memory probe"
+    )
+  if not probe_peaks or any(p is None for p in probe_peaks):
+    return None
+  return float(np.median(np.asarray(probe_peaks, dtype=np.float64)))
+
+
+def _measure_pipelined_step_time(
+    step_fn: step_lib.StepFn,
+    stepper: step_lib.Stepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    name: str,
+    expected_compile_count: int,
+    synchronized_step_seconds: float,
+    num_synchronized_steps: int,
+    clock: Callable[[], float],
+) -> tuple[float, int]:
+  """Measures back-to-back pipelined step time, or (-1.0, 0) if skipped/OOM."""
+  if (
+      not PIPELINED_STEPS.value
+      or not stepper.supports_pipelined_steps
+      or num_synchronized_steps <= 0
+  ):
+    return -1.0, 0
+  # Best effort: the synchronized results stand even if the pipelined steps
+  # run out of memory, e.g. because the device's runtime keeps more steps'
+  # buffers in flight.
+  try:
+    with gc_disabled():
+      pipelined_step_time, num_pipelined_steps = _run_pipelined_window(
+          step_fn,
+          stepper,
+          device_ops,
+          expected_compile_count=expected_compile_count,
+          synchronized_step_seconds=synchronized_step_seconds,
+          clock=clock,
+      )
+  except Exception as e:  # pylint: disable=broad-except
+    if not common.is_out_of_memory(e):
+      raise
+    logging.warning(
+        "Pipelined post warmup steps for %s ran out of memory; not"
+        " reporting the pipelined step time nor the throughput: %s",
+        name,
+        e,
+    )
+    del e
+    _release_device_memory(device_ops)
+    return -1.0, 0
+
+  # Only the whole pipelined window is timed, not its steps.
+  logging.info(
+      "Post Warmup pipelined step time for %s: %.6gs over %d steps in"
+      " %.6gs (synchronized: %.6gs)",
+      name,
+      pipelined_step_time,
+      num_pipelined_steps,
+      pipelined_step_time * num_pipelined_steps,
+      synchronized_step_seconds,
+  )
+  return pipelined_step_time, num_pipelined_steps
+
+
+def _measure_event_device_time(
+    step_fn: step_lib.StepFn,
+    stepper: step_lib.Stepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    name: str,
+    expected_compile_count: int,
+    profiling_time: _ProfilingTime | None,
+    clock: Callable[[], float],
+) -> float:
+  """Measures per-step device time via backend device events (e.g. CUDA).
+
+  Args:
+    step_fn: The step function.
+    stepper: The stepper, whose post-warmup hook runs after each step.
+    device_ops: The device operations to use.
+    name: The name of the benchmark, used in logs.
+    expected_compile_count: The compile count that the steps must not change.
+    profiling_time: If set, accumulates wall time spent in this profiling phase.
+    clock: Returns the current time in seconds.
+
+  Returns:
+    Average active device execution time in seconds across `--xprof_steps`
+    event-timed steps, or `-1.0` if skipped or unavailable.
+  """
+  num_steps = XPROF_STEPS.value
+  if num_steps <= 0:
+    return -1.0
+  profiling_start_time = clock()
+  event_device_timings = np.zeros(num_steps, dtype=np.float64)
+  with gc_disabled():
+    for event_step in range(num_steps):
+      device_elapsed = device_ops.measure_step_device_time(step_fn)
+      stepper.post_warmup_hook()
+      _check_no_recompile(device_ops, expected_compile_count)
+      event_device_timings[event_step] = device_elapsed
+  if profiling_time is not None:
+    profiling_time.seconds += clock() - profiling_start_time
+  avg_device_time = -1.0
+  valid_event_timings = event_device_timings[event_device_timings >= 0.0]
+  if valid_event_timings.size == num_steps:
+    avg_device_time = float(np.mean(valid_event_timings))
+  logging.info(
+      "Post Warmup Event Device Timings for %s: %s",
+      name,
+      event_device_timings,
+  )
+  return avg_device_time
+
+
+def _measure_xprof_device_time(
+    step_fn: step_lib.StepFn,
+    stepper: step_lib.Stepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    name: str,
+    expected_compile_count: int,
+    enable_xprof: bool,
+    capture_xprof: bool,
+    profiling_time: _ProfilingTime | None,
+    clock: Callable[[], float],
+) -> tuple[float, str | None]:
+  """Measures per-step device time and trace URL via an XProf capture window.
+
+  Args:
+    step_fn: The step function.
+    stepper: The stepper, whose post-warmup hook runs after each step.
+    device_ops: The device operations to use.
+    name: The name of the benchmark, used in logs.
+    expected_compile_count: The compile count that the steps must not change.
+    enable_xprof: Whether all ranks run the XProf-profiled steps.
+    capture_xprof: Whether this rank opens the XProf session and emits TraceMe
+      scopes.
+    profiling_time: If set, accumulates wall time spent in this profiling phase.
+    clock: Returns the current time in seconds.
+
+  Returns:
+    A tuple of `(average_device_time_seconds, post_warmup_xprof_url)`, where
+    unavailable device time is `-1.0` and an uncaptured URL is `None`.
+  """
+  num_steps = XPROF_STEPS.value
+  if not enable_xprof or num_steps <= 0:
+    return -1.0, None
+
+  xprof_timings = np.zeros(num_steps, dtype=np.float64)
+  post_warmup_run_session_xprof_url = None
+  avg_device_time = -1.0
+  profiling_start_time = clock()
+  with gc_disabled():
+    with XprofContext(
+        name="post_warmup_run",
+        enable_xprof=capture_xprof,
+        trace_only_host=False,
+        clock=clock,
+    ) as xprof_context:
+      # Align all ranks to host barrier-RPC granularity before each profiled
+      # step (both after rank 0 starts XProf and after rank 0's slower
+      # Python-traced post-step work) without dispatching a TPU collective into
+      # the XProf trace.
+      for xprof_step in range(num_steps):
+        device_ops.host_barrier()
+        xprof_timings[xprof_step] = _run_single_step(
+            step_fn,
+            stepper,
+            device_ops,
+            expected_compile_count=expected_compile_count,
+            clock=clock,
+            run_post_hook=(xprof_step < num_steps - 1),
+            trace_step_num=xprof_step if capture_xprof else None,
+        )
+    stepper.post_warmup_hook()
+    _check_no_recompile(device_ops, expected_compile_count)
+  if profiling_time is not None:
+    profiling_time.seconds += clock() - profiling_start_time
+
+  if capture_xprof:
+    if xprof_context.session_id:
+      post_warmup_run_session_xprof_url = (
+          f"http://xprof/?session_id={xprof_context.session_id}"
+      )
+    avg_device_time = _calculate_avg_device_time(
+        device_ops, xprof_context.xspace, num_steps
+    )
+
+  logging.info("Post Warmup Xprof Timings for %s: %s", name, xprof_timings)
+  return avg_device_time, post_warmup_run_session_xprof_url
+
+
+def _post_warmup_run(
+    stepper: step_lib.Stepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    name: str,
+    enable_xprof: bool = False,
+    profiling_time: _ProfilingTime | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+    capture_xprof: bool | None = None,
+) -> metrics.PostWarmupRunResult:
+  """Executes the post-warmup measurement phases in strict isolation.
+
+  Runs Phases 2-5 sequentially after warmup completes:
+    - Phase 2 (`_measure_sync_step_time`): untimed cache-warming steps followed
+      by synchronized timed steps (median latency) and window diagnostics.
+    - Phase 3 (`_measure_peak_memory`): isolated single-step peak-memory probe,
+      executed strictly before pipelined steps and reading `peak_memory_mb()`
+      before `stepper.post_warmup_hook()`.
+    - Phase 4 (`_measure_pipelined_step_time`): back-to-back pipelined
+      throughput window for steppers that support it.
+    - Phase 5 (`_measure_event_device_time` / `_measure_xprof_device_time`):
+      per-step active device time excluded from `e2e_wall_time_seconds`, with
+      host-only rank synchronization before each XProf-profiled step.
+
+  Args:
+    stepper: The stepper to run.
+    device_ops: The device operations to use.
+    name: The name of the benchmark.
+    enable_xprof: Whether to run the profiled steps. Must be the same on every
+      rank: all ranks run the profiled steps in lockstep.
+    profiling_time: If set, accumulates the wall time of the profiled steps,
+      including starting and ending their xprof session.
+    clock: Returns the current time in seconds; used to time each step.
+    capture_xprof: Whether this process opens the xprof session and emits the
+      TraceMe step scopes. Defaults to `enable_xprof`; ignored when
+      `enable_xprof` is False.
+
+  Returns:
+    A PostWarmupRunResult instance containing the median step time, steady-state
+    peak device memory usage, pipelined throughput time, and device time.
+  """
+
+  capture_xprof = enable_xprof and capture_xprof is not False
+  # The first agreement on a step count compiles its collective (on TPU), so
+  # run one before reading the compile count that the steps must not change.
+  device_ops.agree_on_step_count(POST_WARMUP_STEPS.value)
+
+  compile_count_before = device_ops.compile_count()
+  step_fn = stepper.get_step_fn()
+
+  sync_step_time, num_sync_steps, diagnostics = _measure_sync_step_time(
+      step_fn,
+      stepper,
+      device_ops,
+      name=name,
+      expected_compile_count=compile_count_before,
+      clock=clock,
+  )
+
+  # Measure single-step steady-state peak memory strictly before pipelined
+  # steps, which can keep several steps' outputs in flight.
+  # _measure_sync_step_time populates _ALLOCATED_MEMORY_DRIFT_KEY iff
+  # DeviceOps.allocated_memory_mb() is supported (uniform across ranks),
+  # skipping the probe on CPU without an extra device sync; TorchAx on TPU
+  # reports live allocations without reset_memory_stats and therefore still runs
+  # 1-5 probe steps returning the process high-water mark.
+  if (
+      _PEAK_MEMORY_PROBE_STEPS > 0
+      and num_sync_steps > 0
+      and _ALLOCATED_MEMORY_DRIFT_KEY in diagnostics
+  ):
+    memory_usage = _measure_peak_memory(
+        step_fn,
+        stepper,
+        device_ops,
+        expected_compile_count=compile_count_before,
+        num_synchronized_steps=num_sync_steps,
+        clock=clock,
+    )
+  else:
+    memory_usage = diagnostics.get(_SYNC_WINDOW_PEAK_MEMORY_KEY)
+
+  pipelined_step_time, num_pipelined_steps = _measure_pipelined_step_time(
+      step_fn,
+      stepper,
+      device_ops,
+      name=name,
+      expected_compile_count=compile_count_before,
+      synchronized_step_seconds=sync_step_time,
+      num_synchronized_steps=num_sync_steps,
+      clock=clock,
+  )
+
+  # The throughput comes from the pipelined steps, which overlap the host's
+  # dispatch with the device's execution as a training or serving loop does.
+  # A stepper that supports them but has no pipelined time (disabled by
+  # --pipelined_steps, or out of memory) reports no throughput rather than a
+  # synchronized one. Steppers that do not support them yet (decode, torchax)
+  # keep the throughput of the synchronized steps.
+  if pipelined_step_time > 0:
+    throughput_step_time = pipelined_step_time
+  elif stepper.supports_pipelined_steps:
+    throughput_step_time = None
+  elif num_sync_steps > 0:
+    throughput_step_time = sync_step_time
+  else:
+    throughput_step_time = None
+
+  if device_ops.supports_event_device_time():
+    avg_device_time = _measure_event_device_time(
+        step_fn,
+        stepper,
+        device_ops,
+        name=name,
+        expected_compile_count=compile_count_before,
+        profiling_time=profiling_time,
+        clock=clock,
+    )
+    post_warmup_run_session_xprof_url = None
+  else:
+    avg_device_time, post_warmup_run_session_xprof_url = (
+        _measure_xprof_device_time(
+            step_fn,
+            stepper,
+            device_ops,
+            name=name,
+            expected_compile_count=compile_count_before,
+            enable_xprof=enable_xprof,
+            capture_xprof=capture_xprof,
+            profiling_time=profiling_time,
+            clock=clock,
+        )
+    )
 
   return metrics.PostWarmupRunResult(
-      post_warmup_step_time_seconds=float(np.mean(timings)),
-      num_post_warmup_steps=int(timings.size),
+      post_warmup_step_time_seconds=sync_step_time,
+      num_post_warmup_steps=num_sync_steps,
       pipelined_step_time_seconds=pipelined_step_time,
       num_pipelined_steps=num_pipelined_steps,
       throughput_step_time_seconds=throughput_step_time,
       peak_device_memory_mb=memory_usage,
       post_warmup_run_session_xprof_url=post_warmup_run_session_xprof_url,
       average_post_warmup_device_time_seconds=avg_device_time,
+      diagnostics=diagnostics or None,
   )
 
 

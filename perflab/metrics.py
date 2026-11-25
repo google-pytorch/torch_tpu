@@ -54,10 +54,11 @@ class PostWarmupRunResult:
   """Result of the post warmup run.
 
   Attributes:
-    post_warmup_step_time_seconds: The average step time in seconds after the
-      warmup is complete.
+    post_warmup_step_time_seconds: The step time in seconds after warmup is
+      complete (median across timed steps in `perflab.measure`).
     peak_device_memory_mb: The peak device memory usage in MB for a benchmark
-      step.
+      step (median across isolated post-warmup probe steps excluding
+      `post_warmup_hook()` in `perflab.measure`, when supported).
     post_warmup_run_session_xprof_url: The URL of the xprof session for the post
       warmup run.
     average_post_warmup_device_time_seconds: The average device execution time.
@@ -68,6 +69,8 @@ class PostWarmupRunResult:
     throughput_step_time_seconds: The step time that the throughput, achieved
       TFLOP/s and MFU come from, or None if they are not reported (see
       `PerformanceMetrics`).
+    diagnostics: Optional step-timing, preemption, and memory diagnostics logged
+      only in `PERFLAB_RESULT_JSON` records and excluded from `metric_map()`.
   """
 
   post_warmup_step_time_seconds: float = 0.0
@@ -78,6 +81,7 @@ class PostWarmupRunResult:
   pipelined_step_time_seconds: float = -1.0
   num_pipelined_steps: int = 0
   throughput_step_time_seconds: float | None = None
+  diagnostics: dict[str, float] | None = None
 
 
 @dataclasses.dataclass
@@ -110,10 +114,9 @@ class PerformanceMetrics(MetricsInterface):
       step) * n. For example, if the cache misses are [100, 120, 130, 130] and
       wall times are [15, 10, 10, 2], then the warmup overhead is (15 + 10 + 10)
       - 2*3 = 29 seconds.
-    post_warmup_step_time_seconds: The average run time of a benchmark step
-      after the warmup is complete.
-    num_post_warmup_steps: The number of timed post-warmup steps that
-      `post_warmup_step_time_seconds` is the average of.
+    post_warmup_step_time_seconds: The run time of a benchmark step after warmup
+      is complete (median across timed steps in `perflab.measure`).
+    num_post_warmup_steps: The number of timed post-warmup steps measured.
     pipelined_step_time_seconds: The time per step of the post-warmup steps
       dispatched back to back, without waiting for each step's result, or -1.0
       if they did not run. It overlaps the host's dispatch of a step with the
@@ -129,7 +132,8 @@ class PerformanceMetrics(MetricsInterface):
       step time for steppers that do not support pipelined steps yet (decode and
       torchax). The `device_*` variants come from the device time instead.
     peak_device_memory_mb: The peak device memory usage in MB for a benchmark
-      step.
+      step (median across isolated post-warmup probe steps excluding
+      `post_warmup_hook()` in `perflab.measure`, when supported).
     warmup_session_xprof_url: The URL of the xprof session for the warmup run.
     post_warmup_run_session_xprof_url: The URL of the xprof session for the post
       warmup run.
@@ -146,6 +150,8 @@ class PerformanceMetrics(MetricsInterface):
       exported if both it and `model_flops_per_step` are known.
     step_work: The work of one step (see perflab/workload.py), or None if it is
       unknown. Only exported, with the throughput derived from it, if known.
+    diagnostics: Optional step-timing, preemption, and memory diagnostics logged
+      only in `PERFLAB_RESULT_JSON` records and excluded from `metric_map()`.
   """
 
   num_warmup_steps: int = 0
@@ -164,6 +170,7 @@ class PerformanceMetrics(MetricsInterface):
   model_flops_per_step: float | None = None
   peak_flops_per_second: float | None = None
   step_work: workload_lib.StepWork | None = None
+  diagnostics: dict[str, float] | None = None
 
   def _throughput_metrics(self) -> Mapping[str, float]:
     """Returns the workload and the throughput from the wall and device times.

@@ -98,12 +98,36 @@ class DeviceOps(Protocol):
     """
     ...
 
+  def host_barrier(self) -> None:
+    """Blocks on the host until all processes of the benchmark reach this point.
+
+    Unlike `agree_on_step_count`, this must synchronize purely on the host (e.g.
+    through `torch.distributed`'s TCPStore) without dispatching any device
+    collectives, so `measure()` can align distributed ranks inside an active
+    XProf session without injecting extra XLA modules into the trace. Every
+    distributed rank must call `host_barrier()` the same number of times per
+    process-group store lifecycle. Backends that run in a single process may
+    implement this as a no-op.
+    """
+    ...
+
   def peak_memory_mb(self) -> float | None:
     """Peak device memory in MB since the last reset, or None if unsupported.
 
     Returning None (rather than raising or reporting 0.0) lets callers
     record what a backend can report without special-casing the ones that
     cannot.
+    """
+    ...
+
+  def allocated_memory_mb(self) -> float | None:
+    """Current allocated device memory in MB, or None if unsupported.
+
+    Callers read this only after synchronizing pending device work (e.g. after
+    `await_result` or `reset_peak_memory`) so post-step drift measurements
+    observe a quiescent device. Whether this returns None must depend only on
+    the backend and device kind so all ranks of a distributed benchmark agree on
+    support.
     """
     ...
 
