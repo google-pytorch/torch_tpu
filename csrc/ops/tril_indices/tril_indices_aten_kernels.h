@@ -28,11 +28,11 @@
 namespace torch_tpu {
 
 // aten::tril_indices
-at::Tensor AtenTrilIndices(int64_t row, int64_t col, int64_t offset,
-                           std::optional<at::ScalarType> dtype_opt,
-                           std::optional<at::Layout> layout_opt,
-                           std::optional<at::Device> device_opt,
-                           std::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenTrilIndices(
+    int64_t row, int64_t col, int64_t offset,
+    std::optional<at::ScalarType> dtype_opt,
+    std::optional<at::Layout> layout_opt, std::optional<at::Device> device_opt,
+    std::optional<bool> pin_memory_opt);
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_TRIL_INDICES_TRIL_INDICES_ATEN_KERNELS_H_

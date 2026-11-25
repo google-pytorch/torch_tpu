@@ -130,8 +130,8 @@ using InverseViewPrimitive =
                  ViewAsComplex>;
 static_assert(sizeof(InverseViewPrimitive) == 120, "");
 
-bool operator==(const InverseViewPrimitive& lhs,
-                const InverseViewPrimitive& rhs);
+[[nodiscard]] bool operator==(const InverseViewPrimitive& lhs,
+                              const InverseViewPrimitive& rhs);
 
 // Formats the inverse view primitive as one of:
 //   * "reshape[1, 2, 3]"
@@ -162,7 +162,8 @@ struct InverseViewStage {
   InverseViewSequence inverse;
 };
 
-bool operator==(const InverseViewStage& lhs, const InverseViewStage& rhs);
+[[nodiscard]] bool operator==(const InverseViewStage& lhs,
+                              const InverseViewStage& rhs);
 std::ostream& operator<<(std::ostream& os, const InverseViewStage& stage);
 
 struct InverseViewOperation {
@@ -213,8 +214,8 @@ absl::StatusOr<mlir::MlirOp> InverseViewOperationShlo(
 // This will crash if the view sequence contains a lossy operation (a slice,
 // real(), imag(), or bitcast to boolean) or if it constructs an overlapping
 // view (including broadcasts).
-InverseViewSequence InvertViewSequence(StridedLayout& layout,
-                                       ViewSequenceSpan view_sequence);
+[[nodiscard]] InverseViewSequence InvertViewSequence(
+    StridedLayout& layout, ViewSequenceSpan view_sequence);
 
 // Applies the inverse view sequence to the mutated view, resulting in a
 // tensor with the same shape as the contiguous base.

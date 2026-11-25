@@ -41,12 +41,11 @@ absl::StatusOr<at::Tensor> CopyToTpuTensor(
     std::optional<at::MemoryFormat> memory_format = std::nullopt,
     std::optional<c10::DeviceIndex> tpu_device_index = std::nullopt);
 
-at::Tensor AtenToCopy(const at::Tensor& self,
-                      std::optional<at::ScalarType> dtype,
-                      std::optional<at::Layout> layout,
-                      std::optional<at::Device> device,
-                      std::optional<bool> pin_memory, bool non_blocking,
-                      std::optional<at::MemoryFormat> memory_format);
+[[nodiscard]] at::Tensor AtenToCopy(
+    const at::Tensor& self, std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout, std::optional<at::Device> device,
+    std::optional<bool> pin_memory, bool non_blocking,
+    std::optional<at::MemoryFormat> memory_format);
 
 }  // namespace torch_tpu
 

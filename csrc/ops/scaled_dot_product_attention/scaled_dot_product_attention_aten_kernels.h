@@ -55,20 +55,20 @@ namespace torch_tpu {
 // override the aten::_fused_sdp_choice function to force a call
 // to our custom kernel on any non-"math" backend.
 
-int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
-                           const at::Tensor& value,
-                           const std::optional<at::Tensor>& attn_mask,
-                           double dropout_p, bool is_causal,
-                           std::optional<double> scale, bool enable_gqa);
+[[nodiscard]] int64_t AtenFusedSdpChoice(
+    const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask, double dropout_p,
+    bool is_causal, std::optional<double> scale, bool enable_gqa);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, c10::SymInt,
-           c10::SymInt, at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor,
+                         c10::SymInt, c10::SymInt, at::Tensor, at::Tensor,
+                         at::Tensor>
 AtenScaledDotProductFusedAttentionOverrideable(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     const std::optional<at::Tensor>& attn_bias, double dropout_p,
     bool is_causal, bool return_debug_mask, std::optional<double> scale);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 AtenScaledDotProductFusedAttentionOverrideableBackward(
     const at::Tensor& grad_out, const at::Tensor& query, const at::Tensor& key,
     const at::Tensor& value, const at::Tensor& attn_bias,
@@ -78,8 +78,9 @@ AtenScaledDotProductFusedAttentionOverrideableBackward(
     double dropout_p, bool is_causal, const at::Tensor& philox_seed,
     const at::Tensor& philox_offset, std::optional<double> scale);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, c10::SymInt,
-           c10::SymInt, at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor,
+                         c10::SymInt, c10::SymInt, at::Tensor, at::Tensor,
+                         at::Tensor>
 AtenScaledDotProductFlashAttention(const at::Tensor& query,
                                    const at::Tensor& key,
                                    const at::Tensor& value,
@@ -88,7 +89,7 @@ AtenScaledDotProductFlashAttention(const at::Tensor& query,
                                    bool is_causal, bool return_debug_mask,
                                    std::optional<double> scale);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
 AtenScaledDotProductFlashAttentionBackward(
     const at::Tensor& grad_out, const at::Tensor& query, const at::Tensor& key,
     const at::Tensor& value, const at::Tensor& out, const at::Tensor& logsumexp,

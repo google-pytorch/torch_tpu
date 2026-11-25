@@ -24,19 +24,19 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenMaskedSoftmax(const at::Tensor& self, const at::Tensor& mask,
-                             std::optional<int64_t> dim,
-                             std::optional<int64_t> mask_type);
+[[nodiscard]] at::Tensor AtenMaskedSoftmax(const at::Tensor& self,
+                                           const at::Tensor& mask,
+                                           std::optional<int64_t> dim,
+                                           std::optional<int64_t> mask_type);
 
 at::Tensor& AtenMaskedSoftmaxOut(const at::Tensor& self, const at::Tensor& mask,
                                  std::optional<int64_t> dim,
                                  std::optional<int64_t> mask_type,
                                  at::Tensor& out);
 
-at::Tensor AtenMaskedSoftmaxBackward(const at::Tensor& grad_output,
-                                     const at::Tensor& output,
-                                     const at::Tensor& mask,
-                                     std::optional<int64_t> dim);
+[[nodiscard]] at::Tensor AtenMaskedSoftmaxBackward(
+    const at::Tensor& grad_output, const at::Tensor& output,
+    const at::Tensor& mask, std::optional<int64_t> dim);
 
 at::Tensor& AtenMaskedSoftmaxBackwardOut(const at::Tensor& grad_output,
                                          const at::Tensor& output,

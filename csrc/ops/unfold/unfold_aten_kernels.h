@@ -23,12 +23,13 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenUnfold(const at::Tensor& self, int64_t dimension, int64_t size,
-                      int64_t step);
+[[nodiscard]] at::Tensor AtenUnfold(const at::Tensor& self, int64_t dimension,
+                                    int64_t size, int64_t step);
 
-at::Tensor AtenUnfoldBackward(const at::Tensor& grad_in,
-                              at::IntArrayRef input_sizes, int64_t dimension,
-                              int64_t size, int64_t step);
+[[nodiscard]] at::Tensor AtenUnfoldBackward(const at::Tensor& grad_in,
+                                            at::IntArrayRef input_sizes,
+                                            int64_t dimension, int64_t size,
+                                            int64_t step);
 
 }  // namespace torch_tpu
 

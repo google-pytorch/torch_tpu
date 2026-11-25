@@ -21,8 +21,9 @@
 namespace torch_tpu {
 
 // where.self
-at::Tensor AtenWhereSelf(const at::Tensor& condition, const at::Tensor& self,
-                         const at::Tensor& other);
+[[nodiscard]] at::Tensor AtenWhereSelf(const at::Tensor& condition,
+                                       const at::Tensor& self,
+                                       const at::Tensor& other);
 
 // where.self_out
 at::Tensor& AtenWhereSelfOut(const at::Tensor& condition,

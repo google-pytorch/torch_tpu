@@ -30,18 +30,19 @@ namespace torch_tpu {
 
 // Batch dim (un)flattening helpers. Shapes are static sizes, or upper bounds
 // for bounded dynamic dimensions; bounded dimensions are propagated.
-mlir::MlirOp flatten_batch_dims(mlir::MlirOp mlir_op, int batch_size,
-                                int num_batch_dims);
-mlir::MlirOp unflatten_batch_dims(mlir::MlirOp mlir_op,
-                                  absl::Span<const int64_t> shape);
-mlir::MlirOp unflatten_batch_dims(mlir::MlirOp mlir_op,
-                                  mlir::MlirOp mlir_op_with_target_dims);
-int get_batch_size(absl::Span<const int64_t> shape);
+[[nodiscard]] mlir::MlirOp flatten_batch_dims(mlir::MlirOp mlir_op,
+                                              int batch_size,
+                                              int num_batch_dims);
+[[nodiscard]] mlir::MlirOp unflatten_batch_dims(
+    mlir::MlirOp mlir_op, absl::Span<const int64_t> shape);
+[[nodiscard]] mlir::MlirOp unflatten_batch_dims(
+    mlir::MlirOp mlir_op, mlir::MlirOp mlir_op_with_target_dims);
+[[nodiscard]] int get_batch_size(absl::Span<const int64_t> shape);
 
-mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
-                               std::optional<double> maybe_scale,
-                               int64_t head_dim,
-                               mlir::Type element_type = nullptr);
+[[nodiscard]] mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
+                                             std::optional<double> maybe_scale,
+                                             int64_t head_dim,
+                                             mlir::Type element_type = nullptr);
 
 // The helpers below return the strides that the PyTorch meta functions of the
 // SDPA ops allocate, so that the strides of eager results match the fake tensor
@@ -55,7 +56,7 @@ mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
 // dense, otherwise `at::infer_dense_strides`, which keeps the stride order,
 // removes gaps and leaves zero-stride (expanded) dims in place. The SDPA
 // backward meta functions allocate the gradients this way.
-Strides EmptyLikeStrides(const at::TensorBase& tensor);
+[[nodiscard]] Strides EmptyLikeStrides(const at::TensorBase& tensor);
 
 // Returns the strides of `alloc_with_matching_layout(query, result_sizes)` in
 // torch/_meta_registrations.py, which the SDPA forward meta functions use to
@@ -64,8 +65,8 @@ Strides EmptyLikeStrides(const at::TensorBase& tensor);
 // order, with zero-stride dims outermost and ties broken by making the lower
 // dim innermost. The tie and zero-stride ordering follows PyTorch 2.15
 // (PR #193039); older versions order these dims differently.
-Strides MatchingLayoutStrides(const at::TensorBase& query,
-                              absl::Span<const int64_t> result_sizes);
+[[nodiscard]] Strides MatchingLayoutStrides(
+    const at::TensorBase& query, absl::Span<const int64_t> result_sizes);
 
 }  // namespace torch_tpu
 

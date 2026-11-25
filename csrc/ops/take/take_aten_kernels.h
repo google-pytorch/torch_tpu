@@ -21,7 +21,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenTake(const at::Tensor& self, const at::Tensor& index);
+[[nodiscard]] at::Tensor AtenTake(const at::Tensor& self,
+                                  const at::Tensor& index);
 at::Tensor& AtenTakeOut(const at::Tensor& self, const at::Tensor& index,
                         at::Tensor& out);
 

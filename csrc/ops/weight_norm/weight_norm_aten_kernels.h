@@ -24,13 +24,14 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(const at::Tensor& v,
-                                                           const at::Tensor& g,
-                                                           int64_t dim);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(
+    const at::Tensor& v, const at::Tensor& g, int64_t dim);
 
-std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterfaceBackward(
-    const at::Tensor& grad_w, const at::Tensor& saved_v,
-    const at::Tensor& saved_g, const at::Tensor& saved_norms, int64_t dim);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor>
+AtenWeightNormInterfaceBackward(const at::Tensor& grad_w,
+                                const at::Tensor& saved_v,
+                                const at::Tensor& saved_g,
+                                const at::Tensor& saved_norms, int64_t dim);
 
 }  // namespace torch_tpu
 

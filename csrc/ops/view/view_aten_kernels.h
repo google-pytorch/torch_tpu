@@ -24,18 +24,19 @@
 namespace torch_tpu {
 
 // at::_reshape_alias
-at::Tensor AtenReshapeAlias(const at::Tensor& self,
-                            c10::SymIntArrayRef size_sym,
-                            c10::SymIntArrayRef strides_sym);
+[[nodiscard]] at::Tensor AtenReshapeAlias(const at::Tensor& self,
+                                          c10::SymIntArrayRef size_sym,
+                                          c10::SymIntArrayRef strides_sym);
 
 // at::view
-at::Tensor AtenView(const at::Tensor& self, c10::SymIntArrayRef size_sym);
+[[nodiscard]] at::Tensor AtenView(const at::Tensor& self,
+                                  c10::SymIntArrayRef size_sym);
 
 // at::view_as_real
-at::Tensor AtenViewAsReal(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenViewAsReal(const at::Tensor& self);
 
 // at::view_as_complex
-at::Tensor AtenViewAsComplex(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenViewAsComplex(const at::Tensor& self);
 
 }  // namespace torch_tpu
 

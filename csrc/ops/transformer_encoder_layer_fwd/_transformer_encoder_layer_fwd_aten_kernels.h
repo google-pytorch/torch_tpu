@@ -24,7 +24,7 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenTransformerEncoderLayerFwd(
+[[nodiscard]] at::Tensor AtenTransformerEncoderLayerFwd(
     const at::Tensor& src, int64_t embed_dim, int64_t num_heads,
     const at::Tensor& qkv_weight, const at::Tensor& qkv_bias,
     const at::Tensor& proj_weight, const at::Tensor& proj_bias, bool use_gelu,

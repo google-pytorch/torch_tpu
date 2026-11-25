@@ -66,7 +66,8 @@ struct ViewPrimitiveErrorOptions {
   ViewPrimitiveBugSuffix bug_suffix = ViewPrimitiveBugSuffix::kAppend;
 };
 
-inline bool ShouldAppendBugSuffix(const ViewPrimitiveBugSuffix bug_suffix) {
+[[nodiscard]] inline bool ShouldAppendBugSuffix(
+    const ViewPrimitiveBugSuffix bug_suffix) {
   return bug_suffix == ViewPrimitiveBugSuffix::kAppend;
 }
 
@@ -75,7 +76,7 @@ inline bool ShouldAppendBugSuffix(const ViewPrimitiveBugSuffix bug_suffix) {
 //
 // `ViewPrimitiveT` should be a `ViewPrimitive` type.
 template <typename ViewPrimitiveT>
-std::string GetViewPrimitiveErrorSuffix(
+[[nodiscard]] std::string GetViewPrimitiveErrorSuffix(
     const ViewPrimitiveT& view_primitive,
     const ViewPrimitiveErrorOptions options = ViewPrimitiveErrorOptions{}) {
   constexpr std::string_view kBugSuffix = "; this is a TorchTPU bug";
@@ -95,8 +96,8 @@ std::string GetViewPrimitiveErrorSuffix(
 //
 // `ViewPrimitiveT` should be a `ViewPrimitive` type.
 template <typename ViewPrimitiveT>
-std::string GetUpdateLayoutBugSuffix(const ViewPrimitiveT& view_primitive,
-                                     const StridedLayout& layout) {
+[[nodiscard]] std::string GetUpdateLayoutBugSuffix(
+    const ViewPrimitiveT& view_primitive, const StridedLayout& layout) {
   return absl::StrCat("; calling UpdateLayout() with layout=", ToString(layout),
                       " and ",
                       GetViewPrimitiveErrorSuffix(
@@ -115,7 +116,7 @@ std::string GetUpdateLayoutBugSuffix(const ViewPrimitiveT& view_primitive,
 //
 // `ViewPrimitiveT` should be a `ViewPrimitive` type.
 template <typename ViewPrimitiveT>
-std::string GetViewPrimitiveShloErrorSuffix(
+[[nodiscard]] std::string GetViewPrimitiveShloErrorSuffix(
     const ViewPrimitiveT& view_primitive, const absl::Span<const int64_t> shape,
     const ViewPrimitiveBugSuffix bug_suffix = ViewPrimitiveBugSuffix::kAppend) {
   // Extra step for handling dynamic shapes.

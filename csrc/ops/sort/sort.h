@@ -31,8 +31,8 @@ struct SortShloOutputs {
 // Builds StableHLO sort op.
 // Returns a pair of MlirOp, the first is the sorted array and the second is the
 // indices of the original array.
-SortShloOutputs BuildSortShlo(mlir::MlirOp input_op, bool stable, int64_t dim,
-                              bool descending);
+[[nodiscard]] SortShloOutputs BuildSortShlo(mlir::MlirOp input_op, bool stable,
+                                            int64_t dim, bool descending);
 
 }  // namespace torch_tpu
 

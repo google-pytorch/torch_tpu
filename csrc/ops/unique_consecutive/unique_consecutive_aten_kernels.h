@@ -25,13 +25,13 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUniqueConsecutive(
-    const at::Tensor& self, bool return_inverse, bool return_counts,
-    std::optional<int64_t> dim);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenUniqueConsecutive(const at::Tensor& self, bool return_inverse,
+                      bool return_counts, std::optional<int64_t> dim);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUniqueDimConsecutive(
-    const at::Tensor& self, int64_t dim, bool return_inverse,
-    bool return_counts);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenUniqueDimConsecutive(const at::Tensor& self, int64_t dim,
+                         bool return_inverse, bool return_counts);
 
 }  // namespace torch_tpu
 

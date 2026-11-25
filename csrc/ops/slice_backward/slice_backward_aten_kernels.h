@@ -30,9 +30,9 @@ namespace torch_tpu {
 // default composite decomposition (zeros + select + copy_) while preserving
 // XLA's AlgebraicSimplifier ability to fold step-by-step recurrence gradient
 // accumulations into in-place buffer updates.
-at::Tensor AtenSelectBackward(const at::Tensor& grad_output,
-                              at::IntArrayRef input_sizes, int64_t dim,
-                              int64_t index);
+[[nodiscard]] at::Tensor AtenSelectBackward(const at::Tensor& grad_output,
+                                            at::IntArrayRef input_sizes,
+                                            int64_t dim, int64_t index);
 
 // Implements aten::slice_backward on TPU by lowering directly to StableHLO:
 //   - 2-way `stablehlo.concatenate` with a single zero-broadcast block for
@@ -44,9 +44,10 @@ at::Tensor AtenSelectBackward(const at::Tensor& grad_output,
 //     AlgebraicSimplifier to fold recurrence accumulation loops in-place.
 //   - `stablehlo.pad` with `interior_pad = step - 1` for strided slices (`step
 //   > 1`).
-at::Tensor AtenSliceBackward(const at::Tensor& grad_output,
-                             at::IntArrayRef input_sizes, int64_t dim,
-                             int64_t start, int64_t end, int64_t step);
+[[nodiscard]] at::Tensor AtenSliceBackward(const at::Tensor& grad_output,
+                                           at::IntArrayRef input_sizes,
+                                           int64_t dim, int64_t start,
+                                           int64_t end, int64_t step);
 
 }  // namespace torch_tpu
 

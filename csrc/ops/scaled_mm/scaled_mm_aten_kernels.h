@@ -27,12 +27,11 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenScaledMm(const at::Tensor& self, const at::Tensor& mat2,
-                        const at::Tensor& scale_a, const at::Tensor& scale_b,
-                        const std::optional<at::Tensor>& bias,
-                        const std::optional<at::Tensor>& scale_result,
-                        std::optional<at::ScalarType> out_dtype,
-                        bool use_fast_accum);
+[[nodiscard]] at::Tensor AtenScaledMm(
+    const at::Tensor& self, const at::Tensor& mat2, const at::Tensor& scale_a,
+    const at::Tensor& scale_b, const std::optional<at::Tensor>& bias,
+    const std::optional<at::Tensor>& scale_result,
+    std::optional<at::ScalarType> out_dtype, bool use_fast_accum);
 
 at::Tensor& AtenScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
                             const at::Tensor& scale_a,
@@ -48,14 +47,14 @@ at::Tensor& AtenScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
 // registration aborts at library load. Internal builds always track
 // torch head, so they take the >= 2.14 branch too.
 #if TT_TORCH_VERSION_GE(2, 14)
-at::Tensor AtenScaledMmV2(const at::Tensor& self, const at::Tensor& mat2,
-                          const at::ITensorListRef& scale_a,
-                          at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a,
-                          const at::ITensorListRef& scale_b,
-                          at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
-                          const std::optional<at::Tensor>& bias,
-                          std::optional<at::ScalarType> out_dtype,
-                          at::IntArrayRef contraction_dim, bool use_fast_accum);
+[[nodiscard]] at::Tensor AtenScaledMmV2(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
+    at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum);
 
 at::Tensor& AtenScaledMmV2Out(
     const at::Tensor& self, const at::Tensor& mat2,
@@ -66,13 +65,13 @@ at::Tensor& AtenScaledMmV2Out(
     std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
     bool use_fast_accum, at::Tensor& out);
 #else
-at::Tensor AtenScaledMmV2(const at::Tensor& self, const at::Tensor& mat2,
-                          at::TensorList scale_a, at::IntArrayRef recipe_a,
-                          at::IntArrayRef swizzle_a, at::TensorList scale_b,
-                          at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
-                          const std::optional<at::Tensor>& bias,
-                          std::optional<at::ScalarType> out_dtype,
-                          at::IntArrayRef contraction_dim, bool use_fast_accum);
+[[nodiscard]] at::Tensor AtenScaledMmV2(
+    const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
+    at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum);
 
 at::Tensor& AtenScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
                               at::TensorList scale_a, at::IntArrayRef recipe_a,

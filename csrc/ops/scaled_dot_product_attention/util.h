@@ -40,7 +40,7 @@ absl::Status ValidateFlashAttnConfig(const FlashAttnConfig& config,
 // Dropout needs a single `scalar_prefetch` operand: a 4-word SMEM buffer
 // holding the Philox {seed_lo, seed_hi, offset_lo, offset_hi}. Returns
 // `std::nullopt` when dropout is disabled.
-std::optional<kiln::ScalarPrefetchSpec> DropoutSeedSpec(
+[[nodiscard]] std::optional<kiln::ScalarPrefetchSpec> DropoutSeedSpec(
     const FlashAttnConfig& config);
 
 // Index map for the K / V blocks on a (batch, q_head, q_block, kv_block) grid.
@@ -48,21 +48,21 @@ std::optional<kiln::ScalarPrefetchSpec> DropoutSeedSpec(
 // therefore a function map) and, for causal attention, points skipped blocks
 // above the diagonal at block 0 so the pipeline prefetches what the next q row
 // will need.
-kiln::IndexMap KvBlockIndexMap(const FlashAttnConfig& config,
-                               const Tiling& tiling);
+[[nodiscard]] kiln::IndexMap KvBlockIndexMap(const FlashAttnConfig& config,
+                                             const Tiling& tiling);
 
 // Block shape of the bias: (1, 1, qt, kt), with 1 instead of qt / kt along a
 // broadcast query / key dim (e.g. a [B, 1, 1, S] key padding mask), which
 // `LoadBias` then broadcasts in VMEM.
-kiln::Shape BiasBlockShape(const FlashAttnConfig& config, const Tiling& tiling,
-                           kiln::DType dtype);
+[[nodiscard]] kiln::Shape BiasBlockShape(const FlashAttnConfig& config,
+                                         const Tiling& tiling,
+                                         kiln::DType dtype);
 
 // Input spec for the user attention bias on a (batch, q_head, q_block,
 // kv_block) grid, honouring `config.mask_broadcast_dims`. Returns
 // `std::nullopt` when there is no bias.
-std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
-                                         const Tiling& tiling,
-                                         kiln::DType dtype);
+[[nodiscard]] std::optional<kiln::InSpec> AttnBiasSpec(
+    const FlashAttnConfig& config, const Tiling& tiling, kiln::DType dtype);
 
 // -----------------------------------------------------------------------------
 // Kernel body helpers
@@ -70,24 +70,28 @@ std::optional<kiln::InSpec> AttnBiasSpec(const FlashAttnConfig& config,
 
 // Loads the f32 (rows, cols) bias sub-block at (row_offset, col_offset),
 // broadcasting a size-1 query / key dim (see `BiasBlockShape`).
-kiln::Tile LoadBias(kiln::VmemRef bias_ref, const FlashAttnConfig& config,
-                    int64_t row_offset, int64_t rows, int64_t col_offset,
-                    int64_t cols);
+[[nodiscard]] kiln::Tile LoadBias(kiln::VmemRef bias_ref,
+                                  const FlashAttnConfig& config,
+                                  int64_t row_offset, int64_t rows,
+                                  int64_t col_offset, int64_t cols);
 
 // Whether any sequence boundary masking is required for the given
 // configuration.
-bool NeedsPadMask(const FlashAttnConfig& config, const Tiling& tiling);
+[[nodiscard]] bool NeedsPadMask(const FlashAttnConfig& config,
+                                const Tiling& tiling);
 
 // True when the (row_block, col_block) tile pair touches or lies below the
 // diagonal, i.e. the tile contributes to a causal softmax.
-kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
-                               const Tiling& tiling);
+[[nodiscard]] kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block,
+                                             kiln::Scalar col_block,
+                                             const Tiling& tiling);
 
 // True when the (row_block, col_block) tile contains at least one element
 // strictly above the diagonal, i.e. whether a causal mask needs to be applied
 // to it. Tiles strictly below the diagonal need no masking.
-kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
-                                const Tiling& tiling);
+[[nodiscard]] kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block,
+                                              kiln::Scalar col_block,
+                                              const Tiling& tiling);
 
 // Whether `ApplyStructuredMask` masks out the logits of query rows past the end
 // of the query sequence.
@@ -102,7 +106,7 @@ enum class QueryTailMasking {
 // either sequence for the sub-block starting at (row_offset, col_offset)
 // within the (row_block, col_block) grid tile. Returns `s` untouched when no
 // masking is required.
-kiln::Tile ApplyStructuredMask(
+[[nodiscard]] kiln::Tile ApplyStructuredMask(
     kiln::Tile s, kiln::Scalar row_block, kiln::Scalar col_block,
     const FlashAttnConfig& config, const Tiling& tiling, int64_t row_offset = 0,
     int64_t col_offset = 0,
@@ -111,10 +115,12 @@ kiln::Tile ApplyStructuredMask(
 // log2-scaled logits for one (q, k) tile pair:
 //   s = (q @ k^T) * scale * log2(e) [+ bias * log2(e)]
 // with causal / sequence-padding masking applied. Returns an f32 (qt, kt) tile.
-kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
-                         std::optional<kiln::VmemRef> bias_ref,
-                         kiln::Scalar row_block, kiln::Scalar col_block,
-                         const FlashAttnConfig& config, const Tiling& tiling);
+[[nodiscard]] kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
+                                       std::optional<kiln::VmemRef> bias_ref,
+                                       kiln::Scalar row_block,
+                                       kiln::Scalar col_block,
+                                       const FlashAttnConfig& config,
+                                       const Tiling& tiling);
 
 // Builds a stateless, tile-size-invariant dropout keep mask: an i1 (rows, cols)
 // tile (true = keep, false = drop) for the sub-block starting at
@@ -130,17 +136,16 @@ kiln::Tile ComputeLogits(kiln::Tile q, kiln::Tile k,
 // the same positions.
 //
 // `q_head` must be the *query* head index.
-kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
-                           kiln::Scalar batch, kiln::Scalar q_head,
-                           kiln::Scalar row_block, kiln::Scalar col_block,
-                           kiln::SmemRef seed_ref, int64_t row_offset = 0,
-                           int64_t col_offset = 0, int64_t rows = 0,
-                           int64_t cols = 0);
+[[nodiscard]] kiln::Tile DropoutKeepMask(
+    const FlashAttnConfig& config, const Tiling& tiling, kiln::Scalar batch,
+    kiln::Scalar q_head, kiln::Scalar row_block, kiln::Scalar col_block,
+    kiln::SmemRef seed_ref, int64_t row_offset = 0, int64_t col_offset = 0,
+    int64_t rows = 0, int64_t cols = 0);
 
 // Inverted dropout: kept entries of `t` are rescaled by 1 / (1 - p), dropped
 // entries are zeroed.
-kiln::Tile ApplyDropout(kiln::Tile t, kiln::Tile keep,
-                        const FlashAttnConfig& config);
+[[nodiscard]] kiln::Tile ApplyDropout(kiln::Tile t, kiln::Tile keep,
+                                      const FlashAttnConfig& config);
 
 }  // namespace torch_tpu
 

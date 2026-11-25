@@ -68,7 +68,7 @@ struct PadDimension {
 };
 static_assert(sizeof(PadDimension) == 24, "");
 
-bool operator==(const PadDimension& lhs, const PadDimension& rhs);
+[[nodiscard]] bool operator==(const PadDimension& lhs, const PadDimension& rhs);
 
 // Formats the pad dimension like "(low=1, high=2, interior=3)".
 std::ostream& operator<<(std::ostream& os, const PadDimension& dim);
@@ -89,7 +89,7 @@ struct PadPrimitive {
 // PadPrimitive struct below 64 bytes (one cache line on most x86 CPUs).
 static_assert(sizeof(PadPrimitive) == 24, "");
 
-bool operator==(const PadPrimitive& lhs, const PadPrimitive& rhs);
+[[nodiscard]] bool operator==(const PadPrimitive& lhs, const PadPrimitive& rhs);
 
 // Formats the pad like
 // "pad([(low=1, high=2, interior=3), (low=4, high=5, interior=6)])".
