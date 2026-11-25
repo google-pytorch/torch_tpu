@@ -79,7 +79,6 @@ constexpr int64_t kBlock = 512;
 // HBM tiles are (8, 128) for both f32 and bf16. bf16 VMEM tiles have 16 rows,
 // but a copy rounded up to them would run past the end of the HBM buffer.
 constexpr int64_t kHbmRows = 8;
-constexpr int64_t kLanes = 128;
 // Mosaic splits a static parallel grid axis across the TensorCores of a
 // megacore chip, and runs its programs one after the other elsewhere.
 constexpr int64_t kNumPrograms = 2;
@@ -255,8 +254,7 @@ std::vector<xla::Shape> MatmulParameters(const ElementType dtype) {
       dtype == ElementType::BF16 ? xla::BF16 : xla::F32,
       {xla::Shape::kUnboundedSize, xla::Shape::kUnboundedSize}, {true, true});
   *matrix.mutable_layout() = MatrixLayout(dtype);
-  xla::Shape dimensions = xla::ShapeUtil::MakeShape(xla::S32, {2});
-  *dimensions.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
+  const xla::Shape dimensions = MakeRuntimeDimsShape(2);
   return {matrix, matrix, matrix, dimensions, dimensions, dimensions};
 }
 

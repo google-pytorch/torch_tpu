@@ -22,9 +22,11 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
@@ -33,6 +35,8 @@
 #include "csrc/common/shape.h"
 #include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
+#include "csrc/ops/op_names.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -75,6 +79,10 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
       /*context=*/"failed to compile the Mosaic kernel");
 }
 
+xla::Layout Default1DLayout(const int64_t tile_minor) {
+  return xla::Layout({0}, {xla::Tile({tile_minor})});
+}
+
 xla::Shape MakeUnboundedShape(const xla::PrimitiveType type, const int64_t rank,
                               absl::Span<const xla::Tile> tiles) {
   xla::Shape shape = xla::ShapeUtil::MakeShape(
@@ -84,6 +92,75 @@ xla::Shape MakeUnboundedShape(const xla::PrimitiveType type, const int64_t rank,
     *shape.mutable_layout()->add_tiles() = tile;
   }
   return shape;
+}
+
+xla::Shape MakeS32RowViewShape() {
+  return MakeUnboundedShape(xla::S32, /*rank=*/2, {xla::Tile({1, kLanes})});
+}
+
+xla::Shape MakeRuntimeDimsShape(const int64_t rank) {
+  xla::Shape dims = xla::ShapeUtil::MakeShape(xla::S32, {rank});
+  *dims.mutable_layout() = Default1DLayout(kLanes);
+  return dims;
+}
+
+UnboundedDynamicExecutionMetadata MakeUnaryDonatedOutputMetadata(
+    std::vector<xla::Shape> pjrt_param_shapes,
+    UnboundedDynamicExecutionMetadata::PhysicalOutputShapeFunc
+        physical_shape_fn,
+    UnboundedDynamicExecutionMetadata::OutputTransform output_transform,
+    UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible) {
+  ABSL_CHECK_EQ(  // CRASH_OK=static-init registration bug
+      pjrt_param_shapes.size(), 4)
+      << "A unary donated-output kernel must have 4 PJRT parameters. This is a "
+         "TorchTPU bug.";
+  return UnboundedDynamicExecutionMetadata{
+      .logical_input_to_pjrt_param = {0},
+      .donated_output_params =
+          {
+              UnboundedDynamicExecutionMetadata::DonatedOutputParam{
+                  .logical_output_idx = 0,
+                  .pjrt_param_idx = 1,
+                  .physical_shape_fn = std::move(physical_shape_fn),
+              },
+          },
+      .metadata_params =
+          {
+              UnboundedDynamicExecutionMetadata::MetadataParamBinding{
+                  .buffer_pjrt_idx = 0,  // Input -> its dimensions
+                  .shape_pjrt_idx = 2,
+              },
+              UnboundedDynamicExecutionMetadata::MetadataParamBinding{
+                  .buffer_pjrt_idx = 1,  // Output view -> its dimensions
+                  .shape_pjrt_idx = 3,
+              },
+          },
+      .pjrt_param_shapes = std::move(pjrt_param_shapes),
+      .output_transform = std::move(output_transform),
+      .is_compatible = std::move(is_compatible),
+  };
+}
+
+ExtentlessKey UnaryOpExtentlessKey(const OpName op_name, const int64_t in_rank,
+                                   const mlir::ElementType in_dtype,
+                                   const int64_t out_rank,
+                                   const mlir::ElementType out_dtype) {
+  // Only ranks and dtypes reach the extentless key, so extents are
+  // placeholders.
+  const Dimensions in_dims(in_rank, -1);
+  const Dimensions out_dims(out_rank, -1);
+  GraphSignature graph;
+  graph.SetCorePinningMode(CorePinningMode::kUnpinned);
+  const int in = graph.AddInput(in_dims, in_dtype);
+  int out = -1;
+  graph.AddOp(
+      op_name, OpParamCacheKeys::Empty(), /*donated_inputs=*/{},
+      [in, &out, &out_dims, out_dtype](GraphSignature::OpSignatureBuilder& op) {
+        op.AddInput(in);
+        out = op.AddOutput(out_dims, out_dtype);
+      });
+  graph.AddGraphOutput(out);
+  return graph.GetKey().extentless_key();
 }
 
 bool HasDeviceLayouts(absl::Span<const Shape> shapes,

@@ -71,6 +71,7 @@ torch_tpu_cc_library(
     deps = [
         ":mosaic_custom_call",
         "//csrc/common:cache_key",
+        "//csrc/common:compilation",
         "//csrc/common:compilation_spec",
         "//csrc/common:compile_options_key",
         "//csrc/common:dimension_types",
@@ -78,8 +79,11 @@ torch_tpu_cc_library(
         "//csrc/common:layout_utils",
         "//csrc/common:shape",
         "//csrc/internal/mosaic/kiln",
+        "//csrc/ops:op_names",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/client:executable_build_options",
@@ -87,6 +91,18 @@ torch_tpu_cc_library(
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "stream_compaction",
+    srcs = ["stream_compaction.cc"],
+    hdrs = ["stream_compaction.h"],
+    deps = [
+        ":kernel_utils",
+        "//csrc/internal/mosaic/kiln",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -125,7 +141,7 @@ torch_tpu_cc_library(
     deps = [
         ":kernel_utils",
         ":mosaic_custom_call",
-        "//csrc/common:cache_key",
+        ":stream_compaction",
         "//csrc/common:compilation",
         "//csrc/common:compilation_spec",
         "//csrc/common:dimension_types",
@@ -140,7 +156,6 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/functional:any_invocable",
-        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
@@ -167,6 +182,22 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log:absl_check",
     ],
     alwayslink = True,
+)
+
+torch_tpu_cc_test(
+    name = "kernel_utils_test",
+    srcs = ["kernel_utils_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    deps = [
+        ":kernel_utils",
+        "//csrc/common:cache_key",
+        "//csrc/common:oss_test_main",
+        "//csrc/ops:op_names",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+    ],
 )
 
 torch_tpu_cc_test(
