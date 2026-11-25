@@ -155,19 +155,35 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
       mask_batch=1,
       rows=slice(None),
       block_mask=None,
+      kiln=False,
   ):
-    """Runs the kernel and compares (out, lse) with the CPU reference."""
+    """Runs the kernel and compares (out, lse) with the CPU reference.
+
+    `kiln` calls the Kiln op directly, also where flex_attention_fwd would use
+    flash attention.
+    """
     scale = q.shape[-1] ** -0.5
     if block_mask is None:
       block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2], k.shape[-2])
-    out, lse = flex_attention.flex_attention_fwd(
-        q,
-        k,
-        v,
-        block_mask,
-        scale=scale,
-        score_mod=score_mod,
-    )
+    if kiln:
+      out, lse = torch.ops.tpu._flex_attention_fwd(
+          q,
+          k,
+          v,
+          *flex_attention.kernel_args(
+              q, k, v, block_mask, scale=scale, score_mod=score_mod
+          ),
+      )
+      lse = lse.reshape(q.shape[:3])
+    else:
+      out, lse = flex_attention.flex_attention_fwd(
+          q,
+          k,
+          v,
+          block_mask,
+          scale=scale,
+          score_mod=score_mod,
+      )
     self.assertEqual(out.dtype, q.dtype)
     self.assertEqual(lse.dtype, torch.float32)
     ref_out, ref_lse = _reference(
@@ -188,12 +204,12 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
   )
   def test_matches_reference(self, dtype, mask_mod):
     q, k, v = self._inputs(1, 2, 2, 2048, 128, dtype)
-    self._check(q, k, v, mask_mod)
+    self._check(q, k, v, mask_mod, kiln=True)
 
   def test_single_tile(self):
     # The first and last KV step of a row are the same grid step.
     q, k, v = self._inputs(1, 2, 2, _BLOCK, 128, torch.float32)
-    self._check(q, k, v, fa.noop_mask)
+    self._check(q, k, v, fa.noop_mask, kiln=True)
 
   def test_batched_gqa(self):
     # The block mask is shared across the batch (mask_batch=1).
@@ -355,6 +371,17 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     q, _, _ = self._inputs(1, 2, 2, 3072, 128, torch.float32)
     _, k, v = self._inputs(1, 2, 2, 4096, 128, torch.float32)
     self._check_dkv(q, k, v, _causal_offset)
+
+  def test_dense_uses_flash_attention(self):
+    q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.bfloat16)
+    out, _ = self._check(q, k, v, fa.noop_mask)
+    # Bit-exact with F.sdpa: dense attention ran flash attention.
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, scale=q.shape[-1] ** -0.5
+    )
+    test_utils.assert_close(out, expected.cpu().float(), atol=0, rtol=0)
+    # A score_mod keeps dense attention on the Kiln kernel.
+    self._check(q, k, v, fa.noop_mask, score_mod=_alibi)
 
 
 if __name__ == "__main__":

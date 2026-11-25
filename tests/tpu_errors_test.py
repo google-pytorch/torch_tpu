@@ -6205,9 +6205,7 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
   @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
   def test_non_tile_aligned_sequence(self):
     q, k, v = self._inputs(1024)
-    block_mask = flex_attention.create_block_mask(
-        flex_attention.noop_mask, 1, 1, 1024, 1024, device="cpu"
-    )
+    block_mask = self._causal_mask()
     with et.assert_raises_message(
         RuntimeError,
         tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=1024)""",

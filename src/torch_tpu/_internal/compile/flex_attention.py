@@ -222,6 +222,20 @@ def kernel_args(
   )
 
 
+def _is_dense(
+    block_mask: fa.BlockMask,
+    score_mod: Callable[..., torch.Tensor] | None,
+    kv_len: int,
+) -> bool:
+  """True if no score is masked or modified, from the block tables alone."""
+  if score_mod is not None or block_mask.mask_mod is not fa.noop_mask:
+    return False
+  num_blocks = block_mask.kv_num_blocks
+  if block_mask.full_kv_num_blocks is not None:
+    num_blocks = num_blocks + block_mask.full_kv_num_blocks
+  return bool(torch.all(num_blocks.eq(kv_len // block_mask.BLOCK_SIZE[1])))
+
+
 def flex_attention_fwd(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -246,6 +260,12 @@ def flex_attention_fwd(
     `(out, lse)`: out is [B, Hq, T, Dv] in query's dtype; lse is f32
     [B, Hq, T] in log2 units, matching the flex_attention HOP contract.
   """
+  if _is_dense(block_mask, score_mod, key.shape[-2]):
+    # Flash attention is faster here; its lse is also in log2 units.
+    out, lse = torch.ops.aten._scaled_dot_product_cudnn_attention(
+        query, key, value, None, True, scale=scale
+    )[:2]
+    return out, lse.reshape(query.shape[:3])
   out, lse = torch.ops.tpu._flex_attention_fwd(
       query,
       key,
