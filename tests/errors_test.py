@@ -34,7 +34,7 @@ Tests that don't belong in this file:
 - Anything whose main focus isn't the actual error message.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import re
 from typing import Any
 import unittest
@@ -61,6 +61,142 @@ _INDEX_INTERNAL_ASSERTION_ERROR_RE = re.compile(
 # - TpuVsGpuErrorTest.test_lstm_input_invalid_dropout
 _DROPOUT_INTERNAL_ASSERTION_ERROR_RE = re.compile(
     r"""dropout > 0 INTERNAL ASSERT FAILED .*""",
+)
+
+# Shared `(testcase_name, call_op, op_name)` cases for binary foreach list
+# validation tests (`test_foreach_empty_tensor_list` and
+# `test_foreach_list_length_mismatch`). Explicit `torch.ops.aten.*.List`
+# overloads avoid Python binding `([t], [])` to `.ScalarList`. `_foreach_copy_`
+# is tested separately outside `torch.inference_mode()`.
+_FOREACH_BINARY_LIST_OPS: tuple[
+    tuple[
+        str,
+        Callable[[Sequence[torch.Tensor], Sequence[torch.Tensor]], Any],
+        str,
+    ],
+    ...,
+] = (
+    ("add", torch.ops.aten._foreach_add.List, "foreach_add"),
+    ("add_inplace", torch.ops.aten._foreach_add_.List, "foreach_add_"),
+    ("sub", torch.ops.aten._foreach_sub.List, "foreach_sub"),
+    ("sub_inplace", torch.ops.aten._foreach_sub_.List, "foreach_sub_"),
+    ("mul", torch.ops.aten._foreach_mul.List, "foreach_mul"),
+    ("mul_inplace", torch.ops.aten._foreach_mul_.List, "foreach_mul_"),
+    ("div", torch.ops.aten._foreach_div.List, "foreach_div"),
+    ("div_inplace", torch.ops.aten._foreach_div_.List, "foreach_div_"),
+    ("pow", torch.ops.aten._foreach_pow.List, "foreach_pow"),
+    ("pow_inplace", torch.ops.aten._foreach_pow_.List, "foreach_pow_"),
+    ("clamp_min", torch.ops.aten._foreach_clamp_min.List, "foreach_clamp_min"),
+    (
+        "clamp_min_inplace",
+        torch.ops.aten._foreach_clamp_min_.List,
+        "foreach_clamp_min_",
+    ),
+    ("clamp_max", torch.ops.aten._foreach_clamp_max.List, "foreach_clamp_max"),
+    (
+        "clamp_max_inplace",
+        torch.ops.aten._foreach_clamp_max_.List,
+        "foreach_clamp_max_",
+    ),
+    ("maximum", torch.ops.aten._foreach_maximum.List, "foreach_maximum"),
+    (
+        "maximum_inplace",
+        torch.ops.aten._foreach_maximum_.List,
+        "foreach_maximum_",
+    ),
+    ("minimum", torch.ops.aten._foreach_minimum.List, "foreach_minimum"),
+    (
+        "minimum_inplace",
+        torch.ops.aten._foreach_minimum_.List,
+        "foreach_minimum_",
+    ),
+    (
+        "lerp_scalar",
+        lambda a, b: torch._foreach_lerp(a, b, 0.5),
+        "foreach_lerp",
+    ),
+    (
+        "lerp_scalar_inplace",
+        lambda a, b: torch._foreach_lerp_(a, b, 0.5),
+        "foreach_lerp_",
+    ),
+    (
+        "lerp_scalarlist",
+        lambda a, b: torch._foreach_lerp(a, b, [0.5] * max(len(a), 1)),
+        "foreach_lerp",
+    ),
+    (
+        "lerp_scalarlist_inplace",
+        lambda a, b: torch._foreach_lerp_(a, b, [0.5] * max(len(a), 1)),
+        "foreach_lerp_",
+    ),
+)
+
+# Shared `(testcase_name, call_op, op_name)` cases for ternary foreach list
+# validation tests (`test_foreach_ternary_empty_tensor_list` and
+# `test_foreach_ternary_list_length_mismatch`). Explicit `torch.ops.aten.*.List`
+# overloads avoid Python binding `([t], [t], [])` to `.ScalarList`.
+_FOREACH_TERNARY_LIST_OPS: tuple[
+    tuple[
+        str,
+        Callable[
+            [
+                Sequence[torch.Tensor],
+                Sequence[torch.Tensor],
+                Sequence[torch.Tensor],
+            ],
+            Any,
+        ],
+        str,
+    ],
+    ...,
+] = (
+    ("lerp_list", torch.ops.aten._foreach_lerp.List, "foreach_lerp"),
+    ("lerp_list_inplace", torch.ops.aten._foreach_lerp_.List, "foreach_lerp_"),
+    (
+        "addcmul_scalar",
+        lambda a, b, c: torch._foreach_addcmul(a, b, c, value=2.0),
+        "foreach_addcmul",
+    ),
+    (
+        "addcmul_scalar_inplace",
+        lambda a, b, c: torch._foreach_addcmul_(a, b, c, value=2.0),
+        "foreach_addcmul_",
+    ),
+    (
+        "addcmul_scalarlist",
+        lambda a, b, c: torch._foreach_addcmul(a, b, c, [2.0] * max(len(a), 1)),
+        "foreach_addcmul",
+    ),
+    (
+        "addcmul_scalarlist_inplace",
+        lambda a, b, c: torch._foreach_addcmul_(
+            a, b, c, [2.0] * max(len(a), 1)
+        ),
+        "foreach_addcmul_",
+    ),
+    (
+        "addcdiv_scalar",
+        lambda a, b, c: torch._foreach_addcdiv(a, b, c, value=2.0),
+        "foreach_addcdiv",
+    ),
+    (
+        "addcdiv_scalar_inplace",
+        lambda a, b, c: torch._foreach_addcdiv_(a, b, c, value=2.0),
+        "foreach_addcdiv_",
+    ),
+    (
+        "addcdiv_scalarlist",
+        lambda a, b, c: torch._foreach_addcdiv(a, b, c, [2.0] * max(len(a), 1)),
+        "foreach_addcdiv",
+    ),
+    (
+        "addcdiv_scalarlist_inplace",
+        lambda a, b, c: torch._foreach_addcdiv_(
+            a, b, c, [2.0] * max(len(a), 1)
+        ),
+        "foreach_addcdiv_",
+    ),
 )
 
 
@@ -6452,55 +6588,293 @@ Supported combinations for non-constant padding:
     ):
       torch._foreach_pow(True, [t])
 
-  def test_foreach_pow_empty_tensor_list(self):
+  @parameterized.named_parameters(*_FOREACH_BINARY_LIST_OPS)
+  def test_foreach_empty_tensor_list(
+      self,
+      call_op: Callable[[Sequence[torch.Tensor], Sequence[torch.Tensor]], Any],
+      op_name: str,
+  ):
     t = torch.tensor([2.0], dtype=torch.float32, device=et.device())
     with torch.inference_mode():
+      for self_list, other_list in (([], [t]), ([t], [])):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{op_name}(): expected tensor list to have at least one tensor, got an empty list""",
+            gpu="""Tensor list must have at least one tensor.""",
+        ):
+          call_op(self_list, other_list)
+
+  @parameterized.named_parameters(*_FOREACH_BINARY_LIST_OPS)
+  def test_foreach_list_length_mismatch(
+      self,
+      call_op: Callable[[Sequence[torch.Tensor], Sequence[torch.Tensor]], Any],
+      op_name: str,
+  ):
+    with torch.inference_mode():
+      for num_self, num_other in ((1, 2), (2, 1)):
+        self_list = [
+            torch.tensor([2.0], dtype=torch.float32, device=et.device())
+            for _ in range(num_self)
+        ]
+        other_list = [
+            torch.tensor([2.0], dtype=torch.float32, device=et.device())
+            for _ in range(num_other)
+        ]
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{op_name}(): expected tensor lists to have the same number of tensors, got {num_self} and {num_other}""",
+            gpu=f"""Tensor lists must have the same number of tensors, got {num_self} and {num_other}""",
+        ):
+          call_op(self_list, other_list)
+
+  def test_foreach_copy_empty_tensor_list(self):
+    # Tested outside `torch.inference_mode()` because `_foreach_copy_` has no
+    # autograd list-length check and dispatches directly to the backend kernel.
+    t = torch.tensor([2.0], dtype=torch.float32, device=et.device())
+    for self_list, src_list in (([], [t]), ([t], [])):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""foreach_pow(): expected tensor list to have at least one tensor, got an empty list""",
+          tpu="""foreach_copy_(): expected tensor list to have at least one tensor, got an empty list""",
           gpu="""Tensor list must have at least one tensor.""",
       ):
-        torch._foreach_pow([], [t])
+        torch._foreach_copy_(self_list, src_list)
 
+  def test_foreach_copy_list_length_mismatch(self):
+    # Tested outside `torch.inference_mode()` because `_foreach_copy_` has no
+    # autograd list-length check and dispatches directly to the backend kernel.
+    for num_self, num_src in ((1, 2), (2, 1)):
+      self_list = [
+          torch.tensor([2.0], dtype=torch.float32, device=et.device())
+          for _ in range(num_self)
+      ]
+      src_list = [
+          torch.tensor([3.0], dtype=torch.float32, device=et.device())
+          for _ in range(num_src)
+      ]
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""foreach_pow_(): expected tensor list to have at least one tensor, got an empty list""",
-          gpu="""Tensor list must have at least one tensor.""",
+          tpu=f"""foreach_copy_(): expected tensor lists to have the same number of tensors, got {num_self} and {num_src}""",
+          gpu=f"""Tensor lists must have the same number of tensors, got {num_self} and {num_src}""",
       ):
-        torch._foreach_pow_([], [t])
+        torch._foreach_copy_(self_list, src_list)
 
-  def test_foreach_pow_list_length_mismatch(self):
+  @parameterized.named_parameters(*_FOREACH_TERNARY_LIST_OPS)
+  def test_foreach_ternary_empty_tensor_list(
+      self,
+      call_op: Callable[
+          [
+              Sequence[torch.Tensor],
+              Sequence[torch.Tensor],
+              Sequence[torch.Tensor],
+          ],
+          Any,
+      ],
+      op_name: str,
+  ):
     t = torch.tensor([2.0], dtype=torch.float32, device=et.device())
     with torch.inference_mode():
+      for self_list, t1_list, t2_list in (
+          ([], [t], [t]),
+          ([t], [], [t]),
+          ([t], [t], []),
+      ):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{op_name}(): expected tensor list to have at least one tensor, got an empty list""",
+            gpu="""Tensor list must have at least one tensor.""",
+        ):
+          call_op(self_list, t1_list, t2_list)
+
+  @parameterized.named_parameters(*_FOREACH_TERNARY_LIST_OPS)
+  def test_foreach_ternary_list_length_mismatch(
+      self,
+      call_op: Callable[
+          [
+              Sequence[torch.Tensor],
+              Sequence[torch.Tensor],
+              Sequence[torch.Tensor],
+          ],
+          Any,
+      ],
+      op_name: str,
+  ):
+    with torch.inference_mode():
+      for num_self, num_t1, num_t2, mismatched in (
+          (1, 2, 1, 2),
+          (2, 1, 2, 1),
+          (1, 1, 2, 2),
+          (2, 2, 1, 1),
+      ):
+        self_list = [
+            torch.tensor([2.0], dtype=torch.float32, device=et.device())
+            for _ in range(num_self)
+        ]
+        t1_list = [
+            torch.tensor([2.0], dtype=torch.float32, device=et.device())
+            for _ in range(num_t1)
+        ]
+        t2_list = [
+            torch.tensor([2.0], dtype=torch.float32, device=et.device())
+            for _ in range(num_t2)
+        ]
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{op_name}(): expected tensor lists to have the same number of tensors, got {num_self} and {mismatched}""",
+            gpu=f"""Tensor lists must have the same number of tensors, got {num_self} and {mismatched}""",
+        ):
+          call_op(self_list, t1_list, t2_list)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="add",
+          op=torch.ops.aten._foreach_add.ScalarList,
+          op_name="foreach_add",
+      ),
+      dict(
+          testcase_name="add_inplace",
+          op=torch.ops.aten._foreach_add_.ScalarList,
+          op_name="foreach_add_",
+      ),
+      dict(
+          testcase_name="sub",
+          op=torch.ops.aten._foreach_sub.ScalarList,
+          op_name="foreach_sub",
+      ),
+      dict(
+          testcase_name="sub_inplace",
+          op=torch.ops.aten._foreach_sub_.ScalarList,
+          op_name="foreach_sub_",
+      ),
+      dict(
+          testcase_name="mul",
+          op=torch.ops.aten._foreach_mul.ScalarList,
+          op_name="foreach_mul",
+      ),
+      dict(
+          testcase_name="mul_inplace",
+          op=torch.ops.aten._foreach_mul_.ScalarList,
+          op_name="foreach_mul_",
+      ),
+      dict(
+          testcase_name="div",
+          op=torch.ops.aten._foreach_div.ScalarList,
+          op_name="foreach_div",
+      ),
+      dict(
+          testcase_name="div_inplace",
+          op=torch.ops.aten._foreach_div_.ScalarList,
+          op_name="foreach_div_",
+      ),
+      dict(
+          testcase_name="pow",
+          op=torch.ops.aten._foreach_pow.ScalarList,
+          op_name="foreach_pow",
+      ),
+      dict(
+          testcase_name="pow_inplace",
+          op=torch.ops.aten._foreach_pow_.ScalarList,
+          op_name="foreach_pow_",
+      ),
+      dict(
+          testcase_name="clamp_min",
+          op=torch.ops.aten._foreach_clamp_min.ScalarList,
+          op_name="foreach_clamp_min",
+      ),
+      dict(
+          testcase_name="clamp_min_inplace",
+          op=torch.ops.aten._foreach_clamp_min_.ScalarList,
+          op_name="foreach_clamp_min_",
+      ),
+      dict(
+          testcase_name="clamp_max",
+          op=torch.ops.aten._foreach_clamp_max.ScalarList,
+          op_name="foreach_clamp_max",
+      ),
+      dict(
+          testcase_name="clamp_max_inplace",
+          op=torch.ops.aten._foreach_clamp_max_.ScalarList,
+          op_name="foreach_clamp_max_",
+      ),
+      dict(
+          testcase_name="maximum",
+          op=torch.ops.aten._foreach_maximum.ScalarList,
+          op_name="foreach_maximum",
+      ),
+      dict(
+          testcase_name="maximum_inplace",
+          op=torch.ops.aten._foreach_maximum_.ScalarList,
+          op_name="foreach_maximum_",
+      ),
+      dict(
+          testcase_name="minimum",
+          op=torch.ops.aten._foreach_minimum.ScalarList,
+          op_name="foreach_minimum",
+      ),
+      dict(
+          testcase_name="minimum_inplace",
+          op=torch.ops.aten._foreach_minimum_.ScalarList,
+          op_name="foreach_minimum_",
+      ),
+      dict(
+          testcase_name="lerp",
+          op=torch.ops.aten._foreach_lerp.ScalarList,
+          op_name="foreach_lerp",
+          num_other_tensor_lists=1,
+      ),
+      dict(
+          testcase_name="lerp_inplace",
+          op=torch.ops.aten._foreach_lerp_.ScalarList,
+          op_name="foreach_lerp_",
+          num_other_tensor_lists=1,
+      ),
+      dict(
+          testcase_name="addcmul",
+          op=torch.ops.aten._foreach_addcmul.ScalarList,
+          op_name="foreach_addcmul",
+          num_other_tensor_lists=2,
+      ),
+      dict(
+          testcase_name="addcmul_inplace",
+          op=torch.ops.aten._foreach_addcmul_.ScalarList,
+          op_name="foreach_addcmul_",
+          num_other_tensor_lists=2,
+      ),
+      dict(
+          testcase_name="addcdiv",
+          op=torch.ops.aten._foreach_addcdiv.ScalarList,
+          op_name="foreach_addcdiv",
+          num_other_tensor_lists=2,
+      ),
+      dict(
+          testcase_name="addcdiv_inplace",
+          op=torch.ops.aten._foreach_addcdiv_.ScalarList,
+          op_name="foreach_addcdiv_",
+          num_other_tensor_lists=2,
+      ),
+  )
+  def test_foreach_scalar_list_length_mismatch(
+      self,
+      op: Callable[..., Any],
+      op_name: str,
+      num_other_tensor_lists: int = 0,
+  ):
+    # Covers a scalar list longer than the tensor list, shorter, and empty.
+    for num_tensors, num_scalars in ((1, 2), (2, 1), (1, 0)):
+      tensors = [
+          torch.tensor([2.0], dtype=torch.float32, device=et.device())
+          for _ in range(num_tensors)
+      ]
+      # The tensor lists after `self` (e.g. `tensor1` and `tensor2` of
+      # `_foreach_addcmul`) have the same length as `self`.
+      tensor_lists = [tensors] * (1 + num_other_tensor_lists)
+      scalars = [2.0] * num_scalars
+
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""foreach_pow(): expected tensor lists to have the same number of tensors, got 1 and 2""",
-          gpu="""Tensor lists must have the same number of tensors, got 1 and 2""",
+          tpu=f"""{op_name}(): expected tensor list to have the same number of elements as scalar list, got {num_tensors} and {num_scalars}""",
+          gpu="""Tensor list must have same number of elements as scalar list.""",
       ):
-        torch._foreach_pow([t], [t, t])
-
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""foreach_pow_(): expected tensor lists to have the same number of tensors, got 1 and 2""",
-          gpu="""Tensor lists must have the same number of tensors, got 1 and 2""",
-      ):
-        torch._foreach_pow_([t], [t, t])
-
-  def test_foreach_pow_scalar_list_length_mismatch(self):
-    t = torch.tensor([2.0], dtype=torch.float32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""foreach_pow(): expected tensor list to have the same number of elements as scalar list, got 1 and 2""",
-        gpu="""Tensor list must have same number of elements as scalar list.""",
-    ):
-      torch._foreach_pow([t], [2.0, 3.0])
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""foreach_pow_(): expected tensor list to have the same number of elements as scalar list, got 1 and 2""",
-        gpu="""Tensor list must have same number of elements as scalar list.""",
-    ):
-      torch._foreach_pow_([t], [2.0, 3.0])
+        op(*tensor_lists, scalars)
 
   def test_foreach_pow_negative_integer_scalar_exponent(self):
     x = torch.tensor([2, 3], dtype=torch.int32, device=et.device())
