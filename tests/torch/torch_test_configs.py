@@ -245,6 +245,8 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_ConvTranspose2d_size_1_kernel",
             "test_conv1d_vs_scipy",
             # TODO(b/587476687): Re-enable once conv preserves channels_last.
+            "test_conv2d_depthwise_large_filter",
+            # TODO(b/587476687): Re-enable once conv preserves channels_last.
             "test_conv2d_nhwc",
             "test_conv2d_vs_scipy",
             # TODO(b/587476687): Re-enable once conv preserves channels_last_3d.
@@ -369,6 +371,9 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
         "TestFloat4Dtype": [
             "test_cast_raises_on_host",
             "test_float4_e2m1fn_x2",
+            # TPU stores float4_e2m1fn_x2 unpacked along the stride-1 dim, so
+            # transposed views do not preserve packed-byte equality.
+            "test_float4_e2m1fn_x2_bytes",
         ],
         "TestFloat8Dtype": {
             "test_cast_round_trip": "*",
@@ -376,6 +381,9 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_creation_with_zeros": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
             "test_empty": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
             "test_float8_e8m0fnu_rne_rounding": "*",
+            # Renamed from test_float8_e8m0fnu_rne_rounding in PyTorch PR #204208;
+            # TPU float32 -> float8_e8m0fnu subnormal rounding differs.
+            "test_float8_e8m0fnu_rounding": "*",
             "test_save_load": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
             "test_special_numbers": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
             "test_to_string": {"dtypes": _FLOAT8_E5M3FNU_DTYPES},
@@ -489,6 +497,8 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_gru",
             "test_index_put_error",
             "test_lstm",
+            # Calls aten::upsample_trilinear3d.out, which is not yet implemented for TPU.
+            "test_upsample_channels_last_view_with_size1_batch",
         ],
     },
     "test_indexing": {
