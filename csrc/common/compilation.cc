@@ -34,6 +34,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
 #include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
@@ -175,6 +176,25 @@ CompiledDeviceShapes GetCompiledDeviceShapes(
   return result;
 }
 
+absl::StatusOr<std::string> ComputeUniqueIdentifier(
+    const xla::PjRtExecutable& executable) {
+  TT_ASSIGN_OR_RETURN(const std::string fingerprint,
+                      executable.FingerprintExecutable());
+  TT_ASSIGN_OR_RETURN(const xla::CompileOptions compile_options,
+                      executable.GetCompileOptions());
+  const xla::ExecutableBuildOptions& build_options =
+      compile_options.executable_build_options;
+  // Fingerprinted: a device assignment can have thousands of devices.
+  const std::string device_assignment =
+      build_options.has_device_assignment()
+          ? absl::StrCat(absl::Hex(
+                Fingerprint(build_options.device_assignment().ToString()),
+                absl::kZeroPad16))
+          : "none";
+  return absl::StrCat(absl::BytesToHexString(fingerprint),
+                      ";device_assignment=", device_assignment);
+}
+
 }  // namespace
 
 absl_nonnull std::unique_ptr<mlir::MLIRContext> MakeMlirContext() {
@@ -227,13 +247,16 @@ LoadedExecutableWithMetadata::MakeShared(
     }
   }
 
+  absl::StatusOr<std::string> unique_identifier =
+      ComputeUniqueIdentifier(*executable->GetExecutable());
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
       new LoadedExecutableWithMetadata(
           std::move(executable), std::move(device_shapes.parameters),
           std::make_shared<const std::vector<xla::Shape>>(
               std::move(output_shapes)),
-          output_shapes_kind, std::move(argument_indices),
-          std::move(dynamic_execution_metadata), std::move(subslice_origin)));
+          output_shapes_kind, std::move(unique_identifier),
+          std::move(argument_indices), std::move(dynamic_execution_metadata),
+          std::move(subslice_origin)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(

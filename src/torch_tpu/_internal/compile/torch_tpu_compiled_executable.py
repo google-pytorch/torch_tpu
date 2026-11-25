@@ -169,7 +169,8 @@ class CompiledArtifact(abc.ABC, OutputCode):
         else []
     )
 
-  def fingerprint(self) -> str:
+  def executable_unique_identifier(self) -> str:
+    """Returns the unique identifier of the executable."""
     return ""
 
   @property
@@ -648,8 +649,8 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
   def set_triton_bundle(self, triton_bundle: Any) -> None:
     pass
 
-  def fingerprint(self) -> str:
-    return self._executable.fingerprint_executable()
+  def executable_unique_identifier(self) -> str:
+    return self._executable.executable_unique_identifier()
 
 
 class AsyncCompiledArtifact(CompiledArtifact):
@@ -722,6 +723,11 @@ class AsyncCompiledArtifact(CompiledArtifact):
     """Resolves the background compilation and serializes the executable."""
     self._resolve()
     return self.__reduce__()
+
+  def executable_unique_identifier(self) -> str:
+    """Resolves the background compilation and returns its identifier."""
+    self._resolve()
+    return self.executable_unique_identifier()
 
 
 def _unpickle_noop_compiled_artifact(

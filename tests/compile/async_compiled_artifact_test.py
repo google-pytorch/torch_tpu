@@ -48,6 +48,9 @@ class DummyConcreteArtifact(CompiledArtifact):
   def custom_method(self, multiplier: int) -> int:
     return self.value * multiplier
 
+  def executable_unique_identifier(self) -> str:
+    return f"identifier_{self.value}"
+
 
 class AsyncCompiledArtifactTest(seed_test_utils.RepeatableTest):
 
@@ -143,6 +146,16 @@ class AsyncCompiledArtifactTest(seed_test_utils.RepeatableTest):
     restored = pickle.loads(pickled_data)
     self.assertIsInstance(restored, DummyConcreteArtifact)
     self.assertEqual(restored.value, 99)
+
+  def test_executable_unique_identifier_triggers_resolution(self):
+    future = concurrent.futures.Future()
+    future.set_result(DummyConcreteArtifact(value=7))
+
+    artifact = AsyncCompiledArtifact(future)
+    self.assertFalse(artifact.is_resolved)
+
+    self.assertEqual(artifact.executable_unique_identifier(), "identifier_7")
+    self.assertTrue(artifact.is_resolved)
 
   def test_aot_autograd_hooks_do_not_cause_resolution(self):
     future = concurrent.futures.Future()

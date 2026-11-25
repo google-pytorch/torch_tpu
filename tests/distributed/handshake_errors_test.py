@@ -61,7 +61,7 @@ def _make_request(
   })
   return CollectiveHandshakeRequest(
       pg_collective_counts=pg_counts,
-      executable_fingerprint=fingerprint,
+      executable_unique_identifier=fingerprint,
       rank=rank,
   )
 
@@ -140,7 +140,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     ):
       CollectiveHandshakeRequest(
           pg_collective_counts=RankCollectiveCounts(),
-          executable_fingerprint="fp",
+          executable_unique_identifier="fp",
           rank=0,
       )
 
@@ -154,13 +154,13 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     ):
       CollectiveHandshakeRequest(
           pg_collective_counts=pg_counts,
-          executable_fingerprint="fp",
+          executable_unique_identifier="fp",
           rank=4,
       )
     with self.assertRaisesRegex(ValueError, "rank must be non-negative"):
       CollectiveHandshakeRequest(
           pg_collective_counts=pg_counts,
-          executable_fingerprint="fp",
+          executable_unique_identifier="fp",
           rank=-1,
       )
 
@@ -348,7 +348,7 @@ class HandshakeServerTest(seed_test_utils.RepeatableTest):
       dict(
           testcase_name="non_integer_rank",
           payload=(
-              b'{"executable_fingerprint": "fp", "rank": 1.5,'
+              b'{"executable_unique_identifier": "fp", "rank": 1.5,'
               b' "pg_collective_counts": [[{"start": 0, "stop": 2}, 0, 2]]}'
           ),
       ),

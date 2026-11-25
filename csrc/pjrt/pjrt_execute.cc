@@ -34,7 +34,6 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "csrc/common/compilation.h"
@@ -295,16 +294,14 @@ absl::StatusOr<PjRtBufferPointers> Execute(
     const auto& hlo_module = hlo_modules[0];
 
     if (HloModuleContainsCollective(hlo_module.get())) {
-      TT_ASSIGN_OR_RETURN(
-          const std::string fingerprint,
-          executable->GetLoadedExecutable()->FingerprintExecutable());
+      TT_ASSIGN_OR_RETURN(const std::string unique_identifier,
+                          executable->unique_identifier());
       const std::optional<int> rank = GetIntegerEnvOnce<kRankEnvVar>();
       ABSL_VLOG(8) << "Executable with collectives on rank "
                    << (rank.has_value() ? absl::StrCat(*rank)
                                         : "<unknown_rank>")
-                   << " has PjRT executable fingerprint: "
-                   << absl::BytesToHexString(fingerprint)
-                   << " and HLO module fingerprint: "
+                   << " has PjRT executable unique identifier: "
+                   << unique_identifier << " and HLO module fingerprint: "
                    << hlo_module->GetFingerprint128();
     }
   }

@@ -38,7 +38,6 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
@@ -2259,14 +2258,17 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
           "loaded at, or None if it was loaded for the full topology. Pass it "
           "to load_serialized_executable to load the executable again, e.g. "
           "after pickling.")
-      .def("fingerprint_executable",
-           [](const LoadedExecutableWithMetadata& executable) -> std::string {
-             TT_ASSIGN_OR_THROW(
-                 const std::string fingerprint,
-                 executable.GetExecutable()->FingerprintExecutable(),
-                 _.SetPrepend() << "failed to get executable fingerprint: ");
-             return absl::BytesToHexString(fingerprint);
-           });
+      .def(
+          "executable_unique_identifier",
+          [](const LoadedExecutableWithMetadata& executable) -> std::string {
+            TT_ASSIGN_OR_THROW(
+                const std::string unique_identifier,
+                executable.unique_identifier(),
+                _.SetPrepend()
+                    << "failed to get executable unique identifier: ");
+            return unique_identifier;
+          },
+          "The unique identifier of the executable.");
 
   PyBindClass<xla::PjRtLoadedExecutable,  // NOLINT(bugprone-unused-raii)
               std::shared_ptr<xla::PjRtLoadedExecutable>>(

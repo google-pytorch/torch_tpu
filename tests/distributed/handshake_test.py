@@ -75,7 +75,7 @@ def _make_request(
   })
   return CollectiveHandshakeRequest(
       pg_collective_counts=pg_counts,
-      executable_fingerprint=fingerprint,
+      executable_unique_identifier=fingerprint,
       rank=rank,
   )
 
@@ -361,14 +361,17 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
 
     request = CollectiveHandshakeRequest(
         pg_collective_counts=pg_counts,
-        executable_fingerprint="fp_12345",
+        executable_unique_identifier="fp_12345",
         rank=0,
     )
     serialized = request.to_bytes()
     self.assertIsInstance(serialized, bytes)
 
     deserialized = CollectiveHandshakeRequest.from_bytes(serialized)
-    self.assertEqual(deserialized.executable_fingerprint, "fp_12345")
+    self.assertEqual(
+        deserialized.executable_unique_identifier,
+        "fp_12345",
+    )
     self.assertEqual(deserialized.participating_ranks, [0, 1, 2, 3])
     self.assertEqual(deserialized.rank, 0)
     pg_0123 = ProcessGroupId([0, 1, 2, 3])
@@ -399,7 +402,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
 
     request = CollectiveHandshakeRequest(
         pg_collective_counts=pg_counts,
-        executable_fingerprint="fp",
+        executable_unique_identifier="fp",
         rank=1,
     )
     self.assertEqual(request.participating_ranks, [0, 1, 2])
@@ -413,7 +416,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
       return len(
           CollectiveHandshakeRequest(
               pg_collective_counts=pg_counts,
-              executable_fingerprint="fp",
+              executable_unique_identifier="fp",
               rank=0,
           ).to_bytes()
       )
@@ -426,7 +429,9 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     pg_counts = RankCollectiveCounts()
     pg_counts.increment_pg_collective_counts({pg: 4})
     request = CollectiveHandshakeRequest(
-        pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=5
+        pg_collective_counts=pg_counts,
+        executable_unique_identifier="fp",
+        rank=5,
     )
 
     deserialized = CollectiveHandshakeRequest.from_bytes(request.to_bytes())
@@ -444,7 +449,9 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     pg_counts.increment_pg_collective_counts({earlier_pg: 3})
     pg_counts.increment_pg_collective_counts({pg: 1})
     request = CollectiveHandshakeRequest(
-        pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=0
+        pg_collective_counts=pg_counts,
+        executable_unique_identifier="fp",
+        rank=0,
     )
 
     deserialized = CollectiveHandshakeRequest.from_bytes(request.to_bytes())
@@ -462,7 +469,9 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     pg_counts = RankCollectiveCounts()
     pg_counts.increment_pg_collective_counts({ProcessGroupId(range(16)): 1})
     data = CollectiveHandshakeRequest(
-        pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=3
+        pg_collective_counts=pg_counts,
+        executable_unique_identifier="fp",
+        rank=3,
     ).to_bytes()
 
     first = CollectiveHandshakeRequest.from_bytes(data)
@@ -480,7 +489,9 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
         handshake_messages, "is_torch_tpu_debug_mode", return_value=False
     ):
       request = CollectiveHandshakeRequest(
-          pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=2
+          pg_collective_counts=pg_counts,
+          executable_unique_identifier="fp",
+          rank=2,
       )
     self.assertEqual(request.rank, 2)
 
@@ -496,7 +507,9 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     self.assertEqual(pg_counts[pg_without].num_collectives_in_graph, 0)
 
     request = CollectiveHandshakeRequest(
-        pg_collective_counts=pg_counts, executable_fingerprint="fp", rank=0
+        pg_collective_counts=pg_counts,
+        executable_unique_identifier="fp",
+        rank=0,
     )
 
     self.assertEqual(request.participating_ranks, [0, 1])
@@ -514,7 +527,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     ):
       request = CollectiveHandshakeRequest(
           pg_collective_counts=pg_counts,
-          executable_fingerprint="fp_abc",
+          executable_unique_identifier="fp_abc",
           rank=3,
       )
     self.assertEqual(
@@ -524,7 +537,7 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
         "ProcessGroupId(ranks=range(0, 4096), world_size=4096): "
         "ProcessGroupCollectiveCount("
         "collective_count_before=2, num_collectives_in_graph=1)}), "
-        "executable_fingerprint='fp_abc', rank=3)",
+        "executable_unique_identifier='fp_abc', rank=3)",
     )
     self.assertNotIn("participating_ranks", request.__dict__)
 
@@ -708,7 +721,7 @@ def _msg_eq(
     msg1: CollectiveHandshakeRequest, msg2: CollectiveHandshakeRequest
 ) -> bool:
   return (
-      msg1.executable_fingerprint == msg2.executable_fingerprint
+      msg1.executable_unique_identifier == msg2.executable_unique_identifier
       and msg1.participating_ranks == msg2.participating_ranks
       and msg1.rank == msg2.rank
       and list(msg1.pg_collective_counts.keys())

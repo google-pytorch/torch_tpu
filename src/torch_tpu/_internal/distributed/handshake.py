@@ -864,9 +864,9 @@ class _HandshakeServer(_HandshakeBackend):
         first_msg = next(iter(received_msgs.values()))
 
         # Make consensus decision.
-        first_fp = first_msg.executable_fingerprint
+        first_fp = first_msg.executable_unique_identifier
         all_match = all(
-            m.executable_fingerprint == first_fp
+            m.executable_unique_identifier == first_fp
             and m.pg_collective_counts == first_msg.pg_collective_counts
             for m in received_msgs.values()
         )
@@ -1185,8 +1185,8 @@ class Handshake:
       msg: CollectiveHandshakeRequest object to submit for consensus.
 
     Returns:
-      True if executable fingerprint was identical across all participating
-      ranks, else False.
+      True if the executable unique identifier was identical across all
+      participating ranks, else False.
 
     Raises:
       TypeError: If `msg` is not a `CollectiveHandshakeRequest`.
