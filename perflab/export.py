@@ -197,6 +197,7 @@ def _log_result(
     test_name: str,
     warmup_xprof_url: str | None = None,
     post_warmup_xprof_url: str | None = None,
+    diagnostics: Mapping[str, Any] | None = None,
 ) -> None:
   """Logs a machine-readable JSON record prefixed with `RESULT_LOG_PREFIX`.
 
@@ -213,6 +214,8 @@ def _log_result(
     test_name: The test name of the run, as exported by `_test_name`.
     warmup_xprof_url: The XProf URL of the warmup run, if profiled.
     post_warmup_xprof_url: The XProf URL of the post-warmup run, if profiled.
+    diagnostics: Optional run diagnostics written only to `PERFLAB_RESULT_JSON`
+      when non-empty.
   """
   try:
     record = {
@@ -230,6 +233,14 @@ def _log_result(
         "post_warmup_xprof_url": post_warmup_xprof_url,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    if diagnostics:
+      try:
+        record["diagnostics"] = {
+            str(name): _finite_or_none(float(value))
+            for name, value in diagnostics.items()
+        }
+      except Exception:  # pylint: disable=broad-exception-caught
+        logging.exception("Failed to serialize diagnostics for %s", spec_name)
     line = json.dumps(record, sort_keys=True, allow_nan=False)
     logging.info("%s %s", RESULT_LOG_PREFIX, line)
   except Exception:  # pylint: disable=broad-exception-caught
@@ -261,6 +272,14 @@ def export(data: BenchmarkData) -> None:
   else:
     metrics = data.metrics.metric_map()
     wall_time = data.metrics.e2e_wall_time_seconds
+  if isinstance(data.metrics, metrics_lib.PerformanceMetrics):
+    warmup_xprof_url = data.metrics.warmup_session_xprof_url
+    post_warmup_xprof_url = data.metrics.post_warmup_run_session_xprof_url
+    diagnostics = data.metrics.diagnostics
+  else:
+    warmup_xprof_url = None
+    post_warmup_xprof_url = None
+    diagnostics = None
   # Logged first, so that a failed export still leaves a record in the log.
   _log_result(
       spec_name=data.spec_name,
@@ -275,10 +294,9 @@ def export(data: BenchmarkData) -> None:
           framework=data.framework,
           run_mode=data.run_mode,
       ),
-      warmup_xprof_url=getattr(data.metrics, "warmup_session_xprof_url", None),
-      post_warmup_xprof_url=getattr(
-          data.metrics, "post_warmup_run_session_xprof_url", None
-      ),
+      warmup_xprof_url=warmup_xprof_url,
+      post_warmup_xprof_url=post_warmup_xprof_url,
+      diagnostics=diagnostics,
   )
   export_adapter.export_benchmark_results(
       spec_name=data.spec_name,
@@ -289,6 +307,8 @@ def export(data: BenchmarkData) -> None:
       succeeded=data.succeeded,
       wall_time=wall_time,
       microbenchmark_name=data.microbenchmark_name,
+      warmup_xprof_url=warmup_xprof_url,
+      post_warmup_xprof_url=post_warmup_xprof_url,
   )
 
 
