@@ -1361,6 +1361,11 @@ TORCH_LIBRARY(tpu, m) {
       "int mask_batch, int mask_heads, int q_block, int kv_block, "
       "float scale, str mask_mod_mlir) -> (Tensor, Tensor)");
   m.def(
+      "_flex_attention_bwd_dq(Tensor q, Tensor k, Tensor v, Tensor grad_out, "
+      "Tensor lse, Tensor di, Tensor kv_num_blocks, Tensor kv_indices, "
+      "int mask_batch, int mask_heads, int q_block, int kv_block, "
+      "float scale, str mask_mod_mlir) -> Tensor");
+  m.def(
       "_flex_attention_fwd(Tensor q, Tensor k, Tensor v, "
       "Tensor kv_num_blocks, Tensor kv_indices, int mask_batch, "
       "int mask_heads, int q_block, int kv_block, float scale, "
@@ -1825,6 +1830,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kDistributedSend>(m, TorchTpuSend);
   ImplInternal<OpName::kDistributedRecv>(m, TorchTpuRecv);
   ImplInternal<OpName::kFlexAttentionBwdDkv>(m, FlexAttentionBwdDkv);
+  ImplInternal<OpName::kFlexAttentionBwdDq>(m, FlexAttentionBwdDq);
   ImplInternal<OpName::kFlexAttentionFwd>(m, FlexAttentionFwd);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);

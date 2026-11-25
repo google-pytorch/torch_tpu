@@ -47,6 +47,18 @@ std::tuple<at::Tensor, at::Tensor> FlexAttentionBwdDkv(
     int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
     double scale, std::string_view mask_mod_mlir);
 
+// torch.ops.tpu._flex_attention_bwd_dq: dQ of flex attention. Takes the
+// forward's tables `kv_num_blocks` / `kv_indices`; the other operands are as
+// in FlexAttentionBwdDkv. Returns dq in q's dtype.
+at::Tensor FlexAttentionBwdDq(const at::Tensor& q, const at::Tensor& k,
+                              const at::Tensor& v, const at::Tensor& grad_out,
+                              const at::Tensor& lse, const at::Tensor& di,
+                              const at::Tensor& kv_num_blocks,
+                              const at::Tensor& kv_indices, int64_t mask_batch,
+                              int64_t mask_heads, int64_t q_block,
+                              int64_t kv_block, double scale,
+                              std::string_view mask_mod_mlir);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_FLEX_ATTENTION_FLEX_ATTENTION_ATEN_KERNELS_H_
