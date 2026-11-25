@@ -42,8 +42,8 @@ class IndexMap {
   IndexMap() = default;
   explicit IndexMap(IndexFn fn) : mapping_(std::move(fn)) {}
 
-  bool has_mapping() const { return mapping_ != nullptr; }
-  IndexIndices Invoke() const { return mapping_(); }
+  [[nodiscard]] bool has_mapping() const { return mapping_ != nullptr; }
+  [[nodiscard]] IndexIndices Invoke() const { return mapping_(); }
 
  private:
   IndexFn mapping_;

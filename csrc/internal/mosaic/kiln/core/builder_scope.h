@@ -40,11 +40,13 @@ class BuilderScope {
   BuilderScope(const BuilderScope&) = delete;
   BuilderScope& operator=(const BuilderScope&) = delete;
 
-  mlir::ImplicitLocOpBuilder& builder() const { return *builder_; }
+  [[nodiscard]] mlir::ImplicitLocOpBuilder& builder() const {
+    return *builder_;
+  }
 
   // The first error reported with `ReportError()` while this was the active
   // scope, or OK if there was none.
-  const absl::Status& error() const { return error_; }
+  [[nodiscard]] const absl::Status& error() const { return error_; }
 
  private:
   // Declared in error.h; the only way to record an error on a scope.
@@ -58,7 +60,7 @@ class BuilderScope {
 
 // Returns the active scope of the current thread.
 // Must be called within an active BuildKernel() or IndexMap execution.
-BuilderScope& CurrentBuilderScope();
+[[nodiscard]] BuilderScope& CurrentBuilderScope();
 
 }  // namespace torch_tpu::kiln::internal
 

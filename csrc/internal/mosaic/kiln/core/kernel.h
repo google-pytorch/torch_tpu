@@ -40,19 +40,19 @@ namespace torch_tpu::kiln {
 // -----------------------------------------------------------------------------
 
 // Current iteration index along `axis` (Pallas `pl.program_id(axis)`).
-Scalar ProgramId(int axis);
+[[nodiscard]] Scalar ProgramId(int axis);
 // Grid bound along `axis` (Pallas `pl.num_programs(axis)`).
-int64_t NumPrograms(int axis);
-int GridRank();
+[[nodiscard]] int64_t NumPrograms(int axis);
+[[nodiscard]] int GridRank();
 
 // Access to kernel ref arguments by position (used by `CreateKernel` to unpack
 // arguments into the user callback, and usable inside `IndexMap::IndexFn` for
 // `ScalarPrefetch`). Scalar-prefetch operands are always in SMEM; the memory
 // space of the others depends on their spec (see `Ref::As`).
-SmemRef ScalarPrefetch(int i);
-Ref In(int i);
-Ref Out(int i);
-Ref Scratch(int i);
+[[nodiscard]] SmemRef ScalarPrefetch(int i);
+[[nodiscard]] Ref In(int i);
+[[nodiscard]] Ref Out(int i);
+[[nodiscard]] Ref Scratch(int i);
 
 // An opaque handle to a lowered Kiln kernel module.
 class Kernel {
@@ -65,7 +65,7 @@ class Kernel {
   absl::Status Canonicalize();
 
   // Pretty-prints the kernel IR (for logging / tests).
-  std::string ToString() const;
+  [[nodiscard]] std::string ToString() const;
 
   // Serializes the kernel for Mosaic custom call execution.
   // This is a destructive operation.
@@ -95,37 +95,39 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
 
 namespace internal {
 
-inline auto RegisterSpec(KernelSpec& k, const ScalarPrefetchSpec& s) {
+[[nodiscard]] inline auto RegisterSpec(KernelSpec& k,
+                                       const ScalarPrefetchSpec& s) {
   int idx = k.scalar_prefetch.size();
   k.scalar_prefetch.push_back(s);
   return [idx] { return ScalarPrefetch(idx); };
 }
 
 template <MemorySpace kSpace>
-auto RegisterSpec(KernelSpec& k,
-                  const BasicBlockSpec<BlockRole::kIn, kSpace>& s) {
+[[nodiscard]] auto RegisterSpec(
+    KernelSpec& k, const BasicBlockSpec<BlockRole::kIn, kSpace>& s) {
   int idx = k.in_specs.size();
   k.in_specs.push_back({s.shape, s.map, kSpace});
   return [idx] { return In(idx).As<TypedRef<kSpace>>(); };
 }
 
 template <MemorySpace kSpace>
-auto RegisterSpec(KernelSpec& k,
-                  const BasicBlockSpec<BlockRole::kOut, kSpace>& s) {
+[[nodiscard]] auto RegisterSpec(
+    KernelSpec& k, const BasicBlockSpec<BlockRole::kOut, kSpace>& s) {
   int idx = k.out_specs.size();
   k.out_specs.push_back({s.shape, s.map, kSpace});
   return [idx] { return Out(idx).As<TypedRef<kSpace>>(); };
 }
 
 template <MemorySpace kSpace>
-auto RegisterSpec(KernelSpec& k, const BasicScratchSpec<kSpace>& s) {
+[[nodiscard]] auto RegisterSpec(KernelSpec& k,
+                                const BasicScratchSpec<kSpace>& s) {
   int idx = k.scratch.size();
   k.scratch.push_back({s.shape, kSpace});
   return [idx] { return Scratch(idx).As<TypedRef<kSpace>>(); };
 }
 
 template <typename Spec>
-auto RegisterSpec(KernelSpec& k, const std::optional<Spec>& s) {
+[[nodiscard]] auto RegisterSpec(KernelSpec& k, const std::optional<Spec>& s) {
   auto resolver = s ? std::make_optional(RegisterSpec(k, *s)) : std::nullopt;
   return [resolver = std::move(resolver)] {
     return resolver ? std::make_optional((*resolver)()) : std::nullopt;
@@ -179,7 +181,9 @@ absl::StatusOr<Kernel> CreateKernel(GridSpec grid,
 }
 
 // Pretty-prints a kernel (for logging / tests).
-inline std::string ToString(const Kernel& kernel) { return kernel.ToString(); }
+[[nodiscard]] inline std::string ToString(const Kernel& kernel) {
+  return kernel.ToString();
+}
 
 }  // namespace torch_tpu::kiln
 

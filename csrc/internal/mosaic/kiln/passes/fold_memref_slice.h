@@ -27,7 +27,7 @@ namespace torch_tpu::kiln {
 // Creates a pass that folds chains of `tpu.memref_slice` and
 // `tpu.memref_squeeze` operations into scalar `memref.load` and `memref.store`
 // operations.
-std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
+[[nodiscard]] std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
 CreateFoldMemRefSlicePass();
 
 }  // namespace torch_tpu::kiln
