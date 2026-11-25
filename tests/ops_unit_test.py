@@ -15442,6 +15442,20 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
+  @parameterized.named_parameters(
+      ("float64", torch.float64),
+      ("complex64", torch.complex64),
+  )
+  def test_geqrf_out_dtype_upcast(self, out_dtype):
+    input_tensor = torch.randn(4, 3, dtype=torch.float32)
+
+    def run(device):
+      a = torch.empty(4, 3, dtype=out_dtype, device=device)
+      tau = torch.empty(3, dtype=out_dtype, device=device)
+      return torch.geqrf(input_tensor.to(device), out=(a, tau))
+
+    self.assert_close_tpu_vs_cpu(run, rtol=4e-6, atol=1e-6)
+
   def test_xlogy(self):
     x_data = [0.0, 0.0, 1.0, 0.0, 2.0, -1.0]
     y_data = [0.0, -1.0, float("nan"), float("nan"), 2.0, 3.0]
