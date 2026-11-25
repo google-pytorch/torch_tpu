@@ -522,6 +522,19 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       x[:, ::2].cpu()
 
+  @et.why_tpu_only("FP4 sub-byte layout unpacking happens during TPU lowering.")
+  def test_scaled_mm_mismatched_unpacked_contracting_dim(self):
+    """Tests that asymmetric FP4 packing raises instead of aborting in DotGeneral."""
+    dev = et.device()
+    a = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev)
+    b = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev)
+    scale = torch.ones((1,), dtype=torch.float32, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected lhs contracting dimension to match rhs contracting dimension, got 64 and 32""",
+    ):
+      torch._scaled_mm(a, b, scale, scale, out_dtype=torch.bfloat16).cpu()
+
   @parameterized.named_parameters(
       ("bool_bool", False, True, "bool", "bool"),
       ("int_bool", 0, True, "int64", "bool"),
@@ -4432,6 +4445,21 @@ module {
       torch._scaled_grouped_mm(
           a, b, scale_a, scale_b, scale_result=scale_result, offs=offs
       )
+
+  @et.why_tpu_only("FP4 sub-byte layout unpacking happens during TPU lowering.")
+  def test_scaled_grouped_mm_3d_3d_mismatched_unpacked_contracting_dim(self):
+    dev = et.device()
+    a = torch.empty((2, 16, 16), dtype=torch.float4_e2m1fn_x2, device=dev)
+    b = torch.empty((2, 16, 24), dtype=torch.float4_e2m1fn_x2, device=dev)
+    scale_a = torch.ones((2, 16), dtype=torch.float32, device=dev)
+    scale_b = torch.ones((2, 24), dtype=torch.float32, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_grouped_mm(): expected lhs contracting dimension to match rhs contracting dimension, got 32 and 16""",
+    ):
+      torch._scaled_grouped_mm(
+          a, b, scale_a, scale_b, offs=None, out_dtype=torch.bfloat16
+      ).cpu()
 
   @et.why_tpu_only(
       "GPU supports BlockWise1x32 (3) and BlockWise1x16 (2) scaling recipes."
