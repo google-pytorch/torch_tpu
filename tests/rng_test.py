@@ -146,7 +146,8 @@ class RngTest(seed_test_utils.RepeatableTest):
     device = torch.device("tpu")
     state = torch.tpu.get_rng_state(device).to(device)
     with self.assertRaisesRegex(
-        RuntimeError, "expect rng state to be a torch.ByteTensor"
+        RuntimeError,
+        r"set_rng_state\(\): expected rng state to be a CPU ByteTensor",
     ):
       torch.tpu.set_rng_state(state, device)
 
@@ -155,7 +156,8 @@ class RngTest(seed_test_utils.RepeatableTest):
     g = torch.Generator(device=device)
     state = g.get_state().to(device)
     with self.assertRaisesRegex(
-        RuntimeError, "expect rng state to be a torch.ByteTensor"
+        RuntimeError,
+        r"set_state\(\): expected rng state to be a CPU ByteTensor",
     ):
       g.set_state(state)
 

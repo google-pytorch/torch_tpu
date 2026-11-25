@@ -494,9 +494,6 @@ at::Tensor& AtenNormal_(at::Tensor& self, double mean, double std,
             ValidateNormalPreconditions(self, /*arg_name=*/"self"));
         TT_THROW_IF_ERROR(ValidateNormalStdPreconditions(std));
 
-        auto gen =
-            generator.has_value() ? *generator : GetDefaultDeviceGenerator();
-
         auto out_dims = CopyIntVector(self.sizes());
         auto out_dtype = self.scalar_type();
 
@@ -506,9 +503,10 @@ at::Tensor& AtenNormal_(at::Tensor& self, double mean, double std,
         TT_ASSIGN_OR_THROW(const auto mlir_type,
                            ConvertTo<mlir::ElementType>(out_dtype));
 
-        TT_ASSIGN_OR_THROW(auto output_buf,
-                           DispatchNormal1(gen, std::move(builder), mlir_type,
-                                           out_dims, std::move(param_keys)));
+        TT_ASSIGN_OR_THROW(
+            auto output_buf,
+            DispatchNormal1(generator, std::move(builder), mlir_type, out_dims,
+                            std::move(param_keys)));
 
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(output_buf), self));
         return self;
@@ -525,8 +523,6 @@ at::Tensor AtenNormalFloatTensor(double mean, const at::Tensor& std,
             // integer std.
             ValidateNormalStdPreconditions(std, StdDtypeMode::kFloatOnly));
 
-        auto gen =
-            generator.has_value() ? *generator : GetDefaultDeviceGenerator();
         auto out_dims = CopyIntVector(std.sizes());
         auto out_dtype = std.scalar_type();
 
@@ -537,8 +533,8 @@ at::Tensor AtenNormalFloatTensor(double mean, const at::Tensor& std,
 
         TT_ASSIGN_OR_THROW(
             auto output_buf,
-            DispatchNormal2(gen, std::move(builder), std, mlir_type, out_dims,
-                            std::move(param_keys)));
+            DispatchNormal2(generator, std::move(builder), std, mlir_type,
+                            out_dims, std::move(param_keys)));
 
         return MakeTensor(std::move(output_buf));
       });
@@ -556,8 +552,6 @@ at::Tensor& AtenNormalFloatTensorOut(double mean, const at::Tensor& std,
             ValidateNormalStdPreconditions(std, StdDtypeMode::kFloatOnly));
         TT_THROW_IF_ERROR(ValidateNormalPreconditions(out, /*arg_name=*/"out"));
 
-        const at::Generator gen =
-            generator.has_value() ? *generator : GetDefaultDeviceGenerator();
         const Dimensions out_dims = CopyIntVector(std.sizes());
         const at::ScalarType out_dtype = out.scalar_type();
 
@@ -566,8 +560,8 @@ at::Tensor& AtenNormalFloatTensorOut(double mean, const at::Tensor& std,
         TT_ASSIGN_OR_THROW(const auto mlir_type,
                            ConvertTo<mlir::ElementType>(out_dtype));
 
-        TT_THROW_IF_ERROR(DispatchNormal2Out(gen, std::move(builder), std, out,
-                                             mlir_type, out_dims,
+        TT_THROW_IF_ERROR(DispatchNormal2Out(generator, std::move(builder), std,
+                                             out, mlir_type, out_dims,
                                              std::move(param_keys)));
         return out;
       });
@@ -581,9 +575,6 @@ at::Tensor AtenNormalTensorFloat(const at::Tensor& mean, double std,
                   ValidateNormalPreconditions(mean, /*arg_name=*/"mean"));
               TT_THROW_IF_ERROR(ValidateNormalStdPreconditions(std));
 
-              auto gen = generator.has_value() ? *generator
-                                               : GetDefaultDeviceGenerator();
-
               auto out_dims = CopyIntVector(mean.sizes());
               auto out_dtype = mean.scalar_type();
 
@@ -595,8 +586,8 @@ at::Tensor AtenNormalTensorFloat(const at::Tensor& mean, double std,
 
               TT_ASSIGN_OR_THROW(
                   auto output_buf,
-                  DispatchNormal2(gen, std::move(builder), mean, mlir_type,
-                                  out_dims, std::move(param_keys)));
+                  DispatchNormal2(generator, std::move(builder), mean,
+                                  mlir_type, out_dims, std::move(param_keys)));
 
               return MakeTensor(std::move(output_buf));
             });
@@ -614,9 +605,6 @@ at::Tensor& AtenNormalTensorFloatOut(const at::Tensor& mean, double std,
         TT_THROW_IF_ERROR(ValidateNormalPreconditions(out, /*arg_name=*/"out"));
         TT_THROW_IF_ERROR(ValidateOutDtype(out, mean.scalar_type()));
 
-        const at::Generator gen =
-            generator.has_value() ? *generator : GetDefaultDeviceGenerator();
-
         const Dimensions out_dims = CopyIntVector(mean.sizes());
         const at::ScalarType out_dtype = out.scalar_type();
 
@@ -625,8 +613,8 @@ at::Tensor& AtenNormalTensorFloatOut(const at::Tensor& mean, double std,
         TT_ASSIGN_OR_THROW(const auto mlir_type,
                            ConvertTo<mlir::ElementType>(out_dtype));
 
-        TT_THROW_IF_ERROR(DispatchNormal2Out(gen, std::move(builder), mean, out,
-                                             mlir_type, out_dims,
+        TT_THROW_IF_ERROR(DispatchNormal2Out(generator, std::move(builder),
+                                             mean, out, mlir_type, out_dims,
                                              std::move(param_keys)));
         return out;
       });
@@ -641,8 +629,6 @@ at::Tensor AtenNormalTensorTensor(const at::Tensor& mean, const at::Tensor& std,
             ValidateNormalPreconditions(mean, /*arg_name=*/"mean"));
         TT_THROW_IF_ERROR(ValidateNormalStdPreconditions(std));
 
-        const at::Generator gen =
-            generator.has_value() ? *generator : GetDefaultDeviceGenerator();
         TT_ASSIGN_OR_THROW(const Dimensions out_dims, InferSize(mean, std));
         const at::ScalarType out_dtype = mean.scalar_type();
 
@@ -653,7 +639,7 @@ at::Tensor AtenNormalTensorTensor(const at::Tensor& mean, const at::Tensor& std,
 
         TT_ASSIGN_OR_THROW(
             auto output_buf,
-            DispatchNormal3(gen, std::move(builder), mean, std, mlir_type,
+            DispatchNormal3(generator, std::move(builder), mean, std, mlir_type,
                             out_dims, OpParamCacheKeys::Empty()));
 
         return MakeTensor(std::move(output_buf));
@@ -674,8 +660,6 @@ at::Tensor& AtenNormalTensorTensorOut(const at::Tensor& mean,
         TT_THROW_IF_ERROR(ValidateNormalPreconditions(out, /*arg_name=*/"out"));
         TT_THROW_IF_ERROR(ValidateOutDtype(out, mean.scalar_type()));
 
-        const at::Generator gen =
-            generator.has_value() ? *generator : GetDefaultDeviceGenerator();
         const at::ScalarType out_dtype = out.scalar_type();
 
         auto builder = GetNormalTensorTensorBuilder(out_dims, out_dtype);
@@ -683,9 +667,9 @@ at::Tensor& AtenNormalTensorTensorOut(const at::Tensor& mean,
         TT_ASSIGN_OR_THROW(const auto mlir_type,
                            ConvertTo<mlir::ElementType>(out_dtype));
 
-        TT_THROW_IF_ERROR(DispatchNormal3Out(gen, std::move(builder), mean, std,
-                                             out, mlir_type, out_dims,
-                                             OpParamCacheKeys::Empty()));
+        TT_THROW_IF_ERROR(
+            DispatchNormal3Out(generator, std::move(builder), mean, std, out,
+                               mlir_type, out_dims, OpParamCacheKeys::Empty()));
         return out;
       });
 }

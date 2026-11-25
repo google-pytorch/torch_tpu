@@ -42,6 +42,15 @@ struct RngUsage {
   int64_t bit_width = -1;
 };
 
+inline absl::StatusOr<DeviceGeneratorImplBase*> GetDeviceGeneratorImpl(
+    const c10::optional<at::Generator>& generator) {
+  if (generator.has_value() && generator->defined()) {
+    return at::check_generator<DeviceGeneratorImplBase>(*generator);
+  }
+  TT_ASSIGN_OR_RETURN(at::Generator * default_gen, GetDefaultDeviceGenerator());
+  return at::check_generator<DeviceGeneratorImplBase>(*default_gen);
+}
+
 // Dispatches an RNG operation, handling locking, state retrieval, and
 // advancement. `dispatch_func` must use the provided state tensor and return
 // the output buffers. If `usage` is not provided, the RNG advancement
@@ -52,8 +61,7 @@ template <typename DispatchFunc>
 absl::StatusOr<std::vector<DeviceBufferRef>> DispatchRngOpGeneral(
     c10::optional<at::Generator> generator, DispatchFunc dispatch_func,
     const std::optional<RngUsage>& usage = std::nullopt) {
-  auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
-      generator, GetDefaultDeviceGenerator());
+  TT_ASSIGN_OR_RETURN(auto* gen, GetDeviceGeneratorImpl(generator));
 
   // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
   std::scoped_lock<std::mutex> lock(gen->mutex_);
@@ -118,8 +126,7 @@ absl::Status DispatchRngOpOut(
     at::Tensor& out, c10::optional<at::Generator> generator,
     mlir::ElementType out_dtype, DispatchFunc dispatch_func,
     const std::optional<RngUsage>& usage = std::nullopt) {
-  auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
-      generator, GetDefaultDeviceGenerator());
+  TT_ASSIGN_OR_RETURN(auto* gen, GetDeviceGeneratorImpl(generator));
 
   std::scoped_lock<std::mutex> lock(gen->mutex_);
   TT_RETURN_IF_ERROR(std::move(dispatch_func)(gen->DeviceStateTensor()));

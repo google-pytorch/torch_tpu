@@ -27,6 +27,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "absl/base/no_destructor.h"
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -34,6 +35,7 @@
 #include "absl/status/statusor.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
+#include "c10/core/DeviceType.h"
 #include "c10/core/DispatchKey.h"
 #include "c10/core/DispatchKeySet.h"
 #include "c10/core/GeneratorImpl.h"
@@ -45,6 +47,7 @@
 #include "c10/util/CallOnce.h"
 #include "c10/util/Optional.h"
 #include "c10/util/intrusive_ptr.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
@@ -193,25 +196,27 @@ class DeviceGenerators {
   DeviceGenerators(DeviceGenerators&&) = delete;
   DeviceGenerators& operator=(DeviceGenerators&&) = delete;
 
-  [[nodiscard]] static DeviceGenerators& GetDefaultInstance();
+  static absl::StatusOr<DeviceGenerators* absl_nonnull> GetDefaultInstance();
 
   // Returns the default generator for the given device index. If idx is -1,
   // returns the default generator for the current device.
-  [[nodiscard]] at::Generator& GetDefaultGenerator(c10::DeviceIndex idx = -1);
+  absl::StatusOr<at::Generator* absl_nonnull> GetDefaultGenerator(
+      c10::DeviceIndex idx = -1);
 
   // Returns the eager default generator for the given device index. If idx is
   // -1, returns the eager default generator for the current device.
-  [[nodiscard]] at::Generator& GetEagerDefaultGenerator(
+  absl::StatusOr<at::Generator* absl_nonnull> GetEagerDefaultGenerator(
       c10::DeviceIndex idx = -1);
 
   // Creates a new generator for the given device index. If idx is -1, creates a
   // new generator for the current device.
-  [[nodiscard]] at::Generator CreateGenerator(c10::DeviceIndex idx = -1) const;
+  absl::StatusOr<at::Generator> CreateGenerator(
+      c10::DeviceIndex idx = -1) const;
 
   [[nodiscard]] int num_devices() const { return num_devices_; }
 
-  void SetExportModeDefaultGenerator(c10::DeviceIndex idx,
-                                     c10::optional<at::Generator> gen);
+  absl::Status SetExportModeDefaultGenerator(c10::DeviceIndex idx,
+                                             c10::optional<at::Generator> gen);
 
   static void ClearExportModeDefaultGenerators() {
     GetExportModeDefaultGenerators().clear();
@@ -237,17 +242,25 @@ class DeviceGenerators {
 
 namespace {
 
-c10::DeviceIndex NormalizeDeviceIndex(c10::DeviceIndex idx) {
-  const int32_t num_devices =
-      DeviceGenerators::GetDefaultInstance().num_devices();
+std::string GetGeneratorDeviceTypeName(const c10::DeviceType device_type) {
+  if (device_type == c10::DeviceType::PrivateUse1) {
+    return "TPU";
+  }
+  return c10::DeviceTypeName(device_type);
+}
+
+absl::StatusOr<c10::DeviceIndex> NormalizeDeviceIndex(c10::DeviceIndex idx) {
+  TT_ASSIGN_OR_RETURN(DeviceGenerators* const instances,
+                      DeviceGenerators::GetDefaultInstance());
+  const int32_t num_devices = instances->num_devices();
   if (idx == -1) {
     const auto* guard =
         c10::impl::getDeviceGuardImpl(c10::DeviceType::PrivateUse1);
-    TT_CHECK_THROW(guard != nullptr, error::kFailedPrecondition)
+    TT_RET_CHECK(guard != nullptr, error::kFailedPrecondition)
         << "PrivateUse1 device guard is not registered.";
     idx = guard->getDevice().index();
   }
-  TT_CHECK_THROW(idx >= 0 && idx < num_devices, error::kFailedPrecondition)
+  TT_RET_CHECK(idx >= 0 && idx < num_devices, error::kFailedPrecondition)
       << "expected device_index between 0 and " << num_devices - 1 << ", got "
       << static_cast<int32_t>(idx);
   return idx;
@@ -314,12 +327,13 @@ c10::intrusive_ptr<DeviceGeneratorState> DeviceGeneratorState::clone() const {
   return new_state;
 }
 
-DeviceGenerators& DeviceGenerators::GetDefaultInstance() {
+absl::StatusOr<DeviceGenerators* absl_nonnull>
+DeviceGenerators::GetDefaultInstance() {
   // If TPU initialization failed, `deviceCount()` reports 0 devices, which
   // would be cached below and make every generator operation (e.g. sampling
   // random numbers) fail with an unrelated error later. Surface the underlying
   // initialization error instead.
-  TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
+  TT_RETURN_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
   // We cannot use absl::NoDestructor here because the constructor is private.
   static auto* const kInstance = []() -> DeviceGenerators* {
     const auto* const guard =
@@ -328,7 +342,7 @@ DeviceGenerators& DeviceGenerators::GetDefaultInstance() {
         << "TPU device guard is not registered. This is a TorchTPU bug.";
     return new DeviceGenerators(guard->deviceCount());
   }();
-  return *kInstance;
+  return kInstance;
 }
 
 DeviceGenerators::DeviceGenerators(int num_devices)
@@ -336,13 +350,12 @@ DeviceGenerators::DeviceGenerators(int num_devices)
   ResetGenerators();
 }
 
-void DeviceGenerators::SetExportModeDefaultGenerator(
+absl::Status DeviceGenerators::SetExportModeDefaultGenerator(
     c10::DeviceIndex idx, c10::optional<at::Generator> gen) {
-  idx = NormalizeDeviceIndex(idx);
   if (gen.has_value()) {
     at::check_generator<ExportModeDeviceGeneratorImpl>(*gen);
-    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Defensive check against device
-                     // mismatch.
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Defensive check against device
+                   // mismatch.
         gen->device().index() == idx, error::kInvalidArgument)
         << "generator device index ("
         << static_cast<int32_t>(gen->device().index())
@@ -352,55 +365,65 @@ void DeviceGenerators::SetExportModeDefaultGenerator(
   } else {
     GetExportModeDefaultGenerators().erase(idx);
   }
+  return absl::OkStatus();
 }
 
-at::Generator& DeviceGenerators::GetEagerDefaultGenerator(at::DeviceIndex idx) {
+absl::StatusOr<at::Generator* absl_nonnull>
+DeviceGenerators::GetEagerDefaultGenerator(at::DeviceIndex idx) {
   ABSL_VLOG(1) << "[DeviceGenerators::GetEagerDefaultGenerator] idx: "
                << static_cast<int>(idx);
-  idx = NormalizeDeviceIndex(idx);
+  TT_ASSIGN_OR_RETURN(idx, NormalizeDeviceIndex(idx));
 
   auto& generator = generators_[idx];
-  c10::call_once(
-      generator_init_flags_[idx], [&] {  // REF_CAPTURE_OK=called synchronously
-        auto gen = at::make_generator<EagerModeDeviceGeneratorImpl>(idx);
-        auto* gen_impl = gen.get<EagerModeDeviceGeneratorImpl>();
-        auto random = c10::detail::getNonDeterministicRandom(false);
-        auto status = InitDefaultGenerator(gen_impl, random);
-        if (!status.ok()) {
-          generator = status;
-        } else {
-          generator = std::move(gen);
-        }
-      });
+  c10::call_once(generator_init_flags_[idx],
+                 [&] {  // REF_CAPTURE_OK=called synchronously
+                   absl::StatusOr<at::Generator> gen =
+                       EagerModeDeviceGeneratorImpl::Create(idx);
+                   if (!gen.ok()) {
+                     generator = gen.status();
+                     return;
+                   }
+                   auto* gen_impl = gen->get<EagerModeDeviceGeneratorImpl>();
+                   auto random = c10::detail::getNonDeterministicRandom(false);
+                   auto status = InitDefaultGenerator(gen_impl, random);
+                   if (!status.ok()) {
+                     generator = status;
+                   } else {
+                     generator = std::move(*gen);
+                   }
+                 });
 
   // IMPORTANT: if the generator failed to initialize before, we must fail now
   // instead of returning an uninitialized generator.
-  TT_THROW_IF_ERROR(generator.status());
-  ABSL_CHECK_OK(generator);  // CRASH_OK=satisfying ClangTidy
-  return *generator;
+  if (!generator.ok()) {
+    return generator.status();
+  }
+  return &*generator;
 }
 
-at::Generator& DeviceGenerators::GetDefaultGenerator(at::DeviceIndex idx) {
+absl::StatusOr<at::Generator* absl_nonnull>
+DeviceGenerators::GetDefaultGenerator(at::DeviceIndex idx) {
   ABSL_VLOG(1) << "[DeviceGenerators::GetDefaultGenerator] idx: "
                << static_cast<int>(idx);
-  idx = NormalizeDeviceIndex(idx);
+  TT_ASSIGN_OR_RETURN(idx, NormalizeDeviceIndex(idx));
 
   if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
     const auto it = GetExportModeDefaultGenerators().find(idx);
-    TT_CHECK_THROW(it != GetExportModeDefaultGenerators().end(),
-                   error::kFailedPrecondition)
+    TT_RET_CHECK(it != GetExportModeDefaultGenerators().end(),
+                 error::kFailedPrecondition)
         << "expected export mode default generator to be set for device "
         << static_cast<int32_t>(idx) << ", got none";
-    return it->second;
+    return &it->second;
   }
 
   return GetEagerDefaultGenerator(idx);
 }
 
-at::Generator DeviceGenerators::CreateGenerator(c10::DeviceIndex idx) const {
+absl::StatusOr<at::Generator> DeviceGenerators::CreateGenerator(
+    c10::DeviceIndex idx) const {
   ABSL_VLOG(1) << "[CreateGenerator] idx: " << static_cast<int>(idx);
-  idx = NormalizeDeviceIndex(idx);
-  return at::make_generator<EagerModeDeviceGeneratorImpl>(idx);
+  TT_ASSIGN_OR_RETURN(idx, NormalizeDeviceIndex(idx));
+  return EagerModeDeviceGeneratorImpl::Create(idx);
 }
 
 /*static*/ c10::DeviceType DeviceGeneratorImplBase::device_type() {
@@ -479,31 +502,19 @@ absl::Status DeviceGeneratorImplBase::AdvanceDeviceStateTensor(
 // EagerModeDeviceGeneratorImpl (non-export mode)
 // ============================================================================
 
-EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
-    const c10::DeviceIndex device_index)
-    : DeviceGeneratorImplBase(device_index) {
-  TT_ASSIGN_OR_THROW(auto tensor,
-                     CreateDeviceRngStateTensor(this->device(), 0, 0));
-  state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+absl::StatusOr<at::Generator> EagerModeDeviceGeneratorImpl::Create(
+    const c10::DeviceIndex device_index) {
+  const c10::Device dev(c10::DeviceType::PrivateUse1, device_index);
+  TT_ASSIGN_OR_RETURN(at::Tensor tensor, CreateDeviceRngStateTensor(dev, 0, 0));
+  auto state = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+  return at::make_generator<EagerModeDeviceGeneratorImpl>(device_index,
+                                                          std::move(state));
 }
 
 EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
     const c10::DeviceIndex device_index,
     c10::intrusive_ptr<DeviceGeneratorState> state)
     : DeviceGeneratorImplBase(device_index), state_(std::move(state)) {}
-
-EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
-    const c10::DeviceIndex device_index, at::Tensor rng_state)
-    : DeviceGeneratorImplBase(device_index) {
-  if (ValidateDeviceStateTensor(rng_state).ok()) {
-    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(rng_state));
-  } else {
-    TT_ASSIGN_OR_THROW(auto tensor,
-                       CreateDeviceRngStateTensor(this->device(), 0, 0));
-    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
-    set_state(*rng_state.to(at::kCPU).view(at::kByte).unsafeGetTensorImpl());
-  }
-}
 
 at::Tensor EagerModeDeviceGeneratorImpl::DeviceStateTensor() const {
   return state_->DeviceStateTensor();
@@ -564,6 +575,13 @@ c10::intrusive_ptr<c10::TensorImpl> EagerModeDeviceGeneratorImpl::get_state()
 
 void EagerModeDeviceGeneratorImpl::set_state(
     const c10::TensorImpl& new_state_impl) {
+  RunWithApiErrorHandling("set_state",
+                          &EagerModeDeviceGeneratorImpl::SetStateImpl, this,
+                          new_state_impl);
+}
+
+void EagerModeDeviceGeneratorImpl::SetStateImpl(
+    const c10::TensorImpl& new_state_impl) {
   ABSL_VLOG(1) << "[EagerModeDeviceGeneratorImpl::set_state]"
                << new_state_impl.dtype();
   c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
@@ -576,12 +594,18 @@ void EagerModeDeviceGeneratorImpl::set_state(
                      new_state.dtype() == at::kByte &&
                      new_state.layout() == at::kStrided,
                  error::kFailedPrecondition)
-      << "expect rng state to be a torch.ByteTensor";
+      << "expected rng state to be a CPU ByteTensor (uint8, strided), got "
+      << GetGeneratorDeviceTypeName(new_state.device().type()) << " "
+      << ToString(new_state.scalar_type()) << " ("
+      << (new_state.layout() == at::kStrided ? "strided" : "non-strided")
+      << ")";
   TT_CHECK_THROW(new_state.is_contiguous(), error::kFailedPrecondition)
-      << "expect rng state to be contiguous";
+      << "expected rng state to be contiguous, got non-contiguous tensor with "
+         "strides "
+      << new_state.strides();
   TT_CHECK_THROW(new_state.sizes() == c10::IntArrayRef({16}),
                  error::kFailedPrecondition)
-      << "expect rng state to be shape (16,), got " << new_state.sizes();
+      << "expected rng state to have shape [16], got " << new_state.sizes();
   at::Tensor state_tensor = new_state.view(at::kUInt64).to(device());
   TT_THROW_IF_ERROR(ValidateDeviceStateTensor(state_tensor));
   TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
@@ -595,6 +619,13 @@ EagerModeDeviceGeneratorImpl::graphsafe_get_state() const {
 
 void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
     const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
+  RunWithApiErrorHandling("graphsafe_set_state",
+                          &EagerModeDeviceGeneratorImpl::GraphsafeSetStateImpl,
+                          this, state);
+}
+
+void EagerModeDeviceGeneratorImpl::GraphsafeSetStateImpl(
+    const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
   if (const auto* eager_other =
           dynamic_cast<const EagerModeDeviceGeneratorImpl*>(state.get())) {
     state_ = eager_other->state_;
@@ -607,14 +638,22 @@ void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
     return;
   }
   TT_CHECK_THROW(false, error::kInvalidArgument)
-      << "Expected DeviceGeneratorImplBase in graphsafe_set_state";
+      << "expected a TPU generator, got "
+      << (state ? GetGeneratorDeviceTypeName(state->device().type()) : "null")
+      << " generator";
 }
 
 DeviceGeneratorImplBase* EagerModeDeviceGeneratorImpl::clone_impl() const {
-  // Ensure state tensor cloning occurs in the generator's device context.
-  c10::DeviceGuard guard(device());
-  c10::impl::ExcludeDispatchKeyGuard no_python_guard(c10::DispatchKey::Python);
-  return new EagerModeDeviceGeneratorImpl(device().index(), state_->clone());
+  return RunWithApiErrorHandling(
+      "clone_state", [this]() -> DeviceGeneratorImplBase* {
+        // Ensure state tensor cloning occurs in the generator's device
+        // context.
+        c10::DeviceGuard guard(device());
+        c10::impl::ExcludeDispatchKeyGuard no_python_guard(
+            c10::DispatchKey::Python);
+        return new EagerModeDeviceGeneratorImpl(device().index(),
+                                                state_->clone());
+      });
 }
 
 // ============================================================================
@@ -726,6 +765,13 @@ ExportModeDeviceGeneratorImpl::graphsafe_get_state() const {
 
 void ExportModeDeviceGeneratorImpl::graphsafe_set_state(
     const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
+  RunWithApiErrorHandling("graphsafe_set_state",
+                          &ExportModeDeviceGeneratorImpl::GraphsafeSetStateImpl,
+                          this, state);
+}
+
+void ExportModeDeviceGeneratorImpl::GraphsafeSetStateImpl(
+    const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
   if (const auto* exp_other =
           dynamic_cast<const ExportModeDeviceGeneratorImpl*>(state.get())) {
     export_state_ = exp_other->export_state_;
@@ -740,7 +786,9 @@ void ExportModeDeviceGeneratorImpl::graphsafe_set_state(
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Defensive check against
                    // non-DeviceGeneratorImplBase generator state.
       false, error::kInvalidArgument)
-      << "Expected DeviceGeneratorImplBase in graphsafe_set_state";
+      << "expected a TPU generator, got "
+      << (state ? GetGeneratorDeviceTypeName(state->device().type()) : "null")
+      << " generator";
 }
 
 DeviceGeneratorImplBase* ExportModeDeviceGeneratorImpl::clone_impl() const {
@@ -751,8 +799,10 @@ DeviceGeneratorImplBase* ExportModeDeviceGeneratorImpl::clone_impl() const {
                                            export_state_->clone());
 }
 
-at::Generator MakeDeviceGenerator(c10::DeviceIndex idx) {
-  return DeviceGenerators::GetDefaultInstance().CreateGenerator(idx);
+absl::StatusOr<at::Generator> MakeDeviceGenerator(c10::DeviceIndex idx) {
+  TT_ASSIGN_OR_RETURN(DeviceGenerators* const instances,
+                      DeviceGenerators::GetDefaultInstance());
+  return instances->CreateGenerator(idx);
 }
 
 namespace {
@@ -783,28 +833,34 @@ absl::Status InitializeTpuForSeeding() {
 
 }  // namespace
 
-void SetManualSeed(uint64_t seed, c10::DeviceIndex idx) {
+absl::Status SetManualSeed(uint64_t seed, c10::DeviceIndex idx) {
   if (const absl::Status status = InitializeTpuForSeeding(); !status.ok()) {
     ABSL_LOG_FIRST_N(WARNING, 1) << status;
-    return;
+    return absl::OkStatus();
   }
-  auto& gen =
-      DeviceGenerators::GetDefaultInstance().GetEagerDefaultGenerator(idx);
+  TT_ASSIGN_OR_RETURN(DeviceGenerators* const instances,
+                      DeviceGenerators::GetDefaultInstance());
+  TT_ASSIGN_OR_RETURN(at::Generator* const gen,
+                      instances->GetEagerDefaultGenerator(idx));
   // Ensure state write targets the specified device even if called from
   // a thread with a different active device context.
-  c10::DeviceGuard guard(gen.device());
-  gen.set_current_seed(seed);
+  c10::DeviceGuard guard(gen->device());
+  return gen->get<EagerModeDeviceGeneratorImpl>()->state_->WriteStateToDevice(
+      seed, 0);
 }
 
-void SetManualSeedAll(uint64_t seed) {
+absl::Status SetManualSeedAll(uint64_t seed) {
   if (const absl::Status status = InitializeTpuForSeeding(); !status.ok()) {
     ABSL_LOG_FIRST_N(WARNING, 1) << status;
-    return;
+    return absl::OkStatus();
   }
-  const int num_devices = DeviceGenerators::GetDefaultInstance().num_devices();
+  TT_ASSIGN_OR_RETURN(DeviceGenerators* const instances,
+                      DeviceGenerators::GetDefaultInstance());
+  const int num_devices = instances->num_devices();
   for (int i = 0; i < num_devices; ++i) {
-    SetManualSeed(seed, i);
+    TT_RETURN_IF_ERROR(SetManualSeed(seed, i));
   }
+  return absl::OkStatus();
 }
 
 void PySetInitDefaultGeneratorFailureForTesting(std::string failure_message) {
@@ -812,38 +868,46 @@ void PySetInitDefaultGeneratorFailureForTesting(std::string failure_message) {
 }
 
 void PyResetDefaultDeviceGeneratorsForTesting() {
-  DeviceGenerators::GetDefaultInstance().ResetGenerators();
+  TT_ASSIGN_OR_THROW(DeviceGenerators* const instances,
+                     DeviceGenerators::GetDefaultInstance());
+  instances->ResetGenerators();
 }
 
-void SetExportModeDefaultDeviceGenerator(c10::optional<at::Generator> gen,
-                                         c10::DeviceIndex idx) {
-  idx = NormalizeDeviceIndex(idx);
-  DeviceGenerators::GetDefaultInstance().SetExportModeDefaultGenerator(
-      idx, std::move(gen));
+absl::Status SetExportModeDefaultDeviceGenerator(
+    c10::optional<at::Generator> gen, c10::DeviceIndex idx) {
+  TT_ASSIGN_OR_RETURN(idx, NormalizeDeviceIndex(idx));
+  TT_ASSIGN_OR_RETURN(DeviceGenerators* const instances,
+                      DeviceGenerators::GetDefaultInstance());
+  return instances->SetExportModeDefaultGenerator(idx, std::move(gen));
 }
 
 void ClearExportModeDefaultDeviceGenerators() {
   DeviceGenerators::ClearExportModeDefaultGenerators();
 }
 
-at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx) {
-  return DeviceGenerators::GetDefaultInstance().GetDefaultGenerator(idx);
+absl::StatusOr<at::Generator* absl_nonnull> GetDefaultDeviceGenerator(
+    c10::DeviceIndex idx) {
+  TT_ASSIGN_OR_RETURN(DeviceGenerators* const instances,
+                      DeviceGenerators::GetDefaultInstance());
+  return instances->GetDefaultGenerator(idx);
 }
 
-at::Generator MakeExportModePlaceholderGenerator(
+absl::StatusOr<at::Generator> MakeExportModePlaceholderGenerator(
     c10::DeviceIndex device_index) {
-  device_index = NormalizeDeviceIndex(device_index);
+  TT_ASSIGN_OR_RETURN(const c10::DeviceIndex normalized_index,
+                      NormalizeDeviceIndex(device_index));
   c10::DeviceGuard guard(
-      c10::Device(c10::DeviceType::PrivateUse1, device_index));
-  TT_ASSIGN_OR_THROW(
+      c10::Device(c10::DeviceType::PrivateUse1, normalized_index));
+  TT_ASSIGN_OR_RETURN(
       DeviceBufferRef placeholder,
-      DeviceBufferList::CreatePlaceholder(
-          Dimensions({2}), mlir::ElementType::UI64, /*is_pinned_host=*/false),
+      DeviceBufferList::CreatePlaceholder(Dimensions({2}),
+                                          mlir::ElementType::UI64,
+                                          /*is_pinned_host=*/false),
       _.SetPrepend() << "failed to create export generator placeholder: ");
   at::Tensor placeholder_tensor =
-      MakeTensor(std::move(placeholder), device_index);
+      MakeTensor(std::move(placeholder), normalized_index);
   return at::make_generator<ExportModeDeviceGeneratorImpl>(
-      device_index, std::move(placeholder_tensor));
+      normalized_index, std::move(placeholder_tensor));
 }
 
 }  // namespace torch_tpu

@@ -54,13 +54,13 @@ namespace {
 // AtenFusedDropout). Validates input types and probability range, handles
 // edge-case short circuits for p <= 0 and p >= 1, and dispatches the SHLO
 // RNG dropout kernel.
-std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
+absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenDropoutCommonImpl(
     const at::Tensor& input, double p, bool train,
     c10::optional<at::Generator> generator, DropoutProbabilityType prob_type,
     DropoutMaskType mask_type, OpParamCacheKeys param_keys) {
-  TT_CHECK_THROW(p >= 0.0 && p <= 1.0, error::kInvalidArgument)
+  TT_RET_CHECK(p >= 0.0 && p <= 1.0, error::kInvalidArgument)
       << "expected p to be in the range [0, 1], got " << p;
-  TT_CHECK_THROW(
+  TT_RET_CHECK(
       (input.is_floating_point() && !IsLowPrecisionFloat(input)) ||
           (input.is_complex() && input.scalar_type() != at::kComplexHalf),
       error::kInvalidArgument)
@@ -68,8 +68,7 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
       << ToString(input.scalar_type());
   // Validate generator device upfront before any short-circuit returns
   // (p == 0, p == 1, or empty inputs), matching CUDA.
-  at::get_generator_or_default<DeviceGeneratorImplBase>(
-      generator, GetDefaultDeviceGenerator());
+  TT_RETURN_IF_ERROR(GetDeviceGeneratorImpl(generator).status());
 
   const bool keep_all =
       !train ||
@@ -84,8 +83,8 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
                                            ? mlir::ElementType::UI8
                                            : mlir::ElementType::PRED;
 
-  TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
-                     ConvertTo<mlir::ElementType>(input.scalar_type()));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(input.scalar_type()));
 
   if (keep_all) {
     auto op_builder =
@@ -93,14 +92,14 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
       auto mask_op = MakeConstantLike(input, true, mask_dtype);
       return {{input, mask_op}};
     };
-    TT_ASSIGN_OR_THROW(
+    TT_ASSIGN_OR_RETURN(
         auto results,
         (DispatchOp<1, 2>(std::move(op_builder), input,
                           {.out_dtypes = {output_dtype, mask_dtype},
                            .out_dims_list = {input.sizes(), input.sizes()},
                            .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(std::move(results[0])),
-            MakeTensor(std::move(results[1]))};
+    return std::tuple<at::Tensor, at::Tensor>{
+        MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};
   }
   // Intentional divergence from CUDA `_fused_dropout` at `p == 0.0`: CUDA has
   // no `p == 0` shortcut and computes `1.0 / 0.0 = inf` (yielding all NaN),
@@ -113,14 +112,14 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
       auto mask_op = MakeConstantLike(input, false, mask_dtype);
       return {{zero_const, mask_op}};
     };
-    TT_ASSIGN_OR_THROW(
+    TT_ASSIGN_OR_RETURN(
         auto results,
         (DispatchOp<1, 2>(std::move(op_builder), input,
                           {.out_dtypes = {output_dtype, mask_dtype},
                            .out_dims_list = {input.sizes(), input.sizes()},
                            .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(std::move(results[0])),
-            MakeTensor(std::move(results[1]))};
+    return std::tuple<at::Tensor, at::Tensor>{
+        MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};
   }
 
   if (input.numel() == 0) {
@@ -129,14 +128,14 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
       auto mask_op = MakeConstantLike(input, false, mask_dtype);
       return {{input, mask_op}};
     };
-    TT_ASSIGN_OR_THROW(
+    TT_ASSIGN_OR_RETURN(
         auto results,
         (DispatchOp<1, 2>(std::move(op_builder), input,
                           {.out_dtypes = {output_dtype, mask_dtype},
                            .out_dims_list = {input.sizes(), input.sizes()},
                            .op_param_cache_keys = std::move(param_keys)})));
-    return {MakeTensor(std::move(results[0])),
-            MakeTensor(std::move(results[1]))};
+    return std::tuple<at::Tensor, at::Tensor>{
+        MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};
   }
 
   const int64_t num_elements = input.numel();
@@ -150,21 +149,22 @@ std::tuple<at::Tensor, at::Tensor> AtenDropoutCommonImpl(
     return BuildDropoutTrainShlo(rng_state, input, p, prob_type, mask_type);
   };
 
-  TT_ASSIGN_OR_THROW(auto results,
-                     DispatchRngOpGeneral(
-                         generator,
-                         [&]  // REF_CAPTURE_OK=called synchronously
-                         (at::Tensor rng_input_state) {
-                           return DispatchOp<2, 2>(
-                               dropout_builder, {rng_input_state, input},
-                               {.out_dtypes = {output_dtype, mask_dtype},
-                                .out_dims_list = {input.sizes(), input.sizes()},
-                                .op_param_cache_keys = std::move(param_keys)});
-                         },
-                         RngUsage{num_elements, kDropoutRngBitWidth}));
+  TT_ASSIGN_OR_RETURN(
+      auto results, DispatchRngOpGeneral(
+                        generator,
+                        [&]  // REF_CAPTURE_OK=called synchronously
+                        (at::Tensor rng_input_state) {
+                          return DispatchOp<2, 2>(
+                              dropout_builder, {rng_input_state, input},
+                              {.out_dtypes = {output_dtype, mask_dtype},
+                               .out_dims_list = {input.sizes(), input.sizes()},
+                               .op_param_cache_keys = std::move(param_keys)});
+                        },
+                        RngUsage{num_elements, kDropoutRngBitWidth}));
 
   // [output, mask]
-  return {MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))};
+  return std::tuple<at::Tensor, at::Tensor>{MakeTensor(std::move(results[0])),
+                                            MakeTensor(std::move(results[1]))};
 }
 
 }  // namespace
@@ -173,10 +173,13 @@ std::tuple<at::Tensor, at::Tensor> AtenDropout(const at::Tensor& input,
                                                double p,
                                                c10::optional<bool> train) {
   TT_KERNEL(OpName::kDropout, param_keys, (input, p, train), {
-    return AtenDropoutCommonImpl(input, p, train.value_or(true),
-                                 /*generator=*/std::nullopt,
-                                 DropoutProbabilityType::kDropProbability,
-                                 DropoutMaskType::kBool, std::move(param_keys));
+    TT_ASSIGN_OR_THROW(
+        auto result,
+        AtenDropoutCommonImpl(input, p, train.value_or(true),
+                              /*generator=*/std::nullopt,
+                              DropoutProbabilityType::kDropProbability,
+                              DropoutMaskType::kBool, std::move(param_keys)));
+    return result;
   });
 }
 
@@ -184,10 +187,13 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedDropout(
     const at::Tensor& self, double p, c10::optional<at::Generator> generator) {
   TT_KERNEL(OpName::kFusedDropout, param_keys,
             (self, p, IgnoreInCacheKey(generator, "Doesn't affect SHLO")), {
-              return AtenDropoutCommonImpl(
-                  self, p, /*train=*/true, generator,
-                  DropoutProbabilityType::kKeepProbability,
-                  DropoutMaskType::kUInt8, std::move(param_keys));
+              TT_ASSIGN_OR_THROW(
+                  auto result,
+                  AtenDropoutCommonImpl(
+                      self, p, /*train=*/true, generator,
+                      DropoutProbabilityType::kKeepProbability,
+                      DropoutMaskType::kUInt8, std::move(param_keys)));
+              return result;
             });
 }
 

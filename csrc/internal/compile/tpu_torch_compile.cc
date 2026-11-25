@@ -819,7 +819,7 @@ at::Generator PyMakeExportModeDeviceGenerator(const at::Generator& orig_gen) {
 // Registers an export-mode generator override for GetDefaultDeviceGenerator().
 void PySetExportModeDefaultDeviceGenerator(c10::optional<at::Generator> gen,
                                            const c10::DeviceIndex idx) {
-  SetExportModeDefaultDeviceGenerator(std::move(gen), idx);
+  TT_THROW_IF_ERROR(SetExportModeDefaultDeviceGenerator(std::move(gen), idx));
 }
 
 // Clears all registered export-mode default generator overrides.
@@ -2050,7 +2050,9 @@ class CompiledExecutableRunner {
     absl::InlinedVector<at::Generator, 2> generators;
     UnpackInputTensorPointers(args_ptr, &argument_tensor_ptrs, &generators);
     if (updates_default_generator_state_) {
-      generators.push_back(GetDefaultDeviceGenerator(-1));
+      TT_ASSIGN_OR_THROW(at::Generator * default_gen,
+                         GetDefaultDeviceGenerator(-1));
+      generators.push_back(*default_gen);
     }
 
     // Fast path for deterministic / RNG-free executables: dispatch directly to

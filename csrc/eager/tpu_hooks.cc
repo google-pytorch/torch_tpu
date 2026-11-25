@@ -468,13 +468,20 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
 
   const at::Generator& getDefaultGenerator(
       c10::DeviceIndex device_index) const override {
-    return GetDefaultDeviceGenerator(device_index);
+    return TranslateTtErrorToC10Error([device_index]() -> const at::Generator& {
+      TT_ASSIGN_OR_THROW(at::Generator * gen,
+                         GetDefaultDeviceGenerator(device_index));
+      return *gen;
+    });
   }
 
   void init() const override {}
 
   at::Generator getNewGenerator(c10::DeviceIndex device_index) const override {
-    return MakeDeviceGenerator(device_index);
+    return TranslateTtErrorToC10Error([device_index]() -> at::Generator {
+      TT_ASSIGN_OR_THROW(at::Generator gen, MakeDeviceGenerator(device_index));
+      return gen;
+    });
   }
 
   bool hasPrimaryContext(c10::DeviceIndex device_index) const override {

@@ -54,6 +54,7 @@
 
 #include "ATen/core/Generator.h"
 #include "ATen/ops/tensor.h"  // IWYU pragma: keep
+#include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/Device.h"
@@ -212,9 +213,8 @@ class DeviceGeneratorImplBase : public c10::GeneratorImpl {
 // DeviceGeneratorState.
 class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
  public:
-  explicit EagerModeDeviceGeneratorImpl(c10::DeviceIndex device_index = -1);
-  EagerModeDeviceGeneratorImpl(c10::DeviceIndex device_index,
-                               at::Tensor rng_state);
+  static absl::StatusOr<at::Generator> Create(c10::DeviceIndex device_index);
+
   EagerModeDeviceGeneratorImpl(c10::DeviceIndex device_index,
                                c10::intrusive_ptr<DeviceGeneratorState> state);
 
@@ -229,6 +229,7 @@ class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
  private:
   friend absl::Status InitDefaultGenerator(
       EagerModeDeviceGeneratorImpl* gen_impl, uint64_t seed);
+  friend absl::Status SetManualSeed(uint64_t seed, c10::DeviceIndex idx);
 
   friend at::Tensor PyGetDeviceStateTensor(const at::Generator& gen);
   friend void PySetDeviceStateTensor(const at::Generator& gen,
@@ -243,8 +244,11 @@ class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
   void set_current_seed(uint64_t seed) override;
   void set_offset(uint64_t offset) override;
   void set_state(const c10::TensorImpl& new_state) override;
+  void SetStateImpl(const c10::TensorImpl& new_state);
   void graphsafe_set_state(
       const c10::intrusive_ptr<c10::GeneratorImpl>& new_state) override;
+  void GraphsafeSetStateImpl(
+      const c10::intrusive_ptr<c10::GeneratorImpl>& new_state);
 
   absl::Status SetDeviceStateTensor(at::Tensor t) override;
 
@@ -295,6 +299,8 @@ class ExportModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
   void set_state(const c10::TensorImpl& new_state) override;
   void graphsafe_set_state(
       const c10::intrusive_ptr<c10::GeneratorImpl>& new_state) override;
+  void GraphsafeSetStateImpl(
+      const c10::intrusive_ptr<c10::GeneratorImpl>& new_state);
 
   absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor) override;
 
@@ -303,47 +309,49 @@ class ExportModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
 
 // Constructs a pure export-mode placeholder generator for the specified device
 // index without initializing eager default generators.
-at::Generator MakeExportModePlaceholderGenerator(c10::DeviceIndex device_index);
+absl::StatusOr<at::Generator> MakeExportModePlaceholderGenerator(
+    c10::DeviceIndex device_index);
 
 // Convenience functions.
 
 // Returns the default generator for the given device index. If idx is -1,
 // returns the default generator for the current device.
 // If EagerMode::kInternalCompileFxGraph is active, returns the export-mode
-// default generator or throws if not set, otherwise returns the eager default
-// generator.
-at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx = -1);
+// default generator or returns FailedPrecondition if not set, otherwise returns
+// the eager default generator.
+absl::StatusOr<at::Generator* absl_nonnull> GetDefaultDeviceGenerator(
+    c10::DeviceIndex idx = -1);
 
 // Sets the export-mode default generator for override. If idx is -1, sets the
 // export-mode default generator for the current device.
 // When EagerMode::kInternalCompileFxGraph is active,
 // GetDefaultDeviceGenerator() will return this overridden generator instead of
 // the standard eager generator.
-void SetExportModeDefaultDeviceGenerator(c10::optional<at::Generator> gen,
-                                         c10::DeviceIndex idx = -1);
+absl::Status SetExportModeDefaultDeviceGenerator(
+    c10::optional<at::Generator> gen, c10::DeviceIndex idx = -1);
 
 // Clears all export-mode default generator overrides. Under
 // EagerMode::kInternalCompileFxGraph, subsequent calls to
-// GetDefaultDeviceGenerator() will throw FailedPrecondition if no override is
+// GetDefaultDeviceGenerator() will return FailedPrecondition if no override is
 // set.
 void ClearExportModeDefaultDeviceGenerators();
 
 // Creates a new generator for the given device index. If idx is -1, creates a
 // new generator for the current device.
-at::Generator MakeDeviceGenerator(c10::DeviceIndex idx = -1);
+absl::StatusOr<at::Generator> MakeDeviceGenerator(c10::DeviceIndex idx = -1);
 
 // Sets the seed for the generator of the given device index. If idx is -1,
 // sets the seed for the generator of the current device.
 //
 // This initializes the TPU. If that fails, seeding is skipped with a warning;
 // the initialization error is raised when the TPU is used.
-void SetManualSeed(uint64_t seed, c10::DeviceIndex idx = -1);
+absl::Status SetManualSeed(uint64_t seed, c10::DeviceIndex idx = -1);
 
 // Sets the seed for all TPU generators.
 //
 // This initializes the TPU. If that fails, seeding is skipped with a warning;
 // the initialization error is raised when the TPU is used.
-void SetManualSeedAll(uint64_t seed);
+absl::Status SetManualSeedAll(uint64_t seed);
 
 }  // namespace torch_tpu
 

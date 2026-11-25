@@ -5014,6 +5014,19 @@ module {
     ):
       env.set_libtpu_version("0.2.0")
 
+  @et.why_tpu_only(
+      "CUDAHooks::getNewGenerator does not validate device_index on GPU."
+  )
+  def test_generator_invalid_device(self):
+    expected_msg = re.compile(
+        r"expected device_index between 0 and \d+, got 100"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_msg,
+    ):
+      torch.Generator(device="tpu:100")
+
   @et.why_tpu_only("TorchTPU specific export mode generator error.")
   def test_set_export_mode_default_device_generator_invalid_device(self):
     expected_msg = re.compile(

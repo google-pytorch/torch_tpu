@@ -24,8 +24,7 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/str_cat.h"
-#include "csrc/common/error_utils.h"
-#include "csrc/ops/python_context.h"
+#include "csrc/common/api_error_utils.h"
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "torch/csrc/Exceptions.h"
@@ -39,9 +38,8 @@ namespace internal {
 //
 // Specifically, it adds the following actions to the given function:
 //   1. Captures the Python API name, so that it's prepended to the error.
-//   2. Calls the `TranslateToC10ErrorAndThrow()` function.
-//     - Passes them through the error message checks.
-//     - Translates them into PyTorch `c10::Error`.
+//   2. Calls `RunWithApiErrorHandling()`, which passes errors through the
+//      error message checks and translates them into PyTorch `c10::Error`.
 //   3. Translates the `c10::Error` into their corresponding Python errors.
 template <typename FuncType>
 struct ErrorHandlingHelper;
@@ -50,19 +48,13 @@ template <typename Ret, typename... Args>
 struct ErrorHandlingHelper<Ret(Args...)> {
   // TorchTPU specific logic in the wrapper.
   //
-  // Captures the Python API name, and calls the `TranslateToC10ErrorAndThrow()`
-  // function.
+  // Captures the Python API name, and delegates to `RunWithApiErrorHandling()`.
   //
   // In theory, we could inline this function into `wrap()` definition.
   // However, we split it so that we can test it separately.
   template <typename F>
   static Ret impl(const std::string_view api_name, const F& f, Args... args) {
-    ScopedPythonContextCapturer capturer(PythonApiName{api_name});
-    try {
-      return f(std::forward<Args>(args)...);
-    } catch (const TtError& e) {
-      TranslateToC10ErrorAndThrow(e);
-    }
+    return RunWithApiErrorHandling(api_name, f, std::forward<Args>(args)...);
   }
 
   // Wraps the Python API callable in a lambda that executes with proper

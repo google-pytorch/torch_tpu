@@ -251,6 +251,24 @@ py::dict PyGetLocalDeviceAttributes() {
   return attrs;
 }
 
+void PySetManualSeed(uint64_t seed) { TT_THROW_IF_ERROR(SetManualSeed(seed)); }
+
+void PySetManualSeedAll(uint64_t seed) {
+  TT_THROW_IF_ERROR(SetManualSeedAll(seed));
+}
+
+void PySetRngState(at::Tensor state, int device_index) {
+  TT_ASSIGN_OR_THROW(at::Generator * gen,
+                     GetDefaultDeviceGenerator(device_index));
+  gen->set_state(state);
+}
+
+void PySetExportModeDefaultDeviceGenerator(at::Generator gen,
+                                           int device_index) {
+  TT_THROW_IF_ERROR(
+      SetExportModeDefaultDeviceGenerator(std::move(gen), device_index));
+}
+
 }  // namespace
 
 TT_PYBIND11_MODULE(_device_ops_backend, m) {
@@ -448,11 +466,9 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       "_hbm_usage_summary",
       []() { return CompilationCache::GetInstance().HbmUsageSummary(); },
       "Return the total HBM usage of the compilation cache.");
-  m.def(
-      "manual_seed", [](uint64_t seed) { SetManualSeed(seed); },
-      py::arg("seed"),
-      "Manually set the seed for the generator of the current device.");
-  m.def("manual_seed_all", &SetManualSeedAll, py::arg("seed"),
+  m.def("manual_seed", &PySetManualSeed, py::arg("seed"),
+        "Manually set the seed for the generator of the current device.");
+  m.def("manual_seed_all", &PySetManualSeedAll, py::arg("seed"),
         "Manually set the seed for all generators (one per device).");
 
   m.def(
@@ -460,26 +476,21 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       [](int device_index) -> at::Tensor {
         // Gets the current internal state of the generator for a given device
         // index. The internal state is returned as a CPU byte tensor.
-        const at::Generator& gen = GetDefaultDeviceGenerator(device_index);
-        return gen.get_state();
+        TT_ASSIGN_OR_THROW(const at::Generator* gen,
+                           GetDefaultDeviceGenerator(device_index));
+        return gen->get_state();
       },
       py::arg("device_index"), "Get RNG state for the given device index.");
 
-  m.def(
-      "set_rng_state",
-      [](at::Tensor state, int device_index) {
-        // Sets the internal state of the generator for a given device index.
-        // The new internal state must be a CPU byte tensor.
-        at::Generator& gen = GetDefaultDeviceGenerator(device_index);
-        gen.set_state(state);
-      },
-      py::arg("state"), py::arg("device_index"),
-      "Set RNG state for the given device index.");
+  m.def("set_rng_state", &PySetRngState, py::arg("state"),
+        py::arg("device_index"), "Set RNG state for the given device index.");
 
   m.def(
       "get_default_generator",
       [](int device_index) -> at::Generator {
-        return GetDefaultDeviceGenerator(device_index);
+        TT_ASSIGN_OR_THROW(at::Generator * gen,
+                           GetDefaultDeviceGenerator(device_index));
+        return *gen;
       },
       py::arg("device_index"),
       "Get the default generator for the given device index.");
@@ -487,20 +498,19 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "make_export_mode_placeholder_generator",
       [](int device_index) -> at::Generator {
-        return MakeExportModePlaceholderGenerator(device_index);
+        TT_ASSIGN_OR_THROW(at::Generator gen,
+                           MakeExportModePlaceholderGenerator(device_index));
+        return gen;
       },
       py::arg("device_index"),
       "Construct an export mode placeholder generator for the given device"
       " index.");
 
-  m.def(
-      "set_export_mode_default_device_generator",
-      [](at::Generator gen, int device_index) {
-        SetExportModeDefaultDeviceGenerator(std::move(gen), device_index);
-      },
-      py::arg("generator"), py::arg("device_index"),
-      "Sets the export-mode default generator override for the given device"
-      " index.");
+  m.def("set_export_mode_default_device_generator",
+        &PySetExportModeDefaultDeviceGenerator, py::arg("generator"),
+        py::arg("device_index"),
+        "Sets the export-mode default generator override for the given device"
+        " index.");
 
   PyBindClass<CacheEntryStats>(m, "CacheEntryStats")
       .def_property_readonly(

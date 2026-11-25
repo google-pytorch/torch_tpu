@@ -204,8 +204,7 @@ at::Tensor AtenMultinomial(const at::Tensor& self, int64_t num_samples,
               TT_ASSIGN_OR_THROW(const RngUsage usage,
                                  GetRngUsage(self, num_samples, replacement));
 
-              auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
-                  generator, GetDefaultDeviceGenerator());
+              TT_ASSIGN_OR_THROW(auto* gen, GetDeviceGeneratorImpl(generator));
               // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
               std::scoped_lock<std::mutex> lock(gen->mutex_);
               const at::Tensor rng_input_state = gen->DeviceStateTensor();
@@ -238,8 +237,7 @@ at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
         TT_ASSIGN_OR_THROW(const RngUsage usage,
                            GetRngUsage(self, num_samples, replacement));
 
-        auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
-            generator, GetDefaultDeviceGenerator());
+        TT_ASSIGN_OR_THROW(auto* gen, GetDeviceGeneratorImpl(generator));
         // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
         std::scoped_lock<std::mutex> lock(gen->mutex_);
         const at::Tensor rng_input_state = gen->DeviceStateTensor();
