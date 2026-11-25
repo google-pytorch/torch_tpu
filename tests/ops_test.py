@@ -602,7 +602,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {
             "rtol": 3.9e-3,
             "atol": 2.4e-3,
-        },  # TOLERANCE_OVERRIDE_OK
+        },
     },
     "nn.functional.embedding_bag": {
         torch.bfloat16: {"atol": 3.2e-2},
@@ -1143,6 +1143,60 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     # go/keep-sorted end
 }  # end of ACCURACY_OVERRIDES_VS_GPU_COMPILED
+_LIBTPU_VERSION = test_utils.libtpu_version()
+if (
+    oss_utils.is_oss()
+    and _LIBTPU_VERSION is not None
+    and _LIBTPU_VERSION < (0, 0, 51)
+):
+  # libtpu < 0.0.51 predates XLA's float32 Cody-Waite sinh/cosh precision
+  # improvements (and complex64 tan lowering depends on sinh/cosh). Keep the
+  # tightened head tolerances for internal runs and libtpu >= 0.0.51.
+  # _foreach_cosh integer dtypes and _foreach_sinh fall back per-dtype to
+  # cosh/sinh in op_testing.py.
+  # TODO(b/584809741): Remove once OSS pins libtpu >= 0.0.51.
+  update_dict(
+      ACCURACY_OVERRIDES_VS_GPU_COMPILED,
+      {
+          # go/keep-sorted start
+          "_foreach_cosh": {
+              torch.float32: {"rtol": 5e-6},
+              torch.int16: {"rtol": 4e-6},
+              torch.int32: {"rtol": 4e-6},
+              torch.int64: {"rtol": 4e-6},
+              torch.int8: {"rtol": 4e-6},
+              torch.uint8: {"rtol": 4e-6},
+          },
+          "_foreach_sinh": {
+              torch.float32: {"rtol": 5.8e-6},
+              torch.int16: {"rtol": 4e-6},
+              torch.int32: {"rtol": 4e-6},
+              torch.int64: {"rtol": 4e-6},
+              torch.int8: {"rtol": 4e-6},
+              torch.uint8: {"rtol": 4e-6},
+          },
+          "cosh": {
+              torch.float32: {"rtol": 3.4e-6},
+              torch.int16: {"rtol": 4e-6},
+              torch.int32: {"rtol": 4e-6},
+              torch.int64: {"rtol": 4e-6},
+              torch.int8: {"rtol": 4e-6},
+              torch.uint8: {"rtol": 4e-6},
+          },
+          "sinh": {
+              torch.float32: {"rtol": 5.8e-6},
+              torch.int16: {"rtol": 4e-6},
+              torch.int32: {"rtol": 4e-6},
+              torch.int64: {"rtol": 4e-6},
+              torch.int8: {"rtol": 4e-6},
+              torch.uint8: {"rtol": 4e-6},
+          },
+          "tan": {
+              torch.complex64: {"rtol": 3.0e-5},
+          },
+          # go/keep-sorted end
+      },
+  )
 
 # The GPU gradient tolerances are based on the TPU vs GPU forward pass tolerances.
 ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
@@ -2140,7 +2194,16 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("digamma")
 
   def test_div(self):
-    self.do_test_op("div")
+    exclude_inplace_dtypes: tuple[torch.dtype, ...] = ()
+    if (
+        op_testing.is_tpu_vs_gpu_compiled()
+        and test_utils.get_torch_version() < (2, 13, 0)
+    ):
+      # Before PyTorch 2.13, aten.div_ lacks safe-cast checks in
+      # torch._meta_registrations (meta_div_inplace), so compiled div_() on
+      # bool/integral tensors succeeds instead of raising like the 2.15 goldens.
+      exclude_inplace_dtypes = INTEGRAL_DTYPES
+    self.do_test_op("div", exclude_inplace_dtypes=exclude_inplace_dtypes)
 
   def test_dot(self):
     self.do_test_op(
@@ -2528,18 +2591,27 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_div(self):
+    exclude_inplace_dtypes = (
+        torch.uint8,
+        torch.int8,
+        torch.int16,
+    ) + COMPLEX_DTYPES
+    if (
+        op_testing.is_tpu_vs_gpu_compiled()
+        and test_utils.get_torch_version() < (2, 13, 0)
+    ):
+      # Before PyTorch 2.13, _foreach_div_ slow-path FakeTensor tracing calls
+      # aten.div_, which lacks safe-cast checks in torch._meta_registrations
+      # (meta_div_inplace), so compiled _foreach_div_() on bool/int32/int64
+      # succeeds instead of raising like the 2.15 goldens.
+      exclude_inplace_dtypes += (torch.bool, torch.int32, torch.int64)
     self.do_test_op(
         "_foreach_div",
         # TODO(b/485291373): fix _foreach_div() failing with complex dtypes.
         exclude_dtypes=COMPLEX_DTYPES,
         # TODO(b/485291373): fix _foreach_div_() failing with integral and
         # complex dtypes.
-        exclude_inplace_dtypes=(
-            torch.uint8,
-            torch.int8,
-            torch.int16,
-        )
-        + COMPLEX_DTYPES,
+        exclude_inplace_dtypes=exclude_inplace_dtypes,
     )
 
   @category("foreach")
@@ -3564,9 +3636,18 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("mul")
 
   def test_nan_to_num(self):
+    exclude_inplace_dtypes: tuple[torch.dtype, ...] = ()
+    if (
+        op_testing.is_tpu_vs_gpu_compiled()
+        and test_utils.get_torch_version() < (2, 15, 0)
+    ):
+      # Before PyTorch 2.15, torch._refs.nan_to_num lacks a complex branch and
+      # fails FakeTensor tracing on complex64 via torch.isneginf.
+      exclude_inplace_dtypes = (torch.complex64,)
     self.do_test_op(
         "nan_to_num",
         exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        exclude_inplace_dtypes=exclude_inplace_dtypes,
     )
 
   def test_native_batch_norm(self):

@@ -6512,7 +6512,23 @@ _COMPILED_DENY_LIST: frozenset[str] = frozenset(
         # it misses the graph break for resizing the zero-element out tensors.
         # Tracing then fails with "list index out of range" (or leaves the
         # wrong out shape for 0-D inputs).
-        ["cummax.out", "cummin.out", "max.out", "min.out", "topk.out"]
+        [
+            # go/keep-sorted start
+            "aminmax.out",
+            "cummax.out",
+            "cummin.out",
+            "linalg.cholesky_ex.out",
+            "linalg.lu.out",
+            "linalg.lu_factor_ex.out",
+            "linalg.qr.out",
+            "linalg.solve_ex.out",
+            "lu_unpack.out",
+            "max.out",
+            "min.out",
+            "sort.out",
+            "topk.out",
+            # go/keep-sorted end
+        ]
         if utils.get_torch_version() < (2, 15, 0)
         else []
     )
