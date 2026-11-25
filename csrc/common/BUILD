@@ -2106,6 +2106,7 @@ torch_tpu_cc_library(
     hdrs = ["device_type.h"],
     deps = [
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
     ],
 )

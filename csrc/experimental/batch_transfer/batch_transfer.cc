@@ -31,10 +31,14 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -65,8 +69,9 @@ void TransferFuture::Await() {
       first_error = status;
     }
   }
-  TT_CHECK_THROW(first_error.ok(), error::kInternal)
-      << "Async copy failed: " << first_error.message();
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=hardware or runtime async DMA failure
+      first_error.ok(), error::kInternal)
+      << "async copy failed: " << first_error.message();
   auto end_wait = std::chrono::high_resolution_clock::now();
 
   // If a tag is provided, log the wait latency as raw_copy_wait_ms.
@@ -110,9 +115,29 @@ absl::Status ValidatePartialSpec(const Dimensions& src_offsets_major_dim,
         src_offsets_major_dim.size() == dst_offsets_major_dim.size() &&
             dst_offsets_major_dim.size() == copy_sizes_major_dim.size(),
         error::kInvalidArgument)
-        << "src_offsets_major_dim, dst_offsets_major_dim, and "
-           "copy_sizes_major_dim must have the same size";
+        << "expected src_offsets_major_dim, dst_offsets_major_dim, and "
+           "copy_sizes_major_dim to have the same size, got "
+        << src_offsets_major_dim.size() << ", " << dst_offsets_major_dim.size()
+        << ", and " << copy_sizes_major_dim.size();
   }
+  return absl::OkStatus();
+}
+
+absl::Status ValidatePartialShape(const xla::Shape& shape,
+                                  const int64_t itemsize,
+                                  const int64_t stride) {
+  TT_RET_CHECK(shape.dimensions().size() >= 3, error::kInvalidArgument)
+      << "expected tensor to have at least 3 dimensions for partial copies, "
+         "got "
+      << shape.dimensions().size() << " (shape " << ToString(shape.dimensions())
+      << ")";
+  const int64_t non_major_bytes = stride * itemsize;
+  TT_RET_CHECK(non_major_bytes % 4096 == 0, error::kInvalidArgument)
+      << "expected the product of non-major dimensions in bytes to be a "
+         "multiple of tile size (4096 bytes) for partial copies, got shape "
+      << ToString(shape.dimensions()) << " whose non-major dimensions "
+      << ToString(shape.dimensions().subspan(1)) << " total " << non_major_bytes
+      << " bytes";
   return absl::OkStatus();
 }
 
@@ -122,8 +147,10 @@ absl::StatusOr<int64_t> GetSizePerMajorDim(const xla::Shape& shape,
   if (xla_layout && !xla_layout->tiles().empty()) {
     const xla::Tile& tile = xla_layout->tiles()[0];
     auto tile_dims = tile.dimensions();
-    TT_RET_CHECK(tile_dims.size() == 2, error::kInternal)
-        << "Only 2D tiling supported for now";
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal XLA layout invariant for
+                   // rank >= 3 TPU tensors
+        tile_dims.size() == 2, error::kInternal)
+        << "only 2D tiling supported for now";
     int64_t tH = tile_dims[0];
     int64_t tW = tile_dims[1];
 
@@ -147,14 +174,36 @@ absl::Status ValidateContiguousBase(const at::Tensor& tpu_tensor) {
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref,
                       GetBaseBuffer(tpu_tensor));
   TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tpu_tensor));
-  TT_RET_CHECK(!tpu_tensor.is_conj() && !tpu_tensor.is_neg() &&
-                   tpu_tensor.is_contiguous() &&
-                   tpu_tensor.storage_offset() == 0 &&
-                   tpu_layout.sizes == base_buffer_ref.dimensions() &&
-                   tpu_layout.element_type == base_buffer_ref.element_type(),
-               error::kInvalidArgument)
-      << "destination TPU tensor must be a contiguous base tensor (non-base "
-         "views are not supported by BatchTransferH2D)";
+  std::vector<std::string> violations;
+  if (tpu_tensor.is_conj()) {
+    violations.push_back("conjugated tensor");
+  }
+  if (tpu_tensor.is_neg()) {
+    violations.push_back("negated tensor");
+  }
+  if (!tpu_tensor.is_contiguous()) {
+    violations.push_back("non-contiguous tensor");
+  }
+  if (tpu_tensor.storage_offset() != 0) {
+    violations.push_back(
+        absl::StrCat("storage_offset ", tpu_tensor.storage_offset()));
+  }
+  if (tpu_layout.sizes != base_buffer_ref.dimensions()) {
+    violations.push_back(absl::StrCat("view shape ", ToString(tpu_layout.sizes),
+                                      " != base shape ",
+                                      ToString(base_buffer_ref.dimensions())));
+  }
+  if (tpu_layout.element_type != base_buffer_ref.element_type()) {
+    violations.push_back(absl::StrCat(
+        "view dtype ", ToString(tpu_layout.element_type), " != base dtype ",
+        ToString(base_buffer_ref.element_type())));
+  }
+  if (!violations.empty()) {
+    return TT_ERROR(error::kInvalidArgument)
+           << "expected destination TPU tensor to be a contiguous base tensor "
+              "(non-base views are not supported), got "
+           << absl::StrJoin(violations, ", ");
+  }
   return absl::OkStatus();
 }
 
@@ -162,12 +211,28 @@ absl::StatusOr<DeviceBufferRef> GetPjrtBuffer(const at::Tensor& tpu_tensor,
                                               xla::PjRtBuffer*& out_buffer) {
   TT_RET_CHECK(tpu_tensor.device().type() == GetPrivateUse1DeviceType(),
                error::kInvalidArgument)
-      << "Expected TPU tensor.";
+      << "expected TPU tensor, got "
+      << GetDeviceTypeName(tpu_tensor.device().type());
   TT_ASSIGN_OR_RETURN(
       auto buffer_ref,
       MaterializeAndReturn(tpu_tensor, MaterializationReason::kCpuTransfer));
   TT_ASSIGN_OR_RETURN(out_buffer, buffer_ref.AwaitBuffer());
   return buffer_ref;
+}
+
+std::string FormatOnDeviceShapeMismatch(const size_t index,
+                                        const at::Tensor& expected_tensor,
+                                        const xla::Shape& expected_shape,
+                                        const at::Tensor& actual_tensor,
+                                        const xla::Shape& actual_shape) {
+  return absl::StrCat(
+      "expected tensor at index ", index, " to have shape ",
+      ToString(expected_tensor.sizes()), ", dtype ",
+      ToString(expected_tensor.scalar_type()), ", and on-device layout ",
+      expected_shape.layout().ToString(), ", got shape ",
+      ToString(actual_tensor.sizes()), ", dtype ",
+      ToString(actual_tensor.scalar_type()), ", and on-device layout ",
+      actual_shape.layout().ToString());
 }
 
 }  // namespace
@@ -185,7 +250,8 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
 
   // Step 1: Validate input sizes.
   TT_RET_CHECK(src_arrs.size() == dst_arrs.size(), error::kInvalidArgument)
-      << "Lengths of src_arrs and dst_arrs must match";
+      << "expected src_arrs and dst_arrs to have the same length, got "
+      << src_arrs.size() << " vs " << dst_arrs.size();
   TT_RETURN_IF_ERROR(ValidatePartialSpec(
       src_offsets_major_dim, dst_offsets_major_dim, copy_sizes_major_dim));
   size_t n = src_arrs.size();
@@ -213,10 +279,6 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
                     !copy_sizes_major_dim.empty();
 
   // Step 4: Validate constraints for partial copies.
-  TT_RET_CHECK(!is_partial || shape.dimensions().size() >= 3,
-               error::kInvalidArgument)
-      << "Only support arrays with rank >= 3 for partial copies";
-
   int64_t itemsize =
       xla::ShapeUtil::ByteSizeOfPrimitiveType(shape.element_type());
   int64_t stride = 1;
@@ -225,13 +287,9 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
       stride *= shape.dimensions(i);
     }
   }
-
-  // Partial copy constraints: product of non-major dimensions must align with
-  // TPU 4KB tile boundaries.
-  TT_RET_CHECK(!is_partial || (stride * itemsize) % 4096 == 0,
-               error::kInvalidArgument)
-      << "Unsupported shape: product of non-major dimensions must be a "
-         "multiple of tile size (4KB) on device for partial copies";
+  if (is_partial) {
+    TT_RETURN_IF_ERROR(ValidatePartialShape(shape, itemsize, stride));
+  }
 
   TT_ASSIGN_OR_RETURN(int64_t physical_size,
                       first_buffer->GetOnDeviceSizeInBytes());
@@ -260,7 +318,8 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
 
     TT_RET_CHECK(dst.device().type() == at::DeviceType::CPU,
                  error::kInvalidArgument)
-        << "Destination must be on CPU.";
+        << "expected destination to be on CPU, got "
+        << GetDeviceTypeName(dst.device().type());
     size_t dst_size = dst.nbytes();
     uint8_t* dst_data = reinterpret_cast<uint8_t*>(dst.data_ptr());
 
@@ -272,9 +331,8 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
       TT_ASSIGN_OR_RETURN(src_buffer_ref, GetPjrtBuffer(src, src_buffer));
       TT_RET_CHECK(src_buffer->on_device_shape() == shape,
                    error::kInvalidArgument)
-          << "Tensor at index " << layer_idx << " has shape "
-          << src_buffer->on_device_shape().ToString()
-          << " which is different from expected shape " << shape.ToString();
+          << FormatOnDeviceShapeMismatch(layer_idx, src_arrs[0], shape, src,
+                                         src_buffer->on_device_shape());
     }
     TT_ASSIGN_OR_RETURN(
         PreparedRawDmaBuffer raw_buffer,
@@ -288,7 +346,8 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
     auto start_issue = std::chrono::high_resolution_clock::now();
     if (!is_partial) {
       TT_RET_CHECK(dst_size >= physical_size, error::kInvalidArgument)
-          << "Destination buffer too small for raw copy";
+          << "expected destination buffer size to be at least " << physical_size
+          << " bytes for raw copy, got " << dst_size << " bytes";
       TT_ASSIGN_OR_RETURN(
           xla::Future<> future,
           raw_buffer.CopyDtoH(dst_data, /*offset=*/0, physical_size));
@@ -312,10 +371,16 @@ BatchTransferD2H(  // NOLINT(readability-function-cognitive-complexity)
 
         TT_RET_CHECK(src_offset + size_to_copy <= physical_size,
                      error::kInvalidArgument)
-            << "Copy range exceeds source buffer size";
+            << "expected copy end offset to be <= source buffer size ("
+            << physical_size << " bytes), got " << src_offset + size_to_copy
+            << " bytes (offset " << src_offset << ", size " << size_to_copy
+            << ")";
         TT_RET_CHECK(dst_offset + size_to_copy <= dst_size,
                      error::kInvalidArgument)
-            << "Copy range exceeds destination buffer size";
+            << "expected copy end offset to be <= destination buffer size ("
+            << dst_size << " bytes), got " << dst_offset + size_to_copy
+            << " bytes (offset " << dst_offset << ", size " << size_to_copy
+            << ")";
 
         uint8_t* dst_ptr = dst_data + dst_offset;
         TT_ASSIGN_OR_RETURN(
@@ -355,7 +420,8 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
     const Dimensions& dst_offsets_major_dim,
     const Dimensions& copy_sizes_major_dim) {
   TT_RET_CHECK(src_arrs.size() == dst_arrs.size(), error::kInvalidArgument)
-      << "Lengths of src_arrs and dst_arrs must match";
+      << "expected src_arrs and dst_arrs to have the same length, got "
+      << src_arrs.size() << " vs " << dst_arrs.size();
   TT_RETURN_IF_ERROR(ValidatePartialSpec(
       src_offsets_major_dim, dst_offsets_major_dim, copy_sizes_major_dim));
   size_t n = src_arrs.size();
@@ -374,10 +440,6 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
                     !dst_offsets_major_dim.empty() ||
                     !copy_sizes_major_dim.empty();
 
-  TT_RET_CHECK(!is_partial || shape.dimensions().size() >= 3,
-               error::kInvalidArgument)
-      << "Only support arrays with rank >= 3 for partial copies";
-
   int64_t itemsize =
       xla::ShapeUtil::ByteSizeOfPrimitiveType(shape.element_type());
   int64_t stride = 1;
@@ -386,11 +448,9 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
       stride *= shape.dimensions(i);
     }
   }
-
-  TT_RET_CHECK(!is_partial || (stride * itemsize) % 4096 == 0,
-               error::kInvalidArgument)
-      << "Unsupported shape: product of non-major dimensions must be a "
-         "multiple of tile size (4KB) on device for partial copies";
+  if (is_partial) {
+    TT_RETURN_IF_ERROR(ValidatePartialShape(shape, itemsize, stride));
+  }
 
   TT_ASSIGN_OR_RETURN(int64_t physical_size,
                       first_buffer->GetOnDeviceSizeInBytes());
@@ -416,7 +476,8 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
 
     TT_RET_CHECK(src.device().type() == at::DeviceType::CPU,
                  error::kInvalidArgument)
-        << "Source must be on CPU";
+        << "expected source to be on CPU, got "
+        << GetDeviceTypeName(src.device().type());
     size_t src_size = src.nbytes();
     const uint8_t* src_data = reinterpret_cast<const uint8_t*>(src.data_ptr());
 
@@ -427,9 +488,8 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
       TT_ASSIGN_OR_RETURN(dst_buffer_ref, GetPjrtBuffer(dst, dst_buffer));
       TT_RET_CHECK(dst_buffer->on_device_shape() == shape,
                    error::kInvalidArgument)
-          << "Tensor at index " << layer_idx << " has shape "
-          << dst_buffer->on_device_shape().ToString()
-          << " which is different from expected shape " << shape.ToString();
+          << FormatOnDeviceShapeMismatch(layer_idx, dst_arrs[0], shape, dst,
+                                         dst_buffer->on_device_shape());
     }
     TT_ASSIGN_OR_RETURN(
         PreparedRawDmaBuffer raw_buffer,
@@ -437,7 +497,8 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
 
     if (!is_partial) {
       TT_RET_CHECK(src_size >= physical_size, error::kInvalidArgument)
-          << "Source buffer too small for raw copy";
+          << "expected source buffer size to be at least " << physical_size
+          << " bytes for raw copy, got " << src_size << " bytes";
       TT_ASSIGN_OR_RETURN(
           xla::Future<> future,
           raw_buffer.CopyHtoD(src_data, /*offset=*/0, physical_size));
@@ -461,10 +522,16 @@ BatchTransferH2D(  // NOLINT(readability-function-cognitive-complexity)
 
         TT_RET_CHECK(src_offset + size_to_copy <= src_size,
                      error::kInvalidArgument)
-            << "Copy range exceeds source buffer size";
+            << "expected copy end offset to be <= source buffer size ("
+            << src_size << " bytes), got " << src_offset + size_to_copy
+            << " bytes (offset " << src_offset << ", size " << size_to_copy
+            << ")";
         TT_RET_CHECK(dst_offset + size_to_copy <= physical_size,
                      error::kInvalidArgument)
-            << "Copy range exceeds destination buffer size";
+            << "expected copy end offset to be <= destination buffer size ("
+            << physical_size << " bytes), got " << dst_offset + size_to_copy
+            << " bytes (offset " << dst_offset << ", size " << size_to_copy
+            << ")";
 
         const uint8_t* src_ptr = src_data + src_offset;
         TT_ASSIGN_OR_RETURN(

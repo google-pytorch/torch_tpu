@@ -36,8 +36,10 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:device_type",
         "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:layout_utils",
+        "//csrc/common:to_string",
         "//csrc/eager:device_buffer",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
@@ -49,6 +51,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_client",

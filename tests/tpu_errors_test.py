@@ -37,7 +37,7 @@ Tests that don't belong in this file:
 """
 
 import collections
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import contextlib
 import os
 import re
@@ -56,6 +56,7 @@ from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
 from torch.utils import checkpoint
+from torch_tpu._internal import batch_transfer
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -5564,6 +5565,317 @@ module {
         tpu="""cdist_backward(): expected p to be >= 0, got -1""",
     ):
       torch.ops.aten._cdist_backward(grad, x1, x2, -1.0, cdist)
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_mismatched_lengths(self):
+    tpu_t = torch.ones(4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected src_arrs and dst_arrs to have the same length, got 1 vs 0""",
+    ):
+      batch_transfer.batch_transfer_d2h([tpu_t], [])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_mismatched_lengths(self):
+    cpu_t = torch.ones(4, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected src_arrs and dst_arrs to have the same length, got 1 vs 0""",
+    ):
+      batch_transfer.batch_transfer_h2d([cpu_t], [])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_partial_spec_mismatch(self):
+    tpu_t = torch.ones((2, 128, 128), dtype=torch.float32, device=et.device())
+    cpu_t = torch.empty((2, 128, 128), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected src_offsets_major_dim, dst_offsets_major_dim, and copy_sizes_major_dim to have the same size, got 1, 1, and 0""",
+    ):
+      batch_transfer.batch_transfer_d2h(
+          [tpu_t],
+          [cpu_t],
+          src_offsets_major_dim=[0],
+          dst_offsets_major_dim=[0],
+          copy_sizes_major_dim=[],
+      )
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_src_not_tpu(self):
+    cpu_src = torch.ones(4, dtype=torch.float32)
+    cpu_dst = torch.empty(4096 * 2, dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected TPU tensor, got CPU""",
+    ):
+      batch_transfer.batch_transfer_d2h([cpu_src], [cpu_dst])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_dst_not_cpu(self):
+    tpu_src = torch.ones(4, dtype=torch.float32, device=et.device())
+    tpu_dst = torch.empty(4096 * 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected destination to be on CPU, got TPU""",
+    ):
+      batch_transfer.batch_transfer_d2h([tpu_src], [tpu_dst])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_partial_rank_lt_3(self):
+    tpu_t = torch.ones((8, 128), dtype=torch.float32, device=et.device())
+    cpu_t = torch.empty((8, 128), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected tensor to have at least 3 dimensions for partial copies, got 2 (shape [8, 128])""",
+    ):
+      batch_transfer.batch_transfer_d2h(
+          [tpu_t],
+          [cpu_t],
+          src_offsets_major_dim=[0],
+          dst_offsets_major_dim=[0],
+          copy_sizes_major_dim=[1],
+      )
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_partial_unaligned_stride(self):
+    tpu_t = torch.ones((4, 4, 4), dtype=torch.float32, device=et.device())
+    cpu_t = torch.empty((4, 4, 4), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected the product of non-major dimensions in bytes to be a multiple of tile size (4096 bytes) for partial copies, got shape [4, 4, 4] whose non-major dimensions [4, 4] total 64 bytes""",
+    ):
+      batch_transfer.batch_transfer_d2h(
+          [tpu_t],
+          [cpu_t],
+          src_offsets_major_dim=[0],
+          dst_offsets_major_dim=[0],
+          copy_sizes_major_dim=[1],
+      )
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_mismatched_shapes_in_batch(self):
+    tpu_t1 = torch.ones((128, 128), dtype=torch.float32, device=et.device())
+    tpu_t2 = torch.ones((128, 256), dtype=torch.float32, device=et.device())
+    cpu_t1 = torch.empty((128, 128), dtype=torch.float32, pin_memory=True)
+    cpu_t2 = torch.empty((128, 256), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected tensor at index 1 to have shape [128, 128], dtype float32, and on-device layout {1,0:T(8,128)}, got shape [128, 256], dtype float32, and on-device layout {1,0:T(8,128)}""",
+    ):
+      batch_transfer.batch_transfer_d2h([tpu_t1, tpu_t2], [cpu_t1, cpu_t2])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_mismatched_layouts_in_batch(self):
+    t = torch.ones((128, 128), dtype=torch.float32)
+    tpu_t1 = t.to(et.device())
+    alt_layout = torch.tpu.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
+    with torch.tpu.LayoutContext(alt_layout):
+      tpu_t2 = t.to(et.device())
+    cpu_t1 = torch.empty((128, 128), dtype=torch.float32, pin_memory=True)
+    cpu_t2 = torch.empty((128, 128), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected tensor at index 1 to have shape [128, 128], dtype float32, and on-device layout {1,0:T(8,128)}, got shape [128, 128], dtype float32, and on-device layout {0,1:T(8,128)}""",
+    ):
+      batch_transfer.batch_transfer_d2h([tpu_t1, tpu_t2], [cpu_t1, cpu_t2])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_dst_buffer_too_small(self):
+    tpu_t = torch.ones(4, dtype=torch.float32, device=et.device())
+    cpu_t = torch.empty(4, dtype=torch.float32, pin_memory=True)
+    # Padded PJRT raw buffer size varies by TPU generation (e.g. 512 vs 4096 bytes).
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"batch_transfer_d2h\(\): expected destination buffer size to be at"
+            r" least \d+ bytes for raw copy, got 16 bytes"
+        ),
+    ):
+      batch_transfer.batch_transfer_d2h([tpu_t], [cpu_t])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_partial_src_out_of_bounds(self):
+    tpu_t = torch.ones((8, 128, 128), dtype=torch.float32, device=et.device())
+    cpu_t = torch.empty((4, 128, 128), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected copy end offset to be <= source buffer size (524288 bytes), got 655360 bytes (offset 393216, size 262144)""",
+    ):
+      batch_transfer.batch_transfer_d2h(
+          [tpu_t],
+          [cpu_t],
+          src_offsets_major_dim=[6],
+          dst_offsets_major_dim=[0],
+          copy_sizes_major_dim=[4],
+      )
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_d2h_partial_dst_out_of_bounds(self):
+    tpu_t = torch.ones((8, 128, 128), dtype=torch.float32, device=et.device())
+    cpu_t = torch.empty((2, 128, 128), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_d2h(): expected copy end offset to be <= destination buffer size (131072 bytes), got 196608 bytes (offset 65536, size 131072)""",
+    ):
+      batch_transfer.batch_transfer_d2h(
+          [tpu_t],
+          [cpu_t],
+          src_offsets_major_dim=[0],
+          dst_offsets_major_dim=[1],
+          copy_sizes_major_dim=[2],
+      )
+
+  @parameterized.named_parameters(
+      (
+          "non_contiguous_transpose",
+          lambda: torch.ones(
+              (8, 4), dtype=torch.float32, device=et.device()
+          ).t(),
+          "non-contiguous tensor, view shape [4, 8] != base shape [8, 4]",
+      ),
+      (
+          "sliced_storage_offset",
+          lambda: torch.ones(20, dtype=torch.float32, device=et.device())[2:12],
+          "storage_offset 2, view shape [10] != base shape [20]",
+      ),
+      (
+          "view_dtype_mismatch",
+          lambda: (
+              torch.ones((4, 8), dtype=torch.float32, device=et.device()).view(
+                  torch.int32
+              )
+          ),
+          "view dtype int32 != base dtype float32",
+      ),
+  )
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_non_contiguous_dst(
+      self,
+      make_dst: Callable[[], torch.Tensor],
+      expected_detail: str,
+  ):
+    cpu_t = torch.ones((4, 8), dtype=torch.float32, pin_memory=True)
+    tpu_t = make_dst()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""batch_transfer_h2d(): expected destination TPU tensor to be a contiguous base tensor (non-base views are not supported), got {expected_detail}""",
+    ):
+      batch_transfer.batch_transfer_h2d([cpu_t], [tpu_t])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_partial_rank_lt_3(self):
+    cpu_t = torch.ones((8, 128), dtype=torch.float32, pin_memory=True)
+    tpu_t = torch.empty((8, 128), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected tensor to have at least 3 dimensions for partial copies, got 2 (shape [8, 128])""",
+    ):
+      batch_transfer.batch_transfer_h2d(
+          [cpu_t],
+          [tpu_t],
+          src_offsets_major_dim=[0],
+          dst_offsets_major_dim=[0],
+          copy_sizes_major_dim=[1],
+      )
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_partial_unaligned_stride(self):
+    cpu_t = torch.ones((4, 4, 4), dtype=torch.float32, pin_memory=True)
+    tpu_t = torch.empty((4, 4, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected the product of non-major dimensions in bytes to be a multiple of tile size (4096 bytes) for partial copies, got shape [4, 4, 4] whose non-major dimensions [4, 4] total 64 bytes""",
+    ):
+      batch_transfer.batch_transfer_h2d(
+          [cpu_t],
+          [tpu_t],
+          src_offsets_major_dim=[0],
+          dst_offsets_major_dim=[0],
+          copy_sizes_major_dim=[1],
+      )
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_src_not_cpu(self):
+    tpu_src = torch.ones(4, dtype=torch.float32, device=et.device())
+    tpu_dst = torch.empty(4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected source to be on CPU, got TPU""",
+    ):
+      batch_transfer.batch_transfer_h2d([tpu_src], [tpu_dst])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_mismatched_shapes_in_batch(self):
+    cpu_t1 = torch.empty((128, 128), dtype=torch.float32, pin_memory=True)
+    cpu_t2 = torch.empty((128, 256), dtype=torch.float32, pin_memory=True)
+    tpu_t1 = torch.empty((128, 128), dtype=torch.float32, device=et.device())
+    tpu_t2 = torch.empty((128, 256), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected tensor at index 1 to have shape [128, 128], dtype float32, and on-device layout {1,0:T(8,128)}, got shape [128, 256], dtype float32, and on-device layout {1,0:T(8,128)}""",
+    ):
+      batch_transfer.batch_transfer_h2d([cpu_t1, cpu_t2], [tpu_t1, tpu_t2])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_mismatched_layouts_in_batch(self):
+    t = torch.ones((128, 128), dtype=torch.float32)
+    tpu_t1 = t.to(et.device())
+    alt_layout = torch.tpu.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
+    with torch.tpu.LayoutContext(alt_layout):
+      tpu_t2 = t.to(et.device())
+    cpu_t1 = torch.empty((128, 128), dtype=torch.float32, pin_memory=True)
+    cpu_t2 = torch.empty((128, 128), dtype=torch.float32, pin_memory=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected tensor at index 1 to have shape [128, 128], dtype float32, and on-device layout {1,0:T(8,128)}, got shape [128, 128], dtype float32, and on-device layout {0,1:T(8,128)}""",
+    ):
+      batch_transfer.batch_transfer_h2d([cpu_t1, cpu_t2], [tpu_t1, tpu_t2])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_src_buffer_too_small(self):
+    cpu_t = torch.ones(4, dtype=torch.float32, pin_memory=True)
+    tpu_t = torch.empty(4, dtype=torch.float32, device=et.device())
+    # Padded PJRT raw buffer size varies by TPU generation (e.g. 512 vs 4096 bytes).
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"batch_transfer_h2d\(\): expected source buffer size to be at"
+            r" least \d+ bytes for raw copy, got 16 bytes"
+        ),
+    ):
+      batch_transfer.batch_transfer_h2d([cpu_t], [tpu_t])
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_partial_src_out_of_bounds(self):
+    cpu_t = torch.ones((2, 128, 128), dtype=torch.float32, pin_memory=True)
+    tpu_t = torch.empty((8, 128, 128), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected copy end offset to be <= source buffer size (131072 bytes), got 196608 bytes (offset 65536, size 131072)""",
+    ):
+      batch_transfer.batch_transfer_h2d(
+          [cpu_t],
+          [tpu_t],
+          src_offsets_major_dim=[1],
+          dst_offsets_major_dim=[0],
+          copy_sizes_major_dim=[2],
+      )
+
+  @et.why_tpu_only("batch_transfer is a TPU-specific internal DMA API.")
+  def test_batch_transfer_h2d_partial_dst_out_of_bounds(self):
+    cpu_t = torch.ones((4, 128, 128), dtype=torch.float32, pin_memory=True)
+    tpu_t = torch.empty((8, 128, 128), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""batch_transfer_h2d(): expected copy end offset to be <= destination buffer size (524288 bytes), got 655360 bytes (offset 393216, size 262144)""",
+    ):
+      batch_transfer.batch_transfer_h2d(
+          [cpu_t],
+          [tpu_t],
+          src_offsets_major_dim=[0],
+          dst_offsets_major_dim=[6],
+          copy_sizes_major_dim=[4],
+      )
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
