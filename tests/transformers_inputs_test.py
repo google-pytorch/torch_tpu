@@ -118,5 +118,179 @@ class MultimodalInputsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(int(inputs["mm_token_type_ids"].sum()), 2 * 58)
 
 
+def _llava_config(model_type: str) -> dict[str, Any]:
+  """Returns a minimal LLaVA-style config with a 336x336, patch-14 tower."""
+  return {
+      "model_type": model_type,
+      "image_token_index": 32000,
+      "vision_config": {"image_size": 336, "patch_size": 14},
+      "text_config": {"vocab_size": 32064, "max_position_embeddings": 4096},
+  }
+
+
+class ExplicitShapeTest(seed_test_utils.RepeatableTest):
+  """`shape=(batch, length)` as interpreted by the shape-sensitive builders."""
+
+  def test_vlm_text_grows_to_hold_the_image_tokens(self):
+    inputs = transformers_inputs.generate_transformers_inputs(
+        _llava_config("llava"), "multimodal", shape=(2, 8)
+    )
+
+    image_tokens = (336 // 14) ** 2
+    self.assertEqual(inputs["pixel_values"].shape, (2, 3, 336, 336))
+    # The 8 requested tokens cannot hold the image: the text is regenerated
+    # with 16 text tokens after the image tokens.
+    self.assertEqual(inputs["input_ids"].shape, (2, image_tokens + 16))
+    self.assertTrue(
+        bool((inputs["input_ids"][:, :image_tokens] == 32000).all())
+    )
+    self.assertEqual(
+        int((inputs["input_ids"] == 32000).sum()), 2 * image_tokens
+    )
+
+  def test_vlm_long_text_is_kept(self):
+    inputs = transformers_inputs.generate_transformers_inputs(
+        _llava_config("llava"), "multimodal", shape=(1, 1000)
+    )
+
+    self.assertEqual(inputs["input_ids"].shape, (1, 1000))
+    self.assertEqual(int((inputs["input_ids"] == 32000).sum()), 576)
+
+  def test_llava_next_counts_base_and_high_resolution_tokens(self):
+    inputs = transformers_inputs.generate_transformers_inputs(
+        _llava_config("llava_next"), "multimodal", shape=(1, 8)
+    )
+
+    side = 336 // 14
+    image_tokens = 2 * side * side + side
+    self.assertEqual(int((inputs["input_ids"] == 32000).sum()), image_tokens)
+
+  def test_decoder_length_follows_shape(self):
+    config = {"model_type": "t5", "is_encoder_decoder": True, "vocab_size": 100}
+    inputs = transformers_inputs.generate_transformers_inputs(
+        config, "seq2seq", shape=(2, 16)
+    )
+
+    self.assertEqual(inputs["input_ids"].shape, (2, 16))
+    self.assertEqual(inputs["decoder_input_ids"].shape, (2, 16))
+
+  def test_decoder_length_capped_by_max_target_positions(self):
+    config = {
+        "model_type": "marian",
+        "is_encoder_decoder": True,
+        "vocab_size": 100,
+        "max_position_embeddings": 512,
+        "max_target_positions": 8,
+    }
+    inputs = transformers_inputs.generate_transformers_inputs(
+        config, "seq2seq", shape=(1, 64)
+    )
+
+    self.assertEqual(inputs["decoder_input_ids"].shape, (1, 8))
+
+  def test_whisper_decoder_capped_at_448_tokens(self):
+    config = {"model_type": "whisper", "is_encoder_decoder": True}
+    inputs = transformers_inputs.generate_transformers_inputs(
+        config, "audio", shape=(1, 1000)
+    )
+
+    self.assertEqual(inputs["decoder_input_ids"].shape, (1, 448))
+
+
+class ForwardSelectionTest(seed_test_utils.RepeatableTest):
+  """Inputs selected from the `forward` signature (`forward=` given)."""
+
+  def test_drops_inputs_that_forward_does_not_take(self):
+    def forward(self, input_ids=None):
+      del self, input_ids
+
+    inputs = transformers_inputs.generate_transformers_inputs(
+        {"model_type": "bert", "vocab_size": 100},
+        "text",
+        shape=(2, 8),
+        forward=forward,
+    )
+
+    self.assertEqual(set(inputs), {"input_ids"})
+    self.assertEqual(inputs["input_ids"].shape, (2, 8))
+
+  def test_adds_the_primary_input_that_forward_takes(self):
+    def forward(self, input_features=None, attention_mask=None):
+      del self, input_features, attention_mask
+
+    inputs = transformers_inputs.generate_transformers_inputs(
+        {"model_type": "some_asr", "num_mel_bins": 128},
+        "audio",
+        forward=forward,
+    )
+
+    self.assertEqual(set(inputs), {"input_features"})
+    self.assertEqual(inputs["input_features"].shape, (1, 128, 3000))
+
+  def test_adds_decoder_input_ids_for_encoder_decoder_wrappers(self):
+    def forward(self, pixel_values=None, decoder_input_ids=None):
+      del self, pixel_values, decoder_input_ids
+
+    config = {
+        "model_type": "some_vision_enc_dec",
+        "decoder": {"vocab_size": 50, "max_position_embeddings": 512},
+        "image_size": 32,
+    }
+    inputs = transformers_inputs.generate_transformers_inputs(
+        config, "vision", forward=forward
+    )
+
+    self.assertEqual(inputs["pixel_values"].shape, (1, 3, 32, 32))
+    self.assertEqual(inputs["decoder_input_ids"].shape, (1, 32))
+    self.assertLess(int(inputs["decoder_input_ids"].max()), 50)
+
+  def test_expands_waveform_to_audio_channels(self):
+    def forward(self, input_values=None):
+      del self, input_values
+
+    inputs = transformers_inputs.generate_transformers_inputs(
+        {"model_type": "some_codec", "audio_channels": 2},
+        "audio",
+        shape=(3, 1000),
+        forward=forward,
+    )
+
+    self.assertEqual(inputs["input_values"].shape, (3, 2, 1000))
+
+  def test_missing_required_argument_raises(self):
+    def forward(self, past_values, input_ids=None):
+      del self, past_values, input_ids
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Tests test-harness helper.
+        ValueError, "past_values.*'some_forecaster'"
+    ):
+      transformers_inputs.generate_transformers_inputs(
+          {"model_type": "some_forecaster"}, "text", forward=forward
+      )
+
+  def test_opaque_forward_keeps_modality_inputs(self):
+    def forward(self, *args, **kwargs):
+      del self, args, kwargs
+
+    inputs = transformers_inputs.generate_transformers_inputs(
+        {"model_type": "bert"}, "text", shape=(1, 8), forward=forward
+    )
+
+    self.assertEqual(set(inputs), {"input_ids", "attention_mask"})
+
+  def test_model_builder_types_keep_their_builders(self):
+    def forward(self, pixel_values, task_inputs):
+      del self, pixel_values, task_inputs
+
+    inputs = transformers_inputs.generate_transformers_inputs(
+        {"model_type": "oneformer", "image_size": 32},
+        "vision",
+        forward=forward,
+    )
+
+    self.assertIn("task_inputs", inputs)
+    self.assertIn("pixel_values", inputs)
+
+
 if __name__ == "__main__":
   absltest.main()
