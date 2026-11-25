@@ -89,6 +89,10 @@ class TorchaxDeviceOps:
     """Return peak device memory usage in MB, or None if unsupported."""
     return device_utils.get_jax_peak_memory_mb()
 
+  def allocated_memory_mb(self) -> float | None:
+    """Return current device memory allocation in MB, or None if unsupported."""
+    return device_utils.get_jax_allocated_memory_mb()
+
   def release_cached_memory(self) -> None:
     """No-op: the torchax steppers do not run pipelined steps."""
 

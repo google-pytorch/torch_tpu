@@ -107,6 +107,17 @@ class DeviceOps(Protocol):
     """
     ...
 
+  def allocated_memory_mb(self) -> float | None:
+    """Current allocated device memory in MB, or None if unsupported.
+
+    Callers read this only after synchronizing pending device work (e.g. after
+    `await_result` or `reset_peak_memory`) so post-step drift measurements
+    observe a quiescent device. Whether this returns None must depend only on
+    the backend and device kind so all ranks of a distributed benchmark agree on
+    support.
+    """
+    ...
+
   def get_device_time(self, session_id: str | None = None) -> float:
     """Total active device time in seconds across profiling steps, or -1.0 if unsupported.
 
