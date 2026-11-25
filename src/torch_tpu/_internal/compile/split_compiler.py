@@ -73,14 +73,14 @@ _RANK_COLLECTIVE_COUNTS_LOCK = threading.Lock()
 
 
 def _submit_handshake(
-    executable_fingerprint: str,
+    executable_unique_identifier: str,
     pg_to_num_collectives: Mapping[ProcessGroupId, int],
     graph_module_str: str | None = None,
 ) -> bool:
   """Submits a handshake message across participating ranks.
 
   Args:
-    executable_fingerprint: The fingerprint of the executable.
+    executable_unique_identifier: The unique identifier of the executable.
     pg_to_num_collectives: The mapping of ProcessGroupId to collective counts.
     graph_module_str: The graph module string representation, for logging
       purposes.
@@ -102,25 +102,25 @@ def _submit_handshake(
 
     msg = CollectiveHandshakeRequest(
         pg_collective_counts=pg_collective_counts,
-        executable_fingerprint=executable_fingerprint,
+        executable_unique_identifier=executable_unique_identifier,
         rank=rank,
     )
     result = Handshake().submit(msg)
 
     if result:
       logging.info(
-          "Handshake succeeded for rank %d with executable fingerprint %s and"
-          " pg_to_num_collectives %s",
+          "Handshake succeeded for rank %d with executable unique identifier"
+          " %s and pg_to_num_collectives %s",
           rank,
-          executable_fingerprint,
+          executable_unique_identifier,
           pg_to_num_collectives,
       )
     else:
       logging.warning(
-          "Handshake failed for rank %d with executable fingerprint %s and"
-          " pg_to_num_collectives %s",
+          "Handshake failed for rank %d with executable unique identifier %s"
+          " and pg_to_num_collectives %s",
           rank,
-          executable_fingerprint,
+          executable_unique_identifier,
           pg_to_num_collectives,
       )
       if graph_module_str:
@@ -130,9 +130,9 @@ def _submit_handshake(
             "%s\n"
             "--- [END GRAPH MODULE: %s] ---",
             rank,
-            executable_fingerprint,
+            executable_unique_identifier,
             graph_module_str,
-            executable_fingerprint,
+            executable_unique_identifier,
         )
 
     return result
@@ -733,11 +733,13 @@ class _SplitCompiledExecutable(CompiledArtifact):
       return
 
     self.resolve()
-    executable_fingerprint = self.fingerprint()
-    assert executable_fingerprint, "Executable fingerprint is empty."
+    executable_unique_identifier = self.executable_unique_identifier()
+    assert (
+        executable_unique_identifier
+    ), "Executable unique identifier is empty."
 
     fingerprints_match = _submit_handshake(
-        executable_fingerprint,
+        executable_unique_identifier,
         self.pg_to_num_collectives,
         self._graph_module_str,
     )
@@ -825,11 +827,12 @@ class _SplitCompiledExecutable(CompiledArtifact):
     """Returns True if all submodule compilations are resolved."""
     return all(exe.is_resolved for exe in self.compiled_executables)
 
-  def fingerprint(self) -> str:
-    fps = [
-        e.fingerprint() for e in self.compiled_executables if e.fingerprint()
+  def executable_unique_identifier(self) -> str:
+    values = [
+        executable.executable_unique_identifier()
+        for executable in self.compiled_executables
     ]
-    return ":".join(fps)
+    return ":".join(value for value in values if value)
 
 
 def _unpickle_split_compiled_executable(

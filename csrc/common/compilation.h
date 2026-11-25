@@ -23,6 +23,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -151,7 +152,7 @@ class LoadedExecutableWithMetadata {
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->parameter_device_shapes_,
             existing->output_shapes_, existing->output_shapes_kind_,
-            std::move(argument_indices),
+            existing->unique_identifier_, std::move(argument_indices),
             existing->unbounded_dynamic_execution_metadata_,
             existing->subslice_origin_));
   }
@@ -163,7 +164,7 @@ class LoadedExecutableWithMetadata {
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->parameter_device_shapes_,
             existing->output_shapes_, existing->output_shapes_kind_,
-            existing->argument_indices_,
+            existing->unique_identifier_, existing->argument_indices_,
             std::move(unbounded_dynamic_execution_metadata),
             existing->subslice_origin_));
   }
@@ -213,6 +214,11 @@ class LoadedExecutableWithMetadata {
     return subslice_origin_;
   }
 
+  // The unique identifier of the executable.
+  const absl::StatusOr<std::string>& unique_identifier() const {
+    return unique_identifier_;
+  }
+
  private:
   enum class OutputShapesKind {
     // `output_shapes_` holds the post-execution on-device shapes (with layouts
@@ -228,7 +234,9 @@ class LoadedExecutableWithMetadata {
       absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable,
       std::vector<xla::Shape> parameter_device_shapes,
       absl_nonnull std::shared_ptr<const std::vector<xla::Shape>> output_shapes,
-      const OutputShapesKind output_shapes_kind, Indices argument_indices = {},
+      const OutputShapesKind output_shapes_kind,
+      absl::StatusOr<std::string> unique_identifier,
+      Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
       std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt)
@@ -244,7 +252,8 @@ class LoadedExecutableWithMetadata {
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
             std::move(unbounded_dynamic_execution_metadata)),
-        subslice_origin_(std::move(subslice_origin)) {}
+        subslice_origin_(std::move(subslice_origin)),
+        unique_identifier_(std::move(unique_identifier)) {}
 
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
   // Cached on-device parameter shapes (with layout) for the executable.
@@ -258,6 +267,7 @@ class LoadedExecutableWithMetadata {
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;
   std::optional<xla::PjRtDeviceDimensions> subslice_origin_;
+  absl::StatusOr<std::string> unique_identifier_;
 };
 
 using LoadedExecutablePromise =

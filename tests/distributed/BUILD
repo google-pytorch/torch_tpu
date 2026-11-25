@@ -719,6 +719,31 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "executable_unique_identifier_test",
+    timeout = "long",
+    srcs = ["executable_unique_identifier_test.py"],
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        REQUIRES_V5_MULTI_DEVICE,
+        "noasan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+        "nomsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+        "notsan",  # 8-rank tests exceed Forge memory under sanitizers (b/497035517).
+    ],
+    deps = [
+        ":continuous_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:torch_tpu_compiled_executable",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "subgroup_launch_order_test",
     timeout = "long",
     srcs = ["subgroup_launch_order_test.py"],

@@ -28,6 +28,8 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/escaping.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compilation_test_helper.h"
@@ -54,9 +56,11 @@
 namespace torch_tpu {
 namespace {
 
+using absl_testing::IsOkAndHolds;
 using absl_testing::StatusIs;
 using testing::Contains;
 using testing::ElementsAre;
+using testing::MatchesRegex;
 using testing::Pair;
 
 // Initializes the TPU PjRt client once per test suite.
@@ -228,6 +232,36 @@ class DeviceShapesTest : public TpuClientTest {
 
   xla::PjRtClient* client_ = nullptr;
 };
+
+// The fixture is only used for its compiled executable.
+using ExecutableUniqueIdentifierTest = DeviceShapesTest;
+
+TEST_F(ExecutableUniqueIdentifierTest, HasFingerprintAndDeviceAssignment) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          CompileTuplePassthrough());
+  TT_ASSERT_OK_AND_ASSIGN(const std::string fingerprint,
+                          executable->GetExecutable()->FingerprintExecutable());
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::string unique_identifier,
+                          executable->unique_identifier());
+
+  EXPECT_THAT(
+      unique_identifier,
+      MatchesRegex(absl::StrCat(absl::BytesToHexString(fingerprint),
+                                ";device_assignment=([0-9a-f]{16}|none)")));
+}
+
+TEST_F(ExecutableUniqueIdentifierTest, IsKeptByCopiesOfTheExecutable) {
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,
+                          CompileTuplePassthrough());
+  TT_ASSERT_OK_AND_ASSIGN(const std::string unique_identifier,
+                          executable->unique_identifier());
+
+  const SharedLoadedExecutableWithMetadata copy =
+      LoadedExecutableWithMetadata::WithArgumentIndices(executable, {1, 0});
+
+  EXPECT_THAT(copy->unique_identifier(), IsOkAndHolds(unique_identifier));
+}
 
 TEST_F(DeviceShapesTest, FlattensTupleOutputDeviceShapes) {
   TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata executable,

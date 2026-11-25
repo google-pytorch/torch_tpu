@@ -330,7 +330,7 @@ class CollectiveHandshakeRequest:
   Attributes:
     pg_collective_counts: RankCollectiveCounts tracking collective counts per
       process group of the entire rank.
-    executable_fingerprint: Unique identifier for the compiled executable.
+    executable_unique_identifier: Unique identifier for the compiled executable.
     rank: The rank sending this handshake request. Has to be a member of
       participating_ranks.
   """
@@ -338,14 +338,15 @@ class CollectiveHandshakeRequest:
   def __init__(
       self,
       pg_collective_counts: RankCollectiveCounts,
-      executable_fingerprint: str,
+      executable_unique_identifier: str,
       rank: int,
   ) -> None:
     """Initializes CollectiveHandshakeRequest.
 
     Args:
       pg_collective_counts: Collective counts per process group of the rank.
-      executable_fingerprint: Unique identifier for the compiled executable.
+      executable_unique_identifier: Unique identifier for the compiled
+        executable.
       rank: The rank sending this request. Must be non-negative and, when debug
         checks are enabled, a member of `participating_ranks`.
 
@@ -359,7 +360,7 @@ class CollectiveHandshakeRequest:
       raise ValueError(f"rank must be non-negative, got {rank}.")
 
     self.pg_collective_counts = pg_collective_counts
-    self.executable_fingerprint = executable_fingerprint
+    self.executable_unique_identifier = executable_unique_identifier
     self.rank = rank
 
     # These checks are O(world_size) and the coordinator constructs
@@ -409,7 +410,7 @@ class CollectiveHandshakeRequest:
       JSON UTF-8 encoded bytes representing the request.
     """
     return json.dumps({
-        "executable_fingerprint": self.executable_fingerprint,
+        "executable_unique_identifier": self.executable_unique_identifier,
         "pg_collective_counts": [
             [
                 pg.to_wire(),
@@ -450,7 +451,7 @@ class CollectiveHandshakeRequest:
       )
     return cls(
         pg_collective_counts=RankCollectiveCounts(pg_to_count),
-        executable_fingerprint=obj["executable_fingerprint"],
+        executable_unique_identifier=obj["executable_unique_identifier"],
         rank=obj["rank"],
     )
 
@@ -458,7 +459,7 @@ class CollectiveHandshakeRequest:
     return (
         "CollectiveHandshakeRequest("
         f"pg_collective_counts={self.pg_collective_counts!r}, "
-        f"executable_fingerprint={self.executable_fingerprint!r}, "
+        f"executable_unique_identifier={self.executable_unique_identifier!r}, "
         f"rank={self.rank!r})"
     )
 
