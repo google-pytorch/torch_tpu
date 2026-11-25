@@ -33,6 +33,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/List.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/core/ivalue_to.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -105,6 +106,12 @@ template <typename Iterator>
 }
 [[nodiscard]] std::string ToString(const at::Scalar& scalar,
                                    std::string_view name = "");
+// Without this overload, c10::IValue arguments would resolve to the primary
+// template via operator<<, which prints tensor data (synchronizing TPU tensors
+// or crashing/specializing FakeTensors). Returns std::string rather than
+// std::string_view because non-string payloads format temporary strings at
+// runtime.
+[[nodiscard]] std::string ToString(const c10::IValue& value);
 
 // Returns a string representation of the given type as a PyTorch dtype name
 // (e.g. "float32", "int8"). This is suitable for use in user messages.

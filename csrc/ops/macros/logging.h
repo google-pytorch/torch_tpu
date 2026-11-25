@@ -35,6 +35,7 @@
 #include "ATen/core/IListRef.h"
 #include "ATen/core/List.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/core/ivalue_to.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -44,7 +45,6 @@
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/macro_utils.h"
 #include "csrc/common/to_string.h"
@@ -541,6 +541,9 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
   } else if constexpr (std::is_same_v<T, c10::List<at::Tensor>>) {
     ABSL_CHECK_EQ(normalized_arg_type_in_func_sig,  // CRASH_OK
                   "c10::List<at::Tensor>")
+        << message();
+  } else if constexpr (std::is_same_v<T, c10::IValue>) {
+    ABSL_CHECK_EQ(normalized_arg_type_in_func_sig, "c10::IValue")  // CRASH_OK
         << message();
   } else {
     static_assert(false, "Unsupported argument type.");

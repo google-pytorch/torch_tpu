@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/ivalue_inl.h"
 #include "ATen/ops/ones.h"
 #include "absl/log/absl_log.h"
 #include "c10/core/Device.h"
@@ -157,6 +158,18 @@ TEST(LogKernelArgs, LogsMemoryFormat) {
   std::ostringstream ss;
   LogKernelArgs(ss, {"arg1"}, at::MemoryFormat::Preserve);
   EXPECT_EQ(ss.str(), "arg1: Preserve\n");
+}
+
+void KernelWithIValue(const c10::IValue& group_name) {
+  TT_CHECK_AND_LOG_KERNEL_ARGS_(OpName::kAdd, group_name);
+}
+
+TEST(LogKernelArgs, LogsIValue) {
+  c10::IValue group_name("pg0");
+  KernelWithIValue(group_name);
+  std::ostringstream ss;
+  LogKernelArgs(ss, {"group_name"}, group_name);
+  EXPECT_EQ(ss.str(), "group_name: pg0\n");
 }
 
 TEST(LogKernelArgs, LogsVariadicArgs) {

@@ -33,7 +33,6 @@ torch_tpu_cc_library(
     srcs = ["logging.cc"],
     hdrs = ["logging.h"],
     deps = [
-        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:macro_utils",
         "//csrc/common:to_string",

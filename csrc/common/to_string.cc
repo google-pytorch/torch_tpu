@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/ivalue_inl.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -175,6 +176,25 @@ std::string ToString(const at::Scalar& scalar, const std::string_view name) {
                     ", value: ?)");
   }
   return result;
+}
+
+std::string ToString(const c10::IValue& value) {
+  if (value.isString()) {
+    return value.toStringRef();
+  }
+  if (value.isTensor()) {
+    return ToString(value.toTensor());
+  }
+  if (value.isInt()) {
+    return absl::StrCat(value.toInt());
+  }
+  if (value.isBool()) {
+    return std::string(ToString(value.toBool()));
+  }
+  if (value.isDouble()) {
+    return absl::StrCat(value.toDouble());
+  }
+  return absl::StrCat("<IValue:", value.type()->str(), ">");
 }
 
 std::string_view ToString(const at::ScalarType scalar_type) {

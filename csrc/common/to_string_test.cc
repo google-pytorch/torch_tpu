@@ -25,6 +25,8 @@
 #include "ATen/SparseTensorImpl.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/core/ivalue.h"
+#include "ATen/core/ivalue_inl.h"
 #include "ATen/ops/_nested_tensor_from_tensor_list.h"
 #include "ATen/ops/arange.h"
 #include "ATen/ops/empty.h"
@@ -164,6 +166,17 @@ TEST(ToStringScalarTest, FormatsSignedIntegralBooleanAndFloatingPointScalars) {
   EXPECT_EQ(ToString(at::Scalar(true)), "true");
   EXPECT_EQ(ToString(at::Scalar(false)), "false");
   EXPECT_EQ(ToString(at::Scalar(1.5)), "1.5");
+}
+
+TEST(ToStringIValueTest, AllBranches) {
+  const at::Tensor tensor = at::empty({2, 3});
+  EXPECT_EQ(ToString(c10::IValue("pg0")), "pg0");
+  EXPECT_EQ(ToString(c10::IValue(tensor)), ToString(tensor));
+  EXPECT_EQ(ToString(c10::IValue(int64_t{-42})), "-42");
+  EXPECT_EQ(ToString(c10::IValue(true)), "true");
+  EXPECT_EQ(ToString(c10::IValue(false)), "false");
+  EXPECT_EQ(ToString(c10::IValue(1.5)), "1.5");
+  EXPECT_EQ(ToString(c10::IValue()), "<IValue:NoneType>");
 }
 
 TEST(ToStringScalarTypeTest, ScalarTypes) {
