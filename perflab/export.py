@@ -261,6 +261,12 @@ def export(data: BenchmarkData) -> None:
   else:
     metrics = data.metrics.metric_map()
     wall_time = data.metrics.e2e_wall_time_seconds
+  if isinstance(data.metrics, metrics_lib.PerformanceMetrics):
+    warmup_xprof_url = data.metrics.warmup_session_xprof_url
+    post_warmup_xprof_url = data.metrics.post_warmup_run_session_xprof_url
+  else:
+    warmup_xprof_url = None
+    post_warmup_xprof_url = None
   # Logged first, so that a failed export still leaves a record in the log.
   _log_result(
       spec_name=data.spec_name,
@@ -275,10 +281,8 @@ def export(data: BenchmarkData) -> None:
           framework=data.framework,
           run_mode=data.run_mode,
       ),
-      warmup_xprof_url=getattr(data.metrics, "warmup_session_xprof_url", None),
-      post_warmup_xprof_url=getattr(
-          data.metrics, "post_warmup_run_session_xprof_url", None
-      ),
+      warmup_xprof_url=warmup_xprof_url,
+      post_warmup_xprof_url=post_warmup_xprof_url,
   )
   export_adapter.export_benchmark_results(
       spec_name=data.spec_name,
@@ -289,6 +293,8 @@ def export(data: BenchmarkData) -> None:
       succeeded=data.succeeded,
       wall_time=wall_time,
       microbenchmark_name=data.microbenchmark_name,
+      warmup_xprof_url=warmup_xprof_url,
+      post_warmup_xprof_url=post_warmup_xprof_url,
   )
 
 

@@ -40,6 +40,8 @@ def export_benchmark_results(
     succeeded: bool = True,
     wall_time: float | None = None,
     microbenchmark_name: str | None = None,
+    warmup_xprof_url: str | None = None,
+    post_warmup_xprof_url: str | None = None,
 ) -> None:
   """Exports benchmark results to TensorBoard.
 
@@ -52,7 +54,11 @@ def export_benchmark_results(
     succeeded: Whether the benchmark run succeeded.
     wall_time: Optional total wall time in seconds.
     microbenchmark_name: Optional name of the microbenchmark.
+    warmup_xprof_url: Optional XProf URL of the warmup run (unused in OSS).
+    post_warmup_xprof_url: Optional XProf URL of the post-warmup run (unused in
+      OSS).
   """
+  del warmup_xprof_url, post_warmup_xprof_url
   tblog_dir = os.environ.get(_TENSORBOARD_OUTPUT_ENV_VAR, None)
   if not tblog_dir:
     return
