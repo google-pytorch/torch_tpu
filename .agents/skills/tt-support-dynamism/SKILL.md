@@ -46,6 +46,15 @@ Playbook for supporting bounded dynamism in TorchTPU op lowerings and
         `sym_sizes()`, `sym_size()`, and `sym_numel()` (they return
         `absl::StatusOr`). Comparing the returned `SymInt`s with `==` / `<` also
         guards. `ops_test_symbolic_shapes` detects these specializations.
+*   **Static-only axis guard**: When a lowering genuinely requires a specific
+    axis `dim` to remain static, guard only `dim` and register an
+    `<Op>DynamicOpInfo` subclass in `DynamicOpInfo.get`'s `adapters` list in
+    `tests/dynamism_test_utils.py`:
+
+    ```cpp
+    TT_RET_CHECK(!type.isDynamicDim(dim), error::kPythonNotImplementedError)
+        << "dynamic dimension " << dim << " is not supported";
+    ```
 
 ## Implementing a New Op
 
@@ -158,8 +167,11 @@ bazel test -c opt //tests:ops_test_dynamic_compiled_tpu-v5lite \
     lowering as for Cases A–C.
 2.  **Add Python tests only for net-new coverage**: `ops_test_dynamic_compiled*`
     already test `OpInfo` samples across valid marking plans. Add a dedicated
-    test only for scenarios it misses (e.g., symbolic `x.shape[i]` arguments or
-    specific multi-dim combinations).
+    test only for scenarios it misses (e.g., symbolic `x.shape[i]` arguments,
+    specific multi-dim combinations, or while an op mode remains in
+    `DYNAMISM_DENY_LISTS`). Place TPU-only dynamic-dimension error tests in
+    `tests/tpu_errors_test.py` via
+    [tt-write-error-tests](../tt-write-error-tests/SKILL.md).
 
     *   **`COMPILE`**: add to `tests/dynamism/compile_test.py`, or group related
         ops in a category file under `tests/dynamism/` (like
