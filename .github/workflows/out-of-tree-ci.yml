@@ -156,7 +156,7 @@ jobs:
         id: build
         run: |
           TORCH_TEST_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
-          BAZEL_CRCR_ARGS="--config=${{ matrix.job_info.config }} --config=local_torch --repo_env=TORCH_SOURCE=${TORCH_SOURCE} --run_under=${PWD}/ci/tools/parallel_accelerator_execute.sh --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=${GITHUB_WORKSPACE}/pytorch/test --keep_going ${TORCH_TEST_TARGETS}"
+          BAZEL_CRCR_ARGS="--config=${{ matrix.job_info.config }} --config=local_torch --repo_env=TORCH_SOURCE=${TORCH_SOURCE} --repo_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=${GITHUB_WORKSPACE}/pytorch/test --run_under=${PWD}/ci/tools/parallel_accelerator_execute.sh --keep_going ${TORCH_TEST_TARGETS}"
           echo "BAZEL_CRCR_ARGS=${BAZEL_CRCR_ARGS}" >> "$GITHUB_ENV"
           # shellcheck disable=SC2086
           bazel build ${BAZEL_CRCR_ARGS}
