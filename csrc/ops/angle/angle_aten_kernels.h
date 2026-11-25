@@ -21,7 +21,7 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenAngle(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenAngle(const at::Tensor& self);
 at::Tensor& AtenAngleOut(const at::Tensor& self, at::Tensor& out);
 
 }  // namespace torch_tpu

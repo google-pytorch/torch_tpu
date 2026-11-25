@@ -22,9 +22,9 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenBaddbmmDtype(const at::Tensor& self, const at::Tensor& batch1,
-                            const at::Tensor& batch2, at::ScalarType out_dtype,
-                            const at::Scalar& beta, const at::Scalar& alpha);
+[[nodiscard]] at::Tensor AtenBaddbmmDtype(
+    const at::Tensor& self, const at::Tensor& batch1, const at::Tensor& batch2,
+    at::ScalarType out_dtype, const at::Scalar& beta, const at::Scalar& alpha);
 
 at::Tensor& AtenBaddbmmDtypeOut(const at::Tensor& self,
                                 const at::Tensor& batch1,

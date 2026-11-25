@@ -59,7 +59,7 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
 at::Tensor AtenCopyFromAndResize(const at::Tensor& self, const at::Tensor& dst);
 
 // Copies a 1-element tensor from TPU to CPU and converts it to a scalar.
-at::Scalar AtenLocalScalarDense(const at::Tensor& self);
+[[nodiscard]] at::Scalar AtenLocalScalarDense(const at::Tensor& self);
 
 // Identical to _copy_from, only registered to avoid a dispatch error in torch.
 //

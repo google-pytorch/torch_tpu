@@ -28,7 +28,7 @@ namespace torch_tpu {
 at::Tensor& AtenCatOut(const at::ITensorListRef& tensors, int64_t dim,
                        at::Tensor& out);
 
-at::Tensor AtenStack(at::TensorList tensors, int64_t dim);
+[[nodiscard]] at::Tensor AtenStack(at::TensorList tensors, int64_t dim);
 
 at::Tensor& AtenStackOut(at::TensorList tensors, int64_t dim, at::Tensor& out);
 

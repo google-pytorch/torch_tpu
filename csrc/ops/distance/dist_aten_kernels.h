@@ -23,14 +23,17 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
-                            double p, std::optional<int64_t> compute_mode);
-at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
-                             const at::Tensor& x2, double p,
-                             const at::Tensor& cdist);
-at::Tensor AtenPdistForward(const at::Tensor& self, double p);
-at::Tensor AtenPdistBackward(const at::Tensor& grad, const at::Tensor& self,
-                             double p, const at::Tensor& pdist);
+[[nodiscard]] at::Tensor AtenCdistForward(const at::Tensor& x1,
+                                          const at::Tensor& x2, double p,
+                                          std::optional<int64_t> compute_mode);
+[[nodiscard]] at::Tensor AtenCdistBackward(const at::Tensor& grad,
+                                           const at::Tensor& x1,
+                                           const at::Tensor& x2, double p,
+                                           const at::Tensor& cdist);
+[[nodiscard]] at::Tensor AtenPdistForward(const at::Tensor& self, double p);
+[[nodiscard]] at::Tensor AtenPdistBackward(const at::Tensor& grad,
+                                           const at::Tensor& self, double p,
+                                           const at::Tensor& pdist);
 
 }  // namespace torch_tpu
 

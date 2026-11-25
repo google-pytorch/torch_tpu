@@ -23,15 +23,15 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenBernoulli(const at::Tensor& self,
-                         std::optional<at::Generator> generator);
+[[nodiscard]] at::Tensor AtenBernoulli(const at::Tensor& self,
+                                       std::optional<at::Generator> generator);
 
 at::Tensor& AtenBernoulliOut(const at::Tensor& self,
                              std::optional<at::Generator> generator,
                              at::Tensor& out);
 
-at::Tensor AtenBernoulliP(const at::Tensor& self, double p,
-                          std::optional<at::Generator> generator);
+[[nodiscard]] at::Tensor AtenBernoulliP(const at::Tensor& self, double p,
+                                        std::optional<at::Generator> generator);
 
 at::Tensor& AtenBernoulli_Float(at::Tensor& self, double p,
                                 std::optional<at::Generator> generator);

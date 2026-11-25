@@ -27,11 +27,11 @@
 namespace torch_tpu {
 
 // at::convolution
-at::Tensor AtenConvolution(const at::Tensor& input, const at::Tensor& weight,
-                           const std::optional<at::Tensor>& bias_opt,
-                           at::IntArrayRef stride, at::IntArrayRef padding,
-                           at::IntArrayRef dilation, bool transposed,
-                           at::IntArrayRef output_padding, int64_t groups);
+[[nodiscard]] at::Tensor AtenConvolution(
+    const at::Tensor& input, const at::Tensor& weight,
+    const std::optional<at::Tensor>& bias_opt, at::IntArrayRef stride,
+    at::IntArrayRef padding, at::IntArrayRef dilation, bool transposed,
+    at::IntArrayRef output_padding, int64_t groups);
 
 // at::convolution.out
 at::Tensor& AtenConvolutionOut(const at::Tensor& input,
@@ -43,12 +43,14 @@ at::Tensor& AtenConvolutionOut(const at::Tensor& input,
                                at::Tensor& out);
 
 // at::convolution_backward
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenConvolutionBackward(
-    const at::Tensor& grad_output, const at::Tensor& input,
-    const at::Tensor& weight, at::OptionalIntArrayRef bias_sizes,
-    at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
-    bool transposed, at::IntArrayRef output_padding, int64_t groups,
-    std::array<bool, 3> output_mask);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenConvolutionBackward(const at::Tensor& grad_output, const at::Tensor& input,
+                        const at::Tensor& weight,
+                        at::OptionalIntArrayRef bias_sizes,
+                        at::IntArrayRef stride, at::IntArrayRef padding,
+                        at::IntArrayRef dilation, bool transposed,
+                        at::IntArrayRef output_padding, int64_t groups,
+                        std::array<bool, 3> output_mask);
 
 }  // namespace torch_tpu
 

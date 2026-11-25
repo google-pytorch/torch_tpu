@@ -22,13 +22,13 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenBucketizeScalar(const at::Scalar& self,
-                               const at::Tensor& boundaries, bool out_int32,
-                               bool right);
+[[nodiscard]] at::Tensor AtenBucketizeScalar(const at::Scalar& self,
+                                             const at::Tensor& boundaries,
+                                             bool out_int32, bool right);
 
-at::Tensor AtenBucketizeTensor(const at::Tensor& self,
-                               const at::Tensor& boundaries, bool out_int32,
-                               bool right);
+[[nodiscard]] at::Tensor AtenBucketizeTensor(const at::Tensor& self,
+                                             const at::Tensor& boundaries,
+                                             bool out_int32, bool right);
 
 at::Tensor& AtenBucketizeTensorOut(const at::Tensor& self,
                                    const at::Tensor& boundaries, bool out_int32,

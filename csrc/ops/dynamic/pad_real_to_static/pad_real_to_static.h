@@ -35,10 +35,10 @@ namespace torch_tpu {
 //   is_dynamic: List of booleans indicating which dimensions are dynamic.
 // Returns:
 //   The padded tensor, bounded to its dynamic shape.
-at::Tensor PadRealToStatic(const at::Tensor& input,
-                           at::TensorList runtime_shape,
-                           at::IntArrayRef static_shape,
-                           c10::List<bool> is_dynamic);
+[[nodiscard]] at::Tensor PadRealToStatic(const at::Tensor& input,
+                                         at::TensorList runtime_shape,
+                                         at::IntArrayRef static_shape,
+                                         c10::List<bool> is_dynamic);
 
 }  // namespace torch_tpu
 

@@ -24,17 +24,15 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenCrossEntropyLoss(const at::Tensor& self,
-                                const at::Tensor& target,
-                                const c10::optional<at::Tensor>& weight,
-                                int64_t reduction, int64_t ignore_index,
-                                double label_smoothing);
+[[nodiscard]] at::Tensor AtenCrossEntropyLoss(
+    const at::Tensor& self, const at::Tensor& target,
+    const c10::optional<at::Tensor>& weight, int64_t reduction,
+    int64_t ignore_index, double label_smoothing);
 
-at::Tensor AtenCrossEntropyLossAutograd(const at::Tensor& self,
-                                        const at::Tensor& target,
-                                        const c10::optional<at::Tensor>& weight,
-                                        int64_t reduction, int64_t ignore_index,
-                                        double label_smoothing);
+[[nodiscard]] at::Tensor AtenCrossEntropyLossAutograd(
+    const at::Tensor& self, const at::Tensor& target,
+    const c10::optional<at::Tensor>& weight, int64_t reduction,
+    int64_t ignore_index, double label_smoothing);
 
 }  // namespace torch_tpu
 

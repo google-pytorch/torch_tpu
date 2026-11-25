@@ -40,9 +40,10 @@ namespace torch_tpu {
 //
 // Returns:
 //   The reshaped tensor, bounded to its dynamic shape.
-at::Tensor DynamicReshape(const at::Tensor& input, at::TensorList shape,
-                          at::IntArrayRef static_shape,
-                          c10::List<bool> is_dynamic);
+[[nodiscard]] at::Tensor DynamicReshape(const at::Tensor& input,
+                                        at::TensorList shape,
+                                        at::IntArrayRef static_shape,
+                                        c10::List<bool> is_dynamic);
 
 }  // namespace torch_tpu
 

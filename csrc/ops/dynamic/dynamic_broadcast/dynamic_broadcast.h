@@ -42,10 +42,11 @@ namespace torch_tpu {
 //
 // Returns:
 //   The broadcasted tensor, bounded to its dynamic shape.
-at::Tensor DynamicBroadcast(const at::Tensor& input, at::TensorList shape,
-                            at::IntArrayRef broadcast_dims,
-                            at::IntArrayRef static_shape,
-                            c10::List<bool> is_dynamic);
+[[nodiscard]] at::Tensor DynamicBroadcast(const at::Tensor& input,
+                                          at::TensorList shape,
+                                          at::IntArrayRef broadcast_dims,
+                                          at::IntArrayRef static_shape,
+                                          c10::List<bool> is_dynamic);
 
 }  // namespace torch_tpu
 

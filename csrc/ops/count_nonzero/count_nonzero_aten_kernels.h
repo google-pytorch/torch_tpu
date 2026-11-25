@@ -22,8 +22,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenCountNonzeroDimIntList(const at::Tensor& self,
-                                      at::IntArrayRef dim);
+[[nodiscard]] at::Tensor AtenCountNonzeroDimIntList(const at::Tensor& self,
+                                                    at::IntArrayRef dim);
 
 }  // namespace torch_tpu
 

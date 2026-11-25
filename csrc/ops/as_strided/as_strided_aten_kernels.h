@@ -28,9 +28,10 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenAsStrided(const at::Tensor& self, c10::SymIntArrayRef size_sym,
-                         c10::SymIntArrayRef stride_sym,
-                         c10::optional<c10::SymInt> storage_offset_sym_opt);
+[[nodiscard]] at::Tensor AtenAsStrided(
+    const at::Tensor& self, c10::SymIntArrayRef size_sym,
+    c10::SymIntArrayRef stride_sym,
+    c10::optional<c10::SymInt> storage_offset_sym_opt);
 
 // Creates a view of the target tensor with the given size, stride, and
 // storage offset.

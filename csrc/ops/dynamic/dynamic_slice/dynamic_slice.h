@@ -36,8 +36,9 @@ namespace torch_tpu {
 //
 // Returns:
 //   The sliced tensor with shape `slice_sizes`.
-at::Tensor DynamicSlice(const at::Tensor& input, at::TensorList start_indices,
-                        at::IntArrayRef slice_sizes);
+[[nodiscard]] at::Tensor DynamicSlice(const at::Tensor& input,
+                                      at::TensorList start_indices,
+                                      at::IntArrayRef slice_sizes);
 
 }  // namespace torch_tpu
 
