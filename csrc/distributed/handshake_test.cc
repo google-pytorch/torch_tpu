@@ -26,7 +26,8 @@ TEST(HandshakeDeathTest, FatalOnInvalidHandshakeStage) {
   EXPECT_DEATH(
       {
         setenv(kTorchTpuSpmdHandshakeStageEnvVar, "INVALID_VALUE", 1);
-        GetHandshakeStageEnvVarOnce();
+        (void)GetHandshakeStageEnvVarOnce(  // VOID_CAST_OK=expects a crash
+        );
       },
       "Invalid value for TORCH_TPU_SPMD_HANDSHAKE_STAGE: INVALID_VALUE");
 }

@@ -28,7 +28,7 @@ enum class HandshakeStage {
 
 // Returns the handshake stage mode configured via
 // TORCH_TPU_SPMD_HANDSHAKE_STAGE.
-HandshakeStage GetHandshakeStageEnvVarOnce();
+[[nodiscard]] HandshakeStage GetHandshakeStageEnvVarOnce();
 
 }  // namespace torch_tpu
 

@@ -26,7 +26,7 @@ namespace torch_tpu {
 
 // Creates an MLIR pass that lowers separable multi-axis StableHLO gathers into
 // sequential unbatched dot general contractions.
-std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
+[[nodiscard]] std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
 createLowerSeparableGatherToDotPass();
 
 }  // namespace torch_tpu

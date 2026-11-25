@@ -29,7 +29,7 @@ namespace torch_tpu {
 
 // Given device ids organized into (sub)groups, construct a MLIR constant
 // used for `replica_groups` attribute in all the StableHLO collectives.
-mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
+[[nodiscard]] mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
     mlir::MlirBuilder& builder, const DeviceGroupList& device_groups);
 
 // Given a channel handle and type, construct a MLIR constant used for the
@@ -40,7 +40,7 @@ mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
 // https://openxla.org/stablehlo/spec#send). They are also used to control the
 // interpretation of device groups (see
 // https://openxla.org/stablehlo/spec#all_gather).
-mlir::stablehlo::ChannelHandleAttr BuildChannelHandleAttr(
+[[nodiscard]] mlir::stablehlo::ChannelHandleAttr BuildChannelHandleAttr(
     mlir::MlirBuilder& builder, int handle, int type);
 
 // Enter SPMD safe region by setting the top of the python thread stack

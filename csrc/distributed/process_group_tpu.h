@@ -70,8 +70,10 @@
 namespace torch_tpu {
 
 // Returns global device attributes and rank-to-device-id mapping.
-const std::vector<PjRtDeviceAttributes>& GetGlobalDeviceAttributes();
-const std::vector<int64_t>& GetGlobalRankToDeviceId();  // INT_VEC_OK
+[[nodiscard]] const std::vector<PjRtDeviceAttributes>&
+GetGlobalDeviceAttributes();
+[[nodiscard]] const std::vector<int64_t>&  // INT_VEC_OK
+GetGlobalRankToDeviceId();
 
 // Returns the device assignment of the world: the device ids of the world's
 // ranks in rank order, or of every device in device id order before the world
@@ -86,7 +88,7 @@ absl::StatusOr<std::vector<int64_t>> GetWorldDeviceAssignment();  // INT_VEC_OK
 // Python `topology_aware_mesh` (`_get_physical_tpu_mesh` indexes devices as
 // `[x, y, z, core]` per slice, and slices are stacked outermost in
 // `slice_index` order).
-std::vector<int64_t> ComputeRankToTopologyOrder(  // INT_VEC_OK
+[[nodiscard]] std::vector<int64_t> ComputeRankToTopologyOrder(  // INT_VEC_OK
     absl::Span<const PjRtDeviceAttributes> device_attrs);
 
 // Permutes the world device_assignment to match the flattened order of
@@ -188,7 +190,8 @@ class P2pSendQueue {
   absl::StatusOr<PeerChannel*> GetOrCreateChannel(int dst_rank)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
   static void PeerWorkerLoop(PeerChannel* channel);
-  static bool PopNextOrWait(PeerChannel* channel, PendingSend& out_task);
+  [[nodiscard]] static bool PopNextOrWait(PeerChannel* channel,
+                                          PendingSend& out_task);
   static void ExecuteSendTask(PeerChannel* channel, PendingSend task);
   static void CancelQueuedTasks(std::deque<PendingSend>& tasks);
   static void DeleteConsumedKeys(c10d::Store& store,
@@ -228,18 +231,19 @@ class ProcessGroupTpu : public c10d::Backend {
   const std::string getBackendName() const override { return "tpu_dist"; }
 
   // Device id of each member; the index is the PG rank.
-  const std::vector<int64_t>& rank_to_device_id() const {  // INT_VEC_OK
+  [[nodiscard]] const std::vector<int64_t>&  // INT_VEC_OK
+  rank_to_device_id() const {
     return member_device_ids_;
   }
 
-  const DeviceAssignment& device_assignment() const {
+  [[nodiscard]] const DeviceAssignment& device_assignment() const {
     return device_assignment_;
   }
 
   // Returns the replica groups emitted as StableHLO replica_groups: positions
   // into device_assignment_, a single group {0, ..., K-1}. These are NOT world
   // ranks.
-  const DeviceGroupList& GetReplicaGroups() const;
+  [[nodiscard]] const DeviceGroupList& GetReplicaGroups() const;
 
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<at::Tensor>& tensors,
@@ -398,7 +402,7 @@ class ProcessGroupTpu : public c10d::Backend {
   // Experimental two-way P2P send. Mirrors the semantics of
   // c10d::Backend::send, but is kept isolated from the public torch.distributed
   // API to safely prototype TPU-specific behaviors.
-  c10::intrusive_ptr<c10d::Work> experimental_send(
+  [[nodiscard]] c10::intrusive_ptr<c10d::Work> experimental_send(
       std::vector<at::Tensor>& tensors, int dst_rank, int tag);
 
   // TODO(cbasile): Drop experimental_recv in the future and merge its
@@ -406,7 +410,7 @@ class ProcessGroupTpu : public c10d::Backend {
   // Experimental two-way P2P recv. Mirrors the semantics of
   // c10d::Backend::recv, but is kept isolated from the public torch.distributed
   // API to safely prototype TPU-specific behaviors.
-  c10::intrusive_ptr<c10d::Work> experimental_recv(
+  [[nodiscard]] c10::intrusive_ptr<c10d::Work> experimental_recv(
       std::vector<at::Tensor>& tensors, int src_rank, int tag);
 
 #if TT_TORCH_VERSION_GE(2, 14)
@@ -420,7 +424,7 @@ class ProcessGroupTpu : public c10d::Backend {
  private:
   // Helper to reduce logging boilerplate. Must use only from implementation
   // methods of collective ops, so we know everything here is initialized.
-  std::string OpDebugString(std::string_view method) {
+  [[nodiscard]] std::string OpDebugString(std::string_view method) {
     return absl::StrFormat(
         "[ProcessGroupTpu::%s] rank=%d, device=%d, group_devices=%s "
         "(world_size=%d): ",
@@ -428,7 +432,7 @@ class ProcessGroupTpu : public c10d::Backend {
         GetGlobalRankToDeviceId().size());
   }
 
-  std::string OpDebugString(OpName method) {
+  [[nodiscard]] std::string OpDebugString(OpName method) {
     std::stringstream ss;
     ss << method;
     return OpDebugString(ss.str());

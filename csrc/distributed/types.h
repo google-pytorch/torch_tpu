@@ -56,20 +56,26 @@ class DeviceGroupList {
   // Constructs from initializer list of DeviceGroups.
   DeviceGroupList(std::initializer_list<DeviceGroup> groups);
 
-  const std::vector<DeviceGroup>& groups() const { return groups_; }
+  [[nodiscard]] const std::vector<DeviceGroup>& groups() const {
+    return groups_;
+  }
 
-  FingerprintType fingerprint() const { return fingerprint_; }
+  [[nodiscard]] FingerprintType fingerprint() const { return fingerprint_; }
 
-  size_t size() const { return groups_.size(); }
-  bool empty() const { return groups_.empty(); }
+  [[nodiscard]] size_t size() const { return groups_.size(); }
+  [[nodiscard]] bool empty() const { return groups_.empty(); }
 
-  const DeviceGroup& operator[](size_t index) const { return groups_[index]; }
-  const DeviceGroup& at(size_t index) const { return groups_.at(index); }
+  [[nodiscard]] const DeviceGroup& operator[](size_t index) const {
+    return groups_[index];
+  }
+  [[nodiscard]] const DeviceGroup& at(size_t index) const {
+    return groups_.at(index);
+  }
 
-  auto begin() const { return groups_.begin(); }
-  auto end() const { return groups_.end(); }
-  auto cbegin() const { return groups_.cbegin(); }
-  auto cend() const { return groups_.cend(); }
+  [[nodiscard]] auto begin() const { return groups_.begin(); }
+  [[nodiscard]] auto end() const { return groups_.end(); }
+  [[nodiscard]] auto cbegin() const { return groups_.cbegin(); }
+  [[nodiscard]] auto cend() const { return groups_.cend(); }
 
   auto operator<=>(const DeviceGroupList&) const = default;
 

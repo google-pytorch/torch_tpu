@@ -52,8 +52,8 @@ inline constexpr int64_t kTileShift = kSublaneShift + kLaneShift;
 // serving graphs with extentless key `key` is registered under: `key` with
 // empty dimensions and compile options keys, and `id_key`, which tells apart
 // kernels that share an extentless key.
-CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(ExtentlessKey key,
-                                                       int id_key);
+[[nodiscard]] CompilationCacheKey MakeUnboundedDynamicKernelCacheKey(
+    ExtentlessKey key, int id_key);
 
 // Compiles a Mosaic kernel, wrapped by `BuildMosaicCustomCall` with the other
 // arguments, for exactly the given input and output shapes and layouts: only
@@ -69,8 +69,9 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
 
 // Returns an unbounded dynamic shape of rank `rank` with a row-major layout
 // tiled by `tiles`.
-xla::Shape MakeUnboundedShape(xla::PrimitiveType type, int64_t rank,
-                              absl::Span<const xla::Tile> tiles);
+[[nodiscard]] xla::Shape MakeUnboundedShape(xla::PrimitiveType type,
+                                            int64_t rank,
+                                            absl::Span<const xla::Tile> tiles);
 
 // Returns the S32[?,?]{1,0:T(1,128)} row-view shape used by kernels that write
 // 128-element storage rows into a donated output.
@@ -101,8 +102,8 @@ xla::Shape MakeUnboundedShape(xla::PrimitiveType type, int64_t rank,
 
 // Whether `shapes` resolve to exactly the on-device `layouts`, e.g. those a
 // kernel was compiled for.
-bool HasDeviceLayouts(absl::Span<const Shape> shapes,
-                      absl::Span<const xla::Layout> layouts);
+[[nodiscard]] bool HasDeviceLayouts(absl::Span<const Shape> shapes,
+                                    absl::Span<const xla::Layout> layouts);
 
 }  // namespace torch_tpu
 

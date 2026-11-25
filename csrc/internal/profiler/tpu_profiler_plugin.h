@@ -95,7 +95,8 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
     bool python_tracer_level_set = false;
   };
 
-  static ParsedCustomConfig ParseCustomConfig(std::string_view custom_config);
+  [[nodiscard]] static ParsedCustomConfig ParseCustomConfig(
+      std::string_view custom_config);
 
   mutable absl::Mutex mutex_;
   std::unique_ptr<tsl::ProfilerSession> session_;

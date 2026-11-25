@@ -80,7 +80,7 @@ namespace torch_tpu {
 //   PRED kernels reuse the U8 Mosaic kernel via a layout-preserving HLO bitcast
 //   from PRED to U8, and are gated on libtpu >= 0.0.54.dev20261125 (or in-tree
 //   builds) for unbounded dynamic HLO bitcast support.
-std::vector<UnboundedDynamicKernelRegistration>
+[[nodiscard]] std::vector<UnboundedDynamicKernelRegistration>
 GetNonzeroUnboundedDynamicKernels();
 
 }  // namespace torch_tpu

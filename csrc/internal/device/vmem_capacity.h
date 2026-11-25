@@ -22,7 +22,7 @@
 namespace torch_tpu {
 
 // VMEM capacity of the local device.
-int64_t GetDeviceVmemCapacityBytes();
+[[nodiscard]] int64_t GetDeviceVmemCapacityBytes();
 
 }  // namespace torch_tpu
 

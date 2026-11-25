@@ -128,13 +128,14 @@ class AsyncCompileResult {
   AsyncCompileResult(AsyncCompileResult&&) = default;
   AsyncCompileResult& operator=(AsyncCompileResult&&) = default;
 
-  absl_nullable const std::shared_ptr<ContextedModule>& module() const {
+  [[nodiscard]] absl_nullable const std::shared_ptr<ContextedModule>& module()
+      const {
     return module_;
   }
 
   // Returns `true` if compilation has finished, i.e. if a subsequent `Get()`
   // will not block. Never blocks.
-  bool IsReady() const;
+  [[nodiscard]] bool IsReady() const;
 
   // Blocks until compilation finishes and returns the executable, with any
   // deduplicated argument indices applied once.
@@ -265,12 +266,12 @@ struct OutputShape {
 //
 // Returns:
 //   The result tensors of the compiled executable.
-std::vector<at::Tensor> ExecuteCompiledModel(
+[[nodiscard]] std::vector<at::Tensor> ExecuteCompiledModel(
     const SharedLoadedExecutableWithMetadata& executable,
     absl::Span<const at::Tensor> argument_tensors,
     absl::Span<const OutputShape> output_shapes = {});
 
-std::vector<at::Tensor> ExecuteCompiledModel(
+[[nodiscard]] std::vector<at::Tensor> ExecuteCompiledModel(
     const SharedLoadedExecutableWithMetadata& executable,
     absl::Span<const at::Tensor* const> argument_tensors,
     absl::Span<const OutputShape> output_shapes = {});

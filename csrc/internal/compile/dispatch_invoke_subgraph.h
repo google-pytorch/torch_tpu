@@ -54,7 +54,7 @@ namespace torch_tpu {
 // Returns:
 //   A list of tensors matching `@main`'s result signature, or an empty vector
 //   if `@main` produces no results.
-std::vector<at::Tensor> PyCreateInvokeSubgraphOp(
+[[nodiscard]] std::vector<at::Tensor> PyCreateInvokeSubgraphOp(
     const std::vector<at::Tensor>& inputs,
     const std::shared_ptr<ContextedModule>& subgraph_module,
     std::string_view identifier = "");

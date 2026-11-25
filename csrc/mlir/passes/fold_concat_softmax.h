@@ -27,7 +27,7 @@ namespace torch_tpu {
 // pre-subtractions and partitions softmax across small-tail concatenations
 // (e.g. attention sinks) to avoid materializing unaligned concatenated
 // intermediate tensors.
-std::unique_ptr<mlir::Pass> createFoldConcatSoftmaxPass();
+[[nodiscard]] std::unique_ptr<mlir::Pass> createFoldConcatSoftmaxPass();
 
 }  // namespace torch_tpu
 

@@ -28,7 +28,8 @@ namespace torch_tpu {
 // For now it serves `torch.sort(x)` and `torch.sort(x, stable=True)` of a 1-D
 // int32 tensor of exactly 1024 elements: ascending, along dim -1. Its sort is
 // stable, so both share one executable.
-UnboundedDynamicKernelRegistration GetSortUnboundedDynamicKernel();
+[[nodiscard]] UnboundedDynamicKernelRegistration
+GetSortUnboundedDynamicKernel();
 
 }  // namespace torch_tpu
 
