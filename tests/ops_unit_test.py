@@ -28604,6 +28604,80 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
           actual=z_tpu.grad.cpu(), expected=z_cpu.grad, rtol=1e-4, atol=1e-4
       )
 
+  @parameterized.named_parameters(
+      ("int8", torch.int8, 100),
+      ("uint8", torch.uint8, 200),
+      ("int16", torch.int16, 20_000),
+      ("uint16", torch.uint16, 50_000),
+      ("int32", torch.int32, 1_000_000_000),
+      ("uint32", torch.uint32, 2_000_000_000),
+      ("int64", torch.int64, 2_000_000_000),
+      ("uint64", torch.uint64, 2_000_000_000),
+  )
+  def test_einsum_unary_integer_reduction_promotes_to_int64(
+      self, dtype, fill_val
+  ):
+    x_cpu = torch.full((4, 4), fill_val, dtype=dtype)
+    x_tpu = x_cpu.to("tpu")
+
+    for equation in ("ij->i", "ij->", "ii->", "ii", "...ij->...i"):
+      with self.subTest(equation=equation):
+        out_cpu = torch.einsum(equation, x_cpu)
+        out_tpu = torch.einsum(equation, x_tpu)
+        self.assertEqual(out_tpu.dtype, torch.int64)
+        self.assertEqual(out_tpu.cpu().tolist(), out_cpu.tolist())
+
+    # Compiled unary integer reduction
+    compiled_fn = torch.compile(
+        lambda t: torch.einsum("ij->i", t), backend="tpu"
+    )
+    out_compiled = compiled_fn(x_tpu)
+    self.assertEqual(out_compiled.dtype, torch.int64)
+    self.assertEqual(
+        out_compiled.cpu().tolist(), torch.einsum("ij->i", x_cpu).tolist()
+    )
+
+    # Size-1 and zero-element unary integer reductions also promote to int64.
+    for shape in ((3, 1), (0, 4), (3, 0)):
+      with self.subTest(shape=shape):
+        z_cpu = torch.ones(shape, dtype=dtype)
+        z_tpu = z_cpu.to("tpu")
+        out_z_cpu = torch.einsum("ij->i", z_cpu)
+        out_z_tpu = torch.einsum("ij->i", z_tpu)
+        self.assertEqual(out_z_tpu.dtype, torch.int64)
+        self.assertEqual(out_z_tpu.shape, out_z_cpu.shape)
+        self.assertEqual(out_z_tpu.cpu().tolist(), out_z_cpu.tolist())
+
+    # Non-reducing unary equations preserve the original integer dtype.
+    for equation in ("ij->ji", "ii->i", "ij"):
+      with self.subTest(non_reducing=equation):
+        view_cpu = torch.einsum(equation, x_cpu)
+        view_tpu = torch.einsum(equation, x_tpu)
+        self.assertEqual(view_tpu.dtype, dtype)
+        self.assertEqual(view_tpu.cpu().tolist(), view_cpu.tolist())
+
+  @parameterized.named_parameters(
+      ("float8_e4m3fn", torch.float8_e4m3fn),
+      ("float8_e5m2", torch.float8_e5m2),
+  )
+  def test_einsum_unary_non_reducing_float8(self, dtype):
+    raw_cpu = torch.tensor(
+        [[0x38, 0x40, 0x44], [0x48, 0x4C, 0x50], [0x54, 0x58, 0x5C]],
+        dtype=torch.uint8,
+    )
+    x_cpu = raw_cpu.view(dtype)
+    x_tpu = x_cpu.to("tpu")
+    for equation in ("ij->ji", "ii->i", "ij"):
+      with self.subTest(equation=equation):
+        out_cpu = torch.einsum(equation, x_cpu)
+        out_tpu = torch.einsum(equation, x_tpu)
+        self.assertEqual(out_tpu.dtype, dtype)
+        self.assertEqual(out_tpu.shape, out_cpu.shape)
+        self.assertEqual(
+            out_tpu.cpu().view(torch.uint8).tolist(),
+            out_cpu.contiguous().view(torch.uint8).tolist(),
+        )
+
   def test_einsum_direct_dot_general_ir_and_compile(self):
     # Verify that 6D Mamba-3 einsum lowers directly to a single
     # stablehlo.dot_general without intermediate 3D reshapes.

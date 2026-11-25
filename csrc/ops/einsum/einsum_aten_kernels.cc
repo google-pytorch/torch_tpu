@@ -727,12 +727,21 @@ absl::Status ResolveSingleContractionStepDtype(
 
 absl::Status ValidateAndResolveOperandDtypes(at::TensorList operands,
                                              ParsedEinsum& parsed) {
+  const bool has_unary_reduction =
+      operands.size() == 1 &&
+      parsed.dedup_operand_labels[0].size() > parsed.rhs_labels.size();
+  const bool requires_arithmetic = operands.size() > 1 || has_unary_reduction;
+
   parsed.operand_dtypes.reserve(operands.size());
   bool all_same_dtype = true;
   const at::ScalarType first_dtype = operands[0].scalar_type();
   for (const at::Tensor& op : operands) {
     TT_RET_CHECK(!IsBool(op), error::kPythonNotImplementedError)
         << "expected non-bool dtype, got " << ToString(op.scalar_type());
+    if (requires_arithmetic ||
+        op.scalar_type() == at::ScalarType::Float4_e2m1fn_x2) {
+      TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(op));
+    }
     const at::ScalarType dt = op.scalar_type();
     parsed.operand_dtypes.push_back(dt);
     if (dt != first_dtype) {
@@ -740,7 +749,9 @@ absl::Status ValidateAndResolveOperandDtypes(at::TensorList operands,
     }
   }
   if (all_same_dtype) {
-    parsed.output_dtype = first_dtype;
+    parsed.output_dtype = (has_unary_reduction && IsInteger(operands[0]))
+                              ? at::ScalarType::Long
+                              : first_dtype;
     return absl::OkStatus();
   }
 
@@ -891,9 +902,10 @@ absl::Status SqueezeBroadcastDims(const ParsedEinsum& parsed,
   return absl::OkStatus();
 }
 
-absl::Status ReduceSingleOperandUnkeptDims(const std::vector<bool>& in_rhs,
-                                           const Dimensions& post_squeeze_count,
-                                           mlir::MlirOp& op, Indices& labels) {
+absl::Status ReduceSingleOperandUnkeptDims(
+    const std::vector<bool>& in_rhs, const Dimensions& post_squeeze_count,
+    std::optional<mlir::ElementType> sum_out_dtype, mlir::MlirOp& op,
+    Indices& labels) {
   Dimensions sum_dims;
   Indices remaining_labels;
   remaining_labels.reserve(labels.size());
@@ -906,8 +918,8 @@ absl::Status ReduceSingleOperandUnkeptDims(const std::vector<bool>& in_rhs,
     }
   }
   if (!sum_dims.empty()) {
-    TT_ASSIGN_OR_RETURN(op,
-                        BuildSumShlo(op, sum_dims, ReductionMode::kDropDims));
+    TT_ASSIGN_OR_RETURN(op, BuildSumShlo(op, sum_dims, ReductionMode::kDropDims,
+                                         sum_out_dtype));
     labels = std::move(remaining_labels);
   }
   return absl::OkStatus();
@@ -915,13 +927,17 @@ absl::Status ReduceSingleOperandUnkeptDims(const std::vector<bool>& in_rhs,
 
 absl::Status PreReduceSingleOperandLabels(const ParsedEinsum& parsed,
                                           const std::vector<bool>& in_rhs,
+                                          mlir::ElementType out_dtype,
                                           std::vector<mlir::MlirOp>& ops,
                                           std::vector<Indices>& op_labels) {
   const Dimensions post_squeeze_count =
       CountPostSqueezeLabels(parsed.label_size.size(), op_labels);
+  const std::optional<mlir::ElementType> sum_out_dtype =
+      ops.size() == 1 ? std::optional<mlir::ElementType>(out_dtype)
+                      : std::nullopt;
   for (size_t i = 0; i < ops.size(); ++i) {
-    TT_RETURN_IF_ERROR(ReduceSingleOperandUnkeptDims(in_rhs, post_squeeze_count,
-                                                     ops[i], op_labels[i]));
+    TT_RETURN_IF_ERROR(ReduceSingleOperandUnkeptDims(
+        in_rhs, post_squeeze_count, sum_out_dtype, ops[i], op_labels[i]));
   }
   return absl::OkStatus();
 }
@@ -1087,7 +1103,7 @@ absl::StatusOr<mlir::MlirOp> BuildEinsumShlo(
   // in only 1 operand (post-squeeze) and is not in `rhs_labels`.
   const std::vector<bool> in_rhs = BuildInRhsMask(parsed);
   TT_RETURN_IF_ERROR(
-      PreReduceSingleOperandLabels(parsed, in_rhs, ops, op_labels));
+      PreReduceSingleOperandLabels(parsed, in_rhs, out_dtype, ops, op_labels));
 
   // Step 4: Pairwise contractions along `contraction_steps` via `DotGeneral`.
   for (const ContractionStep& step : parsed.contraction_steps) {
@@ -1367,6 +1383,11 @@ absl::StatusOr<mlir::MlirOp> BuildEinsumShlo(
     promoted_dtype = c10::promoteTypes(
         promoted_dtype,
         ConvertTo<at::ScalarType>(GetElementTypeOrDie(inputs[i])));
+  }
+  if (inputs.size() == 1 &&
+      parsed.dedup_operand_labels[0].size() > parsed.rhs_labels.size() &&
+      c10::isIntegralType(promoted_dtype, /*includeBool=*/false)) {
+    promoted_dtype = at::ScalarType::Long;
   }
   TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
                       ConvertTo<mlir::ElementType>(promoted_dtype));

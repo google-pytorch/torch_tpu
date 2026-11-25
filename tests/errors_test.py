@@ -22040,6 +22040,44 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
       ):
         torch.einsum("ij,jk->ik", a, b_f64)
 
+    for dtype, gpu_dtype_name, tpu_dtype_name in (
+        (torch.float8_e4m3fn, "Float8_e4m3fn", "float8_e4m3fn"),
+        (torch.float8_e5m2, "Float8_e5m2", "float8_e5m2"),
+        (torch.float4_e2m1fn_x2, "Float4_e2m1fn_x2", "float4_e2m1fn_x2"),
+    ):
+      x_lp = torch.zeros((2, 4), dtype=torch.uint8, device=et.device()).view(
+          dtype
+      )
+      with self.subTest(f"unary_reduction_{tpu_dtype_name}"):
+        # Upstream `einsum` decomposes unary reductions to `sum`, whereas
+        # TorchTPU lowers `einsum` natively without decomposing.
+        with et.assert_raises_message(
+            NotImplementedError,
+            gpu=f""""sum_cuda" not implemented for '{gpu_dtype_name}'""",
+            tpu=f"""einsum(): not implemented for {tpu_dtype_name}""",
+        ):
+          torch.einsum("ij->i", x_lp)
+
+    for dtype, gpu_dtype_name, tpu_dtype_name in (
+        (torch.float8_e4m3fn, "Float8_e4m3fn", "float8_e4m3fn"),
+        (torch.float8_e5m2, "Float8_e5m2", "float8_e5m2"),
+    ):
+      a_fp8 = torch.zeros((2, 4), dtype=torch.uint8, device=et.device()).view(
+          dtype
+      )
+      b_fp8 = torch.zeros((4, 3), dtype=torch.uint8, device=et.device()).view(
+          dtype
+      )
+      with self.subTest(f"contraction_{tpu_dtype_name}"):
+        # Upstream `einsum` decomposes contractions to `bmm` (`baddbmm_cuda`),
+        # whereas TorchTPU lowers `einsum` natively without decomposing.
+        with et.assert_raises_message(
+            NotImplementedError,
+            gpu=f""""baddbmm_cuda" not implemented for '{gpu_dtype_name}'""",
+            tpu=f"""einsum(): not implemented for {tpu_dtype_name}""",
+        ):
+          torch.einsum("ij,jk->ik", a_fp8, b_fp8)
+
 
 class UpsampleBicubic2dAaErrorTest(et.ErrorTestBase):
 

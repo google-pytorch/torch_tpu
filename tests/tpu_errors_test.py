@@ -1589,6 +1589,20 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           torch._C.DispatchKeySet(dk), "ij->ij", []
       )
 
+  @et.why_tpu_only(
+      "Packed sub-byte float4_e2m1fn_x2 tensors cannot be transposed across"
+      " dimensions on TPU, so einsum rejects them upfront."
+  )
+  def test_einsum_float4_non_reducing_error(self):
+    x = torch.zeros((2, 4), dtype=torch.uint8, device=et.device()).view(
+        torch.float4_e2m1fn_x2
+    )
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""einsum(): not implemented for float4_e2m1fn_x2""",
+    ):
+      torch.einsum("ij->ji", x)
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_grid_sampler_2d_invalid_interpolation_mode(self):
     inp = torch.ones(1, 1, 2, 2, device=et.device())
