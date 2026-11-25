@@ -16408,6 +16408,248 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         self.assertEqual(actual.shape, expected.shape)
         utils.assert_close(actual.cpu(), expected)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="fp16_large_pos_ord",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          ord_val=100000.0,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="fp16_large_neg_ord",
+          values=[2.0, 4.0],
+          input_dtype=torch.float16,
+          ord_val=-100000.0,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="fp16_large_int_ord",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          ord_val=100000,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="fp16_subnormal_underflow_ord",
+          values=[1.0, 0.0],
+          input_dtype=torch.float16,
+          ord_val=1e-8,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_ord",
+          values=[1.0] * 32,
+          input_dtype=torch.bfloat16,
+          ord_val=0.15,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_ord_fp32_out",
+          values=[2.0] * 64,
+          input_dtype=torch.bfloat16,
+          ord_val=0.9,
+          out_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="fp16_non_exact_ord_fp32_out",
+          values=[2.0] * 64,
+          input_dtype=torch.float16,
+          ord_val=0.9,
+          out_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="fp16_large_ord_fp64_out",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          ord_val=100000.0,
+          out_dtype=torch.float64,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_ord_fp64_out",
+          values=[2.0] * 64,
+          input_dtype=torch.bfloat16,
+          ord_val=0.9,
+          out_dtype=torch.float64,
+      ),
+  )
+  def test_linalg_vector_norm_ord_opmath_precision(
+      self, values, input_dtype, ord_val, out_dtype
+  ):
+    rtol = 1e-5 if out_dtype in (torch.float32, torch.float64) else None
+
+    def fn(device):
+      x = torch.tensor(values, dtype=input_dtype, device=device)
+      return torch.linalg.vector_norm(x, ord=ord_val, dtype=out_dtype)
+
+    def fn_out(device):
+      x = torch.tensor(values, dtype=input_dtype, device=device)
+      out = torch.empty((), dtype=out_dtype or input_dtype, device=device)
+      return torch.linalg.vector_norm(x, ord=ord_val, dtype=out_dtype, out=out)
+
+    self.assert_close_tpu_vs_cpu(fn, rtol=rtol)
+    self.assert_close_tpu_vs_cpu(fn_out, rtol=rtol)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="fp16_large_pos_ord",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          ord_val=100000.0,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_ord_fp32_out",
+          values=[2.0] * 64,
+          input_dtype=torch.bfloat16,
+          ord_val=0.9,
+          out_dtype=torch.float32,
+      ),
+  )
+  def test_linalg_vector_norm_ord_opmath_precision_compiled(
+      self, values, input_dtype, ord_val, out_dtype
+  ):
+    x_cpu = torch.tensor(values, dtype=input_dtype)
+    expected = torch.linalg.vector_norm(x_cpu, ord=ord_val, dtype=out_dtype)
+
+    compiled_fn = torch.compile(
+        lambda x: torch.linalg.vector_norm(x, ord=ord_val, dtype=out_dtype),
+        backend="tpu",
+    )
+    actual = compiled_fn(x_cpu.to("tpu")).cpu()
+    rtol = 1e-5 if out_dtype in (torch.float32, torch.float64) else None
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=actual, rtol=rtol
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="fp16_large_p",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          p=100000.0,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="fp16_subnormal_underflow_p",
+          values=[1.0, 0.0],
+          input_dtype=torch.float16,
+          p=1e-8,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_p",
+          values=[1.0] * 32,
+          input_dtype=torch.bfloat16,
+          p=0.15,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_p_fp32_out",
+          values=[2.0] * 64,
+          input_dtype=torch.bfloat16,
+          p=0.9,
+          out_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="fp16_large_p_fp64_out",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          p=100000.0,
+          out_dtype=torch.float64,
+      ),
+  )
+  def test_norm_ord_opmath_precision(self, values, input_dtype, p, out_dtype):
+    rtol = 1e-5 if out_dtype in (torch.float32, torch.float64) else None
+
+    def fn(device):
+      x = torch.tensor(values, dtype=input_dtype, device=device)
+      return torch.norm(x, p=p, dtype=out_dtype)
+
+    def fn_out(device):
+      x = torch.tensor(values, dtype=input_dtype, device=device)
+      out = torch.empty((), dtype=out_dtype or input_dtype, device=device)
+      if out_dtype is not None:
+        torch.ops.aten.norm.dtype_out(
+            x, p, [0], False, dtype=out_dtype, out=out
+        )
+      else:
+        torch.ops.aten.norm.out(x, p, [0], False, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(fn, rtol=rtol)
+    self.assert_close_tpu_vs_cpu(fn_out, rtol=rtol)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="fp16_large_p",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          p=100000.0,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="fp16_subnormal_underflow_p",
+          values=[1.0, 0.0],
+          input_dtype=torch.float16,
+          p=1e-8,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_p",
+          values=[1.0] * 32,
+          input_dtype=torch.bfloat16,
+          p=0.15,
+          out_dtype=None,
+      ),
+      dict(
+          testcase_name="bf16_non_exact_p_fp32_out",
+          values=[2.0] * 64,
+          input_dtype=torch.bfloat16,
+          p=0.9,
+          out_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="fp16_large_p_fp64_out",
+          values=[0.5, 0.25],
+          input_dtype=torch.float16,
+          p=100000.0,
+          out_dtype=torch.float64,
+      ),
+  )
+  def test_native_norm_ord_opmath_precision(
+      self, values, input_dtype, p, out_dtype
+  ):
+    rtol = 1e-5 if out_dtype in (torch.float32, torch.float64) else None
+    x_cpu = torch.tensor(values, dtype=input_dtype)
+    x_tpu = x_cpu.to("tpu")
+    expected = torch.linalg.vector_norm(x_cpu, ord=p, dtype=out_dtype)
+    if out_dtype is None:
+      actual_default = torch.ops.aten.native_norm.default(x_tpu, p).cpu()
+      self.assert_close(
+          golden_result=expected, torch_tpu_result=actual_default, rtol=rtol
+      )
+    actual_dim_dtype = torch.ops.aten.native_norm.ScalarOpt_dim_dtype(
+        x_tpu, p, [0], False, out_dtype
+    ).cpu()
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=actual_dim_dtype, rtol=rtol
+    )
+
+  def test_native_norm_int_input_fractional_p(self):
+    x_cpu = torch.tensor([3, 4], dtype=torch.int32)
+    expected = torch.linalg.vector_norm(x_cpu.float(), ord=1.5)
+    actual = torch.ops.aten.native_norm.default(x_cpu.to("tpu"), 1.5).cpu()
+    self.assert_close(golden_result=expected, torch_tpu_result=actual)
+
+  def test_cdist_empty_feature_fp16_large_p(self):
+    def fn(device):
+      x1 = torch.empty((2, 0), dtype=torch.float16, device=device)
+      x2 = torch.empty((2, 0), dtype=torch.float16, device=device)
+      return torch.cdist(x1, x2, p=100000.0)
+
+    self.assert_close_tpu_vs_cpu(fn)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

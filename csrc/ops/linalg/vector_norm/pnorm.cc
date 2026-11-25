@@ -218,8 +218,10 @@ absl::StatusOr<mlir::MlirOp> BuildGeneralPNormShlo(
 absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
     mlir::MlirOp input_op, double ord, absl::Span<const int64_t> reduce_dims,
     ReductionMode reduction_mode, mlir::ElementType out_type) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_type));
   mlir::MlirBuilder& builder = input_op.getBuilder();
-  mlir::MlirOp ord_op = MakeScalarConstant(builder, ord, out_type);
+  mlir::MlirOp ord_op = MakeScalarConstant(builder, ord, compute_dtype);
   return BuildPNormShlo(input_op, ord_op, ord, reduce_dims, reduction_mode,
                         out_type);
 }

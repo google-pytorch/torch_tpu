@@ -127,7 +127,7 @@ absl::Status PNormOut(const at::Tensor& self, MaybePromotedScalar& promoted_ord,
 
   TT_ASSIGN_OR_RETURN(
       const at::Tensor ord_tensor,
-      promoted_ord.GetTensor(c10::toRealValueType(self.scalar_type())));
+      promoted_ord.GetTensor(InferComputationDtype(expected_dtype)));
 
   auto op_builder = [ord, canonical_dims, reduction_mode,
                      element_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
