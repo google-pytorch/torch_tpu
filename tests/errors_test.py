@@ -2138,7 +2138,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     out = torch.empty((0, 0), device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""eye.m_out(): expected n to be >= 0, got -1""",
+        tpu="""eye(): expected n to be >= 0, got -1""",
         gpu="""n must be greater or equal to 0, got -1""",
     ):
       torch.eye(-1, out=out)
@@ -2147,7 +2147,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     out = torch.empty((0, 0), device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""eye.m_out(): expected m to be >= 0, got -2""",
+        tpu="""eye(): expected m to be >= 0, got -2""",
         gpu="""m must be greater or equal to 0, got -2""",
     ):
       torch.eye(3, -2, out=out)
