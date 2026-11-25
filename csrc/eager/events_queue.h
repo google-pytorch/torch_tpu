@@ -52,7 +52,7 @@ void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list);
 // graph breaks are suspended on the stream (see SuspendRepeatedOpsGraphBreaks),
 // returns false instead, and the stream remembers that a graph break was
 // requested.
-bool RecordDeferredOpAndDetectRepetition(
+[[nodiscard]] bool RecordDeferredOpAndDetectRepetition(
     const SharedDeviceBufferList& device_buffer_list);
 
 // Suspends the graph breaks requested by the repeated ops heuristic on the
@@ -161,17 +161,19 @@ class EventSnapshot {
 
   // A future that is set to OkStatus when the event snapshot completes or
   // fails.
-  xla::Future<void> OkCallback() const { return state_->ok_callback_future(); }
+  [[nodiscard]] xla::Future<void> OkCallback() const {
+    return state_->ok_callback_future();
+  }
 
   // Directly returns the wrapped future.
-  xla::Future<void> completion_future() const {
+  [[nodiscard]] xla::Future<void> completion_future() const {
     return state_->completion_future();
   }
 
-  c10::DeviceIndex device_index() const { return device_index_; }
-  c10::StreamId stream_id() const { return stream_id_; }
+  [[nodiscard]] c10::DeviceIndex device_index() const { return device_index_; }
+  [[nodiscard]] c10::StreamId stream_id() const { return stream_id_; }
 
-  bool operator==(const EventSnapshot& other) const;
+  [[nodiscard]] bool operator==(const EventSnapshot& other) const;
 
  private:
   // EventSnapshot::State is a lock-free state management class that tracks the
@@ -188,7 +190,9 @@ class EventSnapshot {
 
     // A future that will be completed when the event snapshot has started.
     // This is valid to access before Start() is called.
-    xla::Future<void> started_future() const { return started_future_; }
+    [[nodiscard]] xla::Future<void> started_future() const {
+      return started_future_;
+    }
 
     // A future that will be completed with the time at which the event
     // snapshot completed. This is valid to access before Start() is called;
@@ -202,12 +206,16 @@ class EventSnapshot {
     // completes or fails. This is used to chain event snapshots to ensure later
     // snapshots do not finish before earlier ones.
     // This is valid to access before Start() is called.
-    xla::Future<void> ok_callback_future() const { return ok_callback_future_; }
+    [[nodiscard]] xla::Future<void> ok_callback_future() const {
+      return ok_callback_future_;
+    }
 
     // A future that will be completed when the event snapshot has completed.
     // This is **NOT VALID** to access before Start() is called; synchronization
     // and querying should first check started_future() before accessing this.
-    xla::Future<void> completion_future() const { return completion_future_; }
+    [[nodiscard]] xla::Future<void> completion_future() const {
+      return completion_future_;
+    }
 
    private:
     // Promises that must be set during the lifecycle of the event snapshot.
@@ -255,14 +263,14 @@ void InsertStreamWait(c10::DeviceIndex device_index, c10::StreamId stream_id,
                       EventSnapshot& snapshot);
 
 // Records one EventSnapshot for each stream on the given device.
-std::vector<EventSnapshot> RecordDeviceSnapshots(
+[[nodiscard]] std::vector<EventSnapshot> RecordDeviceSnapshots(
     c10::DeviceIndex device_index,
     std::vector<SharedDeviceBufferList> must_materialize = {},
     MaterializationReason reason = MaterializationReason::kUnknown,
     GraphSplitMode mode = GraphSplitMode::kSplitGraph);
 
 // Returns the CompilationMode for the given EagerMode.
-CompilationMode GetCompilationMode(EagerMode eager_mode);
+[[nodiscard]] CompilationMode GetCompilationMode(EagerMode eager_mode);
 
 // Settings for how to compile a set of traversals to reach a snapshot.
 // These are frozen at the time of the snapshot request, and used to dictate
@@ -316,8 +324,8 @@ using ReadyWork =
 
 // Returns a list of work items that are ready to be processed for the given
 // device and stream.
-std::vector<ReadyWork> GetReadyWork(c10::DeviceIndex device_index,
-                                    c10::StreamId stream_id);
+[[nodiscard]] std::vector<ReadyWork> GetReadyWork(c10::DeviceIndex device_index,
+                                                  c10::StreamId stream_id);
 
 // Sets the core pinning mode for the given stream.
 void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,

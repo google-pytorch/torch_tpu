@@ -44,7 +44,7 @@ enum class KernelType {
   kUnboundedDynamic,
 };
 
-constexpr std::string_view ToString(KernelType type) {
+[[nodiscard]] constexpr std::string_view ToString(KernelType type) {
   switch (type) {
     case KernelType::kStatic:
       return "static";
@@ -69,7 +69,8 @@ enum class MaterializationReason {
   kCompileModeExecution,
 };
 
-constexpr std::string_view ToString(MaterializationReason reason) {
+[[nodiscard]] constexpr std::string_view ToString(
+    MaterializationReason reason) {
   switch (reason) {
     case MaterializationReason::kUnknown:
       return "unknown";
@@ -133,10 +134,10 @@ struct StructuredLogEvent {
 class StructuredLogBuffer {
  public:
   // Returns the global singleton instance.
-  static StructuredLogBuffer& GetInstance();
+  [[nodiscard]] static StructuredLogBuffer& GetInstance();
 
   // Returns whether logging is currently enabled.
-  bool enabled() const { return enabled_; }
+  [[nodiscard]] bool enabled() const { return enabled_; }
 
   // Pushes a new log event into the buffer if enabled.
   // If the buffer is full, the oldest event is evicted.
@@ -152,7 +153,7 @@ class StructuredLogBuffer {
   // Thread-safe drain: returns all buffered events plus the count of
   // events dropped due to overflow since the previous Drain(), then
   // clears both.
-  DrainResult Drain();
+  [[nodiscard]] DrainResult Drain();
 
   // Overrides the enable state for testing.
   void SetEnabledForTest(bool enabled) { enabled_ = enabled; }

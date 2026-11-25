@@ -289,7 +289,8 @@ using OpOutputs = internal::OpOutputsTraits<kNumOutputs>::type;
 namespace internal {
 
 template <int kSize>
-absl::Span<const at::Tensor> GetTensorSpan(const OpInputs<kSize>& tensors) {
+[[nodiscard]] absl::Span<const at::Tensor> GetTensorSpan(
+    const OpInputs<kSize>& tensors) {
   if constexpr (kSize == kDynamicSize) {
     return tensors;
   } else if constexpr (kSize == 1) {
@@ -347,11 +348,11 @@ bool AutoDonateInPlaceBuffers(
 // via DispatchOpOut would donate the base buffer of `out` to its view-inversion
 // write-back (see AutoDonateInPlaceBuffers): donation is enabled, and `out` is
 // an exclusively owned, partial, non-overlapping view of its base.
-bool CanDonateBaseToWriteBack(const at::Tensor& out,
-                              mlir::ElementType out_dtype);
+[[nodiscard]] bool CanDonateBaseToWriteBack(const at::Tensor& out,
+                                            mlir::ElementType out_dtype);
 
 template <int kArity, int kNumOutputs>
-DeferredOpParams MakeDeferredOpParams(
+[[nodiscard]] DeferredOpParams MakeDeferredOpParams(
     OpName op_name, NAryMlirOpBuilder<kArity, kNumOutputs>&& op_builder,
     std::vector<DeviceBufferRef>&& inputs_vec,
     DispatchOpOptions<kNumOutputs>& options) {

@@ -36,19 +36,19 @@ namespace torch_tpu {
 absl::StatusOr<xla::PjRtMemorySpace*> GetDefaultMemorySpace(
     xla::PjRtDevice* device);
 
-std::string ToString(const xla::PjRtBuffer& buffer);
+[[nodiscard]] std::string ToString(const xla::PjRtBuffer& buffer);
 
 // Returns true if the active TPU device has SparseCore hardware on chip and
 // supports SparseCore offloading. Returns false on architectures without
 // SparseCore (e.g., TPU v2, v3, v4, v5e).
-bool TpuDeviceSupportsSparseCore();
+[[nodiscard]] bool TpuDeviceSupportsSparseCore();
 
 // Returns whether `layout` has the dimension order and tiles of the default
 // layout for `element_type` and `dimensions`. Returns false if the default
 // layout is unknown.
-bool IsDefaultDeviceLayout(const CustomLayout& layout,
-                           mlir::ElementType element_type,
-                           absl::Span<const int64_t> dimensions);
+[[nodiscard]] bool IsDefaultDeviceLayout(const CustomLayout& layout,
+                                         mlir::ElementType element_type,
+                                         absl::Span<const int64_t> dimensions);
 
 // Returns the layout that PjRt gives a buffer of `element_type` and
 // `dimensions` by default.
