@@ -20,19 +20,18 @@
 #include <optional>
 #include <utility>
 
+#include "ATen/MemoryOverlap.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/DispatchKey.h"
-#include "c10/core/DispatchKeySet.h"
-#include "c10/core/ScalarType.h"
 #include "c10/core/Storage.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -53,6 +52,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -68,13 +68,45 @@ absl::Status ValidateGatherIndexDtype(const at::Tensor& index) {
   return absl::OkStatus();
 }
 
+// Checks memory overlap on `out` against its post-resize layout without
+// mutating `out`, so `out` preserves its shape and strides if any check throws.
+void CheckGatherOutMemoryOverlap(const at::Tensor& self,
+                                 const at::Tensor& index,
+                                 const at::Tensor& out) {
+  if (out.sizes() == index.sizes()) {
+    at::assert_no_internal_overlap(out);
+    at::assert_no_overlap(out, self);
+    at::assert_no_partial_overlap(out, index);
+    return;
+  }
+  // Check exact TensorImpl identity before creating `resized_out_view`: when
+  // `index` is empty, `resized_out_view` has 0 elements and `assert_no_overlap`
+  // below would return `No` instead of rejecting `out=self`.
+  if (out.is_same(self)) {
+    at::assert_no_overlap(out, self);
+  }
+  // ResizeTensor resets `out` to a contiguous layout at storage_offset 0 on the
+  // same c10::StorageImpl, which has no internal overlap.
+  c10::Storage storage_copy = out.storage();
+  at::Tensor resized_out_view(c10::make_intrusive<c10::TensorImpl>(
+      c10::TensorImpl::VIEW, std::move(storage_copy), out.key_set(),
+      out.dtype()));
+  resized_out_view.unsafeGetTensorImpl()->set_sizes_contiguous(index.sizes());
+  resized_out_view.unsafeGetTensorImpl()->set_storage_offset(0);
+  at::assert_no_overlap(resized_out_view, self);
+  at::assert_no_partial_overlap(resized_out_view, index);
+}
+
 absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
                                        const at::Tensor& index,
                                        bool sparse_grad,
                                        OpParamCacheKeys&& param_keys) {
+  TT_RETURN_IF_ERROR(GetBaseBuffer(self).status());
+  TT_RETURN_IF_ERROR(GetBaseBuffer(index).status());
   TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
-  TT_ASSIGN_OR_RETURN(const auto output_dtype,
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
+  TT_RETURN_IF_ERROR(ValidateGatherSparseGrad(sparse_grad));
   Dimensions output_dims = CopyIntVector(index.sizes());
 
   if (index.numel() == 0) {
@@ -131,21 +163,30 @@ absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
 absl::Status GatherOut(const at::Tensor& self, int64_t dim,
                        const at::Tensor& index, bool sparse_grad,
                        OpParamCacheKeys&& param_keys, at::Tensor& out) {
+  TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
+      << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << out.device().str();
+  TT_RETURN_IF_ERROR(GetBaseBuffer(self).status());
+  TT_RETURN_IF_ERROR(GetBaseBuffer(index).status());
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
   TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
                                       /*allow_out_dtype_cast=*/false));
-  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, index.sizes()));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  CheckGatherOutMemoryOverlap(self, index, out);
+  TT_RETURN_IF_ERROR(ValidateGatherSparseGrad(sparse_grad));
 
+  if (index.numel() != 0) {
+    TT_RETURN_IF_ERROR(ValidateGatherIndexDtype(index));
+    TT_RETURN_IF_ERROR(
+        ValidateGatherInputs(self.sizes(), dim, index.sizes(), sparse_grad));
+  }
+
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, index.sizes()));
   if (index.numel() == 0) {
     return absl::OkStatus();
   }
 
-  TT_RETURN_IF_ERROR(ValidateGatherIndexDtype(index));
-  TT_RETURN_IF_ERROR(
-      ValidateGatherInputs(self.sizes(), dim, index.sizes(), sparse_grad));
-
-  TT_ASSIGN_OR_RETURN(const auto output_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
   Dimensions output_dims = CopyIntVector(index.sizes());
 
   if (auto unexpanded = TryUnexpandZeroStrideIndex(index)) {
