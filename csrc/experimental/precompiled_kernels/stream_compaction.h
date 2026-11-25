@@ -62,9 +62,20 @@ struct CompactionRanks {
 // Routes each element of an (8, 128) tile left by the 10-bit shift distance
 // stored at bits `[distance_shift, distance_shift + 10)` of `control`, clearing
 // those distance bits as elements move and zeroing vacated slots. Returns the
-// compacted tile.
+// compacted tile, which may be ignored when only routing `payloads`.
+//
+// Each tile in `payloads` is routed in lockstep with `control`. Unlike
+// `control`, vacated payload slots keep stale values, so callers must mask
+// them by the live count.
 kiln::Tile CompactTile(kiln::Tile control, int distance_shift, kiln::Tile lane,
-                       kiln::Tile sublane);
+                       kiln::Tile sublane,
+                       absl::Span<kiln::Tile* const> payloads = {});
+
+// Zeroes the high words of S64 storage viewed as `output`, an S32[R, 128] view
+// whose low words fill rows [0, R/2) and high words rows [R/2, R), with R even.
+// Kernels whose S64 results are nonnegative and fit in 32 bits call this, then
+// write only the low words.
+void ZeroHighWords(kiln::HbmRef output);
 
 // Double-buffered VMEM staging and async HBM flushing for stream-compaction
 // kernels that emit `planes` S32 values per live element into an S32[R, 128]

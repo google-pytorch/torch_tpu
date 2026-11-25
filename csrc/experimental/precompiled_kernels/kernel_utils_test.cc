@@ -16,6 +16,9 @@
 
 #include "csrc/experimental/precompiled_kernels/kernel_utils.h"
 
+#include <cstdint>
+#include <limits>
+
 #include "csrc/common/cache_key.h"
 #include "csrc/ops/op_names.h"
 #include "gtest/gtest.h"
@@ -25,6 +28,22 @@ namespace torch_tpu {
 namespace {
 
 using ::mlir::ElementType;
+
+TEST(KernelUtilsTest, Default1DTileMinor) {
+  EXPECT_EQ(Default1DTileMinor(-1), kLanes);
+  EXPECT_EQ(Default1DTileMinor(0), kLanes);
+  EXPECT_EQ(Default1DTileMinor(1), kLanes);
+  EXPECT_EQ(Default1DTileMinor(127), kLanes);
+  EXPECT_EQ(Default1DTileMinor(128), kLanes);
+  EXPECT_EQ(Default1DTileMinor(129), 256);
+  EXPECT_EQ(Default1DTileMinor(256), 256);
+  EXPECT_EQ(Default1DTileMinor(257), 512);
+  EXPECT_EQ(Default1DTileMinor(512), 512);
+  EXPECT_EQ(Default1DTileMinor(513), kTile);
+  EXPECT_EQ(Default1DTileMinor(1024), kTile);
+  EXPECT_EQ(Default1DTileMinor(1025), kTile);
+  EXPECT_EQ(Default1DTileMinor(std::numeric_limits<int64_t>::max()), kTile);
+}
 
 TEST(KernelUtilsTest, UnaryOpExtentlessKeyDistinguishesSignature) {
   const ExtentlessKey nonzero_1d =
