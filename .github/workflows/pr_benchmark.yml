@@ -1,0 +1,337 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Lets repository maintainers trigger an ad-hoc A/B benchmark directly from an
+# open pull request (including fork PRs) by commenting:
+#   /benchmark <test_filter> --platform=<platforms> [--suite=<suite>] [--sha=<prefix>] [--single]
+name: PR Benchmark Comment Trigger
+
+"on":
+  # `issue_comment` fires on PR comments (including fork PRs) and always runs
+  # the workflow definition from the default branch. The `parse` job verifies
+  # the commenter has write, maintain, or admin permission on the repository
+  # before any PR code is checked out or executed.
+  issue_comment:  # zizmor: ignore[dangerous-triggers]
+    types: [created]
+
+permissions: {}
+
+jobs:
+  parse:
+    name: Authorize and parse /benchmark command
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.comment.user.type != 'Bot' &&
+      startsWith(github.event.comment.body, '/benchmark')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    outputs:
+      run: ${{ steps.parse.outputs.run }}
+      platform: ${{ steps.parse.outputs.platform }}
+      benchmark_filter: ${{ steps.parse.outputs.benchmark_filter }}
+      test_filter: ${{ steps.parse.outputs.test_filter }}
+      experiment_ref: ${{ steps.parse.outputs.experiment_ref }}
+      baseline_ref: ${{ steps.parse.outputs.baseline_ref }}
+    steps:
+      - name: Authorize commenter and parse command
+        id: parse
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          # Ignore unrelated commands sharing the prefix (e.g. "/benchmarking").
+          # Avoid `printf | head -n 1`, which can trip SIGPIPE under pipefail.
+          first_line="${COMMENT_BODY%%$'\n'*}"
+          first_line="${first_line%$'\r'}"
+          if [[ ! "${first_line}" =~ ^/benchmark([[:space:]]|$) ]]; then
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          perm="$(gh api "repos/${GH_REPO}/collaborators/${COMMENTER}/permission" --jq '.permission')"
+          case "${perm}" in
+            admin|maintain|write) ;;
+            *)
+              echo "Ignoring /benchmark from ${COMMENTER} (permission: ${perm}; write required)."
+              echo "run=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+              ;;
+          esac
+
+          parse_err="${RUNNER_TEMP}/parse_error.txt"
+          single_flag="${RUNNER_TEMP}/single_flag"
+          sha_file="${RUNNER_TEMP}/expected_sha.txt"
+          rm -f "${single_flag}" "${sha_file}"
+          if ! python3 - "${GITHUB_OUTPUT}" "${single_flag}" "${sha_file}" <<'PYTHON' 2>"${parse_err}"
+          import argparse
+          import os
+          import re
+          import shlex
+          import sys
+
+          usage = (
+              "Usage: `/benchmark <test_filter> --platform=<platforms> [--suite=<suite>] [--sha=<prefix>] [--single]`\n"
+              "- `<test_filter>`: `TESTBRIDGE_TEST_ONLY` pattern (e.g. `*llama_3_1_8b_forward_compiled*`).\n"
+              "- `--platform` (required): comma-separated `BENCHMARK_PLATFORM` target(s) from `perflab/benchmark_registry.pbtxt` "
+              "(e.g. `v7_1x1x1`, `v7_2x2x1`, `b200_1`, or `v7_1x1x1,b200_1`).\n"
+              "- `--suite`: exact suite name (`torch_benchmarks`, `layer_benchmarks`, etc.; required for single-device platforms like `v7_1x1x1` / `b200_1`; "
+              "auto-selected for distributed platforms like `v7_2x2x1`).\n"
+              "- `--sha`: 7–40 hex prefix of the PR head commit reviewed (required for fork PRs).\n"
+              "- `--single`: run only the PR commit instead of an A/B against the PR merge base."
+          )
+
+          class _Parser(argparse.ArgumentParser):
+            def error(self, message):
+              raise ValueError(message)
+
+          first_line = os.environ["COMMENT_BODY"].splitlines()[0].strip()
+          try:
+            tokens = shlex.split(first_line)
+          except ValueError as exc:
+            sys.exit(f"Could not parse `/benchmark` command: {exc}\n\n{usage}")
+
+          args = tokens[1:]
+          if not args or args[0] in ("help", "-h", "--help"):
+            sys.exit(usage)
+
+          parser = _Parser(prog="/benchmark", add_help=False, allow_abbrev=False)
+          parser.add_argument("test_filter")
+          parser.add_argument("--platform", action="append", default=[])
+          parser.add_argument("--suite", action="append", default=[])
+          parser.add_argument("--sha", action="append", default=[])
+          parser.add_argument("--single", action="store_true")
+          try:
+            ns = parser.parse_args(args)
+          except ValueError as exc:
+            sys.exit(f"Invalid `/benchmark` command: {exc}\n\n{usage}")
+
+          def _single_opt(name, values, required=False):
+            if len(values) > 1:
+              sys.exit(f"Duplicate `{name}` option.\n\n{usage}")
+            if not values:
+              if required:
+                sys.exit(f"Missing required `{name}` option.\n\n{usage}")
+              return ""
+            val = values[0].strip()
+            if not val:
+              sys.exit(f"`{name}` requires a value.\n\n{usage}")
+            return val
+
+          platform = _single_opt("--platform", ns.platform, required=True)
+          suite = _single_opt("--suite", ns.suite)
+          expected_sha = _single_opt("--sha", ns.sha).lower()
+          if expected_sha and not re.fullmatch(r"[0-9a-f]{7,40}", expected_sha):
+            sys.exit(
+                f"Invalid `--sha` value `{expected_sha}` (expected 7–40 hex"
+                f" chars).\n\n{usage}"
+            )
+
+          test_filter = ns.test_filter.strip()
+          if not test_filter:
+            sys.exit(f"Missing `<test_filter>`.\n\n{usage}")
+          for label, val in (
+              ("platform", platform),
+              ("suite", suite),
+              ("test_filter", test_filter),
+          ):
+            if "\n" in val or "\r" in val:
+              sys.exit(f"Invalid newline in `{label}`.\n\n{usage}")
+
+          # Anchor the exact suite name generically so unsharded names like
+          # `torch_distributed_benchmarks` do not also match `_ws2`/`_ws4` via
+          # unanchored re.search, while still matching sharded families.
+          bench_filter = (
+              rf"^{re.escape(suite)}(_shard_\d+_of_\d+)?$" if suite else ""
+          )
+
+          with open(sys.argv[1], "a", encoding="utf-8") as out:
+            out.write(f"platform={platform}\n")
+            out.write(f"benchmark_filter={bench_filter}\n")
+            out.write(f"test_filter={test_filter}\n")
+          if ns.single:
+            open(sys.argv[2], "w", encoding="utf-8").close()
+          if expected_sha:
+            with open(sys.argv[3], "w", encoding="utf-8") as f:
+              f.write(expected_sha)
+          PYTHON
+          then
+            gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" -F "body=@${parse_err}"
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Inspect the pull request, reject closed/merged PRs, enforce `--sha`
+          # for fork PRs (preventing force-push races between review and comment),
+          # and pin the merge base for A/B comparisons.
+          pr_json="$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")"
+          pr_state="$(printf '%s' "${pr_json}" | jq -r '.state')"
+          if [[ "${pr_state}" != "open" ]]; then
+            gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="Ignoring \`/benchmark\`: pull request #${PR_NUMBER} is \`${pr_state}\` (must be open)."
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          head_sha="$(printf '%s' "${pr_json}" | jq -r '.head.sha')"
+          base_sha="$(printf '%s' "${pr_json}" | jq -r '.base.sha')"
+          head_repo="$(printf '%s' "${pr_json}" | jq -r '.head.repo.full_name // ""')"
+          base_repo="$(printf '%s' "${pr_json}" | jq -r '.base.repo.full_name // ""')"
+          is_fork=false
+          if [[ -z "${head_repo}" || "${head_repo}" != "${base_repo}" ]]; then
+            is_fork=true
+          fi
+
+          expected_sha=""
+          if [[ -f "${sha_file}" ]]; then
+            expected_sha="$(cat "${sha_file}")"
+          fi
+          if [[ "${is_fork}" == "true" && -z "${expected_sha}" ]]; then
+            gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="Fork PRs require \`--sha=<prefix>\` (7–40 hex chars of the commit you reviewed) to prevent running unreviewed commits pushed before trigger."
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ -n "${expected_sha}" && "${head_sha,,}" != "${expected_sha}"* ]]; then
+            gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+              -f body="Refusing \`/benchmark\`: PR head has changed and does not match \`--sha=${expected_sha}\`. Re-review the new commits before re-triggering."
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          baseline_ref=""
+          if [[ ! -f "${single_flag}" ]]; then
+            baseline_ref="$(gh api "repos/${GH_REPO}/compare/${base_sha}...${head_sha}" --jq '.merge_base_commit.sha // ""')"
+            if [[ -z "${baseline_ref}" ]]; then
+              gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+                -f body="Could not determine merge base for PR #${PR_NUMBER}; rerun with \`--single\` or check that the branch shares history with \`${base_sha:0:12}\`."
+              echo "run=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            if [[ "${baseline_ref}" == "${head_sha}" ]]; then
+              gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+                -f body="PR #${PR_NUMBER} head (\`${head_sha:0:12}\`) equals the merge base; nothing to A/B compare. Use \`--single\` for a single-commit run."
+              echo "run=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          fi
+
+          {
+            echo "experiment_ref=${head_sha}"
+            echo "baseline_ref=${baseline_ref}"
+            echo "run=true"
+          } >> "${GITHUB_OUTPUT}"
+
+          # Acknowledge the trigger with a rocket reaction.
+          gh api --method POST \
+            "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+            -f content=rocket >/dev/null || true
+
+  benchmark:
+    name: Run PR benchmark
+    needs: [parse]
+    if: ${{ needs.parse.outputs.run == 'true' }}
+    concurrency:
+      group: pr-benchmark-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/run_benchmarks.yml
+    with:
+      platform: ${{ needs.parse.outputs.platform }}
+      benchmark_filter: ${{ needs.parse.outputs.benchmark_filter }}
+      test_filter: ${{ needs.parse.outputs.test_filter }}
+      experiment_ref: ${{ needs.parse.outputs.experiment_ref }}
+      baseline_ref: ${{ needs.parse.outputs.baseline_ref }}
+
+  post_comment:
+    name: Post benchmark report to PR
+    needs: [parse, benchmark]
+    # Run even if `benchmark` failed (e.g. ab_analyzer flagged a >5% delta or
+    # resolve failed fast) so the PR always gets the report or failure link.
+    if: ${{ !cancelled() && needs.parse.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # Match by pattern instead of relying on reusable workflow outputs, which
+      # GitHub drops when the called workflow exits non-zero (e.g. ab_analyzer
+      # flagging a >5% delta).
+      - name: Download bundled BAP artifact
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: artifacts-*
+          merge-multiple: true
+          path: bap_artifacts
+
+      - name: Post report comment on PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BENCHMARK_RESULT: ${{ needs.benchmark.result }}
+          TEST_FILTER: ${{ needs.parse.outputs.test_filter }}
+          PLATFORM: ${{ needs.parse.outputs.platform }}
+          BENCHMARK_FILTER: ${{ needs.parse.outputs.benchmark_filter }}
+          BASELINE_REF: ${{ needs.parse.outputs.baseline_ref }}
+          EXPERIMENT_REF: ${{ needs.parse.outputs.experiment_ref }}
+        run: |
+          set -euo pipefail
+          comment_file="${RUNNER_TEMP}/pr_comment.md"
+          report="bap_artifacts/benchmark_report.md"
+
+          {
+            echo "### PR Benchmark Results"
+            echo ""
+            echo "- **Run:** ${RUN_URL}"
+            echo "- **Platform / Suite / Filter:** \`${PLATFORM}\` / \`${BENCHMARK_FILTER:-auto}\` / \`${TEST_FILTER}\`"
+            if [[ -n "${BASELINE_REF}" ]]; then
+              echo "- **Comparison:** \`${BASELINE_REF:0:12}\` (merge base) vs \`${EXPERIMENT_REF:0:12}\` (PR)"
+            else
+              echo "- **Commit:** \`${EXPERIMENT_REF:0:12}\`"
+            fi
+            echo ""
+            if [[ -f "${report}" ]]; then
+              python3 - "${report}" "${RUN_URL}" <<'PYTHON'
+          import sys
+          text = open(sys.argv[1], encoding="utf-8").read()
+          limit = 60000
+          if len(text) > limit:
+            text = (
+                text[:limit]
+                + "\n\n_Report truncated to fit GitHub's comment size"
+                f" limit; see full report in {sys.argv[2]}_\n"
+            )
+          sys.stdout.write(text)
+          PYTHON
+            else
+              echo "_Benchmark workflow finished with status \`${BENCHMARK_RESULT}\` and produced no report — inspect the workflow logs above._"
+            fi
+          } > "${comment_file}"
+
+          gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" -F "body=@${comment_file}"

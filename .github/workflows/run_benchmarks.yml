@@ -52,6 +52,15 @@ on:
         required: false
         type: string
         default: ""
+      baseline_ref:
+        description: >-
+          Optional baseline git ref (full 40-character SHA, branch, tag, or
+          'refs/pull/<number>/head') for a BAP A/B comparison against
+          experiment_ref. When set, builds both wheels in parallel and outputs
+          a side-by-side delta table in the Job Summary.
+        required: false
+        type: string
+        default: ""
       custom_metadata:
         description: "JSON string of metadata to append to the benchmark result. Overwrites static metadata from the registry but is overwritten by dynamic metadata from the workload."
         required: false
@@ -62,6 +71,14 @@ on:
           gs:// path to an already-built torch_tpu wheel to benchmark. If empty,
           build a fresh wheel from the selected ref. Otherwise, the provided
           wheel is used for running the benchmarks.
+        required: false
+        type: string
+        default: ""
+      baseline_torch_tpu_wheel:
+        description: >-
+          gs:// path to an already-built torch_tpu wheel for baseline_ref. Only
+          used when baseline_ref is set; empty builds a fresh baseline wheel in
+          parallel.
         required: false
         type: string
         default: ""
@@ -81,6 +98,55 @@ on:
           - "3.14"
           - "3.15"
 
+  # Allow pr_benchmark.yml to reuse this workflow without duplicating wheel
+  # building or BAP wiring.
+  workflow_call:
+    inputs:
+      platform:
+        description: "Comma-separated BENCHMARK_PLATFORM target(s) (e.g. 'v7_1x1x1', 'v7_2x2x1', 'v7_1x1x1,b200_1')."
+        required: true
+        type: string
+      benchmark_filter:
+        description: "Regex to filter by benchmark name (optional when platform uniquely identifies a suite)."
+        required: false
+        type: string
+        default: ""
+      test_filter:
+        description: "TESTBRIDGE_TEST_ONLY filter of the benchmark cases to run."
+        required: false
+        type: string
+        default: ""
+      experiment_ref:
+        description: "Git ref of this repository to benchmark."
+        required: false
+        type: string
+        default: ""
+      baseline_ref:
+        description: "Optional baseline git ref for BAP A/B comparison."
+        required: false
+        type: string
+        default: ""
+      custom_metadata:
+        description: "JSON string of metadata to append to the benchmark result."
+        required: false
+        type: string
+        default: "{}"
+      torch_tpu_wheel:
+        description: "gs:// path to an already-built torch_tpu wheel."
+        required: false
+        type: string
+        default: ""
+      baseline_torch_tpu_wheel:
+        description: "gs:// path to an already-built baseline torch_tpu wheel."
+        required: false
+        type: string
+        default: ""
+      python_version:
+        description: "Python version for wheel build and benchmarks."
+        required: false
+        type: string
+        default: "3.12"
+
 permissions:
   contents: read
 
@@ -91,18 +157,20 @@ jobs:
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
+      base_sha: ${{ steps.commit.outputs.base_sha }}
       benchmark_filter: ${{ steps.select.outputs.benchmark_filter }}
       environment_filter: ${{ steps.select.outputs.environment_filter }}
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      # Pin the commit, so that every job benchmarks the same one even if the
-      # ref moves during the run.
+      # Pin the commit(s), so that wheel builds and BAP benchmark jobs all
+      # benchmark the exact same commit even if a ref moves during the run.
       - name: Resolve commit
         id: commit
         shell: bash
         env:
           EXPERIMENT_REF: ${{ inputs.experiment_ref || github.sha }}
+          BASELINE_REF: ${{ inputs.baseline_ref }}
         run: |
           set -euo pipefail
           git fetch --depth=1 -- origin "$EXPERIMENT_REF"
@@ -110,6 +178,16 @@ jobs:
           echo "sha=${exp_sha}" >> "$GITHUB_OUTPUT"
           git show "${exp_sha}:perflab/benchmark_registry.pbtxt" > "${RUNNER_TEMP}/benchmark_registry.pbtxt"
           git show "${exp_sha}:.github/actions/run-benchmark/action.yml" > "${RUNNER_TEMP}/exp_action.yml" 2>/dev/null || : > "${RUNNER_TEMP}/exp_action.yml"
+          if [[ -n "${BASELINE_REF}" ]]; then
+            git fetch --depth=1 -- origin "$BASELINE_REF"
+            base_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+            if [[ "${base_sha}" == "${exp_sha}" ]]; then
+              echo "error: baseline_ref and experiment_ref resolved to the same commit (${exp_sha}); A/B mode requires distinct commits." >&2
+              exit 1
+            fi
+            echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+            git show "${base_sha}:.github/actions/run-benchmark/action.yml" > "${RUNNER_TEMP}/base_action.yml" 2>/dev/null || : > "${RUNNER_TEMP}/base_action.yml"
+          fi
       # Validate inputs against the target commit's registry up front so typos
       # fail in seconds before building a wheel or claiming a runner. When
       # test_filter is set, sharding is disabled (TEST_TOTAL_SHARDS=1) and each
@@ -121,12 +199,16 @@ jobs:
           PLATFORM: ${{ inputs.platform }}
           BENCHMARK_FILTER: ${{ inputs.benchmark_filter }}
           TEST_FILTER: ${{ inputs.test_filter }}
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+          EXP_WHEEL: ${{ inputs.torch_tpu_wheel }}
+          BASELINE_WHEEL: ${{ inputs.baseline_torch_tpu_wheel }}
           CUSTOM_METADATA: ${{ inputs.custom_metadata }}
         run: |
           set -euo pipefail
           registry="${RUNNER_TEMP}/benchmark_registry.pbtxt"
           exp_action="${RUNNER_TEMP}/exp_action.yml"
-          python3 - "${registry}" "${exp_action}" "${GITHUB_OUTPUT}" <<'PYTHON'
+          base_action="${RUNNER_TEMP}/base_action.yml"
+          python3 - "${registry}" "${exp_action}" "${base_action}" "${GITHUB_OUTPUT}" <<'PYTHON'
           import json
           import os
           import re
@@ -135,8 +217,11 @@ jobs:
           platform_input = os.environ["PLATFORM"]
           benchmark_filter = os.environ["BENCHMARK_FILTER"]
           test_filter = os.environ["TEST_FILTER"]
+          baseline_ref = os.environ["BASELINE_REF"]
+          exp_wheel = os.environ["EXP_WHEEL"]
+          baseline_wheel = os.environ["BASELINE_WHEEL"]
           custom_metadata = os.environ["CUSTOM_METADATA"]
-          registry_path, exp_action_path, gh_output = sys.argv[1:4]
+          registry_path, exp_action_path, base_action_path, gh_output = sys.argv[1:5]
 
           def _suite_name(bench_name):
             return re.sub(r"_shard_\d+_of_\d+$", "", bench_name)
@@ -154,6 +239,17 @@ jobs:
               sys.exit(f"custom_metadata is not valid JSON: {exc}")
             if not isinstance(parsed, dict):
               sys.exit("custom_metadata must be a JSON object.")
+
+          if baseline_wheel and not baseline_ref:
+            sys.exit(
+                "baseline_torch_tpu_wheel requires baseline_ref to be set."
+            )
+          if baseline_wheel and exp_wheel and baseline_wheel == exp_wheel:
+            sys.exit(
+                "baseline_torch_tpu_wheel and torch_tpu_wheel point to the"
+                f" same wheel ({exp_wheel!r}); A/B mode requires distinct"
+                " wheels."
+            )
 
           if not platform_input.strip():
             sys.exit(
@@ -266,6 +362,27 @@ jobs:
             )
 
           exp_action_text = open(exp_action_path, encoding="utf-8").read()
+          base_action_text = (
+              open(base_action_path, encoding="utf-8").read()
+              if baseline_ref
+              else ""
+          )
+
+          if baseline_ref:
+            if "TORCH_TPU_BASELINE_WHEEL" not in exp_action_text:
+              sys.exit(
+                  "experiment_ref predates the run-benchmark action update"
+                  " needed to select baseline vs experiment wheels for A/B"
+                  " mode; rebase experiment_ref onto main or omit"
+                  " baseline_ref."
+              )
+            if "TORCH_TPU_BASELINE_WHEEL" not in base_action_text:
+              sys.exit(
+                  "baseline_ref predates the run-benchmark action update"
+                  " needed for A/B mode (TORCH_TPU_BASELINE_WHEEL in"
+                  " .github/actions/run-benchmark/action.yml); pick a newer"
+                  " baseline commit or omit baseline_ref."
+              )
 
           sharded_suites = set()
           if test_filter:
@@ -280,12 +397,19 @@ jobs:
                   continue
               selected_pairs.append((name, env_id, plat))
 
-            if sharded_suites and "TEST_TOTAL_SHARDS" not in exp_action_text:
-              sys.exit(
-                  "experiment_ref predates the run-benchmark action update"
-                  " needed to disable sharding for test_filter; rebase onto"
-                  " main or omit test_filter."
-              )
+            if sharded_suites:
+              if "TEST_TOTAL_SHARDS" not in exp_action_text:
+                sys.exit(
+                    "experiment_ref predates the run-benchmark action update"
+                    " needed to disable sharding for test_filter; rebase"
+                    " experiment_ref onto main or omit test_filter."
+                )
+              if baseline_ref and "TEST_TOTAL_SHARDS" not in base_action_text:
+                sys.exit(
+                    "baseline_ref predates the run-benchmark action update"
+                    " needed to disable sharding for test_filter; pick a newer"
+                    " baseline commit or omit test_filter."
+                )
 
             selected_plats = {p for _, _, p in selected_pairs}
             dropped = [p for p in requested_platforms if p not in selected_plats]
@@ -348,32 +472,67 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
+        env:
+          # Distinct suffix per job prevents parallel experiment/baseline builds
+          # from colliding on the same 1-second timestamp GCS wheel filename.
+          WHEEL_VERSION_EXTRAS: .dev${{ github.run_id }}1
         with:
           python_version: ${{ inputs.python_version }}
+
+  build_baseline_wheel:
+    name: Build baseline torch_tpu wheel
+    needs: [resolve]
+    if: ${{ inputs.baseline_ref != '' && !inputs.baseline_torch_tpu_wheel }}
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
+      # Disable ipc isolation to prevent shm limit issues.
+      options: --ipc=host
+    outputs:
+      gcs_wheel_path: ${{ steps.build.outputs.gcs_wheel_path }}
+    steps:
+      - name: Checkout TorchTPU (baseline)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.base_sha }}
+          persist-credentials: false
+      - name: Build and upload wheel
+        id: build
+        uses: ./.github/actions/build-wheel
+        env:
+          WHEEL_VERSION_EXTRAS: .dev${{ github.run_id }}0
+        with:
+          python_version: ${{ inputs.python_version }}
+
   run_benchmarks:
     name: Run TorchTPU benchmarks
-    needs: [resolve, build_wheel]
+    needs: [resolve, build_wheel, build_baseline_wheel]
     if: >-
       !cancelled() &&
       needs.resolve.result == 'success' &&
       (needs.build_wheel.result == 'success' ||
-       needs.build_wheel.result == 'skipped')
+       needs.build_wheel.result == 'skipped') &&
+      (needs.build_baseline_wheel.result == 'success' ||
+       needs.build_baseline_wheel.result == 'skipped')
     permissions:
       contents: read  # Required by run-benchmarks.yaml for actions/checkout.
       # The reusable run-benchmarks.yaml workflow declares `pull-requests: write`
       # at the workflow level (for its optional `post_pr_comment` feature), so
       # GitHub Actions requires caller jobs to grant it.
       pull-requests: write
-    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@df45de4a2390d7510af1e9d747f47cd6f6b9bb94 # main
+    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@7daf410ba0c937136fd041687ab767779be30913 # main
     with:
       registry_file: "perflab/benchmark_registry.pbtxt"
-      bap_ref: "df45de4a2390d7510af1e9d747f47cd6f6b9bb94"
+      bap_ref: "7daf410ba0c937136fd041687ab767779be30913"
       runner: "linux-x86-n4-16"
       benchmark_filter: ${{ needs.resolve.outputs.benchmark_filter }}
       environment_filter: ${{ needs.resolve.outputs.environment_filter }}
+      ab_mode: ${{ inputs.baseline_ref != '' }}
+      baseline_ref: ${{ needs.resolve.outputs.base_sha }}
       experiment_ref: ${{ needs.resolve.outputs.sha }}
       # experiment_ref is pinned to a commit SHA, so BAP would otherwise record
       # the SHA as the result's branch. When neither custom_metadata nor
@@ -386,3 +545,5 @@ jobs:
         TESTBRIDGE_TEST_ONLY=${{ inputs.test_filter }}
         ${{ inputs.test_filter && 'TEST_TOTAL_SHARDS=1' || '' }}
         ${{ inputs.test_filter && 'TEST_SHARD_INDEX=0' || '' }}
+        ${{ inputs.baseline_ref && format('TORCH_TPU_BASELINE_SHA={0}', needs.resolve.outputs.base_sha) || '' }}
+        ${{ inputs.baseline_ref && format('TORCH_TPU_BASELINE_WHEEL={0}', inputs.baseline_torch_tpu_wheel || needs.build_baseline_wheel.outputs.gcs_wheel_path) || '' }}
