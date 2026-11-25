@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -245,34 +246,6 @@ void EnsureUndefokFlag(std::string_view flag_name,
   });
 }
 
-// TPU_VISIBLE_DEVICES is our source of truth for device visibility.
-// Because libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
-// non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
-// TPU_VISIBLE_DEVICES so that external settings do not override device
-// selection.
-void SelectVisibleDevice(std::string_view default_dev) {
-  const char* const visible_devices =
-      std::getenv(kTpuVisibleDevicesEnvVar);  // GETENV_OK=env var is set below.
-  const std::string target_dev = GetSingleDeviceOrDefault(
-      visible_devices != nullptr ? visible_devices : "", default_dev);
-  SafeSetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
-  SafeSetEnv<kTpuVisibleChipsEnvVar>(target_dev);
-}
-
-// Sets the libtpu host/process bounds environment variables and enables
-// concurrent libtpu loads across processes on the same host.
-void SetTpuBoundsEnv(const std::string& host_bounds,
-                     const std::string& chips_bounds) {
-  SafeSetEnv<kTpuHostBoundsEnvVar>(host_bounds);
-  SafeSetEnv<kTpuChipsPerHostBoundsEnvVar>(chips_bounds);
-  SafeSetEnv<kTpuProcessBoundsEnvVar>(host_bounds);
-  SafeSetEnv<kTpuChipsPerProcessBoundsEnvVar>(chips_bounds);
-
-  // Avoid multi-process libtpu lock file collisions across distributed workers
-  // or independent single-device processes on the same host, see b/487769788.
-  SafeSetEnv<kAllowMultipleLibtpuLoadEnvVar>("1");
-}
-
 }  // namespace
 
 absl::Status InitializeDistributedEnvironment(
@@ -287,19 +260,9 @@ absl::Status InitializeDistributedEnvironment(
            << "expected RANK to be >= 0, got " << config.rank;
   }
   std::vector<std::string> addresses = absl::StrSplit(config.sb_addrs, ',');
-  const int slice_rank = config.rank % static_cast<int>(addresses.size());
-  SafeSetEnv<kCloudTpuTaskIdEnvVar>(absl::StrCat(slice_rank));
-
-  SelectVisibleDevice(absl::StrCat(config.local_rank));
-
-  const std::vector<std::string> topology_dims =
-      absl::StrSplit(config.topology, ',');
-  const std::string chips_bounds =
-      (topology_dims.size() == 4) ? "1,1,1,1" : "1,1,1";
-  SetTpuBoundsEnv(config.topology, chips_bounds);
-
-  // The free slicebuilder port of this process.
-  SafeSetEnv<kTpuProcessPortEnvVar>(config.sb_port);
+  ConfigureDistributedTopologyEnv(config.rank, absl::StrCat(config.local_rank),
+                                  config.topology, config.sb_addrs,
+                                  config.sb_port);
 
   // `addresses` lists the processes of one slice, so a larger world spans
   // several slices, which libtpu connects over MegaScale (DCN).
@@ -308,9 +271,6 @@ absl::Status InitializeDistributedEnvironment(
   } else {
     SkipMegascaleClient();
   }
-
-  // The addresses of all other workers in the slice.
-  SafeSetEnv<kTpuProcessAddressesEnvVar>(absl::StrJoin(addresses, ","));
 
   // Read with std::getenv() rather than GetEnvOnce<>(), since the env var is
   // set below.
@@ -325,7 +285,7 @@ absl::Status InitializeDistributedEnvironment(
 
 absl::Status InitializeSingleDeviceEnvironment(
     std::string_view pci_devices_dir) {
-  SelectVisibleDevice("0");
+  ConfigureVisibleDevice("0");
   const std::string bounds(GetSingleDeviceTpuBoundsString(pci_devices_dir));
   SetTpuBoundsEnv(bounds, bounds);
   return absl::OkStatus();
