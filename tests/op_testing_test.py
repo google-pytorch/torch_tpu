@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 import dataclasses
 import gzip
 import hashlib
+import json
 import os
 import pathlib
 import plistlib
@@ -32,6 +33,7 @@ from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
 import torch
+from torch._subclasses import fake_tensor
 from torch.testing._internal import common_methods_invocations
 from torch.utils import _pytree
 from torch_tpu._internal.utils import test_utils
@@ -436,6 +438,35 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       ) as cm:
         self.do_test_op("abs")
       self.assertIn("executed 0 subtests for golden_device", str(cm.exception))
+
+  def test_dump_dynamism_coverage_smoke(self):
+    op = op_testing._get_op("abs")
+    all_dtypes = tuple(
+        dict.fromkeys((*op_testing.ALL_NUMERIC_DTYPES, *op.dtypes))
+    )
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        mock.patch.dict(
+            os.environ,
+            {"TEST_UNDECLARED_OUTPUTS_DIR": tmpdir, "TEST_SHARD_INDEX": "0"},
+        ),
+        mock.patch.object(op_testing, "_DYNAMISM_COVERAGE", []),
+        flagsaver.flagsaver(check_dynamism=True, dump_dynamism_coverage=True),
+    ):
+      with self.assertRaises(  # ASSERT_RAISES_OK=Testing coverage skip path.
+          unittest.case.SkipTest
+      ):
+        self.do_test_op("abs", exclude_dtypes=all_dtypes)
+      op_testing.tear_down_test_module()
+      output_file = pathlib.Path(tmpdir) / "dynamism_coverage00.jsonl"
+      self.assertTrue(output_file.exists())
+      lines = output_file.read_text().splitlines()
+      self.assertLen(lines, 1)
+      record = json.loads(lines[0])
+      self.assertEqual(record["op_name"], "abs")
+      self.assertEqual(record["subtests_run"], 0)
+      self.assertEqual(record["plans"], [])
+      self.assertNotEmpty(record["skips"])
 
   @parameterized.parameters(
       (256, 8),  # Aligned: M=256, K_log=8 (K=256)
@@ -1632,8 +1663,8 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
           pad_reflect, mode=dynamism_test_utils.EAGER
       )
       self.assertIsNotNone(reflect_eager)
-      self.assertIn("nn.functional.pad.reflect", reflect_eager)
-      self.assertIn("reflect only", reflect_eager)
+      self.assertIn("nn.functional.pad.reflect", reflect_eager.reason)
+      self.assertIn("reflect only", reflect_eager.reason)
       self.assertIsNone(
           dynamism_test_utils.verify_op_supports_dynamism(
               pad_replicate, mode=dynamism_test_utils.EAGER
@@ -1644,12 +1675,12 @@ class DynamismDenyListsTest(seed_test_utils.RepeatableTest):
           pad_reflect, mode=dynamism_test_utils.COMPILE
       )
       self.assertIsNotNone(reflect_compile)
-      self.assertIn("reflect only", reflect_compile)
+      self.assertIn("reflect only", reflect_compile.reason)
       replicate_compile = dynamism_test_utils.verify_op_supports_dynamism(
           pad_replicate, mode=dynamism_test_utils.COMPILE
       )
       self.assertIsNotNone(replicate_compile)
-      self.assertIn("all pad in compile", replicate_compile)
+      self.assertIn("all pad in compile", replicate_compile.reason)
 
 
 class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
@@ -2238,6 +2269,22 @@ class CoupledDimDiscoveryTest(seed_test_utils.RepeatableTest):
             ),
         ),
     )
+
+  def test_generate_marking_plans_raises_untraceable_op_error(self):
+    def untraceable_op(*args, **kwargs):
+      del args, kwargs
+      raise fake_tensor.DataDependentOutputException("synthetic_op")
+
+    with self.assertRaises(  # ASSERT_RAISES_OK=Testing harness exception.
+        dynamism_test_utils.UntraceableOpError
+    ):
+      dynamism_test_utils.generate_exhaustive_input_marking_plans(
+          op_testing._get_op("abs"),
+          torch.ones(4, 4),
+          (),
+          mode=dynamism_test_utils.DynamismMode.EAGER,
+          op_func=untraceable_op,
+      )
 
 
 if __name__ == "__main__":
