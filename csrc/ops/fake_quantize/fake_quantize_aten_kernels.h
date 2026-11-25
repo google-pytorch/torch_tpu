@@ -24,9 +24,10 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor> FakeQuantizePerTensorAffineCachemask(
-    const at::Tensor& self, double scale, int64_t zero_point, int64_t quant_min,
-    int64_t quant_max);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor>
+FakeQuantizePerTensorAffineCachemask(const at::Tensor& self, double scale,
+                                     int64_t zero_point, int64_t quant_min,
+                                     int64_t quant_max);
 
 }  // namespace torch_tpu
 

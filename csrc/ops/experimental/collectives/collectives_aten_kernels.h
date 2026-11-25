@@ -24,20 +24,23 @@
 
 namespace torch_tpu {
 
-at::Tensor AllGatherDim(const at::Tensor& input, int64_t dim,
-                        int64_t group_size, std::string_view group_name);
+[[nodiscard]] at::Tensor AllGatherDim(const at::Tensor& input, int64_t dim,
+                                      int64_t group_size,
+                                      std::string_view group_name);
 
-at::Tensor ReduceScatterDim(const at::Tensor& input, std::string_view reduce_op,
-                            int64_t dim, int64_t group_size,
-                            std::string_view group_name);
+[[nodiscard]] at::Tensor ReduceScatterDim(const at::Tensor& input,
+                                          std::string_view reduce_op,
+                                          int64_t dim, int64_t group_size,
+                                          std::string_view group_name);
 
-at::Tensor MetaAllGatherDim(const at::Tensor& input, int64_t dim,
-                            int64_t group_size, std::string_view group_name);
+[[nodiscard]] at::Tensor MetaAllGatherDim(const at::Tensor& input, int64_t dim,
+                                          int64_t group_size,
+                                          std::string_view group_name);
 
-at::Tensor MetaReduceScatterDim(const at::Tensor& input,
-                                std::string_view reduce_op, int64_t dim,
-                                int64_t group_size,
-                                std::string_view group_name);
+[[nodiscard]] at::Tensor MetaReduceScatterDim(const at::Tensor& input,
+                                              std::string_view reduce_op,
+                                              int64_t dim, int64_t group_size,
+                                              std::string_view group_name);
 
 }  // namespace torch_tpu
 

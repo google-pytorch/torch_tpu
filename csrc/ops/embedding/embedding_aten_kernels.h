@@ -26,22 +26,24 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenEmbedding(const at::Tensor& weight, const at::Tensor& indices,
-                         at::SymInt padding_idx, bool scale_grad_by_freq,
-                         bool sparse);
+[[nodiscard]] at::Tensor AtenEmbedding(const at::Tensor& weight,
+                                       const at::Tensor& indices,
+                                       at::SymInt padding_idx,
+                                       bool scale_grad_by_freq, bool sparse);
 
 at::Tensor& AtenEmbeddingOut(const at::Tensor& weight,
                              const at::Tensor& indices, at::SymInt padding_idx,
                              bool scale_grad_by_freq, bool sparse,
                              at::Tensor& out);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> AtenEmbeddingBag(
-    const at::Tensor& weight, const at::Tensor& indices,
-    const at::Tensor& offsets, bool scale_grad_by_freq, int64_t mode,
-    bool sparse, const std::optional<at::Tensor>& per_sample_weights,
-    bool include_last_offset, int64_t padding_idx);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+AtenEmbeddingBag(const at::Tensor& weight, const at::Tensor& indices,
+                 const at::Tensor& offsets, bool scale_grad_by_freq,
+                 int64_t mode, bool sparse,
+                 const std::optional<at::Tensor>& per_sample_weights,
+                 bool include_last_offset, int64_t padding_idx);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 AtenEmbeddingBagForwardOnly(const at::Tensor& weight, const at::Tensor& indices,
                             const at::Tensor& offsets, bool scale_grad_by_freq,
                             int64_t mode, bool sparse,
@@ -51,7 +53,7 @@ AtenEmbeddingBagForwardOnly(const at::Tensor& weight, const at::Tensor& indices,
 at::Tensor& AtenEmbeddingRenorm_(at::Tensor& self, const at::Tensor& indices,
                                  double max_norm, double norm_type);
 
-at::Tensor AtenEmbeddingBagBackward(
+[[nodiscard]] at::Tensor AtenEmbeddingBagBackward(
     const at::Tensor& grad, const at::Tensor& indices,
     const at::Tensor& offsets, const at::Tensor& offset2bag,
     const at::Tensor& bag_size, const at::Tensor& max_indices,
@@ -60,21 +62,19 @@ at::Tensor AtenEmbeddingBagBackward(
 
 // This implementation is adapted from:
 // https://github.com/pytorch/pytorch/blob/5b764267f4446e92e4072fb4faf128da6208cf8f/torch/_decomp/decompositions.py#L1247-L1273
-at::Tensor AtenEmbeddingDenseBackward(const at::Tensor& grad_output,
-                                      const at::Tensor& indices,
-                                      at::SymInt num_weights,
-                                      at::SymInt padding_idx,
-                                      bool scale_grad_by_freq);
+[[nodiscard]] at::Tensor AtenEmbeddingDenseBackward(
+    const at::Tensor& grad_output, const at::Tensor& indices,
+    at::SymInt num_weights, at::SymInt padding_idx, bool scale_grad_by_freq);
 
-at::Tensor AtenEmbeddingSparseBackward(const at::Tensor& grad,
-                                       const at::Tensor& indices,
-                                       int64_t num_weights, int64_t padding_idx,
-                                       bool scale_grad_by_freq);
+[[nodiscard]] at::Tensor AtenEmbeddingSparseBackward(const at::Tensor& grad,
+                                                     const at::Tensor& indices,
+                                                     int64_t num_weights,
+                                                     int64_t padding_idx,
+                                                     bool scale_grad_by_freq);
 
-at::Tensor AtenEmbeddingBackward(const at::Tensor& grad,
-                                 const at::Tensor& indices,
-                                 at::SymInt num_weights, at::SymInt padding_idx,
-                                 bool scale_grad_by_freq, bool sparse);
+[[nodiscard]] at::Tensor AtenEmbeddingBackward(
+    const at::Tensor& grad, const at::Tensor& indices, at::SymInt num_weights,
+    at::SymInt padding_idx, bool scale_grad_by_freq, bool sparse);
 
 }  // namespace torch_tpu
 

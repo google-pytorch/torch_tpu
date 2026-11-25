@@ -70,7 +70,8 @@ namespace torch_tpu {
  *         - The updated \p accumulator tensor.
  */
 
-std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor>
+AtenSparseDenseMatmulGradWithAdagrad(
     const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
     const at::Tensor& sample_ids, const at::Tensor& gains,
     const at::Tensor& embedding_table, const at::Tensor& accumulator,

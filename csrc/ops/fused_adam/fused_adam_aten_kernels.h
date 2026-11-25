@@ -35,8 +35,10 @@ struct AdamStepConfig {
   bool has_grad_scale;
   bool has_found_inf;
 
-  bool amsgrad() const { return amsgrad_mode == AdamAmsgradMode::kEnabled; }
-  bool maximize() const {
+  [[nodiscard]] bool amsgrad() const {
+    return amsgrad_mode == AdamAmsgradMode::kEnabled;
+  }
+  [[nodiscard]] bool maximize() const {
     return maximize_mode == AdamObjectiveMode::kMaximize;
   }
 };
@@ -87,9 +89,9 @@ void MetaFusedAdamTensorLr(at::TensorList self, at::TensorList grads,
                            const std::optional<at::Tensor>& grad_scale,
                            const std::optional<at::Tensor>& found_inf);
 
-std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>>
+[[nodiscard]] std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>>
 MetaFusedAdamFunctional(at::TensorList self, at::TensorList grads,
                         at::TensorList exp_avgs, at::TensorList exp_avg_sqs,
                         at::TensorList max_exp_avg_sqs,
@@ -99,9 +101,9 @@ MetaFusedAdamFunctional(at::TensorList self, at::TensorList grads,
                         const std::optional<at::Tensor>& grad_scale,
                         const std::optional<at::Tensor>& found_inf);
 
-std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>>
+[[nodiscard]] std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>>
 MetaFusedAdamFunctionalTensorLr(
     at::TensorList self, at::TensorList grads, at::TensorList exp_avgs,
     at::TensorList exp_avg_sqs, at::TensorList max_exp_avg_sqs,

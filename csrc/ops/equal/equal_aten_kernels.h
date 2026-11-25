@@ -24,7 +24,7 @@ namespace torch_tpu {
 // Returns true if two tensors have the same size and elements, false otherwise.
 // Does not differentiate between the data types during comparison.
 // This is different from `eq` which computes element-wise equality.
-bool AtenEqual(const at::Tensor& self, const at::Tensor& other);
+[[nodiscard]] bool AtenEqual(const at::Tensor& self, const at::Tensor& other);
 
 }  // namespace torch_tpu
 

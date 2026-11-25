@@ -49,7 +49,7 @@ absl::Status ValidateSparseMapRowInputs(
 // Maps a row-wise user computation across one or more sparse matrices in CSR
 // format on TPU SparseCore. Lowers to a `stablehlo.custom_call` targeting
 // "SparseMapRow" with the body computation embedded as a called computation.
-std::vector<at::Tensor> AtenSparseMapRow(
+[[nodiscard]] std::vector<at::Tensor> AtenSparseMapRow(
     const std::vector<at::Tensor>& csr_tensors, at::IntArrayRef csr_lengths,
     const std::vector<at::Tensor>& dense_args, std::string_view body_mlir,
     const std::vector<at::Tensor>& dummy_outputs,

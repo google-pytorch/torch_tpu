@@ -61,10 +61,10 @@ absl::Status ValidateSparseGatherInputs(const ConstTensor& row_pointers,
  * @return A dense tensor of gathered embeddings with shape [N, D],
  * where N = row_pointers.size(0) * max_non_zeroes_per_row == indices.size(0).
  */
-at::Tensor AtenSparseGather(const at::Tensor& row_pointers,
-                            const at::Tensor& indices,
-                            const at::Tensor& operand,
-                            int64_t max_non_zeroes_per_row);
+[[nodiscard]] at::Tensor AtenSparseGather(const at::Tensor& row_pointers,
+                                          const at::Tensor& indices,
+                                          const at::Tensor& operand,
+                                          int64_t max_non_zeroes_per_row);
 
 /**
  * @brief Performs sparse gather backward (scatter-add) accumulating gradients
@@ -79,22 +79,22 @@ at::Tensor AtenSparseGather(const at::Tensor& row_pointers,
  *
  * @return A dense tensor of embedding gradients with shape [V, D].
  */
-at::Tensor AtenSparseGatherBackward(const at::Tensor& grad_output,
-                                    const at::Tensor& indices,
-                                    const at::Tensor& grad_operand);
+[[nodiscard]] at::Tensor AtenSparseGatherBackward(
+    const at::Tensor& grad_output, const at::Tensor& indices,
+    const at::Tensor& grad_operand);
 
 /**
  * @brief Autograd function for sparse gather.
  */
 struct AtenSparseGatherAutograd
     : public torch::autograd::Function<AtenSparseGatherAutograd> {
-  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
-                            const at::Tensor& row_pointers,
-                            const at::Tensor& indices,
-                            const at::Tensor& operand,
-                            int64_t max_non_zeroes_per_row);
+  [[nodiscard]] static at::Tensor forward(torch::autograd::AutogradContext* ctx,
+                                          const at::Tensor& row_pointers,
+                                          const at::Tensor& indices,
+                                          const at::Tensor& operand,
+                                          int64_t max_non_zeroes_per_row);
 
-  static torch::autograd::variable_list backward(
+  [[nodiscard]] static torch::autograd::variable_list backward(
       torch::autograd::AutogradContext* ctx,
       torch::autograd::variable_list grad_outputs);
 };

@@ -66,7 +66,7 @@ namespace torch_tpu {
  *         - The updated \p velocity tensor.
  */
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
 AtenSparseDenseMatmulGradWithAdam(
     const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
     const at::Tensor& sample_ids, const at::Tensor& gains,

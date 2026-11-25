@@ -74,8 +74,8 @@ void MetaFusedSgdTensorLr(at::TensorList self, at::TensorList grads,
                           const std::optional<at::Tensor>& grad_scale,
                           const std::optional<at::Tensor>& found_inf);
 
-std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>>
+[[nodiscard]] std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>>
 MetaFusedSgdFunctional(at::TensorList self, at::TensorList grads,
                        at::TensorList momentum_buffer_list, double weight_decay,
                        double momentum, double lr, double dampening,
@@ -83,8 +83,8 @@ MetaFusedSgdFunctional(at::TensorList self, at::TensorList grads,
                        const std::optional<at::Tensor>& grad_scale,
                        const std::optional<at::Tensor>& found_inf);
 
-std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>>
+[[nodiscard]] std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>>
 MetaFusedSgdFunctionalTensorLr(at::TensorList self, at::TensorList grads,
                                at::TensorList momentum_buffer_list,
                                double weight_decay, double momentum,

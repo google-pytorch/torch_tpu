@@ -37,13 +37,11 @@ namespace torch_tpu {
 //
 // Returns:
 //   A tensor containing the gathered data.
-at::Tensor AtenRaggedAllToAll(const at::Tensor& operand,
-                              const at::Tensor& output,
-                              const at::Tensor& input_offsets,
-                              const at::Tensor& send_sizes,
-                              const at::Tensor& output_offsets,
-                              const at::Tensor& recv_sizes,
-                              std::string_view process_group_name);
+[[nodiscard]] at::Tensor AtenRaggedAllToAll(
+    const at::Tensor& operand, const at::Tensor& output,
+    const at::Tensor& input_offsets, const at::Tensor& send_sizes,
+    const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
+    std::string_view process_group_name);
 
 // RaggedAllToAll collective operation (out variant).
 at::Tensor& AtenRaggedAllToAllOut(
@@ -53,13 +51,11 @@ at::Tensor& AtenRaggedAllToAllOut(
     std::string_view process_group_name, at::Tensor& out);
 
 // Autograd kernel for ragged all-to-all collective operation.
-at::Tensor AtenRaggedAllToAllAutograd(const at::Tensor& operand,
-                                      const at::Tensor& output,
-                                      const at::Tensor& input_offsets,
-                                      const at::Tensor& send_sizes,
-                                      const at::Tensor& output_offsets,
-                                      const at::Tensor& recv_sizes,
-                                      std::string_view process_group_name);
+[[nodiscard]] at::Tensor AtenRaggedAllToAllAutograd(
+    const at::Tensor& operand, const at::Tensor& output,
+    const at::Tensor& input_offsets, const at::Tensor& send_sizes,
+    const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
+    std::string_view process_group_name);
 
 }  // namespace torch_tpu
 

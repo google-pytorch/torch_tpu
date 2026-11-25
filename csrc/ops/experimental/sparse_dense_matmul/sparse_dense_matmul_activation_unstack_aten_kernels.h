@@ -55,7 +55,7 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
  * @return A vector of unstacked 2D float tensors, each with shape
  * [per_feature_batch_sizes[i], per_feature_dims[i]].
  */
-std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
+[[nodiscard]] std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
     const at::Tensor& stacked_activations,
     at::IntArrayRef per_feature_batch_sizes, at::IntArrayRef per_feature_dims);
 
@@ -72,14 +72,15 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
 struct AtenSparseDenseMatmulActivationUnstackAutograd
     : public torch::autograd::Function<
           AtenSparseDenseMatmulActivationUnstackAutograd> {
-  static std::vector<at::Tensor> forward(
+  [[nodiscard]] static std::vector<at::Tensor> forward(
       torch::autograd::AutogradContext* ctx,
       const at::Tensor& stacked_activations,
       at::IntArrayRef per_feature_batch_sizes,
       at::IntArrayRef per_feature_dims);
 
-  static std::vector<at::Tensor> backward(torch::autograd::AutogradContext* ctx,
-                                          std::vector<at::Tensor> grad_outputs);
+  [[nodiscard]] static std::vector<at::Tensor> backward(
+      torch::autograd::AutogradContext* ctx,
+      std::vector<at::Tensor> grad_outputs);
 };
 
 }  // namespace torch_tpu

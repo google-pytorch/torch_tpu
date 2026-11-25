@@ -49,7 +49,7 @@ absl::Status ValidateSparseDenseMatmulGradientStackInputs(
  * @return A dense 2D float tensor of stacked gradients with shape
  * [stacked_batch_size, stacked_feature_dim].
  */
-at::Tensor AtenSparseDenseMatmulGradientStack(
+[[nodiscard]] at::Tensor AtenSparseDenseMatmulGradientStack(
     at::TensorList unstacked_gradients, int64_t stacked_batch_size,
     int64_t stacked_feature_dim);
 
