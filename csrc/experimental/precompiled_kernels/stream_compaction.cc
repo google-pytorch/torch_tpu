@@ -27,6 +27,8 @@
 namespace torch_tpu {
 namespace {
 
+constexpr int64_t kZeroRows = 16;  // Storage rows per high-word zeroing DMA.
+
 // Shifts an (8, 128) tile left by `stride` lanes, pulling wrapped lanes from
 // the next sublane.
 kiln::Tile ShiftLanesLeft(const kiln::Tile tile, const int64_t stride,
@@ -75,7 +77,8 @@ CompactionRanks ComputePrefixRanks(const kiln::Tile live_flags,
 }
 
 kiln::Tile CompactTile(kiln::Tile control, const int distance_shift,
-                       const kiln::Tile lane, const kiln::Tile sublane) {
+                       const kiln::Tile lane, const kiln::Tile sublane,
+                       const absl::Span<kiln::Tile* const> payloads) {
   ABSL_CHECK(  // CRASH_OK=compile-time kernel construction bug
       distance_shift >= 0 && distance_shift + kTileShift <= 32)
       << "The 10-bit distance field must fit in 32 bits. This is a TorchTPU "
@@ -91,9 +94,32 @@ kiln::Tile CompactTile(kiln::Tile control, const int distance_shift,
                    : Select(keep, control.Rotate(kSublanes - stride, 0), 0);
     const kiln::Tile arriving = (src_control & bit) != 0;
     const kiln::Tile leaving = (control & bit) != 0;
+    for (kiln::Tile* payload : payloads) {
+      const kiln::Tile src = lane_stage
+                                 ? ShiftLanesLeft(*payload, stride, keep)
+                                 : payload->Rotate(kSublanes - stride, 0);
+      *payload = Select(arriving, src, *payload);
+    }
     control = Select(arriving, src_control & ~bit, Select(leaving, 0, control));
   }
   return control;
+}
+
+void ZeroHighWords(const kiln::HbmRef output) {
+  const kiln::VmemRef zeros = kiln::AllocaVmem(kiln::i32(kZeroRows, kLanes));
+  kiln::Store(zeros, kiln::Zeros(kiln::i32(kZeroRows, kLanes)));
+  const kiln::Scalar rows = output.Dim(0);
+  const kiln::Scalar half = rows >> 1;
+  // 16-row DMAs over [half, end), then 1-row DMAs over [end, rows).
+  const kiln::Scalar end = rows - (half & (kZeroRows - 1));
+  kiln::For(half, end, kZeroRows, [&output, &zeros](kiln::Scalar q) {
+    kiln::SyncCopy(zeros,
+                   output(kiln::Slice(q, kZeroRows), kiln::Slice(0, kLanes)));
+  });
+  kiln::For(end, rows, [&output, &zeros](kiln::Scalar q) {
+    kiln::SyncCopy(zeros(kiln::Slice(0, 1)),
+                   output(kiln::Slice(q, 1), kiln::Slice(0, kLanes)));
+  });
 }
 
 StagedOutput::StagedOutput(const kiln::HbmRef output, const int64_t planes,

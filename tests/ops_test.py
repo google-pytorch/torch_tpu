@@ -4583,6 +4583,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_unfold(self):
     self.do_test_op("unfold")
 
+  @also_run_static
   def test_unique(self):
     if (
         not op_testing._CHECK_DYNAMISM.value

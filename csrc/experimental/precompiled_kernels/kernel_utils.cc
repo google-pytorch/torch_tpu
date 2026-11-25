@@ -16,6 +16,7 @@
 
 #include "csrc/experimental/precompiled_kernels/kernel_utils.h"
 
+#include <bit>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -77,6 +78,16 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
   return WrapXlaError(
       client.CompileAndLoad(computation, std::move(*compile_options)),
       /*context=*/"failed to compile the Mosaic kernel");
+}
+
+int64_t Default1DTileMinor(const int64_t size) {
+  if (size <= kLanes) {
+    return kLanes;
+  }
+  if (size >= kTile) {
+    return kTile;
+  }
+  return static_cast<int64_t>(std::bit_ceil(static_cast<uint64_t>(size)));
 }
 
 xla::Layout Default1DLayout(const int64_t tile_minor) {
