@@ -17,8 +17,8 @@
 #include "csrc/ops/split_with_sizes_copy/split_with_sizes_copy_aten_kernels.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -49,14 +49,31 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
       (self, IgnoreInCacheKey(split_sizes, "Doesn't affect SHLO"),
        IgnoreInCacheKey(dim, "Doesn't affect SHLO"), out),
       {
-        TT_ASSIGN_OR_THROW(int64_t normalized_dim,
+        TT_CHECK_THROW(self.dim() > 0, error::kInvalidArgument)
+            << "expected input tensor to be at least 1D, got 0D";
+        TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
                            SafeWrapDim(dim, self.dim()));
-        for (int64_t i = 0; i < out.size(); ++i) {
+        int64_t split_sizes_sum = 0;
+        for (const int64_t size : split_sizes) {
+          TT_CHECK_THROW(size >= 0, error::kInvalidArgument)
+              << "expected split_sizes entries to be >= 0, got "
+              << ToString(split_sizes);
+          TT_ASSIGN_OR_THROW(split_sizes_sum, SafeAdd(split_sizes_sum, size));
+        }
+        const int64_t dim_size = self.size(normalized_dim);
+        TT_CHECK_THROW(split_sizes_sum == dim_size, error::kInvalidArgument)
+            << "expected split_sizes to sum to " << dim_size
+            << " (the input's size at dimension " << normalized_dim << "), got "
+            << ToString(split_sizes);
+        TT_CHECK_THROW(out.size() == split_sizes.size(),
+                       error::kInvalidArgument)
+            << "expected out argument of size " << split_sizes.size()
+            << ", got size " << out.size();
+        for (size_t i = 0; i < out.size(); ++i) {
           TT_THROW_IF_ERROR(ValidateOutDtype(out[i], self.scalar_type(),
                                              /*allow_out_dtype_cast=*/false));
-          int64_t size = split_sizes[i];
           Dimensions expected_shape = CopyIntVector(self.sizes());
-          expected_shape[normalized_dim] = size;
+          expected_shape[normalized_dim] = split_sizes[i];
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out[i], expected_shape));
         }
         // split_with_sizes_copy is an undocumented op used by PyTorch's
@@ -76,12 +93,6 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
         if (normalized_dim == 1 && self.dim() == 2) {
           const int64_t num_rows = self.size(0);
           const int64_t num_cols = self.size(1);
-          TT_CHECK_THROW(std::accumulate(split_sizes.begin(), split_sizes.end(),
-                                         int64_t{0}) == num_cols,
-                         error::kInvalidArgument)
-              << "expected split_sizes to sum to " << num_cols
-              << " (the input's size at dimension 1), got "
-              << ToString(split_sizes);
           // With no rows, every output is empty and there is nothing to copy.
           if (num_rows == 0) {
             return;
@@ -97,7 +108,7 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
                 ConvertTo<mlir::ElementType>(self.scalar_type()));
             const at::Tensor flat_self = self.view(-1);
             int64_t start = 0;
-            for (int64_t i = 0; i < out.size(); ++i) {
+            for (size_t i = 0; i < out.size(); ++i) {
               const int64_t size = split_sizes[i];
               if (size > 0) {
                 auto op_builder = [num_rows, num_cols, start,
@@ -131,8 +142,8 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
         }
         // Fallback to naive implementation: multiple copy_
         int64_t start = 0;
-        for (int64_t i = 0; i < out.size(); ++i) {
-          int64_t size = split_sizes[i];
+        for (size_t i = 0; i < out.size(); ++i) {
+          const int64_t size = split_sizes[i];
           out[i].copy_(self.narrow(normalized_dim, start, size));
           start += size;
         }

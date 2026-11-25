@@ -6786,6 +6786,81 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, allow_failure=True)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="contiguous_dim1",
+          shape=(4, 6),
+          split_sizes=[2, 4],
+          dim=1,
+          layout="contiguous",
+      ),
+      dict(
+          testcase_name="contiguous_neg_dim_zero_split",
+          shape=(4, 6),
+          split_sizes=[2, 0, 4],
+          dim=-1,
+          layout="contiguous",
+      ),
+      dict(
+          testcase_name="contiguous_dim0",
+          shape=(6, 4),
+          split_sizes=[2, 4],
+          dim=0,
+          layout="contiguous",
+      ),
+      dict(
+          testcase_name="transposed_dim1",
+          shape=(6, 4),
+          split_sizes=[2, 4],
+          dim=1,
+          layout="transposed",
+      ),
+      dict(
+          testcase_name="strided_cols_dim1",
+          shape=(4, 12),
+          split_sizes=[2, 4],
+          dim=1,
+          layout="strided_cols",
+      ),
+  )
+  def test_split_with_sizes_copy_2d(
+      self,
+      shape: tuple[int, int],
+      split_sizes: list[int],
+      dim: int,
+      layout: str,
+  ):
+    numel = shape[0] * shape[1]
+
+    def fn(device):
+      base = torch.arange(numel, dtype=torch.float32, device=device).reshape(
+          shape
+      )
+      if layout == "transposed":
+        x = base.t()
+      elif layout == "strided_cols":
+        x = base[:, ::2]
+      else:
+        x = base
+      res = torch.split_with_sizes_copy(x, split_sizes, dim=dim)
+      out = [torch.empty(0, dtype=x.dtype, device=device) for _ in split_sizes]
+      torch.split_with_sizes_copy(x, split_sizes, dim=dim, out=out)
+      return tuple(res) + tuple(out)
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_split_with_sizes_copy_dim1_strided_out(self):
+    def fn(device):
+      x = torch.arange(24, dtype=torch.float32, device=device).reshape(4, 6)
+      out_base0 = torch.zeros(2, 4, device=device)
+      out_base1 = torch.zeros(4, 8, device=device)
+      torch.split_with_sizes_copy(
+          x, [2, 4], dim=1, out=[out_base0.t(), out_base1[:, ::2]]
+      )
+      return out_base0, out_base1
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
   def test_atan2(self):
     x = torch.tensor([2], dtype=torch.int32)
     y = torch.tensor([3], dtype=torch.float32)

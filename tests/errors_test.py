@@ -21529,6 +21529,65 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
           torch.zeros(num_rows, 6, device=et.device()), [2, 3], dim=1, out=out
       )
 
+  def test_split_with_sizes_copy_dim0_split_sizes_mismatch(self):
+    out = [
+        torch.empty(2, 2, device=et.device()),
+        torch.empty(3, 2, device=et.device()),
+    ]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""split_with_sizes_copy(): expected split_sizes to sum to 6 (the input's size at dimension 0), got [2, 3]""",
+        gpu="""split_with_sizes expects split_sizes to sum exactly to 6 (input tensor's size at dimension 0), but got split_sizes=[2, 3]""",
+    ):
+      torch.split_with_sizes_copy(
+          torch.zeros(6, 2, device=et.device()), [2, 3], dim=0, out=out
+      )
+
+  def test_split_with_sizes_copy_negative_split_size(self):
+    out = [
+        torch.empty(2, 1, device=et.device()),
+        torch.empty(2, 5, device=et.device()),
+    ]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""split_with_sizes_copy(): expected split_sizes entries to be >= 0, got [-1, 5]""",
+        gpu="""split_with_sizes expects split_sizes have only non-negative entries, but got split_sizes=-1""",
+    ):
+      torch.split_with_sizes_copy(
+          torch.zeros(2, 4, device=et.device()), [-1, 5], dim=1, out=out
+      )
+
+  def test_split_with_sizes_copy_out_size_mismatch(self):
+    self_t = torch.zeros(2, 4, device=et.device())
+    out_too_few = [torch.empty(2, 2, device=et.device())]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""split_with_sizes_copy(): expected out argument of size 2, got size 1""",
+        gpu="""split_with_sizes_copy_out() expected an out= argument of size 2, got size 1""",
+    ):
+      torch.split_with_sizes_copy(self_t, [2, 2], dim=1, out=out_too_few)
+
+    out_too_many = [
+        torch.empty(2, 4, device=et.device()),
+        torch.empty(2, 4, device=et.device()),
+    ]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""split_with_sizes_copy(): expected out argument of size 1, got size 2""",
+        gpu="""split_with_sizes_copy_out() expected an out= argument of size 1, got size 2""",
+    ):
+      torch.split_with_sizes_copy(self_t, [4], dim=1, out=out_too_many)
+
+  def test_split_with_sizes_copy_0d_input(self):
+    self_0d = torch.tensor(1.0, device=et.device())
+    out = [torch.empty(1, device=et.device())]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""split_with_sizes_copy(): expected input tensor to be at least 1D, got 0D""",
+        gpu="""split expects at least a 1-dimensional tensor""",
+    ):
+      torch.split_with_sizes_copy(self_0d, [1], dim=0, out=out)
+
   def test_select_scatter_errors(self):
     self_0d = torch.tensor(1.0, device=et.device())
     src_0d = torch.tensor(2.0, device=et.device())
