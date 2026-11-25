@@ -21,12 +21,12 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenHardswish(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenHardswish(const at::Tensor& self);
 at::Tensor& AtenHardswishOut(const at::Tensor& self, at::Tensor& out);
 at::Tensor& AtenHardswish_(at::Tensor& self);
 
-at::Tensor AtenHardswishBackward(const at::Tensor& grad_output,
-                                 const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenHardswishBackward(const at::Tensor& grad_output,
+                                               const at::Tensor& self);
 
 }  // namespace torch_tpu
 

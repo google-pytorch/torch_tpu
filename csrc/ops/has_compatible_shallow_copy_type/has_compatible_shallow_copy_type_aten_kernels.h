@@ -23,8 +23,8 @@
 namespace torch_tpu {
 
 // at::_has_compatible_shallow_copy_type
-bool AtenHasCompatibleShallowCopyType(const at::Tensor& self,
-                                      const at::Tensor& from);
+[[nodiscard]] bool AtenHasCompatibleShallowCopyType(const at::Tensor& self,
+                                                    const at::Tensor& from);
 
 }  // namespace torch_tpu
 

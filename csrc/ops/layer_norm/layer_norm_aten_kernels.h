@@ -27,12 +27,14 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeLayerNorm(
-    const at::Tensor& input, at::IntArrayRef normalized_shape_arr,
-    const c10::optional<at::Tensor>& weight_opt,
-    const c10::optional<at::Tensor>& bias_opt, double eps);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenNativeLayerNorm(const at::Tensor& input,
+                    at::IntArrayRef normalized_shape_arr,
+                    const c10::optional<at::Tensor>& weight_opt,
+                    const c10::optional<at::Tensor>& bias_opt, double eps);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenLayerNormBackward(
     const at::Tensor& dY, const at::Tensor& input,
     at::IntArrayRef normalized_shape, const at::Tensor& mean,
     const at::Tensor& rstd,

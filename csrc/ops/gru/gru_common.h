@@ -26,8 +26,9 @@ namespace torch_tpu {
 // derivative:
 //   d/dz sigmoid(z) = sigmoid(z) * (1 - sigmoid(z))
 //   grad_z = delta * act * (1 - act)
-inline mlir::MlirOp SigmoidBackward(mlir::MlirOp delta, mlir::MlirOp act,
-                                    mlir::MlirOp one) {
+[[nodiscard]] inline mlir::MlirOp SigmoidBackward(mlir::MlirOp delta,
+                                                  mlir::MlirOp act,
+                                                  mlir::MlirOp one) {
   mlir::MlirOp one_minus_act = mlir::stablehlo::Subtract(one, act);
   mlir::MlirOp delta_one_minus_act = mlir::stablehlo::Mul(delta, one_minus_act);
   return mlir::stablehlo::Mul(delta_one_minus_act, act);
@@ -37,8 +38,9 @@ inline mlir::MlirOp SigmoidBackward(mlir::MlirOp delta, mlir::MlirOp act,
 // derivative:
 //   d/dz tanh(z) = 1 - tanh^2(z)
 //   grad_z = delta * (1 - act^2)
-inline mlir::MlirOp TanhBackward(mlir::MlirOp delta, mlir::MlirOp act,
-                                 mlir::MlirOp one) {
+[[nodiscard]] inline mlir::MlirOp TanhBackward(mlir::MlirOp delta,
+                                               mlir::MlirOp act,
+                                               mlir::MlirOp one) {
   mlir::MlirOp act_sq = mlir::stablehlo::Mul(act, act);
   mlir::MlirOp one_minus_act_sq = mlir::stablehlo::Subtract(one, act_sq);
   return mlir::stablehlo::Mul(delta, one_minus_act_sq);
@@ -71,11 +73,10 @@ struct GruGateAdjoints {
 //   delta_pre_r = delta_r * r * (1 - r)
 //   delta_pre_z = delta_z * z * (1 - z)
 //   delta_h_n = delta_pre_n * r
-GruGateAdjoints ComputeGruGateAdjoints(mlir::MlirOp delta_h, mlir::MlirOp hx,
-                                       mlir::MlirOp resetgate,
-                                       mlir::MlirOp updategate,
-                                       mlir::MlirOp newgate, mlir::MlirOp h_n,
-                                       mlir::MlirOp one);
+[[nodiscard]] GruGateAdjoints ComputeGruGateAdjoints(
+    mlir::MlirOp delta_h, mlir::MlirOp hx, mlir::MlirOp resetgate,
+    mlir::MlirOp updategate, mlir::MlirOp newgate, mlir::MlirOp h_n,
+    mlir::MlirOp one);
 
 }  // namespace torch_tpu
 

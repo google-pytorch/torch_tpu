@@ -25,8 +25,8 @@
 namespace torch_tpu {
 
 at::Tensor& AtenGluOut(const at::Tensor& self, int64_t dim, at::Tensor& out);
-at::Tensor AtenGluBackward(const at::Tensor& grad_output,
-                           const at::Tensor& self, int64_t dim);
+[[nodiscard]] at::Tensor AtenGluBackward(const at::Tensor& grad_output,
+                                         const at::Tensor& self, int64_t dim);
 at::Tensor& AtenGluBackwardGradInput(const at::Tensor& grad_output,
                                      const at::Tensor& self, int64_t dim,
                                      at::Tensor& grad_input);

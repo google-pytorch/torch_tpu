@@ -26,20 +26,24 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenGridSampler2d(const at::Tensor& input, const at::Tensor& grid,
-                             int64_t interpolation_mode, int64_t padding_mode,
-                             bool align_corners);
+[[nodiscard]] at::Tensor AtenGridSampler2d(const at::Tensor& input,
+                                           const at::Tensor& grid,
+                                           int64_t interpolation_mode,
+                                           int64_t padding_mode,
+                                           bool align_corners);
 
-at::Tensor AtenGridSampler3d(const at::Tensor& input, const at::Tensor& grid,
-                             int64_t interpolation_mode, int64_t padding_mode,
-                             bool align_corners);
+[[nodiscard]] at::Tensor AtenGridSampler3d(const at::Tensor& input,
+                                           const at::Tensor& grid,
+                                           int64_t interpolation_mode,
+                                           int64_t padding_mode,
+                                           bool align_corners);
 
-std::tuple<at::Tensor, at::Tensor> AtenGridSampler2dBackward(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenGridSampler2dBackward(
     const at::Tensor& grad_output, const at::Tensor& input,
     const at::Tensor& grid, int64_t interpolation_mode, int64_t padding_mode,
     bool align_corners, std::array<bool, 2> output_mask);
 
-std::tuple<at::Tensor, at::Tensor> AtenGridSampler3dBackward(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenGridSampler3dBackward(
     const at::Tensor& grad_output, const at::Tensor& input,
     const at::Tensor& grid, int64_t interpolation_mode, int64_t padding_mode,
     bool align_corners, std::array<bool, 2> output_mask);

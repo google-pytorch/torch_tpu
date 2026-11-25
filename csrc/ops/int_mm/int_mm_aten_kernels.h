@@ -21,7 +21,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenIntMm(const at::Tensor& self, const at::Tensor& mat2);
+[[nodiscard]] at::Tensor AtenIntMm(const at::Tensor& self,
+                                   const at::Tensor& mat2);
 at::Tensor& AtenIntMmOut(const at::Tensor& self, const at::Tensor& mat2,
                          at::Tensor& out);
 

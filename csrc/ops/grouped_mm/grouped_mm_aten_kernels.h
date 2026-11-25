@@ -26,25 +26,24 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenGroupedMm(const at::Tensor& self, const at::Tensor& mat2,
-                         const std::optional<at::Tensor>& offs,
-                         const std::optional<at::Tensor>& bias,
-                         std::optional<at::ScalarType> out_dtype);
+[[nodiscard]] at::Tensor AtenGroupedMm(const at::Tensor& self,
+                                       const at::Tensor& mat2,
+                                       const std::optional<at::Tensor>& offs,
+                                       const std::optional<at::Tensor>& bias,
+                                       std::optional<at::ScalarType> out_dtype);
 
-at::Tensor AtenScaledGroupedMm(const at::Tensor& self, const at::Tensor& mat2,
-                               const at::Tensor& scale_a,
-                               const at::Tensor& scale_b,
-                               const std::optional<at::Tensor>& offs,
-                               const std::optional<at::Tensor>& bias,
-                               const std::optional<at::Tensor>& scale_result,
-                               std::optional<at::ScalarType> out_dtype,
-                               bool use_fast_accum);
+[[nodiscard]] at::Tensor AtenScaledGroupedMm(
+    const at::Tensor& self, const at::Tensor& mat2, const at::Tensor& scale_a,
+    const at::Tensor& scale_b, const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    const std::optional<at::Tensor>& scale_result,
+    std::optional<at::ScalarType> out_dtype, bool use_fast_accum);
 
 // PyTorch 2.14 changed the C++ binding of `Tensor[]` arguments from
 // at::TensorList to at::ITensorListRef; the registered kernel's signature
 // must match the torch it runs under.
 #if TT_TORCH_VERSION_GE(2, 14)
-at::Tensor AtenScaledGroupedMmV2(
+[[nodiscard]] at::Tensor AtenScaledGroupedMmV2(
     const at::Tensor& self, const at::Tensor& mat2,
     const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
     at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
@@ -64,7 +63,7 @@ at::Tensor& AtenScaledGroupedMmV2Out(
     std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
     bool use_fast_accum, at::Tensor& out);
 #else
-at::Tensor AtenScaledGroupedMmV2(
+[[nodiscard]] at::Tensor AtenScaledGroupedMmV2(
     const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
     at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
     at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,

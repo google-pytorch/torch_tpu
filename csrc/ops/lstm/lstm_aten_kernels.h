@@ -28,47 +28,48 @@
 namespace torch_tpu {
 
 // Implements aten::lstm.input on PrivateUse1 via fused StableHLO recurrence.
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLstmInput(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLstmInput(
     const at::Tensor& input, at::TensorList hx, at::TensorList params,
     bool has_biases, int64_t num_layers, double dropout, bool train,
     bool bidirectional, bool batch_first);
 
 // AutogradPrivateUse1 entry point for aten::lstm.input across eager and
 // torch.compile.
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLstmInputAutogradKernel(
-    const at::Tensor& input, at::TensorList hx, at::TensorList params,
-    bool has_biases, int64_t num_layers, double dropout, bool train,
-    bool bidirectional, bool batch_first);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenLstmInputAutogradKernel(const at::Tensor& input, at::TensorList hx,
+                            at::TensorList params, bool has_biases,
+                            int64_t num_layers, double dropout, bool train,
+                            bool bidirectional, bool batch_first);
 
 // Internal tpu::_lstm_input* custom op implementations and Meta kernels.
-std::tuple<at::Tensor, at::Tensor, at::Tensor> TpuLstmInput(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor> TpuLstmInput(
     const at::Tensor& input, at::TensorList hx, at::TensorList params,
     bool has_biases, int64_t num_layers, double dropout, bool train,
     bool bidirectional, bool batch_first);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> MetaTpuLstmInput(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor> MetaTpuLstmInput(
     const at::Tensor& input, at::TensorList hx, at::TensorList params,
     bool has_biases, int64_t num_layers, double dropout, bool train,
     bool bidirectional, bool batch_first);
 
-std::vector<at::Tensor> TpuLstmInputForwardCached(
+[[nodiscard]] std::vector<at::Tensor> TpuLstmInputForwardCached(
     const at::Tensor& input, at::TensorList hx, at::TensorList params,
     bool has_biases, int64_t num_layers, double dropout, bool train,
     bool bidirectional, bool batch_first);
 
-std::vector<at::Tensor> MetaTpuLstmInputForwardCached(
+[[nodiscard]] std::vector<at::Tensor> MetaTpuLstmInputForwardCached(
     const at::Tensor& input, at::TensorList hx, at::TensorList params,
     bool has_biases, int64_t num_layers, double dropout, bool train,
     bool bidirectional, bool batch_first);
 
-std::vector<at::Tensor> TpuLstmInputBackward(
+[[nodiscard]] std::vector<at::Tensor> TpuLstmInputBackward(
     const at::Tensor& grad_output, const at::Tensor& grad_hy,
     const at::Tensor& grad_cy, const at::Tensor& input, at::TensorList hx,
     at::TensorList params, bool has_biases, int64_t num_layers, double dropout,
     bool train, bool bidirectional, bool batch_first,
     at::TensorList cached_activations);
 
-std::vector<at::Tensor> MetaTpuLstmInputBackward(
+[[nodiscard]] std::vector<at::Tensor> MetaTpuLstmInputBackward(
     const at::Tensor& grad_output, const at::Tensor& grad_hy,
     const at::Tensor& grad_cy, const at::Tensor& input, at::TensorList hx,
     at::TensorList params, bool has_biases, int64_t num_layers, double dropout,
