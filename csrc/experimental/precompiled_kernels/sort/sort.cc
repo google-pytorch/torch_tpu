@@ -275,6 +275,7 @@ UnboundedDynamicKernelRegistration GetSortUnboundedDynamicKernel() {
       // own, so that its persisted cache entries stay valid.
       .key = MakeUnboundedDynamicKernelCacheKey(
           stable_key, static_cast<int>(SortKernelId::kSort1024)),
+      .op_name = OpName::kSortValuesStable,
       .enabled_by_default = false,
   };
   // Unstable sorts also find it, through their own extentless key.
