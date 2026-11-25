@@ -5,10 +5,9 @@ description: >-
   in Kiln that the compilation cache loads on an eager cache miss instead of
   compiling a static kernel per shape. Covers the kernel and its buffer
   contract, adding missing Pallas features to Kiln, the extentless cache key,
-  kernel ids and the compatibility predicate, registration, end-to-end tests
-  (dynamic_ops_test.py and @also_run_static in ops_test.py), C++ unit tests
-  only for what end-to-end tests can't cover, and retiring
-  the dynamic_ops_test.py cases once the op is fully implemented. Use when
+  kernel ids and the compatibility predicate, registration, end-to-end tests,
+  C++ unit tests only for what end-to-end tests can't cover, and retiring the
+  dynamic_ops_test.py cases once the op is fully implemented. Use when
   adding, extending or testing a kernel in
   csrc/experimental/precompiled_kernels/, like the nonzero kernels. Don't use
   for bounded dynamism in op lowerings (use tt-support-dynamism) or for an op's
@@ -192,6 +191,10 @@ Each piece of information belongs to exactly one of these three:
     names, so never reuse or renumber them; -1 is reserved for keys that don't
     identify a kernel.
 
+Set the kernel's `op_name` to the `OpName` passed to `AddOp`: the
+`ops_test_kiln` targets only run the ops whose ATen name, without the overload
+(e.g. `sort` for `kSortValuesStable`), is a registered `op_name`.
+
 When kernels share an extentless key, registration order is lookup order: make
 their predicates disjoint (like the 1-D tiles) or register the most specific
 kernel first.
@@ -254,18 +257,24 @@ Add, next to existing helpers:
 *   **Mode**: the `dynamic_ops_test` target in `tests/BUILD` runs in the `all`
     mode so all dynamic kernels can be run.
 
-### 6. Mark the Op's Test in `tests/ops_test.py`
+### 6. Test the Op's OpInfo Samples in `tests/ops_test.py`
 
-*   If the added kernel runs by default, decorate `test_{op}` with
-    `@also_run_static`, above any `@category`, as on `test_nonzero`. The default
-    targets run the op's OpInfo samples on its enabled kernels wherever they are
-    compatible. `ops_test_static` sets the mode to `none` and runs only the
-    marked tests, on static kernels, asserting that no lookup was served
-    dynamically, so the static lowering stays covered.
+*   `ops_test_kiln` and `ops_test_kiln_grad` in `tests/BUILD` set the mode to
+    `all` and run `test_{op}` for every op with a registered kernel `op_name`
+    (step 3). They skip each sample that no Kiln kernel served, and fail if none
+    was served.
+*   If no OpInfo sample can reach the kernel (e.g. sort's, which only serves
+    1024 elements), pass `kiln_kernel_unserved_reason` to `do_test_op` and keep
+    the `dynamic_ops_test.py` cases.
+*   The other `ops_test` targets set the mode to `none`. They cover the static
+    lowering and fail if a Kiln kernel serves a sample anyway.
 *   If the op has no `test_{op}` yet, add one first, following the
     `tt-write-tests` skill.
-*   Raise the `shard_count` of `ops_test_static` in `tests/BUILD` if the target
-    nears its timeout.
+*   To skip a known issue of one kind of kernel, e.g. in a `skip_if`, use
+    `op_testing.is_kiln_kernel_mode()`. Prefer narrowing `is_compatible` for a
+    Kiln kernel bug, though: users hit the bug in the default mode.
+*   Raise the `shard_count` of `ops_test_kiln` and `ops_test_kiln_grad` in
+    `tests/BUILD` if they near their timeouts.
 
 ### 7. Check Whether the Op Is Fully Implemented
 
@@ -281,9 +290,9 @@ compile nothing (e.g. nonzero with K = 0, which skips the index graph). Check:
 
 If the op is fully implemented, delete its case helper, case tuples and tests
 from `tests/dynamic_ops_test.py`: from then on, `test_{op}` in
-`tests/ops_test.py` covers the kernels on all its samples, and `ops_test_static`
-covers the static path. If no op is left in `dynamic_ops_test.py`, delete it and
-its target. Otherwise, keep the cases.
+`tests/ops_test.py` covers the kernels on all its samples in `ops_test_kiln`,
+and the static path in the other `ops_test` targets. If no op is left in
+`dynamic_ops_test.py`, delete it and its target. Otherwise, keep the cases.
 
 ## Verification
 
@@ -297,6 +306,6 @@ variants (e.g. `dynamic_ops_test_tpu-v5lite` on GitHub).
     `csrc/experimental/precompiled_kernels/BUILD`, and `{kernel}_test` if you
     added one.
 *   Steps 5 and 7: `dynamic_ops_test` in `tests/BUILD`.
-*   Steps 6 and 7, with `--test_filter=test_{op}`: the `tests/BUILD` target that
-    runs `test_{op}` in CI (`ops_test`, or the op's category target, e.g.
-    `nonzero_ops_test`) and `ops_test_static`.
+*   Steps 6 and 7, with `--test_filter=test_{op}`: `ops_test_kiln`,
+    `ops_test_kiln_grad`, and the `tests/BUILD` target that runs `test_{op}` in
+    CI (`ops_test`, or the op's category target, e.g. `nonzero_ops_test`).

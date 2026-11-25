@@ -36,6 +36,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/excess_precision.h"
 #include "csrc/common/pybind_error_utils.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/distributed/window_tpu.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_gen_impl.h"
@@ -45,6 +46,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
 #include "csrc/internal/device/vmem_capacity.h"
+#include "csrc/ops/op_names.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "pybind11/chrono.h"
 #include "pybind11/gil.h"
@@ -550,6 +552,20 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       "_get_cache_stats",
       []() { return CompilationCache::GetInstance().GetCacheStats(); },
       "Get compilation cache statistics.");
+
+  m.def(
+      "_get_unbounded_dynamic_kernel_op_names",
+      []() {
+        std::vector<std::string> op_names;
+        for (const OpName op_name :
+             UnboundedDynamicKernelRegistry::GetInstance().GetOpNames()) {
+          op_names.emplace_back(ToString(op_name));
+        }
+        return op_names;
+      },
+      "Returns the ATen op overloads (e.g. 'nonzero', 'sort.values_stable')"
+      " that registered unbounded dynamic kernels serve, whether or not"
+      " TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS enables them.");
 
   m.def(
       "_is_optimized_build",

@@ -20,7 +20,6 @@ on GPU.
 
 import collections.abc
 import copy
-import functools
 import os
 import sys
 from typing import Any
@@ -61,74 +60,6 @@ def category(*names):
     return func
 
   return decorator
-
-
-# The attribute that `also_run_static` sets on the tests it marks.
-_ALSO_RUN_STATIC_ATTR = "also_run_static"
-
-_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR = (
-    "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS"
-)
-
-
-def _unbounded_dynamic_kernels_disabled() -> bool:
-  """Returns whether the env var disables unbounded dynamic kernels.
-
-  Mirrors the runtime, which disables them only if the variable is "none".
-  """
-  return os.environ.get(_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR, "") == "none"
-
-
-def _unbounded_dynamic_hits() -> int:
-  """Returns the number of lookups served by unbounded dynamic kernels."""
-  return torch.tpu._get_cache_stats().num_unbounded_dynamic_hits  # pylint: disable=protected-access
-
-
-def also_run_static(func):
-  """Also runs the test in ops_test_static, asserting no dynamic kernels ran.
-
-  In the other targets, which load the dynamic kernels enabled by default, the
-  test fails if no dynamic kernel served any of its samples, so that the
-  kernels can't silently lose their coverage.
-
-  Args:
-    func: The test method of an op with dynamic kernels enabled by default.
-
-  Returns:
-    The wrapped test method.
-  """
-
-  @functools.wraps(func)
-  def wrapper(self, *args, **kwargs):
-    # Samples only run on the TPU if there is one, e.g. not when recording GPU
-    # goldens or dtype exclusions.
-    accelerator = torch.accelerator.current_accelerator()
-    if accelerator is None or accelerator.type != "tpu":
-      return func(self, *args, **kwargs)
-    hits_before = _unbounded_dynamic_hits()
-    result = func(self, *args, **kwargs)
-    torch.accelerator.synchronize()
-    hits = _unbounded_dynamic_hits() - hits_before
-    if _unbounded_dynamic_kernels_disabled():
-      self.assertEqual(
-          hits,
-          0,
-          "Lookups served by unbounded dynamic kernels, although"
-          f" {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR} disables them.",
-      )
-    # The served samples may be filtered out by the dtypes or the sample limit.
-    elif self._subtests_run and op_testing.runs_all_samples():
-      self.assertGreater(
-          hits,
-          0,
-          f"No unbounded dynamic kernel served {self._testMethodName}, which"
-          " is marked with @also_run_static: its dynamic kernels have no"
-          " coverage.",
-      )
-    return result
-
-  setattr(wrapper, _ALSO_RUN_STATIC_ATTR, True)
-  return wrapper
 
 
 def _has_test_filter() -> bool:
@@ -1583,19 +1514,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def setUp(self):
     super().setUp()
 
-    # With unbounded dynamic kernels disabled (the ops_test_static target), run
-    # only the tests marked with @also_run_static: the others run in the
-    # targets with them enabled.
-    method = getattr(self, self._testMethodName, None)
-    if _unbounded_dynamic_kernels_disabled() and not getattr(
-        method, _ALSO_RUN_STATIC_ATTR, False
-    ):
-      self.skipTest(
-          f"Skipping test because {_UNBOUNDED_DYNAMIC_KERNELS_ENV_VAR}"
-          " disables unbounded dynamic kernels, and the test is not marked"
-          " with @also_run_static."
-      )
-
     # Filter the tests by --test_categories only if --test_filter is not on
     # the bazel command line. If --test_filter is specified, we should respect
     # the user's intent and not apply any additional filtering based on
@@ -1604,6 +1522,7 @@ class TestOps(op_testing.OpInfoTestBase):
       exclusions = {c[1:] for c in _TEST_CATEGORIES.value if c.startswith("-")}
       inclusions = {c for c in _TEST_CATEGORIES.value if not c.startswith("-")}
 
+      method = getattr(self, self._testMethodName, None)
       test_categories = getattr(method, "categories", set())
 
       if any(cat in exclusions for cat in test_categories):
@@ -3737,7 +3656,6 @@ class TestOps(op_testing.OpInfoTestBase):
         ),
     )
 
-  @also_run_static
   @category("nonzero")
   def test_nonzero(self):
     self.do_test_op(
@@ -4481,6 +4399,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_sort(self):
     self.do_test_op(
         "sort",
+        kiln_kernel_unserved_reason=(
+            "The opt-in sort kernel only serves 1-D int32 inputs of 1024"
+            " elements, larger than any OpInfo sample. dynamic_ops_test covers"
+            " it."
+        ),
         # sort() returns a (values, indices) tuple, where indices is
         # non-deterministic (as there might be duplicates in values).
         # Therefore we only check the values of the first output.
