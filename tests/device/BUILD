@@ -69,6 +69,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
     ],
 )
 

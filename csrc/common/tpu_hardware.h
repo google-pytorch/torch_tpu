@@ -223,6 +223,10 @@ template <typename Bounds = TpuSpec::Topology>
     std::string_view dev_borg_dir = "/dev_borg",
     std::string_view proc_devices = "/proc/devices");
 
+// Describes the default paths that HasTpuDeviceNodes() checks, for messages.
+// Keep it in sync with HasTpuDeviceNodes().
+extern const std::string_view kTpuDeviceNodePathsDescription;
+
 // Reads the entire contents of `path` and returns it with leading and trailing
 // ASCII whitespace stripped, or std::nullopt if `path` cannot be opened or
 // read. Used to read small sysfs and cgroup files.

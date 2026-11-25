@@ -23,6 +23,7 @@
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -38,6 +39,7 @@ namespace {
 using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::ElementsAre;
+using ::testing::HasSubstr;
 using ::testing::Return;
 
 // A client whose only working method is a mocked `GetDefaultLayout()`.
@@ -153,6 +155,24 @@ TEST(DefaultLayoutCacheTest, ClearsWhenFull) {
   EXPECT_THAT(cache.Get(client, xla::BF16, {3}), IsOkAndHolds(RowMajor()));
   EXPECT_THAT(cache.Get(client, xla::BF16, {1}), IsOkAndHolds(RowMajor()));
   EXPECT_THAT(cache.Get(client, xla::BF16, {3}), IsOkAndHolds(RowMajor()));
+}
+
+TEST(PjrtBackendTest, InitializationFailsRightAwayWithoutTpuDevice) {
+  if (MayReachTpuDevice()) {
+    GTEST_SKIP() << "This process may reach a TPU.";
+  }
+  PjrtBackend& backend = PjrtBackend::GetInstance();
+  backend.SetPjRtInitializationOptions({.device_type = "tpu"});
+
+  EXPECT_THAT(
+      backend.EnsureInitialized(),
+      StatusIs(error::kFailedPrecondition, HasSubstr("no TPU device found")));
+  EXPECT_FALSE(backend.IsTpuReachable());
+  EXPECT_FALSE(backend.IsInitialized());
+
+  backend.Shutdown();
+  EXPECT_TRUE(backend.IsTpuReachable());
+  EXPECT_FALSE(backend.InitAttempted());
 }
 
 }  // namespace

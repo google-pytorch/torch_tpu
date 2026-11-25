@@ -155,6 +155,12 @@ class PjrtBackend {
   // Returns whether the PjRt runtime is initialized.
   [[nodiscard]] bool IsInitialized() const ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns true if initialization did not fail because this process cannot
+  // reach a TPU (see MayReachTpuDevice() in environment.h), and false if it
+  // failed for that reason. Returns true before initialization is attempted.
+  // Does not initialize the runtime.
+  [[nodiscard]] bool IsTpuReachable() const ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Returns whether initialization has been attempted since startup or the
   // last Shutdown(), whether or not it succeeded. For tests.
   [[nodiscard]] bool InitAttempted() const ABSL_LOCKS_EXCLUDED(mutex_);
@@ -241,6 +247,9 @@ class PjrtBackend {
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;
   absl::Status init_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
+  // True iff `init_status_` is not the error for a process that cannot reach
+  // a TPU.
+  bool tpu_reachable_ ABSL_GUARDED_BY(mutex_) = true;
   // Default layouts of `client_`, cleared on Shutdown.
   DefaultLayoutCache default_layout_cache_;
   std::atomic<BadForkChecker> bad_fork_checker_{nullptr};

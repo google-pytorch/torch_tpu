@@ -552,6 +552,11 @@ std::string GetSingleDeviceTpuBoundsString(std::string_view pci_devices_dir) {
   return absl::StrJoin(GetSingleDeviceTpuBounds(pci_devices_dir), ",");
 }
 
+const std::string_view kTpuDeviceNodePathsDescription =
+    "/dev/vfio/<group>, /dev/vfio/devices/*, /dev/accel*, /dev/accel/*, "
+    "/dev_borg/accel* and /dev_borg/accel/*, counting accel nodes only if "
+    "their major is registered in /proc/devices";
+
 bool HasTpuDeviceNodes(std::string_view dev_dir, std::string_view dev_borg_dir,
                        std::string_view proc_devices) {
   if (HasVfioNodes(absl::StrCat(dev_dir, "/vfio"))) {

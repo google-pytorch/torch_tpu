@@ -20,6 +20,7 @@
 #include <string_view>
 
 #include "absl/status/status.h"
+#include "csrc/common/tpu_hardware.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 
 namespace torch_tpu {
@@ -44,6 +45,15 @@ void ApplyTpuVisibleDevices();
 // locations checked by HasTpuDeviceNodes() in tpu_hardware.h. Does not
 // initialize the TPU runtime and does not cache the result.
 [[nodiscard]] bool HasCustomTpuDevicePaths();
+
+// Returns whether this process may reach a TPU through a device node, i.e. TPU
+// device paths are configured explicitly or a TPU device node exists at the
+// default paths (see HasTpuDeviceNodes() in tpu_hardware.h). A false result
+// means that the TPU runtime cannot find a TPU. Does not initialize the TPU
+// runtime and does not cache the result.
+[[nodiscard]] inline bool MayReachTpuDevice() {
+  return HasCustomTpuDevicePaths() || HasTpuDeviceNodes();
+}
 
 }  // namespace torch_tpu
 

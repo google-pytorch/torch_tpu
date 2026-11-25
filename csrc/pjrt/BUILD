@@ -123,6 +123,7 @@ torch_tpu_cc_test(
     requires_libtpu = True,
     deps = [
         ":pjrt_state",
+        "//csrc/common:environment",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "@com_google_absl//absl/status",

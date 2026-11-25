@@ -43,10 +43,8 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
-#include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/macro_utils.h"
-#include "csrc/common/tpu_hardware.h"
 #include "csrc/common/warnings.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
@@ -93,10 +91,14 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
   const absl::StatusOr<xla::PjRtClient* absl_nonnull> pjrt_client_or =
       PjrtBackend::GetInstance().GetClient();
   if (!pjrt_client_or.ok()) {
-    TT_WARN(WarningCategory::kTorchTpu,
-            "PJRT client not available, using TPU device index ",
-            static_cast<int>(device_index),
-            " unchecked: ", pjrt_client_or.status().ToString());
+    // Stay quiet on hosts without TPU device nodes, where this is expected,
+    // e.g. when tracing with fake TPU tensors.
+    if (PjrtBackend::GetInstance().IsTpuReachable()) {
+      TT_WARN(WarningCategory::kTorchTpu,
+              "PJRT client not available, using TPU device index ",
+              static_cast<int>(device_index),
+              " unchecked: ", pjrt_client_or.status().ToString());
+    }
     return;
   }
 
@@ -233,14 +235,6 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void ValidateDevice(c10::Device d) const;
 };
 
-// Returns whether this process may reach a TPU through a device node: TPU
-// device paths are configured explicitly, or a TPU device node exists at the
-// default paths (see HasTpuDeviceNodes()). If not, initializing the TPU runtime
-// is assumed to fail. Does not initialize the TPU runtime.
-[[nodiscard]] bool MayReachTpuDevice() {
-  return HasCustomTpuDevicePaths() || HasTpuDeviceNodes();
-}
-
 }  // namespace
 
 c10::DeviceType TpuDeviceGuardImpl::Type() const {
@@ -342,38 +336,26 @@ c10::Stream TpuDeviceGuardImpl::ExchangeStream(c10::Stream s) const {
 c10::DeviceIndex TpuDeviceGuardImpl::deviceCount() const noexcept {
   // The autograd engine calls this on the first backward() in every process,
   // even for CPU-only graphs, and sizes its device threads once from the
-  // result, so a wrong 0 breaks a later TPU backward(). Initializing the
-  // runtime on a host without TPUs can be very slow before it fails, though. A
-  // process without TPU device nodes cannot use a TPU, so initialization would
-  // fail and this would return 0 anyway; return 0 without trying. If device
-  // paths are configured explicitly, they may point elsewhere, so initialize as
-  // usual. CheckTpuDeviceNodesAfterInitialization() logs an error if the
-  // runtime initializes on a host where this would return 0.
+  // result, so a wrong 0 breaks a later TPU backward(). On a host without TPU
+  // device nodes, PjrtBackend fails to initialize right away (see
+  // MayReachTpuDevice() in environment.h), so this returns 0 without the slow
+  // runtime initialization.
   //
   // Future work:
-  // - Device nodes at non-default paths other than those configured explicitly
-  //   are not detected.
-  // - TPU device-plugin setups (VBAR_CONTROL_SERVICE_URL) are assumed to still
-  //   expose /dev/vfio; this is unverified.
-  // - CPU hosts with non-TPU VFIO or accel devices still pay the initialization
-  //   cost (slow but correct).
-  // - TpuHooksInterface::isAvailable() still initializes the runtime, and is
-  //   reached via torch._C._get_accelerator() when torch.distributed or FSDP
-  //   pick a default device. The same check could guard it.
   // - A CPU-only backward() on a TPU host still initializes the runtime and
   //   holds the TPUs, so forking afterwards is unsafe.
   // - Before initialization, Python's device_count() counts TPUs by PCI device
   //   ID, so it can disagree with this for TPUs whose IDs are not yet listed.
-  if (!PjrtBackend::GetInstance().IsInitialized() && !MayReachTpuDevice()) {
-    return 0;
-  }
   // This method is noexcept, so initialization errors cannot be thrown.
   const absl::StatusOr<xla::PjRtClient* absl_nonnull> pjrt_client_or =
       PjrtBackend::GetInstance().GetClient();
   if (!pjrt_client_or.ok()) {
-    ABSL_LOG_FIRST_N(WARNING, 1)
-        << "TpuDeviceGuardImpl::deviceCount: PjRt backend unavailable: "
-        << pjrt_client_or.status();
+    // Stay quiet on hosts without TPU device nodes, where this is expected.
+    if (PjrtBackend::GetInstance().IsTpuReachable()) {
+      ABSL_LOG_FIRST_N(WARNING, 1)
+          << "TpuDeviceGuardImpl::deviceCount: PjRt backend unavailable: "
+          << pjrt_client_or.status();
+    }
     return 0;
   }
   return static_cast<c10::DeviceIndex>(
@@ -580,27 +562,6 @@ at::PrivateUse1HooksInterface* GetTpuHooks() {
 }
 
 }  // namespace
-
-void CheckTpuDeviceNodesAfterInitialization() {
-  // Without a reachable TPU device, TpuDeviceGuardImpl::deviceCount() returns 0
-  // without initializing the runtime, on the assumption that initialization
-  // would fail. The runtime just initialized successfully, so check that
-  // assumption.
-  if (MayReachTpuDevice()) {
-    return;
-  }
-  ABSL_LOG_FIRST_N(ERROR, 1)
-      << "The TPU runtime initialized successfully, but no TPU device node "
-         "was found (checked /dev/vfio/<group>, /dev/vfio/devices/*, "
-         "/dev/accel*, /dev/accel/*, /dev_borg/accel* and /dev_borg/accel/*, "
-         "counting accel nodes only if their major is registered in "
-         "/proc/devices) and no TPU device paths are configured explicitly. "
-         "On this host, torch_tpu reports 0 TPU devices to PyTorch's device "
-         "guard (deviceCount()) before the runtime is initialized, e.g. on "
-         "the first backward() of a process. Please file a bug at "
-         "https://github.com/google-pytorch/torch_tpu/issues with the TPU "
-         "device paths of this host.";
-}
 
 absl::Status AddTpuHooks() {
   at::RegisterPrivateUse1HooksInterface(GetTpuHooks());

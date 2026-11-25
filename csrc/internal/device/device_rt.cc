@@ -159,10 +159,7 @@ void RegisterForkHandler() {
 
 // Runs once the TPU runtime has initialized successfully, whichever call
 // triggered the initialization.
-void OnTpuRuntimeInitialized() {
-  RegisterForkHandler();
-  CheckTpuDeviceNodesAfterInitialization();
-}
+void OnTpuRuntimeInitialized() { RegisterForkHandler(); }
 
 void InitRuntimeOptions(const std::string& device_type) {
   const bool is_tpu = device_type == "tpu";

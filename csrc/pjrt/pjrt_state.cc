@@ -267,6 +267,28 @@ absl::Status PjrtBackend::InitializeInternal() {
   std::string plugin_name;
   int64_t visible_device_count = 0;
   if (options_.device_type == "tpu") {
+    // On a host without TPUs but with libtpu installed (e.g. a CPU-only CI
+    // worker), initializing the runtime can take ~10 minutes before it fails.
+    // Without a device node it cannot find a TPU, so fail right away. Any call
+    // that needs the runtime, e.g. a device guard validating a device index
+    // while tracing with fake TPU tensors, gets this cached error.
+    //
+    // Known gaps: device nodes at non-default paths are only found if they are
+    // configured explicitly, and TPU device-plugin setups
+    // (VBAR_CONTROL_SERVICE_URL) are assumed to expose /dev/vfio.
+    if (!MayReachTpuDevice()) {
+      tpu_reachable_ = false;
+      // Error coverage runs on TPU hosts, so it can't reach this error;
+      // pjrt_state_test and tests/device:cpu_backward_no_tpu_test cover it.
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=unreachable on TPU hosts.
+                 error::kFailedPrecondition)
+             << "no TPU device found: no TPU device node exists (checked "
+             << kTpuDeviceNodePathsDescription
+             << ") and no TPU device paths are configured explicitly. If this "
+                "host has a TPU, please file a bug at "
+                "https://github.com/google-pytorch/torch_tpu/issues with the "
+                "TPU device paths of this host";
+    }
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
@@ -367,6 +389,11 @@ bool PjrtBackend::IsInitialized() const {
   }
   absl::ReaderMutexLock lock(mutex_);
   return client_ != nullptr;
+}
+
+bool PjrtBackend::IsTpuReachable() const {
+  absl::ReaderMutexLock lock(mutex_);
+  return tpu_reachable_;
 }
 
 bool PjrtBackend::InitAttempted() const {
@@ -503,6 +530,7 @@ void PjrtBackend::Shutdown() {
   visible_device_count_ = 0;
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
+  tpu_reachable_ = true;
   ABSL_VLOG(1) << "PjRt shut down.";
 }
 

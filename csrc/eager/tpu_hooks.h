@@ -23,14 +23,6 @@ namespace torch_tpu {
 
 absl::Status AddTpuHooks();
 
-// Logs an error if no TPU device node is detected (see HasTpuDeviceNodes() in
-// tpu_hardware.h) and no TPU device paths are configured explicitly. Before the
-// TPU runtime is initialized, TPU device guards report 0 devices in that case,
-// assuming that initialization would fail. Call once the TPU runtime has
-// initialized successfully, to detect device layouts that break that
-// assumption. Does not initialize the TPU runtime.
-void CheckTpuDeviceNodesAfterInitialization();
-
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_EAGER_TPU_HOOKS_H_
