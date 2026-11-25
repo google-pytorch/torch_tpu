@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/zeros.h"
@@ -37,6 +38,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -309,104 +311,143 @@ absl::StatusOr<mlir::MlirOp> BuildSliceBackwardShlo(
 at::Tensor AtenSelectBackward(const at::Tensor& grad_output,
                               at::IntArrayRef input_sizes, int64_t dim,
                               int64_t index) {
-  const int64_t ndim = input_sizes.size();
-  TT_ASSIGN_OR_THROW(const int64_t wrapped_dim, SafeWrapDim(dim, ndim));
-  const int64_t dim_size = input_sizes[wrapped_dim];
-  if (index < 0) {
-    index += dim_size;
-  }
-  TT_CHECK_THROW(index >= 0 && index < dim_size, error::kPythonIndexError)
-      << "index out of range";
-
-  if (std::any_of(input_sizes.begin(), input_sizes.end(),
-                  [](const int64_t d) { return d == 0; })) {
-    return at::zeros(input_sizes, grad_output.options());
-  }
-
-  const Dimensions input_sizes_vec = CopyIntVector(input_sizes);
-
   TT_KERNEL(
       OpName::kSelectBackward, param_keys,
-      (grad_output, input_sizes_vec, wrapped_dim, index), {
+      (grad_output, input_sizes, dim, index), {
         TT_ASSIGN_OR_THROW(
             const mlir::ElementType element_type,
             ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+        TT_THROW_IF_ERROR(ValidateTensorByteSize(input_sizes, element_type));
+        const int64_t ndim = input_sizes.size();
+        TT_CHECK_THROW(ndim > 0, error::kPythonIndexError)
+            << "expected input_sizes to have at least 1 dimension, got 0";
+        TT_ASSIGN_OR_THROW(const int64_t wrapped_dim, SafeWrapDim(dim, ndim));
+        const int64_t dim_size = input_sizes[wrapped_dim];
+        if (index < 0) {
+          index += dim_size;
+        }
+        TT_CHECK_THROW(index >= 0 && index < dim_size, error::kPythonIndexError)
+            << "index out of range";
 
-        auto op_builder =
-            [input_sizes_vec, wrapped_dim, index,
-             element_type](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildSelectBackwardShlo(input, input_sizes_vec, wrapped_dim,
-                                         index, element_type);
-        };
+        // Upstream writes `grad_output` into the selected slice with `copy_()`,
+        // which broadcasts it to the shape of the slice.
+        const Dimensions input_sizes_vec = CopyIntVector(input_sizes);
+        Dimensions slice_shape = input_sizes_vec;
+        slice_shape.erase(slice_shape.begin() + wrapped_dim);
+        TT_CHECK_THROW(at::is_expandable_to(grad_output.sizes(),
+                                            at::IntArrayRef(slice_shape)),
+                       error::kInvalidArgument)
+            << "expected grad_output to be broadcastable to the slice shape, "
+               "got "
+            << grad_output.sizes() << " vs " << at::IntArrayRef(slice_shape);
 
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), grad_output,
-                           {.out_dtype = element_type,
-                            .out_dims = input_sizes_vec,
-                            .op_param_cache_keys = std::move(param_keys)})));
-        TT_ASSIGN_OR_THROW(
-            at::Tensor out,
-            MakeEmptyTensor(input_sizes_vec, grad_output.scalar_type(),
-                            grad_output.device()));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
+        if (std::none_of(input_sizes.begin(), input_sizes.end(),
+                         [](const int64_t d) { return d == 0; })) {
+          const bool broadcast_grad =
+              grad_output.sizes() != at::IntArrayRef(slice_shape);
+          auto op_builder =
+              [input_sizes_vec, slice_shape, broadcast_grad, wrapped_dim, index,
+               element_type](
+                  mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+            if (broadcast_grad) {
+              TT_ASSIGN_OR_RETURN(input, BroadcastIfNeeded(input, slice_shape));
+            }
+            return BuildSelectBackwardShlo(input, input_sizes_vec, wrapped_dim,
+                                           index, element_type);
+          };
+
+          TT_ASSIGN_OR_THROW(
+              auto out_buf,
+              (DispatchOp<1>(std::move(op_builder), grad_output,
+                             {.out_dtype = element_type,
+                              .out_dims = input_sizes_vec,
+                              .op_param_cache_keys = std::move(param_keys)})));
+          TT_ASSIGN_OR_THROW(
+              at::Tensor out,
+              MakeEmptyTensor(input_sizes_vec, grad_output.scalar_type(),
+                              grad_output.device()));
+          TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
+          return out;
+        }
       });
+  // The result has no elements. `at::zeros()` runs another kernel, so it has to
+  // be called outside of TT_KERNEL.
+  return at::zeros(input_sizes, grad_output.options());
 }
 
 at::Tensor AtenSliceBackward(const at::Tensor& grad_output,
                              at::IntArrayRef input_sizes, int64_t dim,
                              int64_t start, int64_t end, int64_t step) {
-  TT_CHECK_THROW(step > 0, error::kInvalidArgument)
-      << "slice step must be positive";
-  const int64_t ndim = input_sizes.size();
-  TT_ASSIGN_OR_THROW(const int64_t wrapped_dim, SafeWrapDim(dim, ndim));
-  const int64_t dim_size = input_sizes[wrapped_dim];
-
-  if (start < 0) {
-    start += dim_size;
-  }
-  start = std::clamp<int64_t>(start, 0, dim_size);
-  if (end < 0) {
-    end += dim_size;
-  }
-  end = std::clamp<int64_t>(end, start, dim_size);
-
-  if (grad_output.numel() == 0 || start >= end ||
-      std::any_of(input_sizes.begin(), input_sizes.end(),
-                  [](const int64_t d) { return d == 0; })) {
-    return at::zeros(input_sizes, grad_output.options());
-  }
-
-  const Dimensions input_sizes_vec = CopyIntVector(input_sizes);
-
   TT_KERNEL(
       OpName::kSliceBackward, param_keys,
-      (grad_output, input_sizes_vec, wrapped_dim, start, end, step), {
+      (grad_output, input_sizes, dim, start, end, step), {
         TT_ASSIGN_OR_THROW(
             const mlir::ElementType element_type,
             ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+        TT_THROW_IF_ERROR(ValidateTensorByteSize(input_sizes, element_type));
+        const int64_t ndim = input_sizes.size();
+        TT_CHECK_THROW(ndim > 0, error::kPythonIndexError)
+            << "expected input_sizes to have at least 1 dimension, got 0";
+        TT_ASSIGN_OR_THROW(const int64_t wrapped_dim, SafeWrapDim(dim, ndim));
+        TT_CHECK_THROW(step > 0, error::kInvalidArgument)
+            << "slice step must be positive";
+        const int64_t dim_size = input_sizes[wrapped_dim];
 
-        auto op_builder =
-            [input_sizes_vec, wrapped_dim, start, end, step,
-             element_type](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildSliceBackwardShlo(input, input_sizes_vec, wrapped_dim,
-                                        start, end, step, element_type);
-        };
+        if (start < 0) {
+          start += dim_size;
+        }
+        start = std::clamp<int64_t>(start, 0, dim_size);
+        if (end < 0) {
+          end += dim_size;
+        }
+        end = std::clamp<int64_t>(end, start, dim_size);
 
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), grad_output,
-                           {.out_dtype = element_type,
-                            .out_dims = input_sizes_vec,
-                            .op_param_cache_keys = std::move(param_keys)})));
-        TT_ASSIGN_OR_THROW(
-            at::Tensor out,
-            MakeEmptyTensor(input_sizes_vec, grad_output.scalar_type(),
-                            grad_output.device()));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
+        // Upstream writes `grad_output` into the slice with `copy_()`, which
+        // broadcasts it to the shape of the slice.
+        const Dimensions input_sizes_vec = CopyIntVector(input_sizes);
+        Dimensions slice_shape = input_sizes_vec;
+        slice_shape[wrapped_dim] =
+            start < end ? (end - start - 1) / step + 1 : 0;
+        TT_CHECK_THROW(at::is_expandable_to(grad_output.sizes(),
+                                            at::IntArrayRef(slice_shape)),
+                       error::kInvalidArgument)
+            << "expected grad_output to be broadcastable to the slice shape, "
+               "got "
+            << grad_output.sizes() << " vs " << at::IntArrayRef(slice_shape);
+
+        if (start < end && std::none_of(
+                               input_sizes.begin(), input_sizes.end(),
+                               [](const int64_t d) { return d == 0; })) {
+          const bool broadcast_grad =
+              grad_output.sizes() != at::IntArrayRef(slice_shape);
+          auto op_builder =
+              [input_sizes_vec, slice_shape, broadcast_grad, wrapped_dim, start,
+               end, step, element_type](
+                  mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+            if (broadcast_grad) {
+              TT_ASSIGN_OR_RETURN(input, BroadcastIfNeeded(input, slice_shape));
+            }
+            return BuildSliceBackwardShlo(input, input_sizes_vec, wrapped_dim,
+                                          start, end, step, element_type);
+          };
+
+          TT_ASSIGN_OR_THROW(
+              auto out_buf,
+              (DispatchOp<1>(std::move(op_builder), grad_output,
+                             {.out_dtype = element_type,
+                              .out_dims = input_sizes_vec,
+                              .op_param_cache_keys = std::move(param_keys)})));
+          TT_ASSIGN_OR_THROW(
+              at::Tensor out,
+              MakeEmptyTensor(input_sizes_vec, grad_output.scalar_type(),
+                              grad_output.device()));
+          TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
+          return out;
+        }
       });
+  // No gradient lands in the result. `at::zeros()` runs another kernel, so it
+  // has to be called outside of TT_KERNEL.
+  return at::zeros(input_sizes, grad_output.options());
 }
 
 }  // namespace torch_tpu

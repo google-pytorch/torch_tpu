@@ -26926,6 +26926,175 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         self.assertEqual(compiled_out.shape, cpu_out.shape)
         utils.assert_close(actual=compiled_out.cpu(), expected=cpu_out)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scalar_to_1d_slice",
+          grad_shape=(),
+          input_sizes=(2, 3),
+          dim=0,
+          index=0,
+      ),
+      dict(
+          testcase_name="singleton_to_1d_slice",
+          grad_shape=(1,),
+          input_sizes=(2, 3),
+          dim=0,
+          index=1,
+      ),
+      dict(
+          testcase_name="leading_singleton_to_2d_slice",
+          grad_shape=(1, 4),
+          input_sizes=(2, 3, 4),
+          dim=0,
+          index=1,
+      ),
+      dict(
+          testcase_name="lower_rank_to_2d_slice",
+          grad_shape=(4,),
+          input_sizes=(3, 2, 4),
+          dim=1,
+          index=1,
+      ),
+      dict(
+          testcase_name="zero_element_output",
+          grad_shape=(1,),
+          input_sizes=(0, 3),
+          dim=1,
+          index=0,
+      ),
+  )
+  def test_select_backward_broadcast_grad_output(
+      self,
+      grad_shape: Sequence[int],
+      input_sizes: Sequence[int],
+      dim: int,
+      index: int,
+  ):
+    cpu_grad = torch.arange(
+        1, math.prod(grad_shape) + 1, dtype=torch.float32
+    ).reshape(grad_shape)
+    tpu_grad = cpu_grad.to("tpu")
+
+    cpu_out = torch.ops.aten.select_backward(cpu_grad, input_sizes, dim, index)
+    tpu_out = torch.ops.aten.select_backward(tpu_grad, input_sizes, dim, index)
+    self.assertEqual(tpu_out.shape, cpu_out.shape)
+    utils.assert_close(actual=tpu_out.cpu(), expected=cpu_out)
+
+    @torch.compile(dynamic=False)
+    def compiled_fn(g):
+      return torch.ops.aten.select_backward(g, input_sizes, dim, index)
+
+    compiled_out = compiled_fn(tpu_grad)
+    self.assertEqual(compiled_out.shape, cpu_out.shape)
+    utils.assert_close(actual=compiled_out.cpu(), expected=cpu_out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scalar_to_dus",
+          grad_shape=(),
+          input_sizes=(4, 3),
+          dim=0,
+          start=1,
+          end=3,
+          step=1,
+      ),
+      dict(
+          testcase_name="row_to_dus",
+          grad_shape=(3,),
+          input_sizes=(4, 3),
+          dim=0,
+          start=1,
+          end=3,
+          step=1,
+      ),
+      dict(
+          testcase_name="row_to_concat",
+          grad_shape=(3,),
+          input_sizes=(4, 3),
+          dim=0,
+          start=0,
+          end=3,
+          step=1,
+      ),
+      dict(
+          testcase_name="row_to_identity",
+          grad_shape=(3,),
+          input_sizes=(2, 3),
+          dim=0,
+          start=0,
+          end=2,
+          step=1,
+      ),
+      dict(
+          testcase_name="row_to_strided_aligned",
+          grad_shape=(3,),
+          input_sizes=(4, 3),
+          dim=0,
+          start=0,
+          end=4,
+          step=2,
+      ),
+      dict(
+          testcase_name="row_to_strided_unaligned",
+          grad_shape=(3,),
+          input_sizes=(5, 3),
+          dim=0,
+          start=1,
+          end=5,
+          step=2,
+      ),
+      dict(
+          testcase_name="empty_slice",
+          grad_shape=(3,),
+          input_sizes=(2, 3),
+          dim=0,
+          start=1,
+          end=1,
+          step=1,
+      ),
+      dict(
+          testcase_name="zero_element_output",
+          grad_shape=(1,),
+          input_sizes=(0, 3),
+          dim=1,
+          start=0,
+          end=2,
+          step=1,
+      ),
+  )
+  def test_slice_backward_broadcast_grad_output(
+      self,
+      grad_shape: Sequence[int],
+      input_sizes: Sequence[int],
+      dim: int,
+      start: int,
+      end: int,
+      step: int,
+  ):
+    cpu_grad = torch.arange(
+        1, math.prod(grad_shape) + 1, dtype=torch.float32
+    ).reshape(grad_shape)
+    tpu_grad = cpu_grad.to("tpu")
+
+    cpu_out = torch.ops.aten.slice_backward(
+        cpu_grad, input_sizes, dim, start, end, step
+    )
+    tpu_out = torch.ops.aten.slice_backward(
+        tpu_grad, input_sizes, dim, start, end, step
+    )
+    self.assertEqual(tpu_out.shape, cpu_out.shape)
+    utils.assert_close(actual=tpu_out.cpu(), expected=cpu_out)
+
+    @torch.compile(dynamic=False)
+    def compiled_fn(g):
+      return torch.ops.aten.slice_backward(
+          g, input_sizes, dim, start, end, step
+      )
+
+    compiled_out = compiled_fn(tpu_grad)
+    self.assertEqual(compiled_out.shape, cpu_out.shape)
+    utils.assert_close(actual=compiled_out.cpu(), expected=cpu_out)
+
   @contextlib.contextmanager
   def _highest_matmul_precision(self):
     prev_prec = torch.get_float32_matmul_precision()

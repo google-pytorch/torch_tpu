@@ -18168,22 +18168,183 @@ Note: this function is intended to be used with the output produced by torch.lin
 
   def test_select_backward_index_out_of_range(self):
     grad = torch.ones(2, device=et.device())
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
-        err_type,
-        tpu="""index out of range""",
+        IndexError,
+        tpu="""select_backward(): index out of range""",
         gpu="""select(): index 5 out of range for tensor of size [3, 2] at dimension 0""",
     ):
       torch.ops.aten.select_backward(grad, [3, 2], 0, 5)
+
+  def test_select_backward_dim_out_of_range(self):
+    grad = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""select_backward(): expected dimension to be in range [-2, 1], got 2""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.ops.aten.select_backward(grad, [3, 2], 2, 0)
+
+  def test_select_backward_empty_input_sizes(self):
+    grad = torch.tensor(1.0, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""select_backward(): expected input_sizes to have at least 1 dimension, got 0""",
+        gpu="""select() cannot be applied to a 0-dim tensor.""",
+    ):
+      torch.ops.aten.select_backward(grad, [], 0, 0)
+
+  def test_select_backward_negative_input_size(self):
+    grad = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_backward(): expected dimension sizes to be >= 0, got [2, -1], which contains -1""",
+        gpu="""zeros: Dimension size must be non-negative.""",
+    ):
+      torch.ops.aten.select_backward(grad, [2, -1], 1, 0)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="mismatched_size",
+          grad_shape=(5,),
+          input_sizes=[2, 3],
+          dim=0,
+          tpu_message="""select_backward(): expected grad_output to be broadcastable to the slice shape, got [5] vs [3]""",
+          gpu_message="""The size of tensor a (3) must match the size of tensor b (5) at non-singleton dimension 0""",
+      ),
+      dict(
+          testcase_name="too_many_dims",
+          grad_shape=(1, 3),
+          input_sizes=[2, 3],
+          dim=0,
+          tpu_message="""select_backward(): expected grad_output to be broadcastable to the slice shape, got [1, 3] vs [3]""",
+          gpu_message="""output with shape [3] doesn't match the broadcast shape [1, 3]""",
+      ),
+      dict(
+          testcase_name="empty_result",
+          grad_shape=(5,),
+          input_sizes=[0, 3],
+          dim=1,
+          tpu_message="""select_backward(): expected grad_output to be broadcastable to the slice shape, got [5] vs [0]""",
+          gpu_message="""The size of tensor a (0) must match the size of tensor b (5) at non-singleton dimension 0""",
+      ),
+  )
+  def test_select_backward_grad_output_not_broadcastable(
+      self,
+      grad_shape: Sequence[int],
+      input_sizes: Sequence[int],
+      dim: int,
+      tpu_message: str,
+      gpu_message: str,
+  ):
+    grad = torch.ones(grad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError, tpu=tpu_message, gpu=gpu_message
+    ):
+      torch.ops.aten.select_backward(grad, input_sizes, dim, 0)
 
   def test_slice_backward_non_positive_step(self):
     grad = torch.ones(2, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""slice step must be positive""",
+        tpu="""slice_backward(): slice step must be positive""",
         gpu="""slice step must be positive""",
     ):
       torch.ops.aten.slice_backward(grad, [4], 0, 0, 2, 0)
+
+  def test_slice_backward_dim_out_of_range(self):
+    grad = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""slice_backward(): expected dimension to be in range [-1, 0], got 1""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+    ):
+      torch.ops.aten.slice_backward(grad, [4], 1, 0, 2, 1)
+
+  def test_slice_backward_empty_input_sizes(self):
+    grad = torch.tensor(1.0, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""slice_backward(): expected input_sizes to have at least 1 dimension, got 0""",
+        gpu="""slice() cannot be applied to a 0-dim tensor.""",
+    ):
+      torch.ops.aten.slice_backward(grad, [], 0, 0, 1, 1)
+
+  def test_slice_backward_negative_input_size(self):
+    grad = torch.ones(1, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_backward(): expected dimension sizes to be >= 0, got [2, -1], which contains -1""",
+        gpu="""zeros: Dimension size must be non-negative.""",
+    ):
+      torch.ops.aten.slice_backward(grad, [2, -1], 1, 0, 1, 1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="mismatched_size",
+          grad_shape=(5,),
+          input_sizes=[2, 3],
+          start=0,
+          end=1,
+          step=1,
+          tpu_message="""slice_backward(): expected grad_output to be broadcastable to the slice shape, got [5] vs [1, 3]""",
+          gpu_message="""The size of tensor a (3) must match the size of tensor b (5) at non-singleton dimension 1""",
+      ),
+      dict(
+          testcase_name="too_many_dims",
+          grad_shape=(1, 1, 3),
+          input_sizes=[2, 3],
+          start=0,
+          end=1,
+          step=1,
+          tpu_message="""slice_backward(): expected grad_output to be broadcastable to the slice shape, got [1, 1, 3] vs [1, 3]""",
+          gpu_message="""output with shape [1, 3] doesn't match the broadcast shape [1, 1, 3]""",
+      ),
+      dict(
+          testcase_name="strided",
+          grad_shape=(3, 3),
+          input_sizes=[4, 3],
+          start=0,
+          end=4,
+          step=2,
+          tpu_message="""slice_backward(): expected grad_output to be broadcastable to the slice shape, got [3, 3] vs [2, 3]""",
+          gpu_message="""The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+      ),
+      dict(
+          testcase_name="empty_slice",
+          grad_shape=(5,),
+          input_sizes=[2, 3],
+          start=1,
+          end=1,
+          step=1,
+          tpu_message="""slice_backward(): expected grad_output to be broadcastable to the slice shape, got [5] vs [0, 3]""",
+          gpu_message="""The size of tensor a (3) must match the size of tensor b (5) at non-singleton dimension 1""",
+      ),
+      dict(
+          testcase_name="empty_grad",
+          grad_shape=(0,),
+          input_sizes=[2, 3],
+          start=0,
+          end=1,
+          step=1,
+          tpu_message="""slice_backward(): expected grad_output to be broadcastable to the slice shape, got [0] vs [1, 3]""",
+          gpu_message="""The size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
+      ),
+  )
+  def test_slice_backward_grad_output_not_broadcastable(
+      self,
+      grad_shape: Sequence[int],
+      input_sizes: Sequence[int],
+      start: int,
+      end: int,
+      step: int,
+      tpu_message: str,
+      gpu_message: str,
+  ):
+    grad = torch.ones(grad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError, tpu=tpu_message, gpu=gpu_message
+    ):
+      torch.ops.aten.slice_backward(grad, input_sizes, 0, start, end, step)
 
   def test_gru_input_w_ih_shape_mismatch(self):
     """Verifies that mismatched w_ih shape raises RuntimeError.

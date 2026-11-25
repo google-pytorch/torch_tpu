@@ -238,7 +238,7 @@ csrc/ops/select_scatter/select_scatter_aten_kernels.cc: {remaining: 0, total: 7,
 csrc/ops/set/set_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/ops/sigmoid/sigmoid_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 1}
 csrc/ops/silu/silu_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
-csrc/ops/slice_backward/slice_backward_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
+csrc/ops/slice_backward/slice_backward_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/slice_scatter/slice_scatter_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 0}
 csrc/ops/softmax/_masked_softmax_aten_kernels.cc: {remaining: 0, total: 11, infeasible: 0}
 csrc/ops/softmax/softmax.cc: {remaining: 0, total: 2, infeasible: 2}
