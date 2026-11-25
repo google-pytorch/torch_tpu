@@ -127,6 +127,7 @@ class TorchaxDeviceOpsTest(seed_test_utils.RepeatableTest):
     ops.reset_peak_memory()  # Should complete without error on CPU.
 
     self.assertIsNone(ops.peak_memory_mb())
+    self.assertIsNone(ops.allocated_memory_mb())
 
   def test_reset_peak_memory_resets_device_peak(self):
     ops = _cpu_ops()
@@ -185,9 +186,45 @@ class TorchaxDeviceOpsTest(seed_test_utils.RepeatableTest):
     with mock.patch.object(jax, "local_devices", return_value=[]):
       self.assertIsNone(ops.peak_memory_mb())
 
+  def test_allocated_memory_mb(self):
+    ops = _cpu_ops()
+    device = _FakeDevice(None)
+
+    with mock.patch.object(jax, "local_devices", return_value=[device]):
+      device.stats = {
+          "bytes_in_use": 128 * _MB,
+          "bytes_reserved": 256 * _MB,
+      }
+      self.assertEqual(ops.allocated_memory_mb(), 384.0)
+
+      device.stats = {
+          "bytes_in_use": 64 * _MB,
+          "bytes_reserved": -1,
+      }
+      self.assertEqual(ops.allocated_memory_mb(), 64.0)
+
+      device.stats = {
+          "bytes_in_use": -1,
+          "bytes_reserved": 256 * _MB,
+      }
+      self.assertIsNone(ops.allocated_memory_mb())
+
+      device.stats = None
+      self.assertIsNone(ops.allocated_memory_mb())
+
+      device.stats = RuntimeError("memory stats unavailable")
+      self.assertIsNone(ops.allocated_memory_mb())
+
+    with mock.patch.object(jax, "local_devices", return_value=[]):
+      self.assertIsNone(ops.allocated_memory_mb())
+
   def test_compile_count(self):
     ops = _cpu_ops()
     self.assertEqual(ops.compile_count(), 0)
+
+  def test_host_barrier_is_noop(self):
+    ops = _cpu_ops()
+    ops.host_barrier()
 
   def test_event_device_time_unsupported(self):
     class _FakeLeaf:

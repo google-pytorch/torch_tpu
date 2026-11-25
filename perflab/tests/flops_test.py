@@ -223,6 +223,24 @@ class FlopsMetricsTest(seed_test_utils.RepeatableTest):
     self.assertNotIn("model_flops_per_step", metric_map)
     self.assertNotIn("mfu", metric_map)
 
+  def test_exports_no_flop_rates_for_zero_flops(self):
+    # E.g. a synthetic benchmark whose ops have no FlopCounterMode formula.
+    metric_map = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.5,
+        throughput_step_time_seconds=0.5,
+        average_post_warmup_device_time_seconds=0.25,
+        model_flops_per_step=0.0,
+        peak_flops_per_second=2000e12,
+    ).metric_map()
+    self.assertEqual(metric_map["model_flops_per_step"], 0.0)
+    for name in (
+        "achieved_tflops_per_second",
+        "mfu",
+        "device_achieved_tflops_per_second",
+        "device_mfu",
+    ):
+      self.assertNotIn(name, metric_map)
+
 
 class CheckUtilizationTest(seed_test_utils.RepeatableTest):
 
