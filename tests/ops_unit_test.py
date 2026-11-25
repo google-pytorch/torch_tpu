@@ -1341,6 +1341,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     gathered = torch.gather(t, 1, tpu_indices)
     utils.assert_close(gathered, tpu_values)
 
+  @parameterized.parameters(
+      torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8
+  )
+  def test_topk_smallest_integer_extremes(self, dtype):
+    """Tests torch.topk(largest=False) with the dtype's lowest and highest values."""
+    info = torch.iinfo(dtype)
+    input_cpu = torch.tensor(
+        [[3, info.min, 1, info.max, 6], [info.max, 2, info.min, 5, 4]],
+        dtype=dtype,
+    )
+
+    def run(device):
+      return torch.topk(input_cpu.to(device), k=3, largest=False)
+
+    self.assert_close_tpu_vs_cpu(run)
+
   def test_topk_chlo(self):
     """Tests torch.topk lowering across dtypes, dims, k, and edge cases."""
 

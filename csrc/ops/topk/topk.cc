@@ -37,6 +37,21 @@ namespace torch_tpu {
 namespace chlo = mlir::chlo;
 namespace stablehlo = mlir::stablehlo;
 
+namespace {
+
+// Returns `op` with the order of its elements reversed. Applying it twice gives
+// back `op`. Floats are negated. Integers and bools use `stablehlo::Not`
+// instead of negation, because negation maps the lowest signed integer and
+// unsigned 0 to themselves, whereas bitwise NOT strictly reverses order for
+// both signed two's-complement (`~x = -x - 1`) and unsigned (`~x = max - x`)
+// integers (as well as bools).
+mlir::MlirOp ReverseOrder(mlir::MlirOp op) {
+  return IsFloatType(GetTensorTypeOrDie(op)) ? stablehlo::Neg(op)
+                                             : stablehlo::Not(op);
+}
+
+}  // namespace
+
 absl::StatusOr<TopKOutputs> BuildTopKShlo(
     mlir::MlirOp input_op, int64_t k, int64_t dim, TopKMode topk_mode,
     std::optional<TopKStableMode> topk_stable_mode) {
@@ -55,8 +70,10 @@ absl::StatusOr<TopKOutputs> BuildTopKShlo(
     sort_input = stablehlo::Transpose(sort_input, permutation);
   }
 
+  // chlo::TopK only returns the k largest elements, so for kSmallest we reverse
+  // element order before calling it and reverse the returned values back.
   if (topk_mode == TopKMode::kSmallest) {
-    sort_input = stablehlo::Neg(sort_input);
+    sort_input = ReverseOrder(sort_input);
   }
 
   // Call chlo::TopK along the innermost dimension (rank - 1). The chlo::TopK
@@ -70,7 +87,7 @@ absl::StatusOr<TopKOutputs> BuildTopKShlo(
   mlir::MlirOp topk_indices = outputs[1];
 
   if (topk_mode == TopKMode::kSmallest) {
-    topk_values = stablehlo::Neg(topk_values);
+    topk_values = ReverseOrder(topk_values);
   }
 
   if (need_transpose) {
