@@ -8730,6 +8730,165 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  @parameterized.product(
+      dtype=[torch.bfloat16, torch.float16, torch.float32, torch.float64],
+      invert=[False, True],
+  )
+  def test_isin_tensor_scalar_compares_in_tensor_dtype(self, dtype, invert):
+    # 1.1 has no exact binary representation, so it only matches an element
+    # if the Python scalar is rounded to the dtype of `elements` first.
+    elements = torch.tensor([1.1, 2.0], dtype=dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.isin(
+            to(elements, device=device), 1.1, invert=invert
+        ),
+    )
+
+  @parameterized.product(
+      dtype=[torch.bfloat16, torch.float16, torch.float32, torch.float64],
+      invert=[False, True],
+      out_shape=[(2,), (0,)],
+  )
+  def test_isin_tensor_scalar_out(self, dtype, invert, out_shape):
+    elements = torch.tensor([1.1, 2.0], dtype=dtype)
+
+    def compute(device):
+      out = torch.empty(out_shape, dtype=torch.bool, device=device)
+      result = torch.isin(
+          to(elements, device=device), 1.1, invert=invert, out=out
+      )
+      self.assertIs(result, out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int64_float_non_integer",
+          values=[1, 2],
+          dtype=torch.int64,
+          test_element=1.5,
+      ),
+      dict(
+          testcase_name="int64_float_integer",
+          values=[1, 2],
+          dtype=torch.int64,
+          test_element=1.0,
+      ),
+      dict(
+          testcase_name="int64_float_integer_invert",
+          values=[1, 2],
+          dtype=torch.int64,
+          test_element=1.0,
+          invert=True,
+      ),
+      dict(
+          testcase_name="int64_float_default_dtype_rounding",
+          values=[16777217],
+          dtype=torch.int64,
+          test_element=16777216.0,
+      ),
+      dict(
+          testcase_name="float32_int_scalar",
+          values=[1.0, 2.0],
+          dtype=torch.float32,
+          test_element=1,
+      ),
+      dict(
+          testcase_name="bfloat16_int_scalar",
+          values=[1.0, 2.0],
+          dtype=torch.bfloat16,
+          test_element=2,
+      ),
+      dict(
+          testcase_name="uint8_int_overflow_wrap",
+          values=[44, 255, 1],
+          dtype=torch.uint8,
+          test_element=300,
+      ),
+      dict(
+          testcase_name="uint8_negative_int_wrap",
+          values=[44, 255, 1],
+          dtype=torch.uint8,
+          test_element=-1,
+      ),
+      dict(
+          testcase_name="int8_int_overflow_wrap",
+          values=[1, -24],
+          dtype=torch.int8,
+          test_element=1000,
+      ),
+      dict(
+          testcase_name="float32_overflow_to_inf",
+          values=[float("inf"), 1.0],
+          dtype=torch.float32,
+          test_element=1e39,
+      ),
+      dict(
+          testcase_name="float32_nan",
+          values=[float("nan"), 1.0],
+          dtype=torch.float32,
+          test_element=float("nan"),
+      ),
+      dict(
+          testcase_name="float32_nan_invert",
+          values=[float("nan"), 1.0],
+          dtype=torch.float32,
+          test_element=float("nan"),
+          invert=True,
+      ),
+      dict(
+          testcase_name="float32_0d",
+          values=1.1,
+          dtype=torch.float32,
+          test_element=1.1,
+      ),
+      dict(
+          testcase_name="float32_empty",
+          values=[],
+          dtype=torch.float32,
+          test_element=1.1,
+      ),
+      dict(
+          testcase_name="float32_2d",
+          values=[[1.1, 2.0], [3.0, 1.1]],
+          dtype=torch.float32,
+          test_element=1.1,
+      ),
+      dict(
+          testcase_name="float32_assume_unique",
+          values=[1.1, 2.0],
+          dtype=torch.float32,
+          test_element=1.1,
+          assume_unique=True,
+      ),
+  )
+  def test_isin_tensor_scalar_type_promotion(
+      self, values, dtype, test_element, assume_unique=False, invert=False
+  ):
+    elements = torch.tensor(values, dtype=dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.isin(
+            to(elements, device=device),
+            test_element,
+            assume_unique=assume_unique,
+            invert=invert,
+        ),
+    )
+
+  @parameterized.product(
+      dtype=[torch.bfloat16, torch.float16, torch.float32, torch.float64],
+      invert=[False, True],
+  )
+  def test_isin_scalar_tensor_matches_cuda_promotion(self, dtype, invert):
+    # On CUDA, `isin(1.1, tensor)` promotes the tensor to float64 (because
+    # `isin_default_kernel_gpu` unsqueezes the wrapped float64 scalar before
+    # calling `eq`), so only float64 matches 1.1.
+    test_elements = torch.tensor([1.1, 2.0], dtype=dtype, device="tpu")
+    expected = torch.tensor((dtype == torch.float64) ^ invert, dtype=torch.bool)
+    actual = torch.isin(1.1, test_elements, invert=invert).cpu()
+    self.assertEqual(actual, expected)
+
   def test_mul(self):
     x = torch.tensor([1, 2])
     y = torch.tensor([3, 4])

@@ -19,13 +19,13 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/promote_types.h"
+#include "ATen/ops/result_type.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -208,8 +208,15 @@ at::Tensor& AtenIsInTensorScalarOut(const at::Tensor& elements,
   PromotedScalar promoted_test_element = PromoteScalar(test_element);
   TT_KERNEL(OpName::kIsInTensorScalarOut, param_keys,
             (elements, promoted_test_element, assume_unique, invert, out), {
-              TT_ASSIGN_OR_THROW(at::Tensor test_element_tensor,
-                                 promoted_test_element.GetTensor());
+              // Match PyTorch's `isin(Tensor, Scalar)` promotion (which
+              // redispatches to `eq`/`ne`): materialize the scalar in
+              // `at::result_type(elements, scalar)` so floating-point tensors
+              // are not upcast to float64 and integral tensors wrap like `eq`.
+              const at::ScalarType promoted_scalar_type =
+                  at::result_type(elements, promoted_test_element.scalar());
+              TT_ASSIGN_OR_THROW(
+                  const at::Tensor test_element_tensor,
+                  promoted_test_element.GetTensor(promoted_scalar_type));
               TT_THROW_IF_ERROR(AtenIsInHelper(
                   elements, test_element_tensor, ToIsUnique(assume_unique),
                   ToIsInverted(invert), out, std::move(param_keys)));
