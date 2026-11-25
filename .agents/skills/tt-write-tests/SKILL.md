@@ -25,13 +25,12 @@ Cheatsheet for testing in TorchTPU.
 
 ### TDD Enforcement Checklist
 
-*   **Strict Verification**: When requested to verify a failure, run the
-    specific test, confirm `--test_filter` executed at least one test (a filter
-    matching zero tests can still exit 0), and confirm that the failure is
-    related to the missing feature or bug rather than a syntax or import error.
-*   **Success Verification**: After the developer implements the fix, re-run the
-    exact same test target label and compatible `--test_filter` to verify it
-    passes.
+*   **Strict Verification**: Run the specific test command before implementing
+    the change and confirm it fails.
+*   **Success Verification**: After implementing the fix, re-run the **exact
+    same test command line** (without modifying the test) to confirm it passes;
+    if the test itself needed a fix, re-verify that it fails without the
+    production change.
 *   **Report Results**: Provide clear, concise output.
 
 ## Test Locations
@@ -114,10 +113,13 @@ Per
 *   **Use real resources where cheap**: temporary directories for the
     filesystem, real (test-scoped) environment variables, and multi-process
     `gloo` groups for `torch.distributed`.
-*   **Avoid spawning subprocesses in unit tests**: prefer in-process fakes or
-    threads to spawning `torch_tpu` subprocesses, as each process pays full
-    startup overhead and can push a test past its timeout. Never initialize TPU
-    at module import time.
+*   **Spawn subprocesses only when process isolation is under test** (such as
+    distributed multi-process tests, crash/death tests, or fresh-process
+    initialization tests): otherwise prefer in-process calls, threads, or
+    boundary fakes, as each `torch_tpu` subprocess pays full startup overhead
+    and can push a test past its timeout. Never initialize TPU at module import
+    time, since `spawn`-based multiprocess tests re-import the module in each
+    worker.
 *   **Mutation check**: when adding or rewriting a test, verify that it fails if
     the covered behavior is removed or broken.
 
@@ -127,6 +129,22 @@ Good in-repo examples:
 *   `csrc/common/error_utils_test.cc` (`ScopedFakeProcDir` real temp tree).
 *   `tests/_versioned_so_loader_test.py` (real temp-dir inputs; only patches
     `sys.modules` with a `SimpleNamespace` fake).
+
+## Change-Detector and Boilerplate Tests
+
+Per
+["Change-Detector Tests Considered Harmful"](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html):
+
+*   **Test behavior through the real consumer, not literal mirroring**: Do not
+    assert that a builder or wrapper emits a hardcoded list of flag strings,
+    dict keys, or struct literals copied from the implementation — that breaks
+    on benign edits while missing typos rejected by the real callee. Exercise
+    the real parser, validator, serializer, or execution path on the output
+    instead.
+*   **Scale test surface to logic complexity**: Thin declarative configs and CLI
+    entry points with static type checking need at most a mock-free smoke test
+    that builds/validates the artifact and resolves runtime `data` resources,
+    not a parameterized matrix over flag combinations.
 
 ## Examples
 

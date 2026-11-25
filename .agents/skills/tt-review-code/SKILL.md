@@ -27,10 +27,27 @@ You MUST manually evaluate the following gates.
         of StableHLO operations to suggest lowering that is more efficient or
         has mathematical expansions that lead to more accurate precision.
     *   Assume JAX lowering as the ground truth for performant code.
-*   **Architectural Simplification & Anti-Bloat**:
-    *   Identify all custom logic, new files, and new abstractions in the pull
-        request.
-    *   Flag unnecessary abstractions and logic.
+*   **Architectural Simplification & Anti-Bloat (Run Before Line-Level
+    Checks)**:
+    *   **Delete before fixing**: Evaluate whether each new file, mode, flag,
+        config struct, or helper needs to exist *before* checking its internal
+        edge cases. When a new feature, mode, or helper is speculative or
+        unused, ask to delete it rather than asking for validation, error
+        handling, or tests on it. Inactive defensive error handling on a live
+        call (e.g., checking failures from a third-party API that cannot fail
+        today but may in the future) is legitimate to keep or request.
+    *   **No single-caller flags or pass-through structs**: Flag CLI flags,
+        options dataclasses/builders, and mode switches whose values never vary
+        in real repo usage or only ferry arguments between private functions in
+        one file. Keep fixed settings as constants until a second real caller or
+        concrete operational toggle exists.
+    *   **Verify upstream defaults and existing CLIs**: Read the called SDK,
+        library, or CLI before approving wrapper code. Flag custom boilerplate
+        or subcommands that duplicate defaults or commands the underlying
+        dependency already provides.
+    *   **Strip inherited scaffolding from adapted code**: When code is adapted
+        from a more general neighbor, require deleting every inherited mode,
+        flag, or dependency that this package does not use.
     *   For agent skills and tooling, flag scripts or taxonomies that encode
         semantic judgment the calling agent can follow in a few lines of
         `SKILL.md` prose.
@@ -46,8 +63,8 @@ You MUST manually evaluate the following gates.
     test rules in `BUILD` files or CI job configs in `.bazelrc`, verify
     compliance with
     [tt-write-tests](../tt-write-tests/SKILL.md#ci-jobs--build-test-configuration).
-*   **Test Doubles**: When the pull request adds or modifies tests that use
-    mocks, fakes, or `mock.patch`, flag mock overuse per
+*   **Test Quality & Doubles**: When the pull request adds or modifies tests,
+    flag mock overuse and literal-mirroring change-detector tests per
     [tt-write-tests](../tt-write-tests/SKILL.md#test-doubles).
 
 ### 3. C++ Nuance Review
@@ -114,6 +131,22 @@ Verify:
     templates, and checklists must live **only** in their canonical file. Flag
     any duplicated procedure in a non-canonical file and require replacing it
     with at most a 1-sentence trigger plus a link to the canonical owner.
+*   **Prescriptive Rule & Lint Precision**: When the pull request adds or
+    tightens rules in `AGENTS.md`, `.agents/skills/*/SKILL.md`, developer guides
+    under `docs/`, or custom lint checks (`ci/tools/custom_linter/`), evaluate
+    them as executable constraints from first principles (even if another skill
+    uses similar wording):
+    *   **Necessity (entailment)**: Flag checklist items or sub-steps that a
+        simpler invariant in the same workflow already guarantees; unnecessary
+        instructions bloat agent context and dilute load-bearing rules.
+    *   **No overbroad bans**: When a rule uses universal prescriptions
+        (`Never`, `Avoid`, `Always`, `only`, `rather than`), test it against
+        legitimate workflows and existing repo usage (`rg` / `git grep`). If
+        valid counterexamples exist, ask to scope the rule to the specific
+        anti-pattern rather than banning the mechanism wholesale.
+    *   **Self-contained invariants**: State invariants at the complete command
+        or contract level rather than naming a partial subset of flags or
+        undefined tooling terminology.
 
 ### 6. Moved File Review
 
@@ -162,6 +195,9 @@ shows only the delta from the original.
 *   **All links must be accessible to external readers.** A reference or URL in
     the description that they can't open is a blocking finding; ask for it to be
     removed or replaced with a public one (e.g. a GitHub issue).
+*   **Don't repeat CI.** Skip anything CI already enforces with an actionable
+    error (e.g. formatting or lint). The author sees those failures without a
+    review comment.
 
 ## Validation
 
