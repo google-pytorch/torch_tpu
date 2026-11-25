@@ -16,7 +16,9 @@
 
 import contextlib
 import gc
+import resource
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -41,11 +43,13 @@ flags.FLAGS.set_default("post_warmup_min_seconds", 0.0)
 
 
 def setUpModule():
-  # Most tests count the steps that run. They run no untimed post-warmup steps;
-  # MeasureUntimedStepsTest sets them.
-  patcher = mock.patch.object(measure_lib, "_POST_WARMUP_UNTIMED_STEPS", 0)
-  patcher.start()
-  unittest.addModuleCleanup(patcher.stop)
+  # Most tests count the steps that run. They run no untimed post-warmup steps
+  # or extra peak-memory probe steps; MeasureUntimedStepsTest and
+  # MeasurePeakMemoryProbeTest set them explicitly.
+  for attr in ("_POST_WARMUP_UNTIMED_STEPS", "_PEAK_MEMORY_PROBE_STEPS"):
+    patcher = mock.patch.object(measure_lib, attr, 0)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 def _run_measure(
@@ -287,16 +291,406 @@ class MeasureUntimedStepsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(ops.events[reset_at:].count("await"), 6)
 
 
+class MeasurePeakMemoryProbeTest(_XprofTestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.addCleanup(gc.enable)
+    self.addCleanup(gc.unfreeze)
+
+  def _measure_with_probe(
+      self,
+      step,
+      ops,
+      *,
+      probe_steps=5,
+      steps=16,
+      pipelined=False,
+      xprof_steps=0,
+      enable_xprof=False,
+      min_seconds=0.0,
+  ):
+    clock = step.clock or fakes.FakeClock()
+    with (
+        mock.patch.object(measure_lib, "_PEAK_MEMORY_PROBE_STEPS", probe_steps),
+        flagsaver.flagsaver(pipelined_steps=pipelined),
+    ):
+      return _run_measure(
+          step,
+          ops,
+          steps=steps,
+          min_warmup=2,
+          xprof_steps=xprof_steps,
+          enable_xprof=enable_xprof,
+          clock=clock,
+          min_seconds=min_seconds,
+      )
+
+  def test_long_sync_window_reports_median_across_five_probe_steps(self):
+    # Keyed by reset_count (1 = sync window, 2..6 = 5 isolated probe steps) so
+    # extra reads never fail with StopIteration.
+    peaks_by_reset = {
+        1: 9800.0,  # Sync-window max inflated by a host preemption stall.
+        4: 7500.0,  # Single-step outlier inside the 5-step probe window.
+    }
+
+    class ProbePeakOps(fakes.RecordingOps):
+
+      def __init__(self):
+        super().__init__(allocated_mb=100.0)
+
+      def peak_memory_mb(self):
+        return peaks_by_reset.get(self.reset_count, 3100.0)
+
+    step = fakes.CountingStep()
+    m = self._measure_with_probe(step, ProbePeakOps(), probe_steps=5, steps=16)
+
+    self.assertEqual(step.calls, 2 + 16 + 5)
+    self.assertEqual(m.peak_device_memory_mb, 3100.0)
+    self.assertEqual(m.diagnostics["sync_window_peak_device_memory_mb"], 9800.0)
+    metric_map = m.metric_map()
+    self.assertEqual(metric_map["peak_device_memory_mb"], 3100.0)
+    self.assertNotIn("sync_window_peak_device_memory_mb", metric_map)
+
+  def test_short_sync_window_runs_single_isolated_probe_step(self):
+    class ShortWindowOps(fakes.RecordingOps):
+
+      def __init__(self):
+        super().__init__(allocated_mb=100.0)
+
+      def peak_memory_mb(self):
+        return 9800.0 if self.reset_count == 1 else 3100.0
+
+    step = fakes.CountingStep()
+    m = self._measure_with_probe(
+        step, ShortWindowOps(), probe_steps=5, steps=10
+    )
+
+    # Short windows (<= 15 timed steps) run 1 isolated step instead of 5.
+    self.assertEqual(step.calls, 2 + 10 + 1)
+    self.assertEqual(m.peak_device_memory_mb, 3100.0)
+    self.assertEqual(m.diagnostics["sync_window_peak_device_memory_mb"], 9800.0)
+
+  def test_skips_probe_steps_when_allocated_memory_unsupported(self):
+    # CPU TorchDeviceOps returns peak_memory_mb() == 0.0 and
+    # allocated_memory_mb() is None.
+    step = fakes.CountingStep()
+    ops = fakes.RecordingOps(peak_mb=0.0, allocated_mb=None)
+
+    m = self._measure_with_probe(step, ops, probe_steps=5, steps=16)
+
+    self.assertEqual(step.calls, 2 + 16)
+    self.assertEqual(m.peak_device_memory_mb, 0.0)
+    self.assertNotIn("allocated_memory_drift_mb", m.diagnostics)
+
+  def test_gc_order_and_allocated_memory_drift_in_diagnostics_only(self):
+    events = []
+    probe_gc_enabled = []
+
+    class GcCheckingStep(fakes.CountingStep):
+
+      def __call__(self):
+        # Calls 1..2 are warmup, 3..18 are sync, 19..23 are the 5 probe steps.
+        if self.calls >= 18:
+          probe_gc_enabled.append(gc.isenabled())
+        events.append("step")
+        return super().__call__()
+
+    step = GcCheckingStep()
+
+    class DriftOps(fakes.RecordingOps):
+
+      def __init__(self):
+        super().__init__(peak_mb=2048.0)
+
+      def reset_peak_memory(self):
+        super().reset_peak_memory()
+        events.append("reset")
+
+      def allocated_memory_mb(self):
+        events.append("alloc")
+        # Before the timed window (only the 2 warmup steps ran): 1024.0 MB;
+        # after the timed window: 1040.5 MB.
+        return 1024.0 if step.calls <= 2 else 1040.5
+
+    real_collect = gc.collect
+
+    def tracking_collect(*args, **kwargs):
+      events.append("gc_collect")
+      return real_collect(*args, **kwargs)
+
+    with mock.patch.object(measure_lib.gc, "collect", tracking_collect):
+      m = self._measure_with_probe(step, DriftOps(), probe_steps=5, steps=16)
+
+    self.assertAlmostEqual(m.diagnostics["allocated_memory_drift_mb"], 16.5)
+    self.assertNotIn("allocated_memory_drift_mb", m.metric_map())
+    # GC must be disabled inside all 5 probe steps.
+    self.assertEqual(probe_gc_enabled, [False] * 5)
+    # After the timed window: gc_collect runs before alloc_after, probe step 1
+    # reuses that collection (no back-to-back gc_collect), and probe steps 2..5
+    # each run gc_collect before reset_peak_memory().
+    second_alloc_idx = [i for i, ev in enumerate(events) if ev == "alloc"][1]
+    self.assertEqual(events[second_alloc_idx - 1], "gc_collect")
+    self.assertEqual(
+        events[second_alloc_idx + 1 :],
+        ["reset", "step"] + ["gc_collect", "reset", "step"] * 4,
+    )
+
+  def test_post_warmup_hook_runs_after_peak_read_and_before_next_reset(self):
+    events = []
+
+    class DecodeLikeStep(fakes.CountingStep):
+      """Simulates DecodeStepper whose post_warmup_hook rewinds KV cache."""
+
+      def __init__(self):
+        super().__init__()
+        self.cache_dirty = False
+        self.hook_transient_mb = 0.0
+
+      def __call__(self):
+        if self.cache_dirty:
+          raise AssertionError("step ran before post_warmup_hook rewound cache")
+        self.cache_dirty = True
+        events.append("step")
+        return super().__call__()
+
+      def post_warmup_hook(self):
+        super().post_warmup_hook()
+        self.cache_dirty = False
+        # Eager cache zeroing/cloning allocates transient buffers that must not
+        # inflate the step peak read before the hook, and must be cleared by the
+        # next probe step's reset_peak_memory().
+        self.hook_transient_mb = 900.0
+        events.append("hook")
+
+    step = DecodeLikeStep()
+
+    class HookSensitiveOps(fakes.RecordingOps):
+
+      def __init__(self):
+        super().__init__(allocated_mb=100.0)
+
+      def reset_peak_memory(self):
+        super().reset_peak_memory()
+        step.hook_transient_mb = 0.0
+        events.append("reset")
+
+      def await_result(self, out):
+        super().await_result(out)
+        events.append("await")
+
+      def check_result(self, out):
+        super().check_result(out)
+        events.append("check")
+
+      def peak_memory_mb(self):
+        events.append("peak")
+        return 512.0 + step.hook_transient_mb
+
+    m = self._measure_with_probe(
+        step, HookSensitiveOps(), probe_steps=5, steps=16
+    )
+
+    self.assertEqual(m.peak_device_memory_mb, 512.0)
+    self.assertFalse(step.cache_dirty)
+    # After the sync-window peak read ("peak" #1), the 5 probe iterations must
+    # each follow: reset -> step -> await -> check -> peak -> hook.
+    first_sync_peak_idx = events.index("peak")
+    self.assertEqual(
+        events[first_sync_peak_idx + 1 :],
+        ["reset", "step", "await", "check", "peak", "hook"] * 5,
+    )
+
+  def test_probe_runs_strictly_before_pipelined_steps(self):
+    events = []
+    step = PipelinedStep(fakes.FakeClock(), [10.0, 1.0], events)
+
+    class OrderOps(EventOps):
+
+      def __init__(self):
+        super().__init__(events, allocated_mb=100.0)
+
+      def reset_peak_memory(self):
+        super().reset_peak_memory()
+        events.append("reset")
+
+      def peak_memory_mb(self):
+        events.append("peak")
+        # If pipelined steps ran before the probe, step.calls would exceed
+        # 2 warmup + 16 sync + 5 probe = 23.
+        return 400.0 if step.calls <= 23 else 9999.0
+
+    m = self._measure_with_probe(
+        step, OrderOps(), probe_steps=5, steps=16, pipelined=True
+    )
+
+    self.assertEqual(m.peak_device_memory_mb, 400.0)
+    self.assertEqual(step.calls, 2 + 16 + 5 + 16)
+    last_probe_peak_idx = len(events) - 1 - events[::-1].index("peak")
+    first_pipelined_step_idx = events.index("step out-24")
+    self.assertLess(last_probe_peak_idx, first_pipelined_step_idx)
+
+  def test_probe_recompile_raises_for_step_and_post_warmup_hook(self):
+    # 2 warmup + 10 sync = 12 awaits; 13th await is inside the probe step.
+    ops = fakes.RecordingOps(
+        peak_mb=256.0, allocated_mb=100.0, recompile_on_calls={13}
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+        measure_lib.PostWarmupRecompileError, "peak-memory probe"
+    ):
+      self._measure_with_probe(
+          fakes.CountingStep(), ops, probe_steps=5, steps=10
+      )
+    self.assertTrue(gc.isenabled())
+
+    hook_ops = fakes.RecordingOps(peak_mb=256.0, allocated_mb=100.0)
+
+    class RecompilingHookStep(fakes.CountingStep):
+
+      def post_warmup_hook(self):
+        super().post_warmup_hook()
+        if self.calls == 13:
+          hook_ops._recompiles += 1  # pylint: disable=protected-access
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+        measure_lib.PostWarmupRecompileError, "peak-memory probe"
+    ):
+      self._measure_with_probe(
+          RecompilingHookStep(), hook_ops, probe_steps=5, steps=10
+      )
+    self.assertTrue(gc.isenabled())
+
+  def test_mixed_none_probe_reads_keep_lockstep_and_return_none(self):
+    class MixedNonePeakOps(fakes.RecordingOps):
+
+      def __init__(self):
+        super().__init__(allocated_mb=100.0)
+
+      def peak_memory_mb(self):
+        # Reset 3 (2nd probe step) returns None; others return 512.0.
+        return None if self.reset_count == 3 else 512.0
+
+    step = fakes.CountingStep()
+    m = self._measure_with_probe(
+        step, MixedNonePeakOps(), probe_steps=5, steps=16
+    )
+
+    # All 5 probe steps still run so SPMD ranks never diverge on collectives.
+    self.assertEqual(step.calls, 2 + 16 + 5)
+    self.assertIsNone(m.peak_device_memory_mb)
+
+  def test_two_ranks_run_agreed_probe_steps_in_lockstep(self):
+    agreement = _ThreadedAgreement(num_processes=2)
+    step_barrier = threading.Barrier(2, timeout=5.0)
+
+    class BarrierStep(fakes.CountingStep):
+
+      def __call__(self):
+        step_barrier.wait()
+        return super().__call__()
+
+    # Rank 0 takes 0.2s/step (10 steps = 2.0s >= 1.6s, so alone it would stop at
+    # 10 <= 15 and run 1 probe step); rank 1 takes 0.1s/step (proposes 16 > 15).
+    # Agreement produces 16 sync steps on both ranks, so both run 5 probe steps.
+    clocks = [fakes.FakeClock(), fakes.FakeClock()]
+    steps = [
+        BarrierStep(clock=clocks[0], step_seconds=0.2),
+        BarrierStep(clock=clocks[1], step_seconds=0.1),
+    ]
+    ops = [
+        _ThreadedAgreeingOps(
+            agreement, process=0, peak_mb=512.0, allocated_mb=100.0
+        ),
+        _ThreadedAgreeingOps(
+            agreement, process=1, peak_mb=512.0, allocated_mb=100.0
+        ),
+    ]
+    errors = []
+
+    def run_rank(rank: int) -> None:
+      try:
+        measure_lib.measure(
+            steps[rank],
+            ops[rank],
+            name="test",
+            enable_xprof=False,
+            clock=clocks[rank],
+        )
+      except BaseException as exc:  # pylint: disable=broad-exception-caught
+        errors.append((rank, exc))
+
+    # Flags and module globals are process-global, so set them once for both
+    # threads before spawning.
+    with (
+        mock.patch.object(measure_lib, "_PEAK_MEMORY_PROBE_STEPS", 5),
+        flagsaver.flagsaver(
+            min_warmup_steps=2,
+            max_warmup_steps=12,
+            post_warmup_steps=10,
+            post_warmup_min_seconds=1.6,
+            pipelined_steps=False,
+            xprof_steps=0,
+        ),
+    ):
+      threads = [
+          threading.Thread(target=run_rank, args=(r,), daemon=True)
+          for r in range(2)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive())
+    self.assertEmpty(errors)
+    self.assertEqual(steps[0].calls, 2 + 16 + 5)
+    self.assertEqual(steps[1].calls, 2 + 16 + 5)
+
+  def test_end_to_end_with_probe_pipelining_and_xprof(self):
+    xspace = fakes.make_xspace(
+        {"/device:TPU:0": [20 * _ONE_MS_IN_PS, 20 * _ONE_MS_IN_PS]}
+    )
+    self.install_xprof(
+        fakes.FakeXprofSessionFactory(
+            fakes.FakeXprofSession(session_id="warmup_e2e"),
+            fakes.FakeXprofSession(session_id="post_warmup_e2e", xspace=xspace),
+        )
+    )
+    clock = fakes.FakeClock()
+    step = PipelinedStep(clock, [10.0, 1.0])
+    ops = XspaceDeviceTimeOps(peak_mb=512.0, allocated_mb=256.0)
+
+    m = self._measure_with_probe(
+        step,
+        ops,
+        probe_steps=5,
+        steps=16,
+        pipelined=True,
+        xprof_steps=2,
+        enable_xprof=True,
+    )
+
+    # 2 warmup + 16 sync + 5 probe + 16 pipelined + 2 xprof = 41 steps.
+    self.assertEqual(step.calls, 41)
+    self.assertEqual(m.peak_device_memory_mb, 512.0)
+    self.assertEqual(m.pipelined_step_time_seconds, 1.0)
+    self.assertAlmostEqual(m.average_post_warmup_device_time_seconds, 0.02)
+    self.assertEqual(
+        m.post_warmup_run_session_xprof_url,
+        "http://xprof/?session_id=post_warmup_e2e",
+    )
+    self.assertEqual(m.diagnostics["sync_window_peak_device_memory_mb"], 512.0)
+    self.assertEqual(m.diagnostics["allocated_memory_drift_mb"], 0.0)
+
+
 class AgreeingOps(fakes.RecordingOps):
   """DeviceOps of a process whose other process proposes more steps once.
 
   The other process proposes `other_process_extra_steps` more steps for the
-  `extra_on_proposal`-th post-warmup proposal: the first is the post-warmup
-  run's first agreement, the second the first round of the timed window, and
-  so on.
+  `extra_on_proposal`-th post-warmup timed-window proposal: the first is the
+  first round of the timed window, the second is the second round, and so on.
   """
 
-  def __init__(self, other_process_extra_steps, extra_on_proposal=3):
+  def __init__(self, other_process_extra_steps, extra_on_proposal=2):
     super().__init__()
     self.proposals = []
     self._extra = other_process_extra_steps
@@ -348,7 +742,8 @@ class MeasureWindowTest(seed_test_utils.RepeatableTest):
         [1.0, 1.0, 1.0, 0.25], steps=2, min_seconds=3.0, max_steps=100
     )
     self.assertEqual(m.num_post_warmup_steps, 6)
-    self.assertEqual(m.post_warmup_step_time_seconds, 0.5)
+    self.assertEqual(m.post_warmup_step_time_seconds, 0.25)
+    self.assertEqual(m.diagnostics["post_warmup_step_time_mean_seconds"], 0.5)
 
   def test_capped_at_max_steps(self):
     step, m = self._measure([0.001], steps=3, min_seconds=2.0, max_steps=50)
@@ -369,11 +764,11 @@ class MeasureWindowTest(seed_test_utils.RepeatableTest):
   def test_processes_agree_on_the_first_round(self):
     # The other process wants 7 more steps than the 3 of the first round, and
     # 10 steps of 0.125 s then extend to 16 steps for 2 s.
-    ops = AgreeingOps(other_process_extra_steps=7, extra_on_proposal=2)
+    ops = AgreeingOps(other_process_extra_steps=7, extra_on_proposal=1)
     step, m = self._measure(
         [0.125], steps=3, min_seconds=2.0, max_steps=100, ops=ops
     )
-    self.assertEqual(ops.proposals, [3, 3, 16, 16])
+    self.assertEqual(ops.proposals, [3, 16, 16])
     self.assertEqual(m.num_post_warmup_steps, 16)
 
   def test_logs_summary_and_every_step_time_of_a_short_window(self):
@@ -493,6 +888,25 @@ class MeasurePipelinedTest(seed_test_utils.RepeatableTest):
     self.assertEqual(m.num_pipelined_steps, 8)
     self.assertEqual(step.calls, 2 + 8 + 8)
 
+  def test_pipelined_steps_seeded_from_median_synchronized_step_time(self):
+    # 2 warmup steps [10.0, 0.25], then 3 sync steps [0.25, 0.25, 1.0] (total
+    # 1.5s >= min_seconds=1.5s; median=0.25s, mean=0.5s), then pipelined steps
+    # of 0.25s. Seeding initial_steps from the median runs ceil(1.5 / 0.25) = 6
+    # pipelined steps in a single round rather than ceil(1.5 / 0.5) = 3.
+    events = []
+    step = PipelinedStep(
+        fakes.FakeClock(),
+        [10.0, 0.25, 0.25, 0.25, 1.0, 0.25],
+        events,
+    )
+    m = self._measure(step, EventOps(events), steps=3, min_seconds=1.5)
+
+    self.assertEqual(m.num_post_warmup_steps, 3)
+    self.assertEqual(m.post_warmup_step_time_seconds, 0.25)
+    self.assertEqual(m.num_pipelined_steps, 6)
+    pipelined = events[events.index("step out-5") + 4 :]
+    self.assertEqual(pipelined.count("await None"), 1)
+
   def _faster_pipelined_step(self, events=None):
     # 2 warmup steps, then synchronized steps of 0.25 s, and from the 11th step
     # on, i.e. once 8 synchronized steps have taken 2 s, pipelined steps of
@@ -550,10 +964,9 @@ class MeasurePipelinedTest(seed_test_utils.RepeatableTest):
     ops = ProposalOps()
     self._measure(self._faster_pipelined_step(), ops, steps=3, min_seconds=2.0)
 
-    # The post-warmup run's first agreement; the synchronized rounds of 3 and 8
-    # steps and the final count; then the pipelined rounds of 8 and 16 steps and
-    # the final count.
-    self.assertEqual(ops.proposals, [3, 3, 8, 8, 8, 16, 16])
+    # The synchronized rounds of 3 and 8 steps and the final count; then the
+    # pipelined rounds of 8 and 16 steps and the final count.
+    self.assertEqual(ops.proposals, [3, 8, 8, 8, 16, 16])
 
   def test_no_pipelined_steps_when_disabled(self):
     step = PipelinedStep(fakes.FakeClock(), [10.0, 1.0])
@@ -1141,6 +1554,54 @@ class MeasureMetricsTest(_XprofTestCase):
         ],
     )
 
+  def test_post_warmup_step_time_uses_median_and_records_diagnostics(self):
+    clock = fakes.FakeClock()
+    # 2 warmup steps, then 9 fast 0.01s steps + 1 preemption stall of 0.21s.
+    # Median = 0.01s, mean = 0.03s, p10 = 0.01s, p90 = 0.03s, max = 0.21s.
+    step = fakes.CountingStep(
+        clock=clock,
+        step_seconds=[1.0, 0.01] + [0.01] * 9 + [0.21],
+    )
+    rusage_calls = 0
+
+    def fake_getrusage(_who):
+      nonlocal rusage_calls
+      rusage_calls += 1
+      return types.SimpleNamespace(ru_nivcsw=100 if rusage_calls == 1 else 107)
+
+    with mock.patch.object(
+        resource,
+        "getrusage",
+        autospec=True,
+        side_effect=fake_getrusage,
+    ):
+      m = _run_measure(
+          step, fakes.RecordingOps(), steps=10, min_warmup=2, clock=clock
+      )
+
+    self.assertAlmostEqual(m.post_warmup_step_time_seconds, 0.01)
+    # Non-pipelined stepper fallback throughput uses the median too.
+    self.assertAlmostEqual(m.throughput_step_time_seconds, 0.01)
+    self.assertIsNotNone(m.diagnostics)
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_mean_seconds"], 0.03
+    )
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_p10_seconds"], 0.01
+    )
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_p90_seconds"], 0.03
+    )
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_max_seconds"], 0.21
+    )
+    self.assertEqual(m.diagnostics["ru_nivcsw"], 7.0)
+    # metric_map() must remain 100% free of diagnostics keys.
+    metric_map = m.metric_map()
+    for key in m.diagnostics:
+      self.assertNotIn(key, metric_map)
+    self.assertNotIn("diagnostics", metric_map)
+
 
 class XprofContextTest(
     _XprofTestCase,
@@ -1587,6 +2048,69 @@ class MeasurePostWarmupXprofTest(_XprofTestCase):
     self.assertEqual(hooks_inside_xprof, 1)
     self.assertEqual(hooks_after_xprof, 1)
 
+  def test_post_warmup_xprof_runs_host_barrier_after_start_and_before_steps(
+      self,
+  ):
+    events = []
+
+    class BarrierStep(fakes.CountingStep):
+
+      def __call__(self):
+        events.append("step")
+        return super().__call__()
+
+    class BarrierTrackingOps(fakes.RecordingOps):
+
+      def agree_on_step_count(self, steps):
+        events.append("agree")
+        return super().agree_on_step_count(steps)
+
+      def host_barrier(self) -> None:
+        events.append("host_barrier")
+        super().host_barrier()
+
+    ops = BarrierTrackingOps()
+    self.install_xprof(
+        fakes.FakeXprofSessionFactory(
+            _EventLoggingXprofSession(events, "post_warmup"),
+        )
+    )
+    with flagsaver.flagsaver(post_warmup_steps=2, xprof_steps=2):
+      measure_lib._post_warmup_run(
+          BarrierStep(), ops, name="test_barrier_order", enable_xprof=True
+      )
+
+    xprof_start_idx = events.index("post_warmup_xprof_start")
+    xprof_end_idx = events.index("post_warmup_xprof_end")
+    inside_xprof = events[xprof_start_idx + 1 : xprof_end_idx]
+    self.assertEqual(
+        inside_xprof, ["host_barrier", "step", "host_barrier", "step"]
+    )
+    self.assertEqual(ops.host_barriers, 2)
+
+  def test_post_warmup_recompile_in_final_xprof_post_warmup_hook_raises(self):
+    ops = fakes.RecordingOps()
+
+    class RecompilingFinalHookStep(fakes.CountingStep):
+
+      def post_warmup_hook(self):
+        super().post_warmup_hook()
+        # 3 timed + 2 profiled = 5th step's hook runs after XprofContext exits.
+        if self.calls == 5:
+          ops._recompiles += 1  # pylint: disable=protected-access
+
+    self.install_xprof(fakes.FakeXprofSessionFactory())
+    with flagsaver.flagsaver(post_warmup_steps=3, xprof_steps=2):
+      with self.assertRaises(  # ASSERT_RAISES_OK=benchmark
+          measure_lib.PostWarmupRecompileError
+      ):
+        measure_lib._post_warmup_run(
+            RecompilingFinalHookStep(),
+            ops,
+            name="test_final_xprof_hook_recompile",
+            enable_xprof=True,
+        )
+
 
 class _ThreadLocalClock:
   """Per-thread `time.perf_counter` fake for independent rank clocks."""
@@ -1633,8 +2157,10 @@ class _CollectiveStep(fakes.CountingStep):
     super().__init__(clock=clock, step_seconds=step_seconds)
     self._barrier = barrier
     self._exit_barrier = exit_barrier
+    self.call_durations = []
 
   def __call__(self):
+    start = self.clock()
     self._barrier.wait()
     out = super().__call__()
     # Wait for all ranks to advance their own clocks before syncing to the
@@ -1642,6 +2168,7 @@ class _CollectiveStep(fakes.CountingStep):
     if self._exit_barrier.wait() == 0:
       self.clock.sync_all()
     self._exit_barrier.wait()
+    self.call_durations.append(self.clock() - start)
     return out
 
 
@@ -1692,7 +2219,9 @@ class MeasureDistributedXprofTest(seed_test_utils.RepeatableTest):
           errors.append((rank, exc))
 
     threads = [
-        threading.Thread(target=_worker, args=(r,), name=f"rank-{r}")
+        threading.Thread(
+            target=_worker, args=(r,), name=f"rank-{r}", daemon=True
+        )
         for r in range(world_size)
     ]
     for t in threads:
@@ -1706,7 +2235,16 @@ class MeasureDistributedXprofTest(seed_test_utils.RepeatableTest):
     return results
 
   def test_all_ranks_run_xprof_steps_when_only_rank_0_captures(self):
+    host_sync_barrier = threading.Barrier(2, timeout=5.0)
+    clock = self.clock
+
     class _XspaceDeviceOps(fakes.RecordingOps):
+
+      def host_barrier(self) -> None:
+        super().host_barrier()
+        if host_sync_barrier.wait() == 0:
+          clock.sync_all()
+        host_sync_barrier.wait()
 
       def get_device_time_from_xspace(self, xspace, expected_steps=None):
         del xspace
@@ -1767,6 +2305,15 @@ class MeasureDistributedXprofTest(seed_test_utils.RepeatableTest):
     # 2 warmup + 2 timed steps of 1.0s = 4.0s; rank 0's xprof startup/teardown
     # and profiled steps are excluded.
     self.assertAlmostEqual(metrics_by_rank[0].e2e_wall_time_seconds, 4.0)
+    # Because host_barrier() aligns all ranks after rank 0 starts XprofContext
+    # (5.0s overhead), rank 1 does not enter profiled step 0 early and stall at
+    # its collective: both profiled steps take 1.0s on every rank.
+    self.assertSequenceAlmostEqual(
+        steps_by_rank[0].call_durations[-2:], [1.0, 1.0]
+    )
+    self.assertSequenceAlmostEqual(
+        steps_by_rank[1].call_durations[-2:], [1.0, 1.0]
+    )
 
 
 if __name__ == "__main__":

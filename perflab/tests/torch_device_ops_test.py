@@ -14,11 +14,16 @@
 
 """Tests for torch_device_ops."""
 
+import datetime
 import sys
+import threading
+import time
 from unittest import mock
 
 from absl.testing import absltest
 import torch
+from torch.distributed import distributed_c10d as c10d
+from torch.testing._internal.distributed import fake_pg
 from torch_tpu._internal.utils import test_utils
 from perflab import device_utils
 from perflab import mode as mode_lib
@@ -27,6 +32,11 @@ from perflab import torch_device_ops
 from tests import seed_test_utils
 
 _MB = 2**20
+
+
+def _cleanup_process_group() -> None:
+  if torch.distributed.is_initialized():
+    torch.distributed.destroy_process_group()
 
 
 def _tpu_ops() -> torch_device_ops.TorchDeviceOps:
@@ -97,6 +107,21 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
     del t
     ops.await_result(None)
     self.assertEqual(ops.peak_memory_mb(), peak_after_alloc)
+
+  def test_allocated_memory_tracks_live_allocations(self):
+    ops = _tpu_ops()
+    ops.await_result(None)
+    alloc_before = ops.allocated_memory_mb()
+    self.assertGreaterEqual(alloc_before, 0.0)
+
+    t = torch.randn(32 * _MB // 4, device=ops.device)  # 32 MB of float32.
+    ops.await_result(t)
+    alloc_with_tensor = ops.allocated_memory_mb()
+    self.assertGreaterEqual(alloc_with_tensor - alloc_before, 31.0)
+
+    del t
+    ops.await_result(None)
+    self.assertLess(ops.allocated_memory_mb(), alloc_with_tensor)
 
   @mock.patch.object(device_utils, "synchronize", autospec=True)
   def test_check_result_raises_if_output_execution_failed(
@@ -211,6 +236,23 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
     ops.reset_peak_memory()
     self.assertLess(ops.peak_memory_mb(), peak_after_alloc)
 
+  @mock.patch.object(torch, "accelerator", autospec=True)
+  def test_allocated_memory_synchronizes_before_reading(self, mock_accelerator):
+    mock_accelerator.device_count.return_value = 1
+    call_order = []
+    mock_accelerator.synchronize.side_effect = lambda: call_order.append("sync")
+    mock_accelerator.memory_allocated.side_effect = lambda *_: (
+        call_order.append("alloc") or 64 * _MB
+    )
+    target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
+    ops = torch_device_ops.TorchDeviceOps(target)
+
+    self.assertEqual(ops.allocated_memory_mb(), 64.0)
+
+    mock_accelerator.synchronize.assert_called_once()
+    mock_accelerator.memory_allocated.assert_called_once_with(ops.device)
+    self.assertEqual(call_order, ["sync", "alloc"])
+
   def test_cpu_memory_ops_are_noops(self):
     ops = torch_device_ops.TorchDeviceOps(
         target_lib.make_target(platform=target_lib.Platform.CPU)
@@ -220,6 +262,7 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
     ops.await_result(None)
 
     self.assertEqual(ops.peak_memory_mb(), 0.0)
+    self.assertIsNone(ops.allocated_memory_mb())
 
   def test_compile_count_dynamo_real_compile(self):
     target = target_lib.make_target(platform=target_lib.Platform.CPU)
@@ -279,6 +322,163 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
         ),
     ):
       self.assertEqual(ops.agree_on_step_count(17), 30)
+
+  def test_host_barrier_noop_without_distributed(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ops = torch_device_ops.TorchDeviceOps(target)
+
+    ops.host_barrier()
+
+  def test_host_barrier_noop_for_world_size_one(self):
+    store = torch.distributed.HashStore()
+    opts = fake_pg.FakeProcessGroup.Options()
+    opts.error_on_collective = True
+    torch.distributed.init_process_group(
+        backend="fake", store=store, rank=0, world_size=1, pg_options=opts
+    )
+    self.addCleanup(_cleanup_process_group)
+
+    ops = torch_device_ops.TorchDeviceOps(
+        target_lib.make_target(platform=target_lib.Platform.CPU)
+    )
+    ops.host_barrier()
+
+    self.assertEmpty(
+        [k for k in store.list_keys() if "perflab_host_barrier" in k]
+    )
+
+  def test_store_host_barrier_synchronizes_all_ranks_across_rounds(self):
+    store = torch.distributed.HashStore()
+    world_size = 4
+    barrier_timeout = datetime.timedelta(seconds=5)
+    events: list[str] = []
+    events_lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def _worker(rank: int) -> None:
+      try:
+        if rank == 0:
+          time.sleep(0.03)
+          with events_lock:
+            events.append("rank_0_arrived_round_0")
+        torch_device_ops._store_host_barrier(
+            store,
+            world_size,
+            barrier_key="barrier:0",
+            timeout=barrier_timeout,
+        )
+        with events_lock:
+          events.append(f"passed_round_0_rank_{rank}")
+
+        if rank == 3:
+          time.sleep(0.03)
+          with events_lock:
+            events.append("rank_3_arrived_round_1")
+        torch_device_ops._store_host_barrier(
+            store,
+            world_size,
+            barrier_key="barrier:1",
+            timeout=barrier_timeout,
+        )
+        with events_lock:
+          events.append(f"passed_round_1_rank_{rank}")
+      except BaseException as exc:  # pylint: disable=broad-exception-caught
+        with events_lock:
+          errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_worker, args=(r,), daemon=True)
+        for r in range(world_size)
+    ]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=5.0)
+      self.assertFalse(t.is_alive())
+
+    self.assertEmpty(errors)
+    r0_arrive = events.index("rank_0_arrived_round_0")
+    for r in range(world_size):
+      self.assertGreater(events.index(f"passed_round_0_rank_{r}"), r0_arrive)
+    r3_arrive = events.index("rank_3_arrived_round_1")
+    for r in range(world_size):
+      self.assertGreater(events.index(f"passed_round_1_rank_{r}"), r3_arrive)
+
+  def test_host_barrier_uses_monotonic_keys_and_no_device_collectives(self):
+    self.addCleanup(_cleanup_process_group)
+    test_timeout = datetime.timedelta(seconds=5)
+    with mock.patch.object(
+        torch_device_ops, "_HOST_BARRIER_TIMEOUT", test_timeout
+    ):
+      # Run across two consecutive ProcessGroup lifecycles in the same process
+      # to verify that distinct TorchDeviceOps instances share monotonic keys
+      # within a group AND reset cleanly to seq=0 on a fresh Store after
+      # teardown.
+      for _ in range(2):
+        store = torch.distributed.HashStore()
+        opts = fake_pg.FakeProcessGroup.Options()
+        # Any ProcessGroup collective (barrier, all_reduce, ...) raises
+        # RuntimeError.
+        opts.error_on_collective = True
+        torch.distributed.init_process_group(
+            backend="fake", store=store, rank=0, world_size=2, pg_options=opts
+        )
+
+        default_store = c10d._get_default_store()
+        target = target_lib.make_target(platform=target_lib.Platform.CPU)
+        ops_a = torch_device_ops.TorchDeviceOps(target)
+        ops_b = torch_device_ops.TorchDeviceOps(target)
+
+        peer_arrived = [False, False]
+
+        def _peer(peer_store=default_store, arrived=peer_arrived) -> None:
+          for seq in (0, 1):
+            time.sleep(0.02)
+            arrived[seq] = True
+            torch_device_ops._store_host_barrier(
+                peer_store,
+                2,
+                barrier_key=torch_device_ops._host_barrier_key(seq),
+                timeout=test_timeout,
+            )
+
+        peer_thread = threading.Thread(target=_peer, daemon=True)
+        peer_thread.start()
+        ops_a.host_barrier()
+        self.assertTrue(peer_arrived[0])
+        ops_b.host_barrier()
+        self.assertTrue(peer_arrived[1])
+        peer_thread.join(timeout=5.0)
+        self.assertFalse(peer_thread.is_alive())
+        torch.distributed.destroy_process_group()
+
+  def test_host_barrier_times_out_when_peer_missing(self):
+    self.addCleanup(_cleanup_process_group)
+    store = torch.distributed.HashStore()
+    opts = fake_pg.FakeProcessGroup.Options()
+    opts.error_on_collective = True
+    torch.distributed.init_process_group(
+        backend="fake", store=store, rank=0, world_size=2, pg_options=opts
+    )
+    ops = torch_device_ops.TorchDeviceOps(
+        target_lib.make_target(platform=target_lib.Platform.CPU)
+    )
+    with (
+        mock.patch.object(
+            torch_device_ops,
+            "_HOST_BARRIER_TIMEOUT",
+            datetime.timedelta(milliseconds=50),
+        ),
+        self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+            RuntimeError,
+            r"host barrier 'perflab_host_barrier:0': peers did not arrive in"
+            r" 0\.05 s; a peer rank likely failed or diverged",
+        ) as ctx,
+    ):
+      ops.host_barrier()
+    self.assertIsInstance(
+        ctx.exception.__cause__, torch.distributed.DistStoreError
+    )
 
   def test_compile_count_tpu_counts_new_executables(self):
     ops = _tpu_ops()
