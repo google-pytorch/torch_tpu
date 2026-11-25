@@ -8000,6 +8000,53 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  @parameterized.named_parameters(
+      (
+          "out_of_place_scalar_value",
+          lambda x, dim, index: x.index_fill(dim, index, 5.0),
+      ),
+      (
+          "out_of_place_tensor_value",
+          lambda x, dim, index: x.index_fill(
+              dim, index, torch.tensor(5.0, device=x.device)
+          ),
+      ),
+      (
+          "in_place_scalar_value",
+          lambda x, dim, index: x.index_fill_(dim, index, 5.0),
+      ),
+      (
+          "in_place_tensor_value",
+          lambda x, dim, index: x.index_fill_(
+              dim, index, torch.tensor(5.0, device=x.device)
+          ),
+      ),
+  )
+  def test_index_fill_0d_index(self, index_fill_fn):
+    def test_fn(device: torch.device):
+      x = torch.zeros((4, 3), dtype=torch.float32, device=device)
+      index = torch.tensor(1, dtype=torch.long, device=device)
+      negative_index = torch.tensor(-1, dtype=torch.long, device=device)
+      return (
+          index_fill_fn(x.clone(), 0, index),
+          index_fill_fn(x.clone(), 1, negative_index),
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_index_fill_0d_self_0d_index(self):
+    def test_fn(device: torch.device):
+      x = torch.tensor(1.0, device=device)
+      index = torch.tensor(0, dtype=torch.long, device=device)
+      val_tensor = torch.tensor(5.0, device=device)
+      out_scalar = x.index_fill(0, index, 9.0)
+      out_tensor = x.index_fill(-1, index, val_tensor)
+      inplace = x.clone()
+      inplace.index_fill_(0, index, -7.0)
+      return out_scalar, out_tensor, inplace
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_index_tensor_multidim_1(self):
     t = torch.arange(60).reshape(3, 4, 5)
     i1 = torch.tensor([[0, 1], [1, 2]])

@@ -62,9 +62,13 @@ absl::StatusOr<mlir::MlirOp> BuildIndexFillShlo(mlir::MlirOp self, int64_t dim,
     return value;
   }
 
+  // A 0D index fills a single position, like a 1D index with one element.
+  const int64_t num_indices =
+      index_type.getRank() == 0 ? 1 : index_type.getDimSize(0);
+
   // Create updates tensor by broadcasting scalar value.
   Dimensions updates_shape = CopyIntVector(self_type.getShape());
-  updates_shape[dim] = index_type.getDimSize(0);
+  updates_shape[dim] = num_indices;
   mlir::RankedTensorType updates_type =
       mlir::RankedTensorType::get(updates_shape, computation_type);
   mlir::MlirOp updates =
@@ -85,7 +89,7 @@ absl::StatusOr<mlir::MlirOp> BuildIndexFillShlo(mlir::MlirOp self, int64_t dim,
   mlir::MlirOp wrapped_index = mlir::stablehlo::Add(index, dim_size);
   index = mlir::stablehlo::Select(is_negative, wrapped_index, index);
 
-  index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
+  index = mlir::stablehlo::Reshape(index, {num_indices, 1});
   mlir::stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers =
       mlir::stablehlo::ScatterDimensionNumbersAttr::get(
           &self.getContext(),
