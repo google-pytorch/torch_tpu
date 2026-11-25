@@ -23,11 +23,11 @@
 
 namespace torch_tpu {
 
-// Returns the Mosaic nonzero indices kernels, F32, U8, then PRED (torch.bool),
-// each 1-D to 8-D, for registration with `UnboundedDynamicKernelRegistry` in
-// that order. Each is keyed under the extentless key of the graphs it serves:
-// nonzero graphs with an input of its dtype and rank. The predicate excludes
-// only +0.0 and -0.0 (or 0 / false), matching torch.nonzero.
+// Returns the Mosaic nonzero indices kernels, F32 then U8, each 1-D to 8-D, for
+// registration with `UnboundedDynamicKernelRegistry` in that order. Each is
+// keyed under the extentless key of the graphs it serves: nonzero graphs with
+// an input of its dtype and rank. The predicate excludes only +0.0 and -0.0 (or
+// 0), matching torch.nonzero.
 //
 // Buffer contracts (all payloads have no dynamic-metadata prefix). The input is
 // the only buffer the caller supplies; `Execute` allocates the destination
@@ -71,15 +71,12 @@ namespace torch_tpu {
 //     to {1,0} when K <= P.
 //   - Caller-checked arithmetic bounds: every dimension is at most INT32_MAX,
 //     N <= INT32_MAX - 127, and P < K <= min(element count, INT32_MAX).
-// - U8 and PRED (torch.bool) kernels: as the F32 ones, with byte-packed inputs
-//   in their default layouts, which pack four rows (of 128 elements for rank
-//   one) to a word: {U8,PRED}[N]{0:T(B)(128)(4,1)} with B in {1024, 512},
-//   XLA's default being 512 if N <= 512, and
-//   {U8,PRED}[...,M,N]{D-1,...,0:T(8,128)(4,1)}. XLA defaults to another layout
-//   if that pads less, e.g. to {1,0:T(32,128)(4,1)} if M is a multiple of 32.
-//   PRED kernels reuse the U8 Mosaic kernel via a layout-preserving HLO bitcast
-//   from PRED to U8, and are gated on libtpu >= 0.0.54.dev20261125 (or in-tree
-//   builds) for unbounded dynamic HLO bitcast support.
+// - U8 kernels: as the F32 ones, with U8 inputs in their default layouts, which
+//   pack four rows (of 128 elements for rank one) to a word:
+//   U8[N]{0:T(B)(128)(4,1)} with B in {1024, 512}, XLA's default being 512 if
+//   N <= 512, and U8[...,M,N]{D-1,...,0:T(8,128)(4,1)}. XLA defaults to
+//   another layout if that pads less, e.g. to {1,0:T(32,128)(4,1)} if M is a
+//   multiple of 32.
 std::vector<UnboundedDynamicKernelRegistration>
 GetNonzeroUnboundedDynamicKernels();
 
