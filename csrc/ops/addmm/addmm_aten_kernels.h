@@ -34,9 +34,9 @@ at::Tensor& AtenAddmmActivationOut(const at::Tensor& self,
                                    const at::Scalar& alpha, bool use_gelu,
                                    at::Tensor& out);
 
-at::Tensor AtenAddmmDtype(const at::Tensor& self_bias, const at::Tensor& mat1,
-                          const at::Tensor& mat2, at::ScalarType out_dtype,
-                          const at::Scalar& beta, const at::Scalar& alpha);
+[[nodiscard]] at::Tensor AtenAddmmDtype(
+    const at::Tensor& self_bias, const at::Tensor& mat1, const at::Tensor& mat2,
+    at::ScalarType out_dtype, const at::Scalar& beta, const at::Scalar& alpha);
 
 at::Tensor& AtenAddmmDtypeOut(const at::Tensor& self_bias,
                               const at::Tensor& mat1, const at::Tensor& mat2,

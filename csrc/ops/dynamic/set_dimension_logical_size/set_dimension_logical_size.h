@@ -35,8 +35,9 @@ namespace torch_tpu {
 // Returns:
 //   The input tensor with the first `size` elements of the specified dimension
 //   being valid and the rest being undefined.
-at::Tensor SetDimensionLogicalSize(const at::Tensor& input, int64_t dim,
-                                   const at::Tensor& size);
+[[nodiscard]] at::Tensor SetDimensionLogicalSize(const at::Tensor& input,
+                                                 int64_t dim,
+                                                 const at::Tensor& size);
 
 }  // namespace torch_tpu
 

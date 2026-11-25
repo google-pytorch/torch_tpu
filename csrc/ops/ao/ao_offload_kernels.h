@@ -27,16 +27,17 @@ namespace torch_tpu {
 
 // Activation offload kernel. Emits annotate_device_placement with placement
 // "pinned_host".
-at::Tensor AtenAoOffload(const at::Tensor& tensor);
+[[nodiscard]] at::Tensor AtenAoOffload(const at::Tensor& tensor);
 
 // Activation reload kernel. Emits annotate_device_placement with placement
 // "device".
-at::Tensor AtenAoReload(const at::Tensor& tensor, at::Device device,
-                        at::OptionalIntArrayRef original_size = std::nullopt,
-                        at::OptionalIntArrayRef original_stride = std::nullopt);
+[[nodiscard]] at::Tensor AtenAoReload(
+    const at::Tensor& tensor, at::Device device,
+    at::OptionalIntArrayRef original_size = std::nullopt,
+    at::OptionalIntArrayRef original_stride = std::nullopt);
 
 // Activation wait_tensor kernel (no-op pass-through).
-at::Tensor AtenAoWaitTensor(
+[[nodiscard]] at::Tensor AtenAoWaitTensor(
     const at::Tensor& tensor,
     const std::optional<at::Tensor>& keepalive = std::nullopt,
     const std::optional<at::Tensor>& last_use_of_storage = std::nullopt);

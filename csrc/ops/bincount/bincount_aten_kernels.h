@@ -23,9 +23,9 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenBinCount(const at::Tensor& self,
-                        const c10::optional<at::Tensor>& weights,
-                        c10::SymInt minlength);
+[[nodiscard]] at::Tensor AtenBinCount(const at::Tensor& self,
+                                      const c10::optional<at::Tensor>& weights,
+                                      c10::SymInt minlength);
 
 }  // namespace torch_tpu
 

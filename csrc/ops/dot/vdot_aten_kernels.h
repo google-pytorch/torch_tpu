@@ -21,7 +21,7 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenVdot(const at::Tensor& lhs, const at::Tensor& rhs);
+[[nodiscard]] at::Tensor AtenVdot(const at::Tensor& lhs, const at::Tensor& rhs);
 
 }  // namespace torch_tpu
 

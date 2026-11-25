@@ -71,7 +71,7 @@ enum class TransferSyncMode {
 //
 // Otherwise, non_blocking will determine whether kEagerNonBlocking or
 // kEagerBlocking is used.
-TransferSyncMode GetTransferSyncMode(bool non_blocking);
+[[nodiscard]] TransferSyncMode GetTransferSyncMode(bool non_blocking);
 
 }  // namespace torch_tpu
 

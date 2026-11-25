@@ -28,8 +28,9 @@ namespace torch_tpu {
 // concatenate operations instead of falling back to PyTorch's default composite
 // decomposition (allocating a full-sized output tensor filled with `value` and
 // mutating its interior via DynamicUpdateSlice).
-at::Tensor AtenConstantPadNd(const at::Tensor& self, at::IntArrayRef pad,
-                             const at::Scalar& value);
+[[nodiscard]] at::Tensor AtenConstantPadNd(const at::Tensor& self,
+                                           at::IntArrayRef pad,
+                                           const at::Scalar& value);
 
 }  // namespace torch_tpu
 

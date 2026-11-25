@@ -24,7 +24,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenChannelShuffle(const at::Tensor& self, int64_t groups);
+[[nodiscard]] at::Tensor AtenChannelShuffle(const at::Tensor& self,
+                                            int64_t groups);
 
 }  // namespace torch_tpu
 

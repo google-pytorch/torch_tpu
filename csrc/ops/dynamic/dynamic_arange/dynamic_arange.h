@@ -42,9 +42,11 @@ namespace torch_tpu {
 //
 // Returns:
 //   A 1-D tensor containing the arange sequence, bounded to its dynamic length.
-at::Tensor DynamicArange(const at::Tensor& start, const at::Tensor& end,
-                         const at::Tensor& step, int64_t max_length,
-                         at::ScalarType dtype);
+[[nodiscard]] at::Tensor DynamicArange(const at::Tensor& start,
+                                       const at::Tensor& end,
+                                       const at::Tensor& step,
+                                       int64_t max_length,
+                                       at::ScalarType dtype);
 
 }  // namespace torch_tpu
 
