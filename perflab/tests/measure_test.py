@@ -16,7 +16,9 @@
 
 import contextlib
 import gc
+import resource
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -291,12 +293,11 @@ class AgreeingOps(fakes.RecordingOps):
   """DeviceOps of a process whose other process proposes more steps once.
 
   The other process proposes `other_process_extra_steps` more steps for the
-  `extra_on_proposal`-th post-warmup proposal: the first is the post-warmup
-  run's first agreement, the second the first round of the timed window, and
-  so on.
+  `extra_on_proposal`-th post-warmup timed-window proposal: the first is the
+  first round of the timed window, the second is the second round, and so on.
   """
 
-  def __init__(self, other_process_extra_steps, extra_on_proposal=3):
+  def __init__(self, other_process_extra_steps, extra_on_proposal=2):
     super().__init__()
     self.proposals = []
     self._extra = other_process_extra_steps
@@ -348,7 +349,8 @@ class MeasureWindowTest(seed_test_utils.RepeatableTest):
         [1.0, 1.0, 1.0, 0.25], steps=2, min_seconds=3.0, max_steps=100
     )
     self.assertEqual(m.num_post_warmup_steps, 6)
-    self.assertEqual(m.post_warmup_step_time_seconds, 0.5)
+    self.assertEqual(m.post_warmup_step_time_seconds, 0.25)
+    self.assertEqual(m.diagnostics["post_warmup_step_time_mean_seconds"], 0.5)
 
   def test_capped_at_max_steps(self):
     step, m = self._measure([0.001], steps=3, min_seconds=2.0, max_steps=50)
@@ -369,11 +371,11 @@ class MeasureWindowTest(seed_test_utils.RepeatableTest):
   def test_processes_agree_on_the_first_round(self):
     # The other process wants 7 more steps than the 3 of the first round, and
     # 10 steps of 0.125 s then extend to 16 steps for 2 s.
-    ops = AgreeingOps(other_process_extra_steps=7, extra_on_proposal=2)
+    ops = AgreeingOps(other_process_extra_steps=7, extra_on_proposal=1)
     step, m = self._measure(
         [0.125], steps=3, min_seconds=2.0, max_steps=100, ops=ops
     )
-    self.assertEqual(ops.proposals, [3, 3, 16, 16])
+    self.assertEqual(ops.proposals, [3, 16, 16])
     self.assertEqual(m.num_post_warmup_steps, 16)
 
   def test_logs_summary_and_every_step_time_of_a_short_window(self):
@@ -493,6 +495,25 @@ class MeasurePipelinedTest(seed_test_utils.RepeatableTest):
     self.assertEqual(m.num_pipelined_steps, 8)
     self.assertEqual(step.calls, 2 + 8 + 8)
 
+  def test_pipelined_steps_seeded_from_median_synchronized_step_time(self):
+    # 2 warmup steps [10.0, 0.25], then 3 sync steps [0.25, 0.25, 1.0] (total
+    # 1.5s >= min_seconds=1.5s; median=0.25s, mean=0.5s), then pipelined steps
+    # of 0.25s. Seeding initial_steps from the median runs ceil(1.5 / 0.25) = 6
+    # pipelined steps in a single round rather than ceil(1.5 / 0.5) = 3.
+    events = []
+    step = PipelinedStep(
+        fakes.FakeClock(),
+        [10.0, 0.25, 0.25, 0.25, 1.0, 0.25],
+        events,
+    )
+    m = self._measure(step, EventOps(events), steps=3, min_seconds=1.5)
+
+    self.assertEqual(m.num_post_warmup_steps, 3)
+    self.assertEqual(m.post_warmup_step_time_seconds, 0.25)
+    self.assertEqual(m.num_pipelined_steps, 6)
+    pipelined = events[events.index("step out-5") + 4 :]
+    self.assertEqual(pipelined.count("await None"), 1)
+
   def _faster_pipelined_step(self, events=None):
     # 2 warmup steps, then synchronized steps of 0.25 s, and from the 11th step
     # on, i.e. once 8 synchronized steps have taken 2 s, pipelined steps of
@@ -550,10 +571,9 @@ class MeasurePipelinedTest(seed_test_utils.RepeatableTest):
     ops = ProposalOps()
     self._measure(self._faster_pipelined_step(), ops, steps=3, min_seconds=2.0)
 
-    # The post-warmup run's first agreement; the synchronized rounds of 3 and 8
-    # steps and the final count; then the pipelined rounds of 8 and 16 steps and
-    # the final count.
-    self.assertEqual(ops.proposals, [3, 3, 8, 8, 8, 16, 16])
+    # The synchronized rounds of 3 and 8 steps and the final count; then the
+    # pipelined rounds of 8 and 16 steps and the final count.
+    self.assertEqual(ops.proposals, [3, 8, 8, 8, 16, 16])
 
   def test_no_pipelined_steps_when_disabled(self):
     step = PipelinedStep(fakes.FakeClock(), [10.0, 1.0])
@@ -1140,6 +1160,54 @@ class MeasureMetricsTest(_XprofTestCase):
             "peak_host_compilation_memory_mb",
         ],
     )
+
+  def test_post_warmup_step_time_uses_median_and_records_diagnostics(self):
+    clock = fakes.FakeClock()
+    # 2 warmup steps, then 9 fast 0.01s steps + 1 preemption stall of 0.21s.
+    # Median = 0.01s, mean = 0.03s, p10 = 0.01s, p90 = 0.03s, max = 0.21s.
+    step = fakes.CountingStep(
+        clock=clock,
+        step_seconds=[1.0, 0.01] + [0.01] * 9 + [0.21],
+    )
+    rusage_calls = 0
+
+    def fake_getrusage(_who):
+      nonlocal rusage_calls
+      rusage_calls += 1
+      return types.SimpleNamespace(ru_nivcsw=100 if rusage_calls == 1 else 107)
+
+    with mock.patch.object(
+        resource,
+        "getrusage",
+        autospec=True,
+        side_effect=fake_getrusage,
+    ):
+      m = _run_measure(
+          step, fakes.RecordingOps(), steps=10, min_warmup=2, clock=clock
+      )
+
+    self.assertAlmostEqual(m.post_warmup_step_time_seconds, 0.01)
+    # Non-pipelined stepper fallback throughput uses the median too.
+    self.assertAlmostEqual(m.throughput_step_time_seconds, 0.01)
+    self.assertIsNotNone(m.diagnostics)
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_mean_seconds"], 0.03
+    )
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_p10_seconds"], 0.01
+    )
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_p90_seconds"], 0.03
+    )
+    self.assertAlmostEqual(
+        m.diagnostics["post_warmup_step_time_max_seconds"], 0.21
+    )
+    self.assertEqual(m.diagnostics["ru_nivcsw"], 7.0)
+    # metric_map() must remain 100% free of diagnostics keys.
+    metric_map = m.metric_map()
+    for key in m.diagnostics:
+      self.assertNotIn(key, metric_map)
+    self.assertNotIn("diagnostics", metric_map)
 
 
 class XprofContextTest(
