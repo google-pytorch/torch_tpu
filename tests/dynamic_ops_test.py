@@ -22,7 +22,9 @@ from typing import Any
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal.utils import utils
 from tests import op_testing
+from tests import oss_utils
 
 
 def _to_cpu(result: Any) -> Any:
@@ -180,6 +182,12 @@ _NONZERO_SERVED_CASES = (
     _nonzero_case((1, 2, 1, 2, 8, 129), _ALL_NONZERO, torch.uint8),
     _nonzero_case((2, 1, 2, 1, 2, 8, 129), 99, torch.uint8),
     _nonzero_case((1, 2, 1, 2, 1, 2, 8, 129), _ALL_NONZERO, torch.uint8),
+    # bool reuses the U8 kernels via an HLO bitcast from PRED to U8; cover
+    # both 1-D tile sizes, 2-D, and N-D without duplicating the U8 edge cases.
+    _nonzero_case((129,), 5, torch.bool),
+    _nonzero_case((513,), 7, torch.bool),
+    _nonzero_case((9, 129), 10, torch.bool),
+    _nonzero_case((2, 8, 129), 10, torch.bool),
 )
 
 _NONZERO_NOT_SERVED_CASES = (
@@ -188,10 +196,11 @@ _NONZERO_NOT_SERVED_CASES = (
     _nonzero_case((5, 1), 5),
     _nonzero_case((5, 3), 5),
     _nonzero_case((2, 4, 4), 5),
-    # Nor is it T(8,128)(4,1) for U8, e.g. T(32,128)(4,1) when M is a multiple
-    # of 32.
+    # Nor is it T(8,128)(4,1) for U8 or bool, e.g. T(32,128)(4,1) when M is a
+    # multiple of 32.
     _nonzero_case((3, 7), 5, torch.uint8),
     _nonzero_case((32, 129), 5, torch.uint8),
+    _nonzero_case((32, 129), 5, torch.bool),
     # K = 0 skips the index graph; K <= rank rounded up to a power of two uses
     # row-major S64[K,rank] layout.
     _nonzero_case((17, 257), 0),
@@ -201,7 +210,7 @@ _NONZERO_NOT_SERVED_CASES = (
     _nonzero_case((3000,), 1),
     _nonzero_case((16,), 1),
     _nonzero_case((2, 8, 129), 4),
-    # Neither F32 nor U8, or rank above 8.
+    # Neither F32, U8, nor bool, or rank above 8.
     _nonzero_case((17, 257), 5, torch.bfloat16),
     _nonzero_case((3000,), 5, torch.bfloat16),
     _nonzero_case((16,), 5, torch.bfloat16),
@@ -289,6 +298,17 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
 
   @parameterized.named_parameters(*_NONZERO_SERVED_CASES)
   def test_nonzero_served(self, x: torch.Tensor):
+    if (
+        x.dtype == torch.bool
+        and oss_utils.is_oss()
+        and (ver := utils.libtpu_version()) is not None
+        and ver < (0, 0, 54)
+    ):
+      torch.tpu._clear_cache()  # pylint: disable=protected-access
+      torch.nonzero(torch.zeros_like(x).to("tpu"))  # Warm up the count graph.
+      self.run_and_check_cache(torch.nonzero, x, served=False)
+      return
+
     # Warm up the dynamic index kernel and this shape's static count graph
     # (a CPU-to-TPU copy avoids fusing constant ops into either graph).
     torch.nonzero(torch.ones_like(x).to("tpu"))
@@ -300,7 +320,7 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
       tiles_1d = [[min(max(128, 1 << (x.numel() - 1).bit_length()), 1024)]]
       tiles = [[8, 128]]
     else:
-      # U8 tiles pack four rows (of 128 for 1-D) to a word.
+      # U8 and bool tiles pack four rows (of 128 for 1-D) to a word.
       tiles_1d = [[512 if x.numel() <= 512 else 1024], [128], [4, 1]]
       tiles = [[8, 128], [4, 1]]
     # (minor_to_major, tiles, element_size_in_bits); see nonzero_indices.h.

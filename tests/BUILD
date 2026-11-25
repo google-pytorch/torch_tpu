@@ -2638,10 +2638,12 @@ torch_tpu_py_test(
     shard_count = 8,
     deps = [
         ":op_testing",
+        ":oss_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils",
     ],
 )
 

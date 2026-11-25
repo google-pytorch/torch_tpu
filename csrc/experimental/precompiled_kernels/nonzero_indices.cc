@@ -36,13 +36,18 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/unbounded_dynamic_kernel_registry.h"
+#include "csrc/common/version.h"
 #include "csrc/experimental/precompiled_kernels/kernel_utils.h"
+#include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
 #include "csrc/internal/mosaic/kiln_utils.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -608,18 +613,20 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
 // inputs whose first tile is T(8,kTileMinorDim) or T(kTileMinorDim); see the
 // header. A rank-one F32 array is stored in logical order whatever its tile,
 // and the kernel reads no further than the T(128) padding, so the 1-D kernels
-// differ only in this layout. U8 layouts add inner tiles that pack four rows
-// (of 128 elements for rank one) to a word, which loads unpack.
+// differ only in this layout. U8 and PRED layouts add inner tiles that pack
+// four rows (of 128 elements for rank one) to a word, which loads unpack.
 template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim>
 xla::Layout NonzeroInputLayout() {
   Indices minor_to_major(kRank);
   std::iota(minor_to_major.rbegin(), minor_to_major.rend(), 0);
   std::vector<xla::Tile> tiles = {kRank == 1 ? xla::Tile({kTileMinorDim})
                                              : xla::Tile({8, kTileMinorDim})};
-  if constexpr (kDtype == mlir::ElementType::UI8 && kRank == 1) {
+  constexpr bool kIsBytePacked =
+      kDtype == mlir::ElementType::UI8 || kDtype == mlir::ElementType::PRED;
+  if constexpr (kIsBytePacked && kRank == 1) {
     tiles.push_back(xla::Tile({kLanes}));
   }
-  if constexpr (kDtype == mlir::ElementType::UI8) {
+  if constexpr (kIsBytePacked) {
     tiles.push_back(xla::Tile({4, 1}));
   }
   return xla::Layout(minor_to_major, tiles);
@@ -674,6 +681,16 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
       .is_compatible =
           [](absl::Span<const Shape> input_shapes,
              absl::Span<const Shape> output_shapes) {
+            // Unbounded dynamic PRED->U8 HLO bitcasts require XLA:TPU support
+            // added in libtpu 0.0.54.dev20261125.
+            // TODO (suzukiryo): Remove when libtpu version updated in OSS
+            if constexpr (kDtype == mlir::ElementType::PRED) {
+              constexpr Version kMinLibtpuForUnboundedDynamicBitcast(
+                  0, 0, 54, Version::Dev(20261125));
+              if (GetLibtpuVersion() < kMinLibtpuForUnboundedDynamicBitcast) {
+                return false;
+              }
+            }
             // The extentless key already fixes the number, ranks and dtypes of
             // the operands: one rank-kRank kDtype input and one rank-2 S64
             // output. The layouts are those of the kernel's buffer contract.
@@ -690,22 +707,42 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
   return dynamic_meta;
 }
 
+// Returns an HLO operands transform for `kDtype`, or null if the kernel accepts
+// `kDtype` directly. Mosaic rejects PRED operands, while TPU stores PRED as
+// 1-byte i8 with the same layout as U8, so PRED inputs are bitcast to U8.
+template <mlir::ElementType kDtype>
+OperandsTransform MakeNonzeroOperandsTransform() {
+  if constexpr (kDtype != mlir::ElementType::PRED) {
+    return nullptr;
+  } else {
+    return [](xla::HloComputation::Builder& builder,
+              absl::Span<xla::HloInstruction*> operands) {
+      xla::Shape u8_shape = operands[0]->shape();
+      u8_shape.set_element_type(xla::U8);
+      operands[0] = builder.AddInstruction(
+          xla::HloInstruction::CreateBitcast(u8_shape, operands[0]));
+    };
+  }
+}
+
 // Builds and compiles the Mosaic nonzero kernel for rank-`kRank` inputs. See
 // `GetNonzeroUnboundedDynamicKernels` in the header for their contracts.
 template <mlir::ElementType kDtype, int kRank, int64_t kTileMinorDim>
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options) {
+  constexpr mlir::ElementType kKernelDtype =
+      kDtype == mlir::ElementType::PRED ? mlir::ElementType::UI8 : kDtype;
   const xla::Shape output_view =
       MakeUnboundedShape(xla::S32, /*rank=*/2, {xla::Tile({1, 128})});
-  TT_ASSIGN_OR_RETURN(const kiln::DType kiln_dtype, ToKilnDType(kDtype));
+  TT_ASSIGN_OR_RETURN(const kiln::DType kiln_dtype, ToKilnDType(kKernelDtype));
   TT_ASSIGN_OR_RETURN(kiln::Kernel kernel,
                       BuildNonzeroIndices(kRank, kiln_dtype));
-  return CompileMosaicKernel(client, std::move(compile_options),
-                             std::move(kernel),
-                             NonzeroParameters<kDtype, kRank, kTileMinorDim>(),
-                             output_view, {2, 3, -1, -1},
-                             /*aliased_parameter=*/1);
+  return CompileMosaicKernel(
+      client, std::move(compile_options), std::move(kernel),
+      NonzeroParameters<kDtype, kRank, kTileMinorDim>(), output_view,
+      {2, 3, -1, -1},
+      /*aliased_parameter=*/1, MakeNonzeroOperandsTransform<kDtype>());
 }
 
 // Returns the ExtentlessKey a nonzero graph would be lowered to.
@@ -789,6 +826,8 @@ GetNonzeroUnboundedDynamicKernels() {
   std::vector<UnboundedDynamicKernelRegistration> kernels =
       GetNonzeroKernelsOfDtype<mlir::ElementType::F32, 1024, 512, 256, 128>();
   absl::c_move(GetNonzeroKernelsOfDtype<mlir::ElementType::UI8, 1024, 512>(),
+               std::back_inserter(kernels));
+  absl::c_move(GetNonzeroKernelsOfDtype<mlir::ElementType::PRED, 1024, 512>(),
                std::back_inserter(kernels));
   return kernels;
 }
