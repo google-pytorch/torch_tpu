@@ -12621,6 +12621,278 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(res_c2r.shape, torch.Size([8]))
     self.assertEqual(res_c2r.dtype, torch.float32)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="fftn_4d_backward",
+          op=torch.fft.fftn,
+          shape=(2, 3, 4, 5),
+          dtype=torch.complex64,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=None,
+          norm="backward",
+      ),
+      dict(
+          testcase_name="fftn_4d_permuted_ortho",
+          op=torch.fft.fftn,
+          shape=(2, 3, 2, 4, 3),
+          dtype=torch.complex64,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=(3, 1, 4, 0),
+          norm="ortho",
+      ),
+      dict(
+          testcase_name="fftn_5d_forward",
+          op=torch.fft.fftn,
+          shape=(2, 2, 3, 2, 2),
+          dtype=torch.complex64,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=None,
+          norm="forward",
+      ),
+      dict(
+          testcase_name="fftn_6d_backward",
+          op=torch.fft.fftn,
+          shape=(2, 2, 2, 2, 2, 2),
+          dtype=torch.complex64,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=None,
+          norm="backward",
+      ),
+      dict(
+          testcase_name="ifftn_4d_backward",
+          op=torch.fft.ifftn,
+          shape=(2, 3, 4, 5),
+          dtype=torch.complex64,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=None,
+          norm="backward",
+      ),
+      dict(
+          testcase_name="ifftn_4d_permuted_ortho",
+          op=torch.fft.ifftn,
+          shape=(2, 3, 2, 4, 3),
+          dtype=torch.complex64,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=(3, 1, 4, 0),
+          norm="ortho",
+      ),
+      dict(
+          testcase_name="ifftn_5d_forward",
+          op=torch.fft.ifftn,
+          shape=(2, 2, 3, 2, 2),
+          dtype=torch.complex64,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=None,
+          norm="forward",
+      ),
+      dict(
+          testcase_name="rfftn_4d_backward",
+          op=torch.fft.rfftn,
+          shape=(2, 3, 4, 5),
+          dtype=torch.float32,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=None,
+          norm="backward",
+      ),
+      dict(
+          testcase_name="rfftn_4d_permuted_ortho",
+          op=torch.fft.rfftn,
+          shape=(2, 3, 2, 4, 3),
+          dtype=torch.float32,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=(3, 1, 4, 0),
+          norm="ortho",
+      ),
+      dict(
+          testcase_name="rfftn_5d_forward",
+          op=torch.fft.rfftn,
+          shape=(2, 2, 3, 2, 4),
+          dtype=torch.float32,
+          out_dtype=torch.complex64,
+          s=None,
+          dim=None,
+          norm="forward",
+      ),
+      dict(
+          testcase_name="irfftn_4d_even_backward",
+          op=torch.fft.irfftn,
+          shape=(2, 3, 4, 3),
+          dtype=torch.complex64,
+          out_dtype=torch.float32,
+          s=(2, 3, 4, 4),
+          dim=None,
+          norm="backward",
+      ),
+      dict(
+          testcase_name="irfftn_4d_odd_ortho",
+          op=torch.fft.irfftn,
+          shape=(2, 3, 4, 3),
+          dtype=torch.complex64,
+          out_dtype=torch.float32,
+          s=(2, 3, 4, 5),
+          dim=None,
+          norm="ortho",
+      ),
+      dict(
+          testcase_name="irfftn_4d_permuted_forward",
+          op=torch.fft.irfftn,
+          shape=(2, 3, 2, 4, 3),
+          dtype=torch.complex64,
+          out_dtype=torch.float32,
+          s=(4, 3, 3, 2),
+          dim=(3, 1, 4, 0),
+          norm="forward",
+      ),
+      dict(
+          testcase_name="irfftn_5d_backward",
+          op=torch.fft.irfftn,
+          shape=(2, 2, 3, 2, 3),
+          dtype=torch.complex64,
+          out_dtype=torch.float32,
+          s=(2, 2, 3, 2, 4),
+          dim=None,
+          norm="backward",
+      ),
+  )
+  def test_fft_high_rank(self, op, shape, dtype, out_dtype, s, dim, norm):
+    x_cpu = torch.randn(shape, dtype=dtype)
+    expected = op(x_cpu, s=s, dim=dim, norm=norm)
+
+    x_tpu = x_cpu.to("tpu")
+    actual = op(x_tpu, s=s, dim=dim, norm=norm)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=actual.cpu(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+    out_tpu = torch.empty(0, dtype=out_dtype, device="tpu")
+    actual_out = op(x_tpu, s=s, dim=dim, norm=norm, out=out_tpu)
+    self.assertIs(actual_out, out_tpu)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+  def test_fft_r2c_high_rank_twosided(self):
+    x_cpu = torch.randn((2, 3, 2, 4), dtype=torch.float32)
+    expected = torch.ops.aten._fft_r2c(x_cpu, [0, 1, 2, 3], 1, False)
+
+    x_tpu = x_cpu.to("tpu")
+    actual = torch.ops.aten._fft_r2c(x_tpu, [0, 1, 2, 3], 1, False)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=actual.cpu(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+    out_tpu = torch.empty(0, dtype=torch.complex64, device="tpu")
+    torch.ops.aten._fft_r2c.out(x_tpu, [0, 1, 2, 3], 1, False, out=out_tpu)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="fftn_2d",
+          op=torch.fft.fftn,
+          shape=(2, 3),
+          dim=(),
+          norm="backward",
+      ),
+      dict(
+          testcase_name="ifftn_2d_ortho",
+          op=torch.fft.ifftn,
+          shape=(2, 3),
+          dim=(),
+          norm="ortho",
+      ),
+      dict(
+          testcase_name="fftn_0d_scalar",
+          op=torch.fft.fftn,
+          shape=(),
+          dim=None,
+          norm="backward",
+      ),
+  )
+  def test_fft_c2c_empty_dims(self, op, shape, dim, norm):
+    x_cpu = torch.randn(shape, dtype=torch.complex64)
+    expected = op(x_cpu, dim=dim, norm=norm)
+
+    x_tpu = x_cpu.to("tpu")
+    actual = op(x_tpu, dim=dim, norm=norm)
+    self.assertEqual(actual.cpu(), expected)
+
+    # Verify the returned tensor does not alias the input.
+    actual.add_(1.0)
+    self.assertEqual(x_tpu.cpu(), x_cpu)
+
+    out_tpu = torch.empty(0, dtype=torch.complex64, device="tpu")
+    op(x_tpu, dim=dim, norm=norm, out=out_tpu)
+    self.assertEqual(out_tpu.cpu(), expected)
+
+    # Verify in-place out aliasing self.
+    x_inplace = x_cpu.to("tpu")
+    op(x_inplace, dim=dim, norm=norm, out=x_inplace)
+    self.assertEqual(x_inplace.cpu(), expected)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bfloat16_onesided",
+          dtype=torch.bfloat16,
+          normalization=0,
+          onesided=True,
+      ),
+      dict(
+          testcase_name="bfloat16_twosided",
+          dtype=torch.bfloat16,
+          normalization=1,
+          onesided=False,
+      ),
+      dict(
+          testcase_name="float16_onesided",
+          dtype=torch.float16,
+          normalization=0,
+          onesided=True,
+      ),
+  )
+  def test_fft_r2c_out_low_precision_float(
+      self, dtype, normalization, onesided
+  ):
+    x_cpu = torch.randn((4,), dtype=dtype)
+    expected = torch.ops.aten._fft_r2c(
+        x_cpu.float(), [0], normalization, onesided
+    )
+
+    x_tpu = x_cpu.to("tpu")
+    out_tpu = torch.empty(0, dtype=torch.complex64, device="tpu")
+    actual = torch.ops.aten._fft_r2c.out(
+        x_tpu, [0], normalization, onesided, out=out_tpu
+    )
+    self.assertIs(actual, out_tpu)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
   def test_fake_quantize_per_tensor_affine_cachemask(self):
     scale = 1 / 255
     zero_point = 10

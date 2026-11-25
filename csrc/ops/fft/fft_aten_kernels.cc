@@ -29,8 +29,11 @@
 #include "ATen/ops/fft_ifft_native.h"
 #include "ATen/ops/fft_irfft_native.h"
 #include "ATen/ops/fft_rfft_native.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
@@ -70,59 +73,156 @@ enum class FftNormalization {
   kByN = 2,
 };
 
-// Normalizes the dimensions for the FFT operation
+constexpr int64_t kMaxStablehloFftRank = 3;
+
+enum class AllowEmptyDim {
+  kNo,
+  kYes,
+};
+
+// Normalizes the dimensions for an FFT operation, checking bounds and
+// uniqueness. When `allow_empty` is `kYes`, an empty `dim` returns empty
+// (meaning no axes are transformed).
 absl::StatusOr<Dimensions> GetNormalizedDims(const at::Tensor& self,
-                                             at::IntArrayRef dim) {
+                                             const at::IntArrayRef dim,
+                                             const AllowEmptyDim allow_empty) {
   const int64_t num_dims = self.dim();
-  Dimensions dims_vec = CopyIntVector(dim);
-
-  // If no dimensions are specified, perform FFT on all dimensions
-  if (dims_vec.empty()) {
-    dims_vec.reserve(num_dims);
-    for (int i = 0; i < num_dims; ++i) {
-      dims_vec.push_back(i);
-    }
+  if (dim.empty()) {
+    TT_RET_CHECK(allow_empty == AllowEmptyDim::kYes, error::kInvalidArgument)
+        << "expected at least 1 transform dimension, got 0";
+    return Dimensions{};
   }
+  // SafeWrapDim allows wrapping dim 0/-1 for 0D scalars, which is invalid for
+  // FFT transforms because there is no axis to transform.
+  TT_RET_CHECK(num_dims > 0, error::kPythonIndexError)
+      << "expected input tensor to have at least 1 dimension, got 0D";
 
-  // Normalize the dimensions to be positive and perform bounds-checking
   Dimensions normalized_dims;
-  normalized_dims.reserve(dims_vec.size());
-  for (int64_t d : dims_vec) {
-    TT_ASSIGN_OR_RETURN(int64_t wrapped_d, SafeWrapDim(d, num_dims));
+  normalized_dims.reserve(dim.size());
+  absl::flat_hash_set<int64_t> seen_dims;
+  seen_dims.reserve(dim.size());
+  for (const int64_t d : dim) {
+    TT_ASSIGN_OR_RETURN(const int64_t wrapped_d, SafeWrapDim(d, num_dims));
+    TT_RET_CHECK(seen_dims.insert(wrapped_d).second, error::kInvalidArgument)
+        << "dim " << wrapped_d << " appears multiple times in the list of dims";
     normalized_dims.push_back(wrapped_d);
   }
 
   return normalized_dims;
 }
 
-struct FftParams {
-  Dimensions fft_length;
-  std::vector<bool> is_fft_dim;
-};
+absl::StatusOr<at::ScalarType> GetFftR2cResultDtype(const at::Tensor& self) {
+  const at::ScalarType scalar_type = self.scalar_type();
+  TT_RET_CHECK(scalar_type == at::kHalf || scalar_type == at::kBFloat16 ||
+                   scalar_type == at::kFloat || scalar_type == at::kDouble,
+               error::kInvalidArgument)
+      << "expected float16, bfloat16, float32, or float64 input type, got "
+      << ToString(scalar_type);
+  const at::ScalarType compute_scalar_type =
+      scalar_type == at::kBFloat16 ? at::kFloat : scalar_type;
+  return c10::toComplexType(compute_scalar_type);
+}
 
-FftParams ComputeFftParams(
-    mlir::RankedTensorType input_type, Dimensions dims,
-    std::optional<int64_t> last_dim_size = std::nullopt) {
-  auto input_shape = input_type.getShape();
-  const int64_t num_dims = input_type.getRank();
+absl::Status ValidateFftC2rLastDimSize(const at::Tensor& self,
+                                       const int64_t last_dim,
+                                       const int64_t last_dim_size) {
+  TT_RET_CHECK(last_dim_size >= 1, error::kInvalidArgument)
+      << "expected last_dim_size to be >= 1, got " << last_dim_size;
+  const int64_t expected_size = last_dim_size / 2 + 1;
+  const int64_t actual_size = self.size(last_dim);
+  TT_RET_CHECK(actual_size == expected_size, error::kInvalidArgument)
+      << "expected input size along dim " << last_dim << " to be "
+      << expected_size << " for last_dim_size " << last_dim_size << ", got "
+      << actual_size;
+  return absl::OkStatus();
+}
 
+[[nodiscard]] Dimensions ComputeFftLengths(
+    const mlir::RankedTensorType input_type,
+    const absl::Span<const int64_t> dims,
+    const std::optional<int64_t> last_dim_size = std::nullopt) {
+  const mlir::ArrayRef<int64_t> input_shape = input_type.getShape();
   Dimensions fft_length;
   fft_length.reserve(dims.size());
   for (size_t i = 0; i < dims.size(); ++i) {
-    int64_t dim = dims[i];
+    const int64_t dim = dims[i];
     if (last_dim_size.has_value() && i == dims.size() - 1) {
       fft_length.push_back(*last_dim_size);
     } else {
       fft_length.push_back(input_shape[dim]);
     }
   }
+  return fft_length;
+}
 
-  std::vector<bool> is_fft_dim(num_dims, false);
-  for (int64_t dim : dims) {
-    is_fft_dim[dim] = true;
+// Applies a StableHLO FFT over the innermost `fft_length.size()` axes of
+// `input`. StableHLO's FftOp verifier requires `1 <= fft_length.size() <= 3`,
+// so higher-rank transforms are decomposed into chunks of at most 3 axes
+// (matching JAX's `_fft_core_nd`), splitting 4D into 2D+2D to avoid 1D tails.
+[[nodiscard]] mlir::MlirOp ApplyChunkedFft(
+    mlir::MlirOp input, const mlir::stablehlo::FftType fft_type,
+    const absl::Span<const int64_t> fft_length) {
+  const int64_t fft_rank = static_cast<int64_t>(fft_length.size());
+  ABSL_CHECK_GE(fft_rank, 1)  // CRASH_OK=Callers validate non-empty dims.
+      << "ApplyChunkedFft requires at least 1 FFT dimension. This is a "
+         "TorchTPU bug.";
+  if (fft_rank <= kMaxStablehloFftRank) {
+    return mlir::stablehlo::Fft(input, fft_type, AsArrayRef(fft_length));
   }
 
-  return {std::move(fft_length), std::move(is_fft_dim)};
+  const int64_t rank = GetTensorTypeOrDie(input).getRank();
+  const int64_t chunk_rank = (fft_rank == 4) ? 2 : kMaxStablehloFftRank;
+  const int64_t outer_rank = fft_rank - chunk_rank;
+  const int64_t batch_rank = rank - fft_rank;
+
+  // Rotate the last `fft_rank` axes so the `outer_rank` outer FFT axes become
+  // innermost, and build the inverse rotation to restore axis order.
+  Dimensions move_outer_to_back;
+  move_outer_to_back.reserve(rank);
+  Dimensions restore_axes;
+  restore_axes.reserve(rank);
+  for (int64_t i = 0; i < batch_rank; ++i) {
+    move_outer_to_back.push_back(i);
+    restore_axes.push_back(i);
+  }
+  for (int64_t i = rank - chunk_rank; i < rank; ++i) {
+    move_outer_to_back.push_back(i);
+  }
+  for (int64_t i = batch_rank; i < rank - chunk_rank; ++i) {
+    move_outer_to_back.push_back(i);
+  }
+  for (int64_t i = rank - outer_rank; i < rank; ++i) {
+    restore_axes.push_back(i);
+  }
+  for (int64_t i = batch_rank; i < rank - outer_rank; ++i) {
+    restore_axes.push_back(i);
+  }
+
+  const absl::Span<const int64_t> outer_lengths =
+      fft_length.subspan(0, outer_rank);
+  const absl::Span<const int64_t> inner_lengths =
+      fft_length.subspan(outer_rank, chunk_rank);
+
+  if (fft_type == mlir::stablehlo::FftType::FFT ||
+      fft_type == mlir::stablehlo::FftType::RFFT) {
+    // Transform the innermost `chunk_rank` axes first (handling real-to-complex
+    // on the final axis for RFFT), then apply complex FFT to the outer axes.
+    mlir::MlirOp result =
+        mlir::stablehlo::Fft(input, fft_type, AsArrayRef(inner_lengths));
+    result = mlir::stablehlo::Transpose(result, move_outer_to_back);
+    result =
+        ApplyChunkedFft(result, mlir::stablehlo::FftType::FFT, outer_lengths);
+    return mlir::stablehlo::Transpose(result, restore_axes);
+  }
+
+  // For inverse / C2R transforms, apply complex IFFT to the outer axes while
+  // the tensor is still complex, then transform the innermost `chunk_rank`
+  // axes (handling complex-to-real on the final axis for IRFFT).
+  mlir::MlirOp result = mlir::stablehlo::Transpose(input, move_outer_to_back);
+  result =
+      ApplyChunkedFft(result, mlir::stablehlo::FftType::IFFT, outer_lengths);
+  result = mlir::stablehlo::Transpose(result, restore_axes);
+  return mlir::stablehlo::Fft(result, fft_type, AsArrayRef(inner_lengths));
 }
 
 struct TransposePermutations {
@@ -136,8 +236,8 @@ struct TransposePermutations {
 // set of dimensions in a specific order, we:
 // 1. Place all non-transform dimensions first (preserving coordinate order).
 // 2. Place all transform dimensions at the end in the exact order requested.
-TransposePermutations ComputeTransposePermutations(int64_t num_dims,
-                                                   const Dimensions& dims) {
+[[nodiscard]] TransposePermutations ComputeTransposePermutations(
+    const int64_t num_dims, const absl::Span<const int64_t> dims) {
   std::vector<bool> is_fft_dim(num_dims, false);
   for (int64_t d : dims) {
     is_fft_dim[d] = true;
@@ -212,20 +312,23 @@ absl::StatusOr<mlir::MlirOp> ApplyComplexScaling(mlir::MlirOp fft_op,
 }
 
 absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
-    mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
-    bool onesided) {
-  auto input_type = GetTensorTypeOrDie(input);
+    mlir::MlirOp input, const absl::Span<const int64_t> dims,
+    const FftNormalization normalization, const bool onesided) {
+  mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
 
-  if (input_type.getElementType().isBF16()) {
+  // StableHLO RFFT on f16/bf16 produces complex<f16>/complex<bf16>, which XLA
+  // TPU does not support; promote to f32 before transforming.
+  if (input_type.getElementType().isBF16() ||
+      input_type.getElementType().isF16()) {
     mlir::Builder builder(input_type.getContext());
     input = mlir::stablehlo::ConvertElementType(input, builder.getF32Type());
     input_type = GetTensorTypeOrDie(input);
   }
 
-  const auto float_type = input_type.getElementType();
+  const mlir::Type float_type = input_type.getElementType();
 
-  auto fft_params = ComputeFftParams(input_type, dims);
-  auto transpose_perms =
+  const Dimensions fft_length = ComputeFftLengths(input_type, dims);
+  const TransposePermutations transpose_perms =
       ComputeTransposePermutations(input_type.getRank(), dims);
 
   mlir::MlirOp fft_input = input;
@@ -233,16 +336,16 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
     fft_input = mlir::stablehlo::Transpose(input, transpose_perms.permutation);
   }
 
-  // Perform the FFT operation
+  // Perform the FFT operation.
   mlir::MlirOp fft_op;
   if (onesided) {
-    fft_op = mlir::stablehlo::Fft(fft_input, mlir::stablehlo::FftType::RFFT,
-                                  fft_params.fft_length);
+    fft_op =
+        ApplyChunkedFft(fft_input, mlir::stablehlo::FftType::RFFT, fft_length);
   } else {
-    auto zero_imag = MakeConstantLike(fft_input, 0.0, float_type);
-    auto complex_input = mlir::stablehlo::Complex(fft_input, zero_imag);
-    fft_op = mlir::stablehlo::Fft(complex_input, mlir::stablehlo::FftType::FFT,
-                                  fft_params.fft_length);
+    mlir::MlirOp zero_imag = MakeConstantLike(fft_input, 0.0, float_type);
+    mlir::MlirOp complex_input = mlir::stablehlo::Complex(fft_input, zero_imag);
+    fft_op = ApplyChunkedFft(complex_input, mlir::stablehlo::FftType::FFT,
+                             fft_length);
   }
 
   // Apply normalization: stablehlo::Fft does not support normalization modes,
@@ -256,8 +359,9 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
   }
 
   if (scale_mode != ScaleMode::kNone) {
-    mlir::MlirOp num_elements_op = GetNumElements(input, float_type, dims);
-    TT_ASSIGN_OR_RETURN(auto scale_op,
+    mlir::MlirOp num_elements_op =
+        GetNumElements(input, float_type, AsArrayRef(dims));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_op,
                         ComputeScaleOp(fft_op.getBuilder(), num_elements_op,
                                        float_type, scale_mode));
 
@@ -274,28 +378,33 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
 }
 
 absl::StatusOr<mlir::MlirOp> BuildFftC2cShlo(
-    mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
-    bool forward) {
-  auto input_type = GetTensorTypeOrDie(input);
+    mlir::MlirOp input, const absl::Span<const int64_t> dims,
+    const FftNormalization normalization, const bool forward) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
 
-  auto elem_type = input_type.getElementType();
+  const mlir::Type elem_type = input_type.getElementType();
   if (!mlir::isa<mlir::ComplexType>(elem_type)) {
-    TT_ASSIGN_OR_RETURN(auto scalar_type, ConvertTo<at::ScalarType>(elem_type));
+    TT_ASSIGN_OR_RETURN(const at::ScalarType scalar_type,
+                        ConvertTo<at::ScalarType>(elem_type));
     return TT_ERROR(  // ERROR_COV_INFEASIBLE=Checked by caller before
                       // DispatchOp.
                error::kInvalidArgument)
            << "expected complex input type, got " << ToString(scalar_type);
   }
-  auto float_type = mlir::cast<mlir::ComplexType>(elem_type).getElementType();
+  if (dims.empty()) {
+    return input;
+  }
+  const mlir::Type float_type =
+      mlir::cast<mlir::ComplexType>(elem_type).getElementType();
 
-  mlir::stablehlo::FftType fft_type =
+  const mlir::stablehlo::FftType fft_type =
       forward ? mlir::stablehlo::FftType::FFT : mlir::stablehlo::FftType::IFFT;
 
   // StableHLO's FftOp does not support normalization modes, so we scale the
   // result manually based on the 'normalization' and 'forward' parameters to
   // match PyTorch's behavior.
   // Stablehlo's ifft precisely inverses the fft operation, which means that it
-  // includes 1/N scaling in the backward transform. Thus, we ha ve to apply
+  // includes 1/N scaling in the backward transform. Thus, we have to apply
   // scaling in the opposite direction to obtain the same result as PyTorch
   // expects.
   ScaleMode scale_mode = ScaleMode::kNone;
@@ -313,8 +422,8 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2cShlo(
     }
   }
 
-  auto fft_params = ComputeFftParams(input_type, dims);
-  auto transpose_perms =
+  const Dimensions fft_length = ComputeFftLengths(input_type, dims);
+  const TransposePermutations transpose_perms =
       ComputeTransposePermutations(input_type.getRank(), dims);
 
   mlir::MlirOp fft_input = input;
@@ -322,14 +431,14 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2cShlo(
     fft_input = mlir::stablehlo::Transpose(input, transpose_perms.permutation);
   }
 
-  // Perform the FFT operation
-  auto fft_op =
-      mlir::stablehlo::Fft(fft_input, fft_type, fft_params.fft_length);
+  // Perform the FFT operation.
+  mlir::MlirOp fft_op = ApplyChunkedFft(fft_input, fft_type, fft_length);
 
-  // Apply scaling manually
+  // Apply scaling manually.
   if (scale_mode != ScaleMode::kNone) {
-    mlir::MlirOp num_elements_op = GetNumElements(input, float_type, dims);
-    TT_ASSIGN_OR_RETURN(auto scale_op,
+    mlir::MlirOp num_elements_op =
+        GetNumElements(input, float_type, AsArrayRef(dims));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_op,
                         ComputeScaleOp(fft_op.getBuilder(), num_elements_op,
                                        float_type, scale_mode));
 
@@ -346,21 +455,23 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2cShlo(
 }
 
 absl::StatusOr<mlir::MlirOp> BuildFftC2rShlo(
-    mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
-    int64_t last_dim_size) {
-  auto input_type = GetTensorTypeOrDie(input);
+    mlir::MlirOp input, const absl::Span<const int64_t> dims,
+    const FftNormalization normalization, const int64_t last_dim_size) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
 
-  auto elem_type = input_type.getElementType();
+  const mlir::Type elem_type = input_type.getElementType();
   if (!mlir::isa<mlir::ComplexType>(elem_type)) {
-    TT_ASSIGN_OR_RETURN(auto scalar_type, ConvertTo<at::ScalarType>(elem_type));
+    TT_ASSIGN_OR_RETURN(const at::ScalarType scalar_type,
+                        ConvertTo<at::ScalarType>(elem_type));
     return TT_ERROR(  // ERROR_COV_INFEASIBLE=Checked by caller before
                       // DispatchOp.
                error::kInvalidArgument)
            << "expected complex input type, got " << ToString(scalar_type);
   }
-  auto float_type = mlir::cast<mlir::ComplexType>(elem_type).getElementType();
+  const mlir::Type float_type =
+      mlir::cast<mlir::ComplexType>(elem_type).getElementType();
 
-  mlir::stablehlo::FftType fft_type = mlir::stablehlo::FftType::IRFFT;
+  const mlir::stablehlo::FftType fft_type = mlir::stablehlo::FftType::IRFFT;
 
   ScaleMode scale_mode = ScaleMode::kNone;
   if (normalization == FftNormalization::kNone) {
@@ -369,8 +480,9 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2rShlo(
     scale_mode = ScaleMode::kMulSqrtN;
   }
 
-  auto fft_params = ComputeFftParams(input_type, dims, last_dim_size);
-  auto transpose_perms =
+  const Dimensions fft_length =
+      ComputeFftLengths(input_type, dims, last_dim_size);
+  const TransposePermutations transpose_perms =
       ComputeTransposePermutations(input_type.getRank(), dims);
 
   mlir::MlirOp fft_input = input;
@@ -378,9 +490,8 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2rShlo(
     fft_input = mlir::stablehlo::Transpose(input, transpose_perms.permutation);
   }
 
-  // Perform the FFT operation
-  auto fft_op =
-      mlir::stablehlo::Fft(fft_input, fft_type, fft_params.fft_length);
+  // Perform the FFT operation.
+  mlir::MlirOp fft_op = ApplyChunkedFft(fft_input, fft_type, fft_length);
 
   // Apply scaling manually.
   // NOTE: BuildFftC2rShlo scales based on raw transform size
@@ -390,17 +501,18 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2rShlo(
   if (scale_mode != ScaleMode::kNone) {
     // Compute the number of elements in the FFT dimensions (statically).
     int64_t num_elements = 1;
-    for (int64_t len : fft_params.fft_length) {
+    for (const int64_t len : fft_length) {
       num_elements *= len;
     }
     mlir::MlirOp num_elements_op = MakeScalarConstant(
         input.getBuilder(), static_cast<double>(num_elements), float_type);
 
-    TT_ASSIGN_OR_RETURN(auto scale_op,
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_op,
                         ComputeScaleOp(fft_op.getBuilder(), num_elements_op,
                                        float_type, scale_mode));
 
-    TT_ASSIGN_OR_RETURN(auto scaled_op, BroadcastIfNeeded(scale_op, fft_op));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp scaled_op,
+                        BroadcastIfNeeded(scale_op, fft_op));
     fft_op = mlir::stablehlo::Mul(fft_op, scaled_op);
   }
 
@@ -424,10 +536,11 @@ absl::Status FFTValidateStaticShape(const at::Tensor& tensor,
 
 }  // namespace
 
-at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
-                      int64_t normalization, bool onesided) {
+at::Tensor AtenFftR2c(const at::Tensor& self, const at::IntArrayRef dim,
+                      const int64_t normalization, const bool onesided) {
   TT_KERNEL(OpName::kFftR2c, param_keys, (self, dim, normalization, onesided), {
-    FftNormalization norm_enum = static_cast<FftNormalization>(normalization);
+    const FftNormalization norm_enum =
+        static_cast<FftNormalization>(normalization);
 
     // Explicitly check for static shape.
     // Shape introspection is unsafe with dynamism.
@@ -436,44 +549,47 @@ at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
     // this op supports bounded dynamic values.
     TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
 
-    TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-    auto out_sizes = CopyIntVector(self.sizes());
+    TT_ASSIGN_OR_THROW(const at::ScalarType out_scalar_type,
+                       GetFftR2cResultDtype(self));
+    TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
+                       ConvertTo<mlir::ElementType>(out_scalar_type));
+
+    TT_ASSIGN_OR_THROW(Dimensions normalized_dims,
+                       GetNormalizedDims(self, dim, AllowEmptyDim::kNo));
+    Dimensions out_sizes = CopyIntVector(self.sizes());
     if (onesided) {
       const int64_t last_dim = normalized_dims.back();
       out_sizes[last_dim] = self.size(last_dim) / 2 + 1;
     }
 
-    const auto compute_scalar_type =
-        self.scalar_type() == at::kBFloat16 ? at::kFloat : self.scalar_type();
-    const auto out_scalar_type = c10::toComplexType(compute_scalar_type);
-    TT_ASSIGN_OR_THROW(const auto output_dtype,
-                       ConvertTo<mlir::ElementType>(out_scalar_type));
-
-    auto op_builder = [normalized_dims, norm_enum, onesided](
-                          mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+    auto op_builder =
+        [normalized_dims = std::move(normalized_dims), norm_enum,
+         onesided](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildFftR2cShlo(input, normalized_dims, norm_enum, onesided);
     };
 
-    TT_ASSIGN_OR_THROW(auto result, DispatchOp<1>(std::move(op_builder), self,
-                                                  {.out_dtype = output_dtype,
-                                                   .out_dims = out_sizes,
-                                                   .op_param_cache_keys =
-                                                       std::move(param_keys)}));
+    TT_ASSIGN_OR_THROW(
+        DeviceBufferRef result,
+        DispatchOp<1>(std::move(op_builder), self,
+                      {.out_dtype = output_dtype,
+                       .out_dims = out_sizes,
+                       .op_param_cache_keys = std::move(param_keys)}));
 
     TT_ASSIGN_OR_THROW(
-        auto out, MakeEmptyTensor(out_sizes, out_scalar_type, self.device()));
+        at::Tensor out,
+        MakeEmptyTensor(out_sizes, out_scalar_type, self.device()));
     TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
     return out;
   });
 }
 
-at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
-                          int64_t normalization, bool onesided,
+at::Tensor& AtenFftR2cOut(const at::Tensor& self, const at::IntArrayRef dim,
+                          const int64_t normalization, const bool onesided,
                           at::Tensor& out) {
   TT_KERNEL(
       OpName::kFftR2cOut, param_keys, (self, dim, normalization, onesided, out),
       {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
         // Explicitly check for static shape.
@@ -483,22 +599,23 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
         // supports bounded dynamic values.
         TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
 
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-        auto out_sizes = CopyIntVector(self.sizes());
+        TT_ASSIGN_OR_THROW(const at::ScalarType result_dtype,
+                           GetFftR2cResultDtype(self));
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, result_dtype,
+                                           /*allow_out_dtype_cast=*/true));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
+                           ConvertTo<mlir::ElementType>(out.scalar_type()));
+
+        TT_ASSIGN_OR_THROW(Dimensions normalized_dims,
+                           GetNormalizedDims(self, dim, AllowEmptyDim::kNo));
+        Dimensions out_sizes = CopyIntVector(self.sizes());
         if (onesided) {
           const int64_t last_dim = normalized_dims.back();
           out_sizes[last_dim] = self.size(last_dim) / 2 + 1;
         }
 
-        const auto result_dtype = c10::toComplexType(self.scalar_type());
-        TT_THROW_IF_ERROR(ValidateOutDtype(out, result_dtype,
-                                           /*allow_out_dtype_cast=*/true));
-
-        TT_ASSIGN_OR_THROW(const auto output_dtype,
-                           ConvertTo<mlir::ElementType>(out.scalar_type()));
-
         auto op_builder =
-            [normalized_dims, norm_enum,
+            [normalized_dims = std::move(normalized_dims), norm_enum,
              onesided](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           return BuildFftR2cShlo(input, normalized_dims, norm_enum, onesided);
         };
@@ -512,10 +629,11 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
       });
 }
 
-at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
-                      int64_t normalization, bool forward) {
+at::Tensor AtenFftC2c(const at::Tensor& self, const at::IntArrayRef dim,
+                      const int64_t normalization, const bool forward) {
   TT_KERNEL(OpName::kFftC2c, param_keys, (self, dim, normalization, forward), {
-    FftNormalization norm_enum = static_cast<FftNormalization>(normalization);
+    const FftNormalization norm_enum =
+        static_cast<FftNormalization>(normalization);
 
     // Explicitly check for static shape.
     // Shape introspection is unsafe with dynamism.
@@ -524,39 +642,42 @@ at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
     // supports bounded dynamic values.
     TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
 
-    TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-
-    TT_ASSIGN_OR_THROW(const auto output_dtype,
+    TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
     TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
         << "expected complex input type, got " << ToString(self.scalar_type());
-    auto op_builder = [normalized_dims, norm_enum, forward](
-                          mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+
+    TT_ASSIGN_OR_THROW(Dimensions normalized_dims,
+                       GetNormalizedDims(self, dim, AllowEmptyDim::kYes));
+
+    auto op_builder =
+        [normalized_dims = std::move(normalized_dims), norm_enum,
+         forward](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
     };
 
     TT_ASSIGN_OR_THROW(
-        auto result,
+        DeviceBufferRef result,
         DispatchOp<1>(std::move(op_builder), self,
                       {.out_dtype = output_dtype,
                        .out_dims = CopyIntVector(self.sizes()),
                        .op_param_cache_keys = std::move(param_keys)}));
 
     TT_ASSIGN_OR_THROW(
-        auto out,
+        at::Tensor out,
         MakeEmptyTensor(self.sizes(), self.scalar_type(), self.device()));
     TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
     return out;
   });
 }
 
-at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
-                          int64_t normalization, bool forward,
+at::Tensor& AtenFftC2cOut(const at::Tensor& self, const at::IntArrayRef dim,
+                          const int64_t normalization, const bool forward,
                           at::Tensor& out) {
   TT_KERNEL(
       OpName::kFftC2cOut, param_keys, (self, dim, normalization, forward, out),
       {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
         // Explicitly check for static shape.
@@ -565,9 +686,7 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
         TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
                                            /*allow_out_dtype_cast=*/true));
 
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-
-        TT_ASSIGN_OR_THROW(const auto output_dtype,
+        TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
         TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2c_out
                          // does not exist
@@ -575,8 +694,11 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
             << "expected complex input type, got "
             << ToString(self.scalar_type());
 
+        TT_ASSIGN_OR_THROW(Dimensions normalized_dims,
+                           GetNormalizedDims(self, dim, AllowEmptyDim::kYes));
+
         auto op_builder =
-            [normalized_dims, norm_enum,
+            [normalized_dims = std::move(normalized_dims), norm_enum,
              forward](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
         };
@@ -590,11 +712,12 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
       });
 }
 
-at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
-                      int64_t normalization, int64_t last_dim_size) {
+at::Tensor AtenFftC2r(const at::Tensor& self, const at::IntArrayRef dim,
+                      const int64_t normalization,
+                      const int64_t last_dim_size) {
   TT_KERNEL(
       OpName::kFftC2r, param_keys, (self, dim, normalization, last_dim_size), {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
         // Explicitly check for static shape.
@@ -604,33 +727,38 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
         // supports bounded dynamic values.
         TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
 
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-        auto out_sizes = CopyIntVector(self.sizes());
-        const int64_t last_dim = normalized_dims.back();
-        out_sizes[last_dim] = last_dim_size;
-
-        TT_ASSIGN_OR_THROW(const auto output_dtype,
-                           ConvertTo<mlir::ElementType>(
-                               c10::toRealValueType(self.scalar_type())));
         TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
             << "expected complex input type, got "
             << ToString(self.scalar_type());
+        TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
+                           ConvertTo<mlir::ElementType>(
+                               c10::toRealValueType(self.scalar_type())));
+
+        TT_ASSIGN_OR_THROW(Dimensions normalized_dims,
+                           GetNormalizedDims(self, dim, AllowEmptyDim::kNo));
+        const int64_t last_dim = normalized_dims.back();
+        TT_THROW_IF_ERROR(
+            ValidateFftC2rLastDimSize(self, last_dim, last_dim_size));
+        Dimensions out_sizes = CopyIntVector(self.sizes());
+        out_sizes[last_dim] = last_dim_size;
+
         auto op_builder =
-            [normalized_dims, norm_enum, last_dim_size](
+            [normalized_dims = std::move(normalized_dims), norm_enum,
+             last_dim_size](
                 mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           return BuildFftC2rShlo(input, normalized_dims, norm_enum,
                                  last_dim_size);
         };
 
         TT_ASSIGN_OR_THROW(
-            auto result,
+            DeviceBufferRef result,
             DispatchOp<1>(std::move(op_builder), self,
                           {.out_dtype = output_dtype,
                            .out_dims = out_sizes,
                            .op_param_cache_keys = std::move(param_keys)}));
 
         TT_ASSIGN_OR_THROW(
-            auto out,
+            at::Tensor out,
             MakeEmptyTensor(out_sizes, c10::toRealValueType(self.scalar_type()),
                             self.device()));
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
@@ -638,13 +766,13 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
       });
 }
 
-at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
-                          int64_t normalization, int64_t last_dim_size,
-                          at::Tensor& out) {
+at::Tensor& AtenFftC2rOut(const at::Tensor& self, const at::IntArrayRef dim,
+                          const int64_t normalization,
+                          const int64_t last_dim_size, at::Tensor& out) {
   TT_KERNEL(
       OpName::kFftC2rOut, param_keys,
       (self, dim, normalization, last_dim_size, out), {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
         // Explicitly check for static shape.
@@ -654,16 +782,11 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
         // supports bounded dynamic values.
         TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
 
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-        auto out_sizes = CopyIntVector(self.sizes());
-        const int64_t last_dim = normalized_dims.back();
-        out_sizes[last_dim] = last_dim_size;
-
-        const auto result_dtype = c10::toRealValueType(self.scalar_type());
+        const at::ScalarType result_dtype =
+            c10::toRealValueType(self.scalar_type());
         TT_THROW_IF_ERROR(ValidateOutDtype(out, result_dtype,
                                            /*allow_out_dtype_cast=*/true));
-
-        TT_ASSIGN_OR_THROW(const auto output_dtype,
+        TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
         TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2r_out
                          // does not exist
@@ -671,8 +794,17 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
             << "expected complex input type, got "
             << ToString(self.scalar_type());
 
+        TT_ASSIGN_OR_THROW(Dimensions normalized_dims,
+                           GetNormalizedDims(self, dim, AllowEmptyDim::kNo));
+        const int64_t last_dim = normalized_dims.back();
+        TT_THROW_IF_ERROR(
+            ValidateFftC2rLastDimSize(self, last_dim, last_dim_size));
+        Dimensions out_sizes = CopyIntVector(self.sizes());
+        out_sizes[last_dim] = last_dim_size;
+
         auto op_builder =
-            [normalized_dims, norm_enum, last_dim_size](
+            [normalized_dims = std::move(normalized_dims), norm_enum,
+             last_dim_size](
                 mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           return BuildFftC2rShlo(input, normalized_dims, norm_enum,
                                  last_dim_size);
