@@ -17610,6 +17610,123 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.aminmax(tensor, dim=0, out=out)
 
+  def test_aminmax_invalid_input_device(self):
+    tensor = torch.ones(5, device="cpu", dtype=torch.float32)
+    out = _get_aminmax_outputs(
+        torch.aminmax, device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""aminmax(): expected input tensor to be on tpu, got cpu""",
+        gpu="""CUDAGuardImpl initialized with non-CUDA DeviceType: cpu""",
+    ):
+      torch.aminmax(tensor, dim=0, out=out)
+
+  def test_aminmax_second_output_invalid_device(self):
+    tensor = torch.ones(5, device=et.device(), dtype=torch.float32)
+    min_out = torch.full((2,), 7.0, device=et.device(), dtype=torch.float32)
+    max_out = torch.empty((), device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""aminmax(): expected output tensor to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.aminmax(tensor, dim=0, out=(min_out, max_out))
+    if et.is_on_tpu():
+      self.assertEqual(min_out.shape, (2,))
+      self.assertEqual(min_out.cpu().tolist(), [7.0, 7.0])
+
+  def test_aminmax_out_overlapping_outputs(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
+    with self.subTest("same_tensor"):
+      x = torch.tensor([1.0, 5.0, 3.0], device=et.device(), dtype=torch.float32)
+      t = torch.empty((), device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          err_type,
+          tpu="""aminmax(): the `min` and `max` out= tensors must not overlap""",
+          gpu="""aminmax(): the `min` and `max` out= tensors must not overlap.""",
+      ):
+        torch.aminmax(x, out=(t, t))
+
+    with self.subTest("partial_overlap_slices"):
+      x = torch.tensor(
+          [[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]],
+          device=et.device(),
+          dtype=torch.float32,
+      )
+      buf = torch.empty(4, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          err_type,
+          tpu="""aminmax(): the `min` and `max` out= tensors must not overlap""",
+          gpu="""aminmax(): the `min` and `max` out= tensors must not overlap.""",
+      ):
+        torch.aminmax(x, dim=0, out=(buf[:3], buf[1:4]))
+
+  @parameterized.named_parameters(
+      {"testcase_name": "min", "op": torch.min, "op_name": "min"},
+      {"testcase_name": "max", "op": torch.max, "op_name": "max"},
+  )
+  def test_min_max_dim_invalid_device(self, op, op_name: str):
+    with self.subTest("cpu_self"):
+      inp = torch.ones(2, 3, device="cpu", dtype=torch.float32)
+      values = torch.empty(3, device=et.device(), dtype=torch.float32)
+      indices = torch.empty(3, device=et.device(), dtype=torch.int64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{op_name}(): expected input tensor to be on tpu, got cpu""",
+          gpu="""CUDAGuardImpl initialized with non-CUDA DeviceType: cpu""",
+      ):
+        op(inp, 0, out=(values, indices))
+
+    with self.subTest("cpu_values_differing_shape"):
+      inp = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+      values = torch.empty(5, device="cpu", dtype=torch.float32)
+      indices = torch.empty(3, device=et.device(), dtype=torch.int64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{op_name}(): expected output tensor to be on tpu, got cpu""",
+          gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+      ):
+        op(inp, 0, out=(values, indices))
+
+    with self.subTest("cpu_indices_differing_shape"):
+      inp = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+      values = torch.full((5,), 7.0, device=et.device(), dtype=torch.float32)
+      indices = torch.empty(5, device="cpu", dtype=torch.int64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{op_name}(): expected output tensor to be on tpu, got cpu""",
+          gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+      ):
+        op(inp, 0, out=(values, indices))
+      # Note: on CUDA, set_output_raw_strided(0, ...) runs before checking
+      # output 1, whereas TPU checks all devices upfront without mutating values.
+      if et.is_on_tpu():
+        self.assertEqual(values.shape, (5,))
+        self.assertEqual(values.cpu().tolist(), [7.0] * 5)
+
+    with self.subTest("zero_numel_cpu_values"):
+      inp = torch.empty(2, 0, device=et.device(), dtype=torch.float32)
+      values = torch.empty(5, device="cpu", dtype=torch.float32)
+      indices = torch.empty(0, device=et.device(), dtype=torch.int64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{op_name}(): expected output tensor to be on tpu, got cpu""",
+          gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+      ):
+        op(inp, 0, out=(values, indices))
+
+    with self.subTest("zero_dim_cpu_indices"):
+      inp = torch.tensor(3.0, device=et.device(), dtype=torch.float32)
+      values = torch.empty((), device=et.device(), dtype=torch.float32)
+      indices = torch.empty(5, device="cpu", dtype=torch.int64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{op_name}(): expected output tensor to be on tpu, got cpu""",
+          gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+      ):
+        op(inp, 0, out=(values, indices))
+
   def test_amin_invalid_output_device(self):
     tensor = torch.ones(5, device=et.device(), dtype=torch.float32)
     out = _get_aminmax_outputs(torch.amin, device="cpu", dtype=torch.float32)

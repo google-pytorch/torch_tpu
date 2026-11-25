@@ -19,6 +19,7 @@
 #include <tuple>
 #include <utility>
 
+#include "ATen/MemoryOverlap.h"
 #include "ATen/WrapDimUtils.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
@@ -53,6 +54,10 @@ OpName GetOpName(AMinMaxOp op) {
 }
 
 absl::Status ValidateAMinMaxInputs(const at::Tensor& self, at::Tensor& out) {
+  TT_RET_CHECK(IsPrivateUse1Device(self), error::kInvalidArgument)
+      << "expected input tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << self.device();
+
   TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
       << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << out.device();
@@ -153,6 +158,12 @@ std::tuple<at::Tensor&, at::Tensor&> AtenAminmaxOut(
   TT_KERNEL(OpName::kAminmaxOut, param_keys, (self, dim, keep_dim, min, max), {
     TT_THROW_IF_ERROR(ValidateAMinMaxInputs(self, min));
     TT_THROW_IF_ERROR(ValidateAMinMaxInputs(self, max));
+
+    const at::MemOverlapStatus overlap = at::get_overlap_status(min, max);
+    TT_CHECK_THROW(overlap != at::MemOverlapStatus::Partial &&
+                       overlap != at::MemOverlapStatus::Full,
+                   error::kInvalidArgument)
+        << "the `min` and `max` out= tensors must not overlap";
 
     // aminmax only supports one optional dimension, but the builder expects
     // a vector of dimensions, so we build a vector here for the optional
