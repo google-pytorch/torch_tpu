@@ -46,7 +46,8 @@ enum class WarningCategory {
 };
 
 // Returns the message prefix of warnings in `category`.
-constexpr std::string_view GetWarningPrefix(WarningCategory category) {
+[[nodiscard]] constexpr std::string_view GetWarningPrefix(
+    WarningCategory category) {
   switch (category) {
     case WarningCategory::kTorchTpu:
       return "//TorchTpu// ";
@@ -72,7 +73,7 @@ constexpr std::string_view GetWarningPrefix(WarningCategory category) {
 
 // Returns whether warnings in `category` are emitted as Python
 // `DeprecationWarning`s rather than `UserWarning`s.
-constexpr bool IsDeprecationWarning(WarningCategory category) {
+[[nodiscard]] constexpr bool IsDeprecationWarning(WarningCategory category) {
   return category == WarningCategory::kDeprecatedApi;
 }
 

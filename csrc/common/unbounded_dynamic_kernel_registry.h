@@ -66,7 +66,7 @@ struct UnboundedDynamicKernelRegistration {
 // registration order.
 class UnboundedDynamicKernelRegistry {
  public:
-  static UnboundedDynamicKernelRegistry& GetInstance();
+  [[nodiscard]] static UnboundedDynamicKernelRegistry& GetInstance();
 
   UnboundedDynamicKernelRegistry(const UnboundedDynamicKernelRegistry&) =
       delete;

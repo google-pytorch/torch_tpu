@@ -100,10 +100,11 @@ class CompilationContext {
   CompilationContext(CompilationContext&&) = default;
   CompilationContext& operator=(CompilationContext&&) = default;
 
-  const CompilationSpecsByMode& compilation_specs() const {
+  [[nodiscard]] const CompilationSpecsByMode& compilation_specs() const {
     return compilation_specs_;
   }
-  const CompilerOptionOverrides& compiler_option_overrides() const {
+  [[nodiscard]] const CompilerOptionOverrides& compiler_option_overrides()
+      const {
     return compiler_option_overrides_;
   }
 

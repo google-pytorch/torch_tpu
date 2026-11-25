@@ -82,7 +82,8 @@ TEST(FlagsTest, SafeSetFlagOnFlagNotReadByGetFlagOnceSucceeds) {
 TEST(FlagsDeathTest, SafeSetFlagAfterGetFlagOnceCrashes) {
   EXPECT_DEATH(
       {
-        (GetFlagOnce<int, &FLAGS_safe_set_after_get_flag>());
+        (void)  // VOID_CAST_OK=death test only checks the crash
+            (GetFlagOnce<int, &FLAGS_safe_set_after_get_flag>());
         SafeSetFlag(&FLAGS_safe_set_after_get_flag, 2);
       },
       "safe_set_after_get_flag.*GetFlagOnce");

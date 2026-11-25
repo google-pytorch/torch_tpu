@@ -219,7 +219,7 @@ class IgnoredInCacheKey {
   [[nodiscard]] const T& value() const { return value_ref_; }
 
   // Supports logging.
-  friend auto ToString(const IgnoredInCacheKey& value) {
+  [[nodiscard]] friend auto ToString(const IgnoredInCacheKey& value) {
     using torch_tpu::ToString;
     return ToString(value.value_ref_);
   }
@@ -241,7 +241,7 @@ struct is_ignored_in_cache_key<IgnoredInCacheKey<T>> : std::true_type {};
 // computation as their information is already included in the cache key
 // automatically.
 template <typename T>
-constexpr bool IncludeInCacheKey() {
+[[nodiscard]] constexpr bool IncludeInCacheKey() {
   using U = std::decay_t<T>;
   // If the argument is wrapped in IgnoreInCacheKey(), it should not be
   // included in the cache key.
@@ -377,23 +377,27 @@ using FingerprintedKey = typename FingerprintedKeyTrait<EncodedKey<T>>::type;
 // declared first and their definitions should be put after all the other
 // overloads.
 template <typename T>
-FingerprintedKey<T> EncodeParamCacheKey(const std::optional<T>& value);
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(
+    const std::optional<T>& value);
 template <typename T1, typename T2>
-FingerprintType EncodeParamCacheKey(  //
-    const std::pair<T1, T2>& value);  // STD_PAIR_OK=generic code.
+[[nodiscard]] FingerprintType EncodeParamCacheKey(  //
+    const std::pair<T1, T2>& value);                // STD_PAIR_OK=generic code.
 template <typename T, std::size_t kSize>
-FingerprintedKey<T> EncodeParamCacheKey(const std::array<T, kSize>& value);
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(
+    const std::array<T, kSize>& value);
 template <typename T>
-FingerprintedKey<T> EncodeParamCacheKey(const std::vector<T>& value);
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(
+    const std::vector<T>& value);
 template <typename T, size_t kSize, typename Allocator>
-FingerprintedKey<T> EncodeParamCacheKey(
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(
     const absl::InlinedVector<T, kSize, Allocator>& value);
 template <typename T>
-FingerprintedKey<T> EncodeParamCacheKey(at::ArrayRef<T> value);
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(at::ArrayRef<T> value);
 template <typename T>
-FingerprintedKey<T> EncodeParamCacheKey(absl::Span<T> value);
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(absl::Span<T> value);
 template <typename T>
-FingerprintedKey<T> EncodeParamCacheKey(c10::OptionalArrayRef<T> value);
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(
+    c10::OptionalArrayRef<T> value);
 
 template <typename T>
 FingerprintedKey<T> EncodeParamCacheKey(const std::optional<T>& value) {
@@ -426,8 +430,8 @@ FingerprintType EncodeParamCacheKey(
 // string, which is intuitive as an empty string can be viewed as an empty
 // sequence of characters.
 template <typename T, typename Iter>
-FingerprintedKey<T> EncodeParamCacheKeyForRange(const Iter begin,
-                                                const Iter end) {
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKeyForRange(const Iter begin,
+                                                              const Iter end) {
   using Result = FingerprintedKey<T>;
   FingerprintType result = Fingerprint("");
   for (Iter it = begin; it != end; ++it) {
@@ -481,7 +485,8 @@ FingerprintedKey<T> EncodeParamCacheKey(at::ArrayRef<T> value) {
 }
 
 template <typename T>
-FingerprintedKey<T> EncodeParamCacheKey(const c10::List<T>& value) {
+[[nodiscard]] FingerprintedKey<T> EncodeParamCacheKey(
+    const c10::List<T>& value) {
   return EncodeParamCacheKeyForRange<T>(value.begin(), value.end());
 }
 
@@ -517,7 +522,7 @@ template <typename T,
           // Only allow this function to be called for types that should be
           // included in the cache key.
           typename = std::enable_if_t<internal::IncludeInCacheKey<T>()>>
-constexpr internal::IgnoredInCacheKey<T> IgnoreInCacheKey(
+[[nodiscard]] constexpr internal::IgnoredInCacheKey<T> IgnoreInCacheKey(
     const T& value, const std::string_view reason) {
   ABSL_CHECK(!reason.empty())  // CRASH_OK
       << "Please provide a non-empty reason for using IgnoreInCacheKey().";
@@ -686,7 +691,7 @@ class OpParamCacheKeys::Builder {
   absl::StatusOr<OpParamCacheKeys> operator*();
 
   // Returns the current error state of the builder.
-  const absl::Status& status() const { return first_error_; }
+  [[nodiscard]] const absl::Status& status() const { return first_error_; }
 
  private:
   // The first error encountered during the construction of the parameter
@@ -919,17 +924,19 @@ struct DimensionBounds {
   int64_t upper = -1;
 };
 
-Dimensions GetUpperBounds(absl::Span<const DimensionBounds> bounds);
+[[nodiscard]] Dimensions GetUpperBounds(
+    absl::Span<const DimensionBounds> bounds);
 
 // Returns a cache key for the pad module for the given input dynamic shapes.
-GraphKey PadModuleCacheKey(absl::Span<const Shape> dynamic_shapes,
-                           bool pad_only_module = false);
+[[nodiscard]] GraphKey PadModuleCacheKey(absl::Span<const Shape> dynamic_shapes,
+                                         bool pad_only_module = false);
 
 // Returns a cache key for the slice module with the given target and padded
 // shapes.
-GraphKey SliceModuleCacheKey(absl::Span<const Dimensions> target_shapes,
-                             absl::Span<const Dimensions> padded_shapes,
-                             absl::Span<const mlir::ElementType> element_types);
+[[nodiscard]] GraphKey SliceModuleCacheKey(
+    absl::Span<const Dimensions> target_shapes,
+    absl::Span<const Dimensions> padded_shapes,
+    absl::Span<const mlir::ElementType> element_types);
 
 // The metadata necessary to check if a static graph is compatible with a
 // BoundedDynamicCacheEntry.
@@ -942,7 +949,8 @@ class ShapeDynamismMetadata {
 
   // Check if the static part of the given shapes is compatible with the input
   // shape dynamism bounds. This ignores dynamic annotations.
-  bool IsStaticShapeCompatible(absl::Span<const Shape> shapes) const;
+  [[nodiscard]] bool IsStaticShapeCompatible(
+      absl::Span<const Shape> shapes) const;
 
   [[nodiscard]] const std::vector<DimensionBounds>& input_dimension_bounds()
       const {
@@ -956,7 +964,8 @@ class ShapeDynamismMetadata {
 
   // Returns a cache key for the slice module with the given output shapes.
   // This ignores dynamic annotations.
-  GraphKey GetSliceModuleCacheKey(absl::Span<const Shape> shapes) const;
+  [[nodiscard]] GraphKey GetSliceModuleCacheKey(
+      absl::Span<const Shape> shapes) const;
 
  private:
   // The lower and upper bounds of each dimension in the graph's inputs.
@@ -1054,8 +1063,8 @@ class GraphSignature {
   // before the graph is fully constructed.
   [[nodiscard]] GraphKey GetKey() const;
 
-  int num_inputs() const { return num_inputs_; }
-  int num_deferred_ops() const { return op_names_.size(); }
+  [[nodiscard]] int num_inputs() const { return num_inputs_; }
+  [[nodiscard]] int num_deferred_ops() const { return op_names_.size(); }
 
  private:
   int next_tensor_index_ = 0;

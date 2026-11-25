@@ -60,7 +60,7 @@ struct ErrorHandlingHelper<Ret(Args...)> {
   // Wraps the Python API callable in a lambda that executes with proper
   // TorchTPU error handling.
   template <typename F>
-  static auto wrap(const std::string_view api_name, const F& f) {
+  [[nodiscard]] static auto wrap(const std::string_view api_name, const F& f) {
     return [api_name = std::string(api_name), f](Args... args) -> Ret {
       try {
         return impl(api_name, f, std::forward<Args>(args)...);
@@ -94,7 +94,8 @@ struct ErrorHandlingHelper<Ret(Args...)> {
 // Unified helper that extracts function signature traits using PyTorch's
 // c10::guts::infer_function_traits and wraps the callable with error handling.
 template <typename F>
-auto WrapWithErrorHandling(const std::string_view api_name, const F& f) {
+[[nodiscard]] auto WrapWithErrorHandling(const std::string_view api_name,
+                                         const F& f) {
   using InferredTraits = typename c10::guts::infer_function_traits<F>::type;
   using FuncType = typename InferredTraits::func_type;
   return ErrorHandlingHelper<FuncType>::wrap(api_name, f);
@@ -120,7 +121,8 @@ class PyBindModule {
 
   // Creates and returns a new submodule wrapped in a `PyBindModule`.
   template <typename... Extra>
-  PyBindModule def_submodule(const char* name, const Extra&... extra) {
+  [[nodiscard]] PyBindModule def_submodule(const char* name,
+                                           const Extra&... extra) {
     return PyBindModule(wrapped_.def_submodule(name, extra...));
   }
 
@@ -131,8 +133,8 @@ class PyBindModule {
             name));
   }
 
-  auto doc() { return wrapped_.doc(); }
-  auto attr(const char* name) { return wrapped_.attr(name); }
+  [[nodiscard]] auto doc() { return wrapped_.doc(); }
+  [[nodiscard]] auto attr(const char* name) { return wrapped_.attr(name); }
 
   friend pybind11::handle GetPyBindHandle(const PyBindModule& m);
 
@@ -144,7 +146,7 @@ class PyBindModule {
 //
 // Its use should be avoided whenever possible, and only used when interfacing
 // with pybind11 APIs that require the raw handle (such as `pybind11::enum_`).
-inline pybind11::handle GetPyBindHandle(const PyBindModule& m) {
+[[nodiscard]] inline pybind11::handle GetPyBindHandle(const PyBindModule& m) {
   return m.wrapped_;
 }
 

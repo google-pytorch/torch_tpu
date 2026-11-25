@@ -45,7 +45,8 @@ struct CustomLayout {
   absl::InlinedVector<Indices, 1> tiles;
   int64_t element_size_in_bits = 0;
 
-  friend bool operator==(const CustomLayout& lhs, const CustomLayout& rhs) {
+  [[nodiscard]] friend bool operator==(const CustomLayout& lhs,
+                                       const CustomLayout& rhs) {
     return lhs.minor_to_major == rhs.minor_to_major && lhs.tiles == rhs.tiles &&
            lhs.element_size_in_bits == rhs.element_size_in_bits;
   }

@@ -32,7 +32,7 @@ namespace torch_tpu {
 
 // Returns dummy unbounded dynamic execution metadata whose compatibility check
 // accepts exactly one rank-2 shape.
-UnboundedDynamicExecutionMetadata MakeDummyDynamicMetadata();
+[[nodiscard]] UnboundedDynamicExecutionMetadata MakeDummyDynamicMetadata();
 
 // Compiles a trivial identity computation with `client`. Matches the
 // UnboundedDynamicKernel::BuildFn signature, so it can be registered directly

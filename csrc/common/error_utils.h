@@ -313,14 +313,15 @@ template <typename Value>
 
 // Retrieves the status from a Status or StatusOr. Useful for contexts where we
 // are interested in the Status error but not the StatusOr value.
-inline const absl::Status& GetStatus(const absl::Status& status) {
+[[nodiscard]] inline const absl::Status& GetStatus(const absl::Status& status) {
   return status;
 }
-inline absl::Status&& GetStatus(absl::Status&& status) {
+[[nodiscard]] inline absl::Status&& GetStatus(absl::Status&& status) {
   return std::move(status);
 }
 template <typename T>
-const absl::Status& GetStatus(const absl::StatusOr<T>& status_or) {
+[[nodiscard]] const absl::Status& GetStatus(
+    const absl::StatusOr<T>& status_or) {
   return status_or.status();
 }
 template <typename T>
@@ -345,7 +346,7 @@ class TtError : public std::runtime_error {
   TtError& operator=(const TtError&) = default;
 
   // Getters.
-  const absl::Status& status() const { return status_; }
+  [[nodiscard]] const absl::Status& status() const { return status_; }
   [[nodiscard]] const c10::SourceLocation& thrown_from() const {
     return thrown_from_;
   }
@@ -852,7 +853,9 @@ class ReturnIfErrorAdaptor {
     // the various tests we have when run under lsan or debug leak checker.
   }
 
-  explicit operator bool() const { return ABSL_PREDICT_TRUE(status_.ok()); }
+  [[nodiscard]] explicit operator bool() const {
+    return ABSL_PREDICT_TRUE(status_.ok());
+  }
 
   // Returns a status builder based on the original status.
   //

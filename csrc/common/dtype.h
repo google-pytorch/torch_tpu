@@ -92,7 +92,7 @@ absl::StatusOr<mlir::ElementType> ToElementType(mlir::Type type);
 // - xla::PrimitiveType
 template <typename ToType,
           typename = std::enable_if_t<internal::IsValidElemType<ToType>::value>>
-ToType ConvertTo(mlir::ElementType element_type) {
+[[nodiscard]] ToType ConvertTo(mlir::ElementType element_type) {
   if constexpr (std::is_same_v<ToType, at::ScalarType>) {
     return internal::ToScalarType(element_type);
   } else if constexpr (std::is_same_v<ToType, xla::PrimitiveType>) {
@@ -131,12 +131,12 @@ absl::StatusOr<ToType> ConvertTo(mlir::Type mlir_type) {
 // Note that mlir::ElementType::COMPLEXF32 and mlir::ElementType::COMPLEXF64
 // are the equivalent of torch.complex64 and torch.complex128, respectively, so
 // the bitwidth of COMPLEXF32 is 64 and the bitwidth of COMPLEXF64 is 128.
-int64_t TorchEquivalentBitwidth(mlir::ElementType element_type);
+[[nodiscard]] int64_t TorchEquivalentBitwidth(mlir::ElementType element_type);
 
 // Returns the number of bits used to represent the given element type in XLA.
 // For booleans (PRED), returns 1 bit. For all other types, matches
 // TorchEquivalentBitwidth.
-int64_t XlaEquivalentBitwidth(mlir::ElementType element_type);
+[[nodiscard]] int64_t XlaEquivalentBitwidth(mlir::ElementType element_type);
 
 // Returns the number of unpacked MLIR elements stored in a single PyTorch
 // container element for `element_type` (e.g. 2 for `F4E2M1FN`, which maps to
@@ -155,7 +155,7 @@ int64_t XlaEquivalentBitwidth(mlir::ElementType element_type);
 //
 // If the input is a complex type, returns the type of its real component;
 // otherwise returns the input type itself.
-mlir::ElementType RealComponentOf(mlir::ElementType element_type);
+[[nodiscard]] mlir::ElementType RealComponentOf(mlir::ElementType element_type);
 
 // Returns the accumulation type for the given scalar type.
 // We mimic CUDA's accumulation behavior (e.g. promoting Float16/BFloat16 to

@@ -125,8 +125,11 @@ TEST(ConstexprMapTest, EmptyMap) {
   EXPECT_EQ(empty_map.begin(), empty_map.end());
   EXPECT_FALSE(empty_map.contains(1));
   EXPECT_EQ(empty_map.find(1), empty_map.end());
-  EXPECT_THROW(empty_map.at(1), std::out_of_range);
-  EXPECT_THROW(empty_map[1], std::out_of_range);
+  EXPECT_THROW(
+      (void)empty_map.at(1),  // VOID_CAST_OK=only checks that it throws
+      std::out_of_range);
+  EXPECT_THROW((void)empty_map[1],  // VOID_CAST_OK=only checks that it throws
+               std::out_of_range);
 }
 
 TEST(ConstexprMapTest, SingleElementMap) {
@@ -137,8 +140,12 @@ TEST(ConstexprMapTest, SingleElementMap) {
   EXPECT_FALSE(single_map.contains("bar"sv));
   EXPECT_EQ(single_map.at("foo"sv), 42);
   EXPECT_EQ(single_map["foo"sv], 42);
-  EXPECT_THROW(single_map.at("bar"sv), std::out_of_range);
-  EXPECT_THROW(single_map["bar"sv], std::out_of_range);
+  EXPECT_THROW(
+      (void)single_map.at("bar"sv),  // VOID_CAST_OK=only checks that it throws
+      std::out_of_range);
+  EXPECT_THROW(
+      (void)single_map["bar"sv],  // VOID_CAST_OK=only checks that it throws
+      std::out_of_range);
 }
 
 TEST(ConstexprMapTest, MultiElementLookupAndOrdering) {
@@ -158,8 +165,10 @@ TEST(ConstexprMapTest, MultiElementLookupAndOrdering) {
   EXPECT_EQ(map.at(30), "thirty"sv);
   EXPECT_EQ(map.at(40), "forty"sv);
 
-  EXPECT_THROW(map.at(50), std::out_of_range);
-  EXPECT_THROW(map[50], std::out_of_range);
+  EXPECT_THROW((void)map.at(50),  // VOID_CAST_OK=only checks that it throws
+               std::out_of_range);
+  EXPECT_THROW((void)map[50],  // VOID_CAST_OK=only checks that it throws
+               std::out_of_range);
 }
 
 TEST(ConstexprMapTest, DuplicateKeyThrows) {

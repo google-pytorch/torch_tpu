@@ -36,11 +36,11 @@ class OpNameStack {
 
   // Returns the top OpName from the current thread's stack.
   // Crashes if the stack is empty.
-  static OpName Top();
+  [[nodiscard]] static OpName Top();
 
   // Returns the top OpName from the current thread's stack, or std::nullopt if
   // the stack is empty.
-  static std::optional<OpName> MaybeTop();
+  [[nodiscard]] static std::optional<OpName> MaybeTop();
 
  private:
   static thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching

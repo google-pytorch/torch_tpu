@@ -74,11 +74,11 @@ inline constexpr bool always_false_v = false;
 void LogLines(std::string_view s);
 
 // Format percentage.
-std::string PercAsStr(uint64_t num, uint64_t den);
+[[nodiscard]] std::string PercAsStr(uint64_t num, uint64_t den);
 
 // Filter indices [0, until] using the given `predicate`.
 template <typename Predicate>
-Indices FilterIndices(size_t until, const Predicate& predicate) {
+[[nodiscard]] Indices FilterIndices(size_t until, const Predicate& predicate) {
   Indices indices(until, 0);
 
   absl::c_iota(indices, 0);
@@ -91,7 +91,7 @@ Indices FilterIndices(size_t until, const Predicate& predicate) {
 }
 
 // Does the given tensor have a trivial and standard layout in memory.
-bool TensorHasTrivialLayout(const at::Tensor& tensor);
+[[nodiscard]] bool TensorHasTrivialLayout(const at::Tensor& tensor);
 
 }  // namespace torch_tpu
 
