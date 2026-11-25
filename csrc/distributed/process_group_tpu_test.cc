@@ -981,7 +981,8 @@ class SerializedStore : public c10d::Store {
  public:
   SerializedStore(c10::intrusive_ptr<c10d::HashStore> backing_store,
                   std::shared_ptr<ReadCounter> reads_started)
-      : backing_store_(std::move(backing_store)),
+      : c10d::Store(backing_store->getTimeout()),
+        backing_store_(std::move(backing_store)),
         reads_started_(std::move(reads_started)) {}
 
   c10::intrusive_ptr<c10d::Store> clone() override {
@@ -1070,11 +1071,8 @@ class SerializedStore : public c10d::Store {
     backing_store_->multiSet(keys, values);
   }
 
-  std::chrono::milliseconds getTimeout() const noexcept override {
-    return backing_store_->getTimeout();
-  }
-
   void setTimeout(const std::chrono::milliseconds& timeout) override {
+    c10d::Store::setTimeout(timeout);
     backing_store_->setTimeout(timeout);
   }
 
