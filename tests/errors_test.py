@@ -14235,6 +14235,195 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.fft.irfft(t, out=out)
 
+  @et.gpu_crashes_or_raises("GPU reads dim.back() on an empty dim list.")
+  def test_fft_r2c_empty_dim(self):
+    t = torch.ones((2, 2), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_r2c(): expected at least 1 transform dimension, got 0""",
+    ):
+      torch.ops.aten._fft_r2c(t, [], 0, True)
+
+  @et.gpu_crashes_or_raises(
+      "GPU indexes out_sizes[dim.back()] on an empty dim list."
+  )
+  def test_fft_c2r_empty_dim(self):
+    t = torch.ones((2, 2), device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2r(): expected at least 1 transform dimension, got 0""",
+    ):
+      torch.ops.aten._fft_c2r(t, [], 0, 4)
+
+  @et.gpu_crashes_or_raises(
+      "GPU crashes when transforming a dimension on a 0D tensor."
+  )
+  def test_fft_c2c_scalar_with_dim(self):
+    t = torch.tensor(1.0 + 2.0j, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""fft_c2c(): expected input tensor to have at least 1 dimension, got 0D""",
+    ):
+      torch.ops.aten._fft_c2c(t, [0], 0, True)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="same_positive", dims=[0, 0]),
+      dict(testcase_name="wrapped_negative", dims=[0, -1]),
+  )
+  @et.gpu_crashes_or_raises(
+      "GPU crashes when duplicate dims exceed the input tensor rank."
+  )
+  def test_fft_c2c_duplicate_dims(self, dims):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2c(): dim 0 appears multiple times in the list of dims""",
+    ):
+      torch.ops.aten._fft_c2c(t, dims, 0, True)
+
+  @et.gpu_crashes_or_raises(
+      "GPU crashes when duplicate dims exceed the input tensor rank."
+  )
+  def test_fft_r2c_duplicate_dims(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_r2c(): dim 0 appears multiple times in the list of dims""",
+    ):
+      torch.ops.aten._fft_r2c(t, [0, 0], 0, True)
+
+  @et.gpu_crashes_or_raises(
+      "GPU crashes when duplicate dims exceed the input tensor rank."
+  )
+  def test_fft_c2r_duplicate_dims(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2r(): dim 0 appears multiple times in the list of dims""",
+    ):
+      torch.ops.aten._fft_c2r(t, [0, 0], 0, 6)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int32",
+          dtype=torch.int32,
+          tpu_dtype="int32",
+          gpu_msg=(
+              "Expected self.is_floating_point() to be true, but got false.  "
+              "(Could this error message be improved?  If so, please report an "
+              "enhancement request to PyTorch.)"
+          ),
+      ),
+      dict(
+          testcase_name="complex64",
+          dtype=torch.complex64,
+          tpu_dtype="complex64",
+          gpu_msg=(
+              "Expected self.is_floating_point() to be true, but got false.  "
+              "(Could this error message be improved?  If so, please report an "
+              "enhancement request to PyTorch.)"
+          ),
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_msg="Unknown Complex ScalarType for Float8_e4m3fn",
+      ),
+  )
+  def test_fft_r2c_invalid_input_dtype(self, dtype, tpu_dtype, gpu_msg):
+    t = torch.ones(4, device=et.device(), dtype=dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fft_r2c(): expected float16, bfloat16, float32, or float64 input type, got {tpu_dtype}""",
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten._fft_r2c(t, [0], 0, True)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bfloat16",
+          dtype=torch.bfloat16,
+          tpu_result_dtype="complex64",
+          gpu_result_dtype="ComplexFloat",
+      ),
+      dict(
+          testcase_name="float16",
+          dtype=torch.float16,
+          tpu_result_dtype="complex32",
+          gpu_result_dtype="ComplexHalf",
+      ),
+  )
+  def test_fft_r2c_out_low_precision_dtype_mismatch(
+      self, dtype, tpu_result_dtype, gpu_result_dtype
+  ):
+    t = torch.ones(4, device=et.device(), dtype=dtype)
+    out = torch.empty(3, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fft_r2c(): result type {tpu_result_dtype} can't be cast to the desired output type int32""",
+        gpu=f"""result type {gpu_result_dtype} can't be cast to the desired output type Int""",
+    ):
+      torch.ops.aten._fft_r2c.out(t, [0], 0, True, out=out)
+
+  def test_fft_c2r_negative_last_dim_size(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2r(): expected last_dim_size to be >= 1, got -1""",
+        gpu="""Trying to create tensor with negative dimension -1: [-1]""",
+    ):
+      torch.ops.aten._fft_c2r(t, [0], 0, -1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="too_large",
+          last_dim_size=8,
+          expected_size=5,
+          gpu_pattern=re.compile(
+              r"in_size == signal_size\[i \+ 1\] \|\| in_size == "
+              r"\(signal_size\[i \+ 1\] / 2\) \+ 1 INTERNAL ASSERT FAILED"
+              r" at .*",
+              re.DOTALL,
+          ),
+      ),
+      dict(
+          testcase_name="too_small",
+          last_dim_size=2,
+          expected_size=2,
+          gpu_pattern=re.compile(
+              r"out_size == signal_size\[i \+ 1\] \|\| out_size == "
+              r"\(signal_size\[i \+ 1\] / 2\) \+ 1 INTERNAL ASSERT FAILED"
+              r" at .*",
+              re.DOTALL,
+          ),
+      ),
+  )
+  def test_fft_c2r_mismatched_last_dim_size(
+      self, last_dim_size, expected_size, gpu_pattern
+  ):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fft_c2r(): expected input size along dim 0 to be {expected_size} for last_dim_size {last_dim_size}, got 4""",
+        gpu=gpu_pattern,
+    ):
+      torch.ops.aten._fft_c2r(t, [0], 0, last_dim_size)
+
+  def test_fft_c2r_out_mismatched_last_dim_size(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    out = torch.empty(0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2r(): expected input size along dim 0 to be 5 for last_dim_size 8, got 4""",
+        gpu=re.compile(
+            r"in_size == signal_size\[i \+ 1\] \|\| in_size == "
+            r"\(signal_size\[i \+ 1\] / 2\) \+ 1 INTERNAL ASSERT FAILED at .*",
+            re.DOTALL,
+        ),
+    ):
+      torch.ops.aten._fft_c2r.out(t, [0], 0, 8, out=out)
+
   def test_dunder_lshift_unsupported_dtype(self):
     x = torch.tensor([1.0], device=et.device())
     y = torch.tensor([1.0], device=et.device())
