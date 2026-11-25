@@ -13303,6 +13303,28 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
+  def test_bucketize_mixed_devices(self):
+    input_cpu = torch.tensor([0.5, 1.5, 2.5])
+    int_input_cpu = torch.tensor([0, 1, 2, 3], dtype=torch.int32)
+    boundaries_cpu = torch.tensor([1.0, 2.0])
+
+    def run(device):
+      out = torch.empty(3, dtype=torch.int64, device=device)
+      torch.bucketize(input_cpu.to(device), boundaries_cpu, out=out)
+      out_cpu_input = torch.empty(3, dtype=torch.int64, device=device)
+      torch.bucketize(input_cpu, boundaries_cpu.to(device), out=out_cpu_input)
+      return (
+          torch.bucketize(input_cpu.to(device), boundaries_cpu),
+          torch.bucketize(input_cpu, boundaries_cpu.to(device)),
+          torch.bucketize(input_cpu[0], boundaries_cpu.to(device)),
+          # Mixed dtypes and a non-contiguous CPU tensor.
+          torch.bucketize(int_input_cpu[::2], boundaries_cpu.to(device)),
+          out,
+          out_cpu_input,
+      )
+
+    self.assert_close_tpu_vs_cpu(run)
+
   @parameterized.product(
       out_int32=[True, False],
       right=[True, False],

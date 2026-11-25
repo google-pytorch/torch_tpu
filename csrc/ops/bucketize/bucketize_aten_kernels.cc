@@ -17,6 +17,7 @@
 #include "csrc/ops/bucketize/bucketize_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -24,6 +25,7 @@
 #include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/Device.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
@@ -38,6 +40,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/to_copy/to_copy_aten_kernels.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -46,6 +49,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -162,12 +166,35 @@ absl::StatusOr<mlir::MlirOp> BuildBucketizeShlo(mlir::MlirOp self_op,
   return BuildCompareAllShlo(self_op, boundaries_op, out_dtype, right);
 }
 
+// PyTorch dispatches bucketize to the TPU kernel when either `self` or
+// `boundaries` is on TPU, so the other tensor can arrive on CPU. Copies
+// `tensor` to the TPU device of `other` in that case, like searchsorted does.
+// We use CopyToTpuTensor instead of ATen's .to() to avoid re-entering the
+// dispatcher.
+absl::StatusOr<at::Tensor> MoveToTpuIfNeeded(const at::Tensor& tensor,
+                                             const at::Tensor& other) {
+  if (IsPrivateUse1Device(tensor)) {
+    return tensor;
+  }
+  const std::optional<c10::DeviceIndex> tpu_device_index =
+      IsPrivateUse1Device(other) ? std::make_optional(other.device().index())
+                                 : std::nullopt;
+  return CopyToTpuTensor(tensor, /*dtype=*/std::nullopt,
+                         /*non_blocking=*/false,
+                         /*memory_format=*/c10::MemoryFormat::Contiguous,
+                         tpu_device_index);
+}
+
 template <typename ReturnType, typename OpDispatcherFn>
 ReturnType DispatchBucketize(const at::Tensor& self,
                              const at::Tensor& boundaries, bool out_int32,
                              bool right, OpParamCacheKeys param_keys,
                              OpDispatcherFn&& dispatch_fn) {
   TT_RETURN_IF_ERROR(ValidateInputAndBoundaries(self, boundaries));
+  TT_ASSIGN_OR_RETURN(const at::Tensor tpu_self,
+                      MoveToTpuIfNeeded(self, boundaries));
+  TT_ASSIGN_OR_RETURN(const at::Tensor tpu_boundaries,
+                      MoveToTpuIfNeeded(boundaries, self));
 
   TT_ASSIGN_OR_RETURN(
       const auto common_dtype,
@@ -192,7 +219,8 @@ ReturnType DispatchBucketize(const at::Tensor& self,
     return result_op;
   };
 
-  return dispatch_fn(std::move(op_builder), out_dtype, std::move(param_keys));
+  return dispatch_fn(std::move(op_builder), tpu_self, tpu_boundaries, out_dtype,
+                     std::move(param_keys));
 }
 
 absl::StatusOr<DeviceBufferRef> Bucketize(const at::Tensor& self,
@@ -201,12 +229,12 @@ absl::StatusOr<DeviceBufferRef> Bucketize(const at::Tensor& self,
                                           OpParamCacheKeys param_keys) {
   return DispatchBucketize<absl::StatusOr<DeviceBufferRef>>(
       self, boundaries, out_int32, right, std::move(param_keys),
-      [&]  // REF_CAPTURE_OK=called synchronously
-      (auto op_builder, mlir::ElementType out_dtype,
-       OpParamCacheKeys param_keys) {
-        return DispatchOp<2>(std::move(op_builder), {self, boundaries},
+      [](auto op_builder, const at::Tensor& tpu_self,
+         const at::Tensor& tpu_boundaries, mlir::ElementType out_dtype,
+         OpParamCacheKeys param_keys) {
+        return DispatchOp<2>(std::move(op_builder), {tpu_self, tpu_boundaries},
                              {.out_dtype = out_dtype,
-                              .out_dims = CopyIntVector(self.sizes()),
+                              .out_dims = CopyIntVector(tpu_self.sizes()),
                               .op_param_cache_keys = std::move(param_keys)});
       });
 }
@@ -219,12 +247,14 @@ absl::Status BucketizeOut(const at::Tensor& self, const at::Tensor& boundaries,
       /*allow_out_dtype_cast=*/false));
   return DispatchBucketize<absl::Status>(
       self, boundaries, out_int32, right, std::move(param_keys),
-      [&]  // REF_CAPTURE_OK=called synchronously
-      (auto op_builder, mlir::ElementType out_dtype,
+      [&out]  // REF_CAPTURE_OK=called synchronously
+      (auto op_builder, const at::Tensor& tpu_self,
+       const at::Tensor& tpu_boundaries, mlir::ElementType out_dtype,
        OpParamCacheKeys param_keys) {
-        return DispatchOpOut<2>(std::move(op_builder), {self, boundaries}, out,
+        return DispatchOpOut<2>(std::move(op_builder),
+                                {tpu_self, tpu_boundaries}, out,
                                 {.out_dtype = out_dtype,
-                                 .out_dims = CopyIntVector(self.sizes()),
+                                 .out_dims = CopyIntVector(tpu_self.sizes()),
                                  .op_param_cache_keys = std::move(param_keys)});
       });
 }

@@ -42,6 +42,7 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/to_copy",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
