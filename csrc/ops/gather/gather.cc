@@ -16,6 +16,7 @@
 
 #include "csrc/ops/gather/gather.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -28,7 +29,6 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -54,23 +54,25 @@ struct BroadcastGatherPlan {
   Dimensions free_dims;
 };
 
-mlir::MlirOp HandleScalarGather(mlir::MlirOp self,
-                                mlir::RankedTensorType self_type,
-                                mlir::RankedTensorType index_type) {
-  if (self_type.getRank() == index_type.getRank()) {
-    return self;
+// Gathers when `self` or `index` is 0D. Like PyTorch, treats a 0D tensor as a
+// 1D tensor with one element. The result has the shape of `index`.
+absl::StatusOr<mlir::MlirOp> HandleScalarGather(
+    mlir::MlirOp self, int64_t dim, mlir::MlirOp index, bool sparse_grad,
+    mlir::ElementType computation_element_type) {
+  if (GetTensorTypeOrDie(self).getRank() == 0) {
+    self = stablehlo::Reshape(self, {1});
   }
-  if (self_type.getRank() == 0 && index_type.getRank() == 1 &&
-      index_type.getShape()[0] == 0) {
-    // Gathering from a scalar with an empty index results in an empty tensor.
-    mlir::MlirBuilder& builder = self.getBuilder();
-    mlir::Type element_type = self_type.getElementType();
-    auto result_type = mlir::RankedTensorType::get({0}, element_type);
-    auto empty_attr = mlir::DenseElementsAttr::get(
-        result_type, llvm::ArrayRef<mlir::Attribute>());
-    return stablehlo::Constant(builder, empty_attr);
+  const bool is_index_scalar = GetTensorTypeOrDie(index).getRank() == 0;
+  if (is_index_scalar) {
+    index = stablehlo::Reshape(index, {1});
   }
-  return stablehlo::Reshape(self, index_type.getShape());
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp result,
+      BuildGatherShlo(self, dim, index, sparse_grad, computation_element_type));
+  if (is_index_scalar) {
+    result = stablehlo::Reshape(result, {});
+  }
+  return result;
 }
 
 bool ParseBroadcastGatherAxes(mlir::RankedTensorType base_type,
@@ -245,41 +247,29 @@ absl::Status ValidateGatherInputs(absl::Span<const int64_t> self_dims,
   const int64_t self_rank = self_dims.size();
   const int64_t index_rank = index_dims.size();
 
-  // self and index should have the same rank, except when one of them is a
-  // scalar and the other is a vector.
-  if (self_rank == 0 || index_rank == 0) {
-    // PyTorch allows 0D input with 1D index (if index size is 1)
-    // and vice versa.
-    if (self_rank == 0 && index_rank > 0) {
-      TT_RET_CHECK(index_rank == 1 && index_dims[0] <= 1,
-                   error::kInvalidArgument)
-          << "expected the input and the index tensor to have the same number "
-          << "of dimensions, got 0D vs " << index_rank << "D";
-    } else if (index_rank == 0 && self_rank > 0) {
-      TT_RET_CHECK(self_rank == 1 && self_dims[0] <= 1, error::kInvalidArgument)
-          << "expected the input to be a 1D tensor with size at most 1 when "
-             "index is 0D, got "
-          << self_rank << "D with shape {" << self_dims[0] << "}";
-    }
-  } else {
-    TT_RET_CHECK(self_rank == index_rank, error::kInvalidArgument)
-        << "expected the input and the index tensor to have the same number of "
-           "dimensions, got "
-        << self_rank << "D vs " << index_rank << "D";
+  // Like PyTorch, treat a 0D tensor as a 1D tensor with one element, so self
+  // and index have the same rank, or one is a scalar and the other a vector.
+  const int64_t effective_rank = std::max<int64_t>(self_rank, 1);
+  TT_RET_CHECK(effective_rank == std::max<int64_t>(index_rank, 1),
+               error::kInvalidArgument)
+      << "expected the input and the index tensor to have the same number of "
+         "dimensions, got "
+      << self_rank << "D vs " << index_rank << "D";
 
-    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=SafeWrapDim function (called before
-                   // this one) catches this error first.
-        dim >= 0 && dim < self_rank, error::kInvalidArgument)
-        << "expected the dim argument to be in the range [0, " << self_rank
-        << "), got " << dim;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=SafeWrapDim function (called before
+                 // this one) catches this error first.
+      dim >= 0 && dim < effective_rank, error::kInvalidArgument)
+      << "expected the dim argument to be in the range [0, " << effective_rank
+      << "), got " << dim;
 
-    for (auto d = 0; d < self_rank; ++d) {
-      if (d != dim) {
-        TT_RET_CHECK(index_dims[d] <= self_dims[d], error::kInvalidArgument)
-            << "expected the index tensor to have size less than or equal to "
-               "the input tensor at dimension "
-            << d << ", got " << index_dims[d] << " vs " << self_dims[d];
-      }
+  // A 0D tensor has no dimension other than `dim`, so `d` is always a valid
+  // index into both shapes here.
+  for (int64_t d = 0; d < effective_rank; ++d) {
+    if (d != dim) {
+      TT_RET_CHECK(index_dims[d] <= self_dims[d], error::kInvalidArgument)
+          << "expected the index tensor to have size less than or equal to "
+             "the input tensor at dimension "
+          << d << ", got " << index_dims[d] << " vs " << self_dims[d];
     }
   }
 
@@ -304,7 +294,8 @@ absl::StatusOr<mlir::MlirOp> BuildGatherShlo(
   // self and index should have the same rank, except when one of them is a
   // scalar and the other is a vector.
   if (self_type.getRank() == 0 || index_type.getRank() == 0) {
-    return HandleScalarGather(self, self_type, index_type);
+    return HandleScalarGather(self, dim, index, sparse_grad,
+                              computation_element_type);
   }
 
   const mlir::Type original_element_type = self_type.getElementType();

@@ -10594,7 +10594,7 @@ Note: this function is intended to be used with the output produced by torch.lin
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): expected the input to be a 1D tensor with size at most 1 when index is 0D, got 2D with shape {2}""",
+        tpu="""gather(): expected the input and the index tensor to have the same number of dimensions, got 2D vs 0D""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
       torch.gather(inp, dim, index, out=out)

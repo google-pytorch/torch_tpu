@@ -2498,6 +2498,57 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     expected_grad = torch.tensor([2.0])
     utils.assert_close(self_tpu.grad.cpu(), expected_grad)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="0d_self_1d_index",
+          self_data=5.0,
+          dim=0,
+          index_data=[0, 0, 0],
+          index_dtype=torch.int64,
+      ),
+      dict(
+          testcase_name="1d_self_0d_index",
+          self_data=[10.0, 20.0, 30.0],
+          dim=0,
+          index_data=2,
+          index_dtype=torch.int64,
+      ),
+      dict(
+          testcase_name="0d_self_0d_index",
+          self_data=5.0,
+          dim=0,
+          index_data=0,
+          index_dtype=torch.int64,
+      ),
+      dict(
+          testcase_name="0d_self_1d_index_negative_dim_int32_index",
+          self_data=5.0,
+          dim=-1,
+          index_data=[0, 0],
+          index_dtype=torch.int32,
+      ),
+      dict(
+          testcase_name="1d_self_0d_index_negative_dim_int32_index",
+          self_data=[10.0, 20.0, 30.0],
+          dim=-1,
+          index_data=1,
+          index_dtype=torch.int32,
+      ),
+  )
+  def test_gather_0d_self_or_index(
+      self, self_data, dim, index_data, index_dtype
+  ):
+    """Tests gather where a 0D self or index acts as a 1-element 1D tensor."""
+
+    def test_fn(device):
+      self_tensor = torch.tensor(self_data, device=device)
+      index = torch.tensor(index_data, dtype=index_dtype, device=device)
+      out = torch.empty(0, device=device)
+      torch.gather(self_tensor, dim, index, out=out)
+      return torch.gather(self_tensor, dim, index), out
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_gather_empty_dim(self):
     def test_fn(device):
       self_tensor = torch.randn(0, 7, device=device)
