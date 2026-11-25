@@ -24,6 +24,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -90,15 +91,27 @@ absl::StatusOr<c10::optional<at::Tensor>> ResolveAuxiliaryTensorDevice(
   return c10::make_optional(std::move(resolved_tensor));
 }
 
-absl::Status ValidateSearchsortedInputs(
-    const at::Tensor& sorted, const at::Tensor& values,
-    const c10::optional<at::Tensor>& sorter) {
+// Rejects complex tensors, which CUDA doesn't support either.
+absl::Status ValidateNonComplex(const at::Tensor& tensor,
+                                std::string_view name) {
+  TT_RET_CHECK(!IsComplex(tensor), error::kInvalidArgument)
+      << "expected " << name << " to be non-complex, got "
+      << ToString(tensor.scalar_type());
+  return absl::OkStatus();
+}
+
+// Validates the inputs, where `common_dtype` is the dtype that `sorted` and
+// `values` are compared in.
+absl::Status ValidateSearchsortedInputs(const at::Tensor& sorted,
+                                        const at::Tensor& values,
+                                        const c10::optional<at::Tensor>& sorter,
+                                        const at::ScalarType common_dtype) {
   // Reject booleans for non-empty inputs to keep consistent with CUDA impl,
   // which short-circuits and returns success for empty inputs before
-  // dispatching on the input dtype.
-  TT_RET_CHECK(values.numel() == 0 || !IsBool(values),
+  // dispatching on the common dtype.
+  TT_RET_CHECK(values.numel() == 0 || !IsBool(common_dtype),
                error::kPythonNotImplementedError)
-      << "not implemented for " << ToString(values.scalar_type());
+      << "not implemented for " << ToString(common_dtype);
   TT_RET_CHECK(sorted.dim() != 0, error::kInvalidArgument)
       << "expected sorted_sequence to have >0 dimension, got 0";
 
@@ -277,6 +290,12 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
                                     const c10::optional<at::Tensor>& sorter,
                                     OpParamCacheKeys&& param_keys,
                                     DispatchFn&& dispatch_fn) {
+  TT_RETURN_IF_ERROR(ValidateNonComplex(sorted_sequence, "sorted_sequence"));
+  TT_RETURN_IF_ERROR(ValidateNonComplex(values, "values"));
+  // Promote the original tensors: copying a tensor to TPU below drops the
+  // wrapped-number flag that type promotion depends on.
+  const at::ScalarType common_aten_type =
+      at::result_type(sorted_sequence, values);
   TT_ASSIGN_OR_RETURN(at::Tensor resolved_sorted,
                       ResolveAuxiliaryTensorDevice(sorted_sequence));
   TT_ASSIGN_OR_RETURN(at::Tensor resolved_values,
@@ -285,7 +304,7 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
                       ResolveAuxiliaryTensorDevice(sorter));
 
   TT_RETURN_IF_ERROR(ValidateSearchsortedInputs(
-      resolved_sorted, resolved_values, resolved_sorter));
+      resolved_sorted, resolved_values, resolved_sorter, common_aten_type));
   TT_ASSIGN_OR_RETURN(bool is_right, ResolveSearchsortedIsRight(right, side));
 
   at::ScalarType out_dtype =
@@ -311,8 +330,6 @@ ReturnType SearchsortedTensorCommon(const at::Tensor& sorted_sequence,
     temp_seq_len /= 2;
   }
 
-  at::ScalarType common_aten_type = at::promoteTypes(
-      resolved_sorted.scalar_type(), resolved_values.scalar_type());
   TT_ASSIGN_OR_RETURN(auto common_elem_type,
                       internal::ToElementType(common_aten_type));
   const bool is_float = at::isFloatingType(common_aten_type);
@@ -404,6 +421,15 @@ absl::Status SearchsortedTensorOut(const at::Tensor& sorted_sequence,
       });
 }
 
+// Promotes the scalar `value` to a tensor of the dtype that it is compared with
+// `sorted_sequence` in.
+absl::StatusOr<at::Tensor> PromoteValue(const at::Tensor& sorted_sequence,
+                                        PromotedScalar& value) {
+  // Validate `sorted_sequence` before promoting `value` against its dtype.
+  TT_RETURN_IF_ERROR(ValidateNonComplex(sorted_sequence, "sorted_sequence"));
+  return value.GetTensor(at::result_type(sorted_sequence, value.scalar()));
+}
+
 }  // namespace
 
 at::Tensor AtenSearchsortedTensor(const at::Tensor& sorted_sequence,
@@ -444,7 +470,8 @@ at::Tensor AtenSearchsortedScalar(const at::Tensor& sorted_sequence,
   auto promoted_value = PromoteScalar(value);
   TT_KERNEL(OpName::kSearchsortedScalar, param_keys,
             (sorted_sequence, promoted_value, out_int32, right, side, sorter), {
-              TT_ASSIGN_OR_THROW(at::Tensor values, promoted_value.GetTensor());
+              TT_ASSIGN_OR_THROW(at::Tensor values,
+                                 PromoteValue(sorted_sequence, promoted_value));
               TT_ASSIGN_OR_THROW(auto result,
                                  SearchsortedTensorInternal(
                                      sorted_sequence, values, out_int32, right,
@@ -463,7 +490,8 @@ at::Tensor& AtenSearchsortedScalarOut(const at::Tensor& sorted_sequence,
   TT_KERNEL(
       OpName::kSearchsortedScalarOut, param_keys,
       (sorted_sequence, promoted_value, out_int32, right, side, sorter, out), {
-        TT_ASSIGN_OR_THROW(at::Tensor values, promoted_value.GetTensor());
+        TT_ASSIGN_OR_THROW(at::Tensor values,
+                           PromoteValue(sorted_sequence, promoted_value));
         TT_THROW_IF_ERROR(SearchsortedTensorOut(sorted_sequence, values,
                                                 out_int32, right, side, sorter,
                                                 out, std::move(param_keys)));

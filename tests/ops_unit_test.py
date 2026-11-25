@@ -28989,6 +28989,227 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="bfloat16", dtype=torch.bfloat16),
+      dict(testcase_name="float16", dtype=torch.float16),
+      dict(testcase_name="float32", dtype=torch.float32),
+      dict(testcase_name="float64", dtype=torch.float64),
+  )
+  def test_searchsorted_and_bucketize_scalar_float_precision(self, dtype):
+    def test_fn(device):
+      results = []
+      for val in [0.9, 1.1]:
+        seq = torch.tensor([val], dtype=dtype, device=device)
+        val_f64_0d = torch.tensor(val, dtype=torch.float64, device=device)
+        for right in [False, True]:
+          out_scalar = torch.empty((), dtype=torch.int64, device=device)
+          torch.searchsorted(seq, val, right=right, out=out_scalar)
+          out_0d = torch.empty((), dtype=torch.int64, device=device)
+          torch.searchsorted(seq, val_f64_0d, right=right, out=out_0d)
+          results.extend([
+              torch.searchsorted(seq, val, right=right),
+              out_scalar,
+              torch.searchsorted(seq, val_f64_0d, right=right),
+              out_0d,
+              torch.bucketize(val, seq, right=right),
+          ])
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="int32", dtype=torch.int32),
+      dict(testcase_name="int64", dtype=torch.int64),
+  )
+  def test_searchsorted_and_bucketize_scalar_integral_promotion(self, dtype):
+    def run_all(device):
+      results = []
+      seq_small = torch.tensor([1, 2, 3, 4], dtype=dtype, device=device)
+      for val in [
+          1.5,
+          2,
+          True,
+          False,
+          float("nan"),
+          float("inf"),
+          float("-inf"),
+      ]:
+        for right in [False, True]:
+          out_scalar = torch.empty((), dtype=torch.int64, device=device)
+          torch.searchsorted(seq_small, val, right=right, out=out_scalar)
+          results.extend([
+              torch.searchsorted(seq_small, val, right=right),
+              out_scalar,
+              torch.bucketize(val, seq_small, right=right),
+          ])
+      # 2**24 and 2**24 + 1 both round to 2**24 in float32, distinguishing
+      # wrapped-scalar float32 promotion from unwrapped float64 promotion.
+      seq_large = torch.tensor([16777216, 16777217], dtype=dtype, device=device)
+      for right in [False, True]:
+        out_scalar = torch.empty((), dtype=torch.int64, device=device)
+        torch.searchsorted(seq_large, 16777216.5, right=right, out=out_scalar)
+        results.extend([
+            torch.searchsorted(seq_large, 16777216.5, right=right),
+            out_scalar,
+            torch.bucketize(16777216.5, seq_large, right=right),
+        ])
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(run_all)
+    with set_default_dtype(torch.float64):
+      self.assert_close_tpu_vs_cpu(run_all)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="bfloat16", dtype=torch.bfloat16),
+      dict(testcase_name="float16", dtype=torch.float16),
+      dict(testcase_name="float32", dtype=torch.float32),
+      dict(testcase_name="float64", dtype=torch.float64),
+  )
+  def test_searchsorted_and_bucketize_scalar_bool_and_non_finite(self, dtype):
+    def test_fn(device):
+      seq = torch.tensor([0.0, 1.0, 2.0], dtype=dtype, device=device)
+      results = []
+      for val in [False, True, float("nan"), float("inf"), float("-inf")]:
+        for right in [False, True]:
+          out_scalar = torch.empty((), dtype=torch.int64, device=device)
+          torch.searchsorted(seq, val, right=right, out=out_scalar)
+          results.extend([
+              torch.searchsorted(seq, val, right=right),
+              out_scalar,
+              torch.bucketize(val, seq, right=right),
+          ])
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_searchsorted_and_bucketize_scalar_on_bool_sequence(self):
+    def test_fn(device):
+      seq = torch.tensor([False, True], dtype=torch.bool, device=device)
+      results = []
+      for val in [0.5, 1]:
+        for right in [False, True]:
+          out_scalar = torch.empty((), dtype=torch.int64, device=device)
+          torch.searchsorted(seq, val, right=right, out=out_scalar)
+          results.extend([
+              torch.searchsorted(seq, val, right=right),
+              out_scalar,
+              torch.bucketize(val, seq, right=right),
+          ])
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float16_overflow",
+          dtype=torch.float16,
+          seq_vals=[float("-inf"), 1.0, 2.0, float("inf")],
+          scalars=[1e5, -1e5],
+      ),
+      dict(
+          testcase_name="bfloat16_overflow",
+          dtype=torch.bfloat16,
+          seq_vals=[float("-inf"), 1.0, 2.0, float("inf")],
+          scalars=[1e40, -1e40],
+      ),
+      dict(
+          testcase_name="float32_overflow",
+          dtype=torch.float32,
+          seq_vals=[float("-inf"), 1.0, 2.0, float("inf")],
+          scalars=[1e40, -1e40],
+      ),
+      dict(
+          testcase_name="float16_int_overflow",
+          dtype=torch.float16,
+          seq_vals=[float("-inf"), 1.0, 2.0, float("inf")],
+          scalars=[100000, -100000],
+      ),
+      dict(
+          testcase_name="int8_wrap",
+          dtype=torch.int8,
+          seq_vals=[-30, -24, 0, 10],
+          scalars=[1000],
+      ),
+      dict(
+          testcase_name="uint8_wrap",
+          dtype=torch.uint8,
+          seq_vals=[10, 24, 44, 255],
+          scalars=[-1, -1000, 300],
+      ),
+  )
+  def test_searchsorted_and_bucketize_scalar_out_of_range(
+      self, dtype, seq_vals, scalars
+  ):
+    def run_ops(seq, val, right):
+      out_scalar = torch.empty((), dtype=torch.int64, device=seq.device)
+      torch.searchsorted(seq, val, right=right, out=out_scalar)
+      return (
+          torch.searchsorted(seq, val, right=right),
+          out_scalar,
+          torch.bucketize(val, seq, right=right),
+      )
+
+    def test_fn(device):
+      seq = torch.tensor(seq_vals, dtype=dtype, device=device)
+      results = []
+      for val in scalars:
+        for right in [False, True]:
+          results.extend(run_ops(seq, val, right))
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+    # Also verify compiled path where PromoteScalar uses MakeConstant.
+    for val in scalars:
+      for right in [False, True]:
+        seq_cpu = torch.tensor(seq_vals, dtype=dtype)
+        expected = run_ops(seq_cpu, val, right)
+        compiled_fn = torch.compile(
+            lambda s, v=val, r=right: (
+                torch.searchsorted(s, v, right=r),
+                torch.bucketize(v, s, right=r),
+            ),
+            backend="tpu",
+            fullgraph=True,
+        )
+        actual_ss, actual_bk = compiled_fn(seq_cpu.to("tpu"))
+        self.assert_close(
+            torch_tpu_result=actual_ss.cpu(), golden_result=expected[0]
+        )
+        self.assert_close(
+            torch_tpu_result=actual_bk.cpu(), golden_result=expected[2]
+        )
+
+  def test_searchsorted_and_bucketize_tensor_type_promotion(self):
+    """Tests that tensor values are promoted against the sequence like on CPU."""
+
+    def test_fn(device):
+      seq_int8 = torch.tensor(
+          [-30, -24, 0, 10], dtype=torch.int8, device=device
+      )
+      seq_float = torch.tensor([0.0, 0.5, 1.0], device=device)
+      results = []
+      for seq, values in [
+          # A 0-D tensor doesn't promote a sequence of the same category, so
+          # 1000 wraps to -24 in `int8`.
+          (seq_int8, torch.tensor(1000, dtype=torch.int64, device=device)),
+          (
+              seq_int8,
+              torch.tensor([1000, -24], dtype=torch.int64, device=device),
+          ),
+          # `bool` values are promoted to the dtype of a non-`bool` sequence.
+          (seq_int8, torch.tensor(True, device=device)),
+          (seq_float, torch.tensor([True, False], device=device)),
+      ]:
+        for right in [False, True]:
+          results.extend([
+              torch.searchsorted(seq, values, right=right),
+              torch.bucketize(values, seq, right=right),
+          ])
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_searchsorted_0d_query_1elem_sorter(self):
     def test_fn(device):
       seq = torch.tensor([10], dtype=torch.int64, device=device)

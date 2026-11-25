@@ -14644,6 +14644,24 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.bucketize(input_tensor, boundaries)
 
+  def test_bucketize_scalar_complex_boundaries(self):
+    boundaries = torch.tensor([1 + 1j], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""searchsorted_out_cuda" not implemented for 'ComplexFloat'""",
+        tpu="""bucketize(): expected boundaries to be non-complex, got complex64""",
+    ):
+      torch.bucketize(0.5, boundaries)
+
+  def test_bucketize_scalar_bool_unsupported(self):
+    boundaries = torch.tensor([False, True], device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bucketize(): not implemented for bool""",
+        gpu=""""searchsorted_out_cuda" not implemented for 'Bool'""",
+    ):
+      torch.bucketize(True, boundaries)
+
   def test_geqrf_insufficient_dims(self):
     input_tensor = torch.ones(1, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
@@ -15862,6 +15880,44 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu=""""searchsorted_out_cuda" not implemented for 'Bool'""",
     ):
       torch.searchsorted(sorted_seq, values)
+
+  def test_searchsorted_complex_sorted_sequence(self):
+    sorted_seq = torch.tensor([1 + 1j], device=et.device())
+    values = torch.tensor([0.5], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""searchsorted_out_cuda" not implemented for 'ComplexFloat'""",
+        tpu="""searchsorted(): expected sorted_sequence to be non-complex, got complex64""",
+    ):
+      torch.searchsorted(sorted_seq, values)
+
+  def test_searchsorted_complex_values(self):
+    sorted_seq = torch.tensor([0.5], device=et.device())
+    values = torch.tensor([1 + 1j], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""searchsorted_out_cuda" not implemented for 'ComplexFloat'""",
+        tpu="""searchsorted(): expected values to be non-complex, got complex64""",
+    ):
+      torch.searchsorted(sorted_seq, values)
+
+  def test_searchsorted_scalar_complex_sorted_sequence(self):
+    sorted_seq = torch.tensor([1 + 1j], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""searchsorted_out_cuda" not implemented for 'ComplexFloat'""",
+        tpu="""searchsorted(): expected sorted_sequence to be non-complex, got complex64""",
+    ):
+      torch.searchsorted(sorted_seq, 0.5)
+
+  def test_searchsorted_scalar_bool_unsupported(self):
+    sorted_seq = torch.tensor([False, True], device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""searchsorted(): not implemented for bool""",
+        gpu=""""searchsorted_out_cuda" not implemented for 'Bool'""",
+    ):
+      torch.searchsorted(sorted_seq, True)
 
   def test_fused_adagrad_default_int32_dtype(self):
     device = et.device()

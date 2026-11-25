@@ -17,7 +17,10 @@
 #include "csrc/common/aten_utils.h"
 
 #include <cmath>
+#include <cstdint>
 #include <exception>
+#include <limits>
+#include <type_traits>
 
 #include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
@@ -31,6 +34,48 @@
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+namespace {
+
+// Rounds a finite `value` beyond the `float` range the way IEEE 754
+// round-to-nearest-even does, as converting it with a cast is undefined:
+// magnitudes below `FLT_MAX` plus half a unit in the last place become
+// `FLT_MAX`, larger ones become infinity. Other values are returned unchanged.
+double SaturateToFloatRange(const double value) {
+  constexpr double kFloatMax = std::numeric_limits<float>::max();
+  constexpr double kRoundsToInfinity = 0x1.ffffffp+127;
+  if (!std::isfinite(value) || std::abs(value) <= kFloatMax) {
+    return value;
+  }
+  return std::copysign(std::abs(value) < kRoundsToInfinity
+                           ? kFloatMax
+                           : std::numeric_limits<double>::infinity(),
+                       value);
+}
+
+template <typename To>
+at::Scalar ConvertScalarTo(const at::Scalar& scalar) {
+  if (scalar.isFloatingPoint()) {
+    if constexpr (std::is_integral_v<To>) {
+      // Converting an out-of-range floating-point value to an integer is
+      // undefined, so leave the scalar to the checked conversions of its users.
+      return scalar;
+    } else {
+      // `c10::Half` and `c10::BFloat16` are converted through `float`.
+      const double value = scalar.toDouble();
+      return at::Scalar(c10::convert<To>(
+          std::is_same_v<To, double> ? value : SaturateToFloatRange(value)));
+    }
+  }
+  if (scalar.type() == at::ScalarType::UInt64) {
+    return at::Scalar(c10::convert<To>(scalar.toUInt64()));
+  }
+  if (scalar.isIntegral(/*includeBool=*/false)) {
+    return at::Scalar(c10::convert<To>(scalar.toLong()));
+  }
+  return scalar;
+}
+
+}  // namespace
 
 bool operator==(const HashableScalar& lhs, const HashableScalar& rhs) {
   // If the target types are different, they are not equal.
@@ -151,6 +196,28 @@ absl::StatusOr<bool> CanCastScalarWithoutOverflow(const at::Scalar& scalar,
   }
 
   return true;
+}
+
+at::Scalar CastScalarToDtype(const at::Scalar& scalar,
+                             const at::ScalarType target_dtype) {
+  if (scalar.isSymbolic() || scalar.isBoolean() || scalar.isComplex() ||
+      scalar.type() == target_dtype) {
+    return scalar;
+  }
+  switch (target_dtype) {
+#define TT_CAST_SCALAR_CASE(ctype, name) \
+  case at::ScalarType::name:             \
+    return ConvertScalarTo<ctype>(scalar);
+
+    AT_FORALL_SCALAR_TYPES_AND2(Half, BFloat16, TT_CAST_SCALAR_CASE)
+    TT_CAST_SCALAR_CASE(uint16_t, UInt16)
+    TT_CAST_SCALAR_CASE(uint32_t, UInt32)
+    TT_CAST_SCALAR_CASE(uint64_t, UInt64)
+
+#undef TT_CAST_SCALAR_CASE
+    default:
+      return scalar;
+  }
 }
 
 }  // namespace torch_tpu

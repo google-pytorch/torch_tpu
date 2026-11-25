@@ -1169,6 +1169,7 @@ torch_tpu_cc_test(
         ":dimension_types",
         ":status_test_utils",
         "//csrc/common:oss_test_main",
+        "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
