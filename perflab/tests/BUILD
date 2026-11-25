@@ -277,6 +277,33 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "flops_gen_benchmarks_test",
+    srcs = ["flops_gen_benchmarks_test.py"],
+    data = [
+        "//perflab/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
+    ],
+    notest_oss = True,  # NOTEST_OSS_OK=builds models from the internal in-tree model configs, which OSS does not export
+    tags = [
+        "nomsan",  # 3p 'py/torch' error: use-of-uninitialized-value in reduced_float_type_copy
+    ],
+    deps = [
+        "//perflab:context",
+        "//perflab:discovery",
+        "//perflab:flops",
+        "//perflab:registry",
+        "//perflab:target",
+        "//perflab/models",
+        "//perflab/steps",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "measure_test",
     srcs = ["measure_test.py"],
     deps = [
@@ -459,6 +486,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
