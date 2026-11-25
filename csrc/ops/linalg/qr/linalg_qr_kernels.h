@@ -24,7 +24,8 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor> AtenGeqrf(const at::Tensor& self);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenGeqrf(
+    const at::Tensor& self);
 std::tuple<at::Tensor&, at::Tensor&> AtenGeqrfA(const at::Tensor& self,
                                                 at::Tensor& a, at::Tensor& tau);
 

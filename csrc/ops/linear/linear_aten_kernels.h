@@ -30,12 +30,14 @@ namespace torch_tpu {
 // `at::native::linear` (matching CPU/CUDA behavior) while dispatching standard
 // TPU tensors and `FakeTensor`s (`torch.compile` / `torch.export`) through
 // `LinearBackward0` and `AtenLinear`.
-at::Tensor AtenLinearAutograd(const at::Tensor& input, const at::Tensor& weight,
-                              const std::optional<at::Tensor>& bias);
+[[nodiscard]] at::Tensor AtenLinearAutograd(
+    const at::Tensor& input, const at::Tensor& weight,
+    const std::optional<at::Tensor>& bias);
 
 // Implements `aten::linear` (`linear.default`): y = x @ A^T + b.
-at::Tensor AtenLinear(const at::Tensor& input, const at::Tensor& weight,
-                      const std::optional<at::Tensor>& bias);
+[[nodiscard]] at::Tensor AtenLinear(const at::Tensor& input,
+                                    const at::Tensor& weight,
+                                    const std::optional<at::Tensor>& bias);
 
 // Implements `aten::linear.out`: writes y = x @ A^T + b into `out`.
 at::Tensor& AtenLinearOut(const at::Tensor& input, const at::Tensor& weight,
@@ -44,7 +46,7 @@ at::Tensor& AtenLinearOut(const at::Tensor& input, const at::Tensor& weight,
 
 // Implements `aten::linear_backward`, returning `(grad_input, grad_weight,
 // grad_bias)` according to `output_mask`.
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLinearBackward(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLinearBackward(
     const at::Tensor& self, const at::Tensor& grad_output,
     const at::Tensor& weight, std::array<bool, 3> output_mask);
 

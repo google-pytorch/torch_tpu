@@ -20,9 +20,11 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenIm2Col(const at::Tensor& self, at::IntArrayRef kernel_size,
-                      at::IntArrayRef dilation, at::IntArrayRef padding,
-                      at::IntArrayRef stride);
+[[nodiscard]] at::Tensor AtenIm2Col(const at::Tensor& self,
+                                    at::IntArrayRef kernel_size,
+                                    at::IntArrayRef dilation,
+                                    at::IntArrayRef padding,
+                                    at::IntArrayRef stride);
 
 at::Tensor& AtenIm2ColOut(const at::Tensor& self, at::IntArrayRef kernel_size,
                           at::IntArrayRef dilation, at::IntArrayRef padding,

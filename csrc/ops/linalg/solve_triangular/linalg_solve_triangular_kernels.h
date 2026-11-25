@@ -29,7 +29,7 @@ struct SolveTriangularOptions {
   bool adjoint = false;
 };
 
-NAryMlirOpBuilder<2, 1> LinalgSolveTriangularBuilder(
+[[nodiscard]] NAryMlirOpBuilder<2, 1> LinalgSolveTriangularBuilder(
     SolveTriangularOptions options);
 
 at::Tensor& AtenLinalgSolveTriangularOut(const at::Tensor& a,
@@ -37,8 +37,10 @@ at::Tensor& AtenLinalgSolveTriangularOut(const at::Tensor& a,
                                          bool left, bool unitriangular,
                                          at::Tensor& out);
 
-at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a, const at::Tensor& b,
-                                     bool upper, bool left, bool unitriangular);
+[[nodiscard]] at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a,
+                                                   const at::Tensor& b,
+                                                   bool upper, bool left,
+                                                   bool unitriangular);
 
 }  // namespace torch_tpu
 

@@ -23,8 +23,8 @@
 
 namespace torch_tpu {
 
-mlir::MlirOp BuildIndexSelectShlo(mlir::MlirOp self, int64_t dim,
-                                  mlir::MlirOp index);
+[[nodiscard]] mlir::MlirOp BuildIndexSelectShlo(mlir::MlirOp self, int64_t dim,
+                                                mlir::MlirOp index);
 
 }  // namespace torch_tpu
 

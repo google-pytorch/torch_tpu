@@ -24,8 +24,9 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenHistc(const at::Tensor& self, int64_t bins,
-                     const at::Scalar& min, const at::Scalar& max);
+[[nodiscard]] at::Tensor AtenHistc(const at::Tensor& self, int64_t bins,
+                                   const at::Scalar& min,
+                                   const at::Scalar& max);
 
 at::Tensor& AtenHistcOut(const at::Tensor& self, int64_t bins,
                          const at::Scalar& min, const at::Scalar& max,

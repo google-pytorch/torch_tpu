@@ -26,8 +26,9 @@ namespace torch_tpu {
 // derivative:
 //   d/dz sigmoid(z) = sigmoid(z) * (1 - sigmoid(z))
 //   grad_z = delta * act * (1 - act)
-inline mlir::MlirOp SigmoidBackward(mlir::MlirOp delta, mlir::MlirOp act,
-                                    mlir::MlirOp one) {
+[[nodiscard]] inline mlir::MlirOp SigmoidBackward(mlir::MlirOp delta,
+                                                  mlir::MlirOp act,
+                                                  mlir::MlirOp one) {
   mlir::MlirOp one_minus_act = mlir::stablehlo::Subtract(one, act);
   mlir::MlirOp delta_one_minus_act = mlir::stablehlo::Mul(delta, one_minus_act);
   return mlir::stablehlo::Mul(delta_one_minus_act, act);
@@ -37,8 +38,9 @@ inline mlir::MlirOp SigmoidBackward(mlir::MlirOp delta, mlir::MlirOp act,
 // derivative:
 //   d/dz tanh(z) = 1 - tanh^2(z)
 //   grad_z = delta * (1 - act^2)
-inline mlir::MlirOp TanhBackward(mlir::MlirOp delta, mlir::MlirOp act,
-                                 mlir::MlirOp one) {
+[[nodiscard]] inline mlir::MlirOp TanhBackward(mlir::MlirOp delta,
+                                               mlir::MlirOp act,
+                                               mlir::MlirOp one) {
   mlir::MlirOp act_sq = mlir::stablehlo::Mul(act, act);
   mlir::MlirOp one_minus_act_sq = mlir::stablehlo::Subtract(one, act_sq);
   return mlir::stablehlo::Mul(delta, one_minus_act_sq);
@@ -69,12 +71,10 @@ struct LstmGateAdjoints {
 //   delta_pre_f = SigmoidBackward(delta_c * c_prev, f, 1.0)
 //   delta_pre_g = TanhBackward(delta_c * i, g, 1.0)
 //   delta_pre_o = SigmoidBackward(delta_o, o, 1.0)
-LstmGateAdjoints ComputeLstmGateAdjoints(mlir::MlirOp delta_h,
-                                         mlir::MlirOp delta_c_next,
-                                         mlir::MlirOp tanh_c,
-                                         mlir::MlirOp c_prev, mlir::MlirOp i,
-                                         mlir::MlirOp f, mlir::MlirOp g,
-                                         mlir::MlirOp o, mlir::MlirOp one);
+[[nodiscard]] LstmGateAdjoints ComputeLstmGateAdjoints(
+    mlir::MlirOp delta_h, mlir::MlirOp delta_c_next, mlir::MlirOp tanh_c,
+    mlir::MlirOp c_prev, mlir::MlirOp i, mlir::MlirOp f, mlir::MlirOp g,
+    mlir::MlirOp o, mlir::MlirOp one);
 
 }  // namespace torch_tpu
 

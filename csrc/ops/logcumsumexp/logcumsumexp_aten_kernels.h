@@ -23,7 +23,7 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenLogcumsumexp(const at::Tensor& self, int64_t dim);
+[[nodiscard]] at::Tensor AtenLogcumsumexp(const at::Tensor& self, int64_t dim);
 
 at::Tensor& AtenLogcumsumexpOut(const at::Tensor& self, int64_t dim,
                                 at::Tensor& out);

@@ -23,8 +23,8 @@
 
 namespace torch_tpu {
 
-at::Tensor TpuAtenIndexSelect(const at::Tensor& self, int64_t dim,
-                              const at::Tensor& index);
+[[nodiscard]] at::Tensor TpuAtenIndexSelect(const at::Tensor& self, int64_t dim,
+                                            const at::Tensor& index);
 
 }  // namespace torch_tpu
 

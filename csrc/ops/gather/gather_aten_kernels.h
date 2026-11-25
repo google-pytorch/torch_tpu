@@ -24,8 +24,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenGather(const at::Tensor& self, int64_t dim,
-                      const at::Tensor& index, bool sparse_grad);
+[[nodiscard]] at::Tensor AtenGather(const at::Tensor& self, int64_t dim,
+                                    const at::Tensor& index, bool sparse_grad);
 
 at::Tensor& AtenGatherOut(const at::Tensor& self, int64_t dim,
                           const at::Tensor& index, bool sparse_grad,

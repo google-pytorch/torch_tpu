@@ -23,7 +23,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenLogit(const at::Tensor& self, std::optional<double> eps);
+[[nodiscard]] at::Tensor AtenLogit(const at::Tensor& self,
+                                   std::optional<double> eps);
 at::Tensor& AtenLogit_(at::Tensor& self, std::optional<double> eps);
 at::Tensor& AtenLogitOut(const at::Tensor& self, std::optional<double> eps,
                          at::Tensor& out);
