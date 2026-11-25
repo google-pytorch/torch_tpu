@@ -16,25 +16,36 @@
 
 #include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/experimental/precompiled_kernels/kernel_test_utils.h"
+#include "csrc/experimental/precompiled_kernels/kernel_utils.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
+#include "csrc/pjrt/runtime_shape_metadata_pool.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/ir/hlo_schedule.h"
+#include "xla/layout.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
+#include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/service/hlo_runner.h"
 #include "xla/shape.h"
@@ -45,32 +56,35 @@
 namespace torch_tpu {
 namespace {
 
+// Returns a kernel that copies from src to dst, with runtime-varying
+// dimensions.
+absl::StatusOr<kiln::Kernel> BuildCopyKernel() {
+  const kiln::Shape dynamic_2d = kiln::f32(kiln::kDynamic, kiln::kDynamic);
+  return kiln::CreateKernel(
+      kiln::GridSpec{.name = "main"}, kiln::InSpec::Hbm(dynamic_2d),
+      kiln::InSpec::Hbm(dynamic_2d), kiln::OutSpec::Hbm(dynamic_2d),
+      [](kiln::HbmRef src, kiln::HbmRef /*destination*/, kiln::HbmRef dst) {
+        kiln::VmemRef tile = kiln::AllocaVmem(kiln::f32(8, 128));
+        kiln::Semaphore sem = kiln::AllocaDmaSemaphore();
+        kiln::For(0, src.Dim(0), 8, [&](kiln::Scalar row) {
+          kiln::For(0, src.Dim(1), 128, [&](kiln::Scalar col) {
+            kiln::Scalar r = kiln::MultipleOf(row, 8);
+            kiln::Scalar c = kiln::MultipleOf(col, 128);
+            kiln::AsyncCopy(src(kiln::Slice(r, 8), kiln::Slice(c, 128)), tile,
+                            sem)
+                .Wait();
+            kiln::AsyncCopy(tile, dst(kiln::Slice(r, 8), kiln::Slice(c, 128)),
+                            sem)
+                .Wait();
+          });
+        });
+      });
+}
+
 TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
   TT_ASSERT_OK_AND_ASSIGN(auto client, CreateKernelTestClient());
   xla::HloRunner runner(std::move(client));
-  // Copy from src to dst, with runtime-varying dimensions.
-  const kiln::Shape dynamic_2d = kiln::f32(kiln::kDynamic, kiln::kDynamic);
-  TT_ASSERT_OK_AND_ASSIGN(
-      kiln::Kernel kernel,
-      kiln::CreateKernel(
-          kiln::GridSpec{.name = "main"}, kiln::InSpec::Hbm(dynamic_2d),
-          kiln::InSpec::Hbm(dynamic_2d), kiln::OutSpec::Hbm(dynamic_2d),
-          [](kiln::HbmRef src, kiln::HbmRef /*destination*/, kiln::HbmRef dst) {
-            kiln::VmemRef tile = kiln::AllocaVmem(kiln::f32(8, 128));
-            kiln::Semaphore sem = kiln::AllocaDmaSemaphore();
-            kiln::For(0, src.Dim(0), 8, [&](kiln::Scalar row) {
-              kiln::For(0, src.Dim(1), 128, [&](kiln::Scalar col) {
-                kiln::Scalar r = kiln::MultipleOf(row, 8);
-                kiln::Scalar c = kiln::MultipleOf(col, 128);
-                kiln::AsyncCopy(src(kiln::Slice(r, 8), kiln::Slice(c, 128)),
-                                tile, sem)
-                    .Wait();
-                kiln::AsyncCopy(
-                    tile, dst(kiln::Slice(r, 8), kiln::Slice(c, 128)), sem)
-                    .Wait();
-              });
-            });
-          }));
+  TT_ASSERT_OK_AND_ASSIGN(kiln::Kernel kernel, BuildCopyKernel());
   TT_ASSERT_OK_AND_ASSIGN(const std::string serialized_kernel,
                           std::move(kernel).Serialize());
   auto payload = xla::ShapeUtil::MakeShape(xla::F32, {8, 128});
@@ -129,6 +143,107 @@ TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
     TT_ASSERT_OK_AND_ASSIGN(auto result, outputs[0]->ToLiteral().Await());
     EXPECT_EQ(*result, input);
   }
+}
+
+TEST(DynamicMosaic, CopiesHostMemoryMetadataToDevice) {
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<xla::PjRtClient> client,
+                          CreateKernelTestClient());
+  TT_ASSERT_OK_AND_ASSIGN(kiln::Kernel kernel, BuildCopyKernel());
+  const xla::Layout layout({1, 0}, {xla::Tile({8, 128})});
+  const xla::Shape dynamic =
+      MakeUnboundedShape(xla::F32, /*rank=*/2, layout.tiles());
+  // The dimensions of the operands are in pinned host memory.
+  const xla::Shape metadata = MakeRuntimeDimsShape(/*rank=*/2);
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::unique_ptr<xla::PjRtLoadedExecutable> executable,
+      CompileMosaicKernel(*client, std::make_unique<xla::CompileOptions>(),
+                          std::move(kernel),
+                          {dynamic, dynamic, metadata, metadata}, dynamic,
+                          {2, 3, -1, -1}, /*aliased_parameter=*/1));
+  EXPECT_THAT(
+      executable->GetParameterMemoryKinds(),
+      absl_testing::IsOkAndHolds(testing::ElementsAre(testing::ElementsAre(
+          "device", "device", "pinned_host", "pinned_host"))));
+
+  xla::PjRtDevice* const device = client->addressable_devices()[0];
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtMemorySpace* const memory_space,
+                          device->default_memory_space());
+  // Each execution overwrites the two metadata buffers of the one before.
+  const std::shared_ptr<RuntimeShapeMetadataPool> pool =
+      RuntimeShapeMetadataPool::Create();
+  std::set<const xla::PjRtBuffer*> seen_metadata_buffers;
+  for (const std::vector<int64_t>& dims :  // INT_VEC_OK
+       {std::vector<int64_t>{8, 128},      // INT_VEC_OK
+        {16, 256},
+        {3, 7},
+        {9, 129},
+        {0, 128}}) {
+    TT_ASSERT_OK_AND_ASSIGN(
+        auto input,
+        xla::Literal::Make(xla::ShapeUtil::MakeShape(xla::F32, dims)));
+    for (int64_t i = 0; i < input.element_count(); ++i) {
+      input.data<float>()[i] = static_cast<float>(i % 19) - 9.f;
+    }
+    const auto destination = xla::LiteralUtil::CreateFull<float>(dims, -123.f);
+    const auto to_device = [&](const xla::Literal& literal) {
+      return client->BufferFromHostBuffer(
+          literal.untyped_data(), xla::F32, dims, /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space, &layout);
+    };
+    TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<xla::PjRtBuffer> input_buffer,
+                            to_device(input));
+    TT_ASSERT_OK_AND_ASSIGN(
+        const std::unique_ptr<xla::PjRtBuffer> destination_buffer,
+        to_device(destination));
+    const std::vector<int32_t> extents(dims.begin(), dims.end());
+    TT_ASSERT_OK_AND_ASSIGN(
+        const std::shared_ptr<xla::PjRtBuffer> input_extents,
+        pool->Acquire(extents, metadata, *device));
+    TT_ASSERT_OK_AND_ASSIGN(
+        const std::shared_ptr<xla::PjRtBuffer> destination_extents,
+        pool->Acquire(extents, metadata, *device));
+    seen_metadata_buffers.insert(input_extents.get());
+    seen_metadata_buffers.insert(destination_extents.get());
+
+    const std::vector<xla::PjRtBuffer*> arguments = {
+        input_buffer.get(), destination_buffer.get(), input_extents.get(),
+        destination_extents.get()};
+    xla::ExecuteOptions options;
+    options.strict_shape_checking = false;
+    // Only the aliased destination (param 1) is donated.
+    options.non_donatable_input_indices = {0, 2, 3};
+    TT_ASSERT_OK_AND_ASSIGN(
+        auto outputs,
+        executable->Execute(absl::MakeConstSpan(&arguments, 1), options));
+    ASSERT_EQ(outputs.size(), 1);
+    ASSERT_EQ(outputs[0].size(), 1);
+    // The execution is complete once its result is read.
+    TT_ASSERT_OK_AND_ASSIGN(auto result, outputs[0][0]->ToLiteral().Await());
+    EXPECT_EQ(*result, input);
+  }
+  EXPECT_EQ(seen_metadata_buffers.size(), 2);
+}
+
+TEST(DynamicMosaic, StartsEveryHostMemoryCopyBeforeItWaitsForOne) {
+  const xla::Shape tensor = xla::ShapeUtil::MakeShape(xla::F32, {8, 128});
+  const xla::Shape metadata = MakeRuntimeDimsShape(/*rank=*/2);
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::unique_ptr<xla::HloModule> hlo,
+      BuildMosaicCustomCall("", {tensor, tensor, metadata, metadata}, tensor,
+                            {2, 3, -1, -1}, /*aliased_parameter=*/-1));
+
+  std::vector<xla::HloOpcode> opcodes;
+  for (const xla::HloInstruction* const instruction :
+       hlo->schedule().sequence(hlo->entry_computation()).instructions()) {
+    opcodes.push_back(instruction->opcode());
+  }
+  // The copies overlap only if both start before the wait for the first.
+  const auto first_wait = absl::c_find(opcodes, xla::HloOpcode::kCopyDone);
+  EXPECT_EQ(std::count(opcodes.begin(), first_wait, xla::HloOpcode::kCopyStart),
+            2);
+  EXPECT_EQ(absl::c_count(opcodes, xla::HloOpcode::kCopyDone), 2);
+  EXPECT_EQ(opcodes.back(), xla::HloOpcode::kCustomCall);
 }
 
 TEST(DynamicMosaic, BitcastsPredOperandToU8) {

@@ -44,7 +44,6 @@
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
-#include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -91,15 +90,29 @@ TEST_F(PjrtExecuteTest,
   xla::XlaBuilder builder("dynamic_metadata_test");
   xla::Shape data_shape =
       xla::ShapeUtil::MakeShape(xla::F32, /*dimensions=*/{2, 3});
-  xla::LayoutUtil::SetToDefaultLayout(&data_shape);
+  TT_ASSERT_OK_AND_ASSIGN(*data_shape.mutable_layout(),
+                          client_->GetDefaultLayout(xla::F32, {2, 3}));
   xla::Shape meta_shape =
       xla::ShapeUtil::MakeShape(xla::S32, /*dimensions=*/{2});
-  xla::LayoutUtil::SetToDefaultLayout(&meta_shape);
+  *meta_shape.mutable_layout() =
+      xla::Layout({0}, {xla::Tile({128})})
+          .set_memory_space(xla::Layout::kHostMemorySpace);
 
+  const xla::Shape device_meta_shape =
+      xla::ShapeUtil::MakeShape(xla::S32, /*dimensions=*/{2});
   xla::XlaOp p0 = xla::Parameter(&builder, 0, data_shape, "input_0");
   xla::XlaOp p1 = xla::Parameter(&builder, 1, data_shape, "donated_out_0");
-  xla::XlaOp p2 = xla::Parameter(&builder, 2, meta_shape, "meta_in0_s32");
-  xla::XlaOp p3 = xla::Parameter(&builder, 3, meta_shape, "meta_out0_s32");
+  // Full XLA compilation (unlike backend-only BuildMosaicCustomCall) relies on
+  // HostOffloader's MoveToDevice custom call to move S(5) parameters to device
+  // memory before slicing.
+  xla::XlaOp p2 =
+      xla::CustomCall(&builder, "MoveToDevice",
+                      {xla::Parameter(&builder, 2, meta_shape, "meta_in0_s32")},
+                      device_meta_shape);
+  xla::XlaOp p3 = xla::CustomCall(
+      &builder, "MoveToDevice",
+      {xla::Parameter(&builder, 3, meta_shape, "meta_out0_s32")},
+      device_meta_shape);
 
   // Extract dim 0 from p2 (value = 2) and dim 1 from p3 (value = 3).
   // Insert into p1.
@@ -115,9 +128,14 @@ TEST_F(PjrtExecuteTest,
   TT_ASSERT_OK_AND_ASSIGN(xla::XlaComputation computation,
                           builder.Build(result));
 
+  // Pin S(5) on the metadata parameters while keeping TPU default layouts for
+  // the data parameters so `input_buf` matches.
+  xla::CompileOptions compile_options;
+  compile_options.argument_layouts = {data_shape, data_shape, meta_shape,
+                                      meta_shape};
   TT_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
-      client_->CompileAndLoad(computation, xla::CompileOptions()));
+      client_->CompileAndLoad(computation, compile_options));
 
   UnboundedDynamicExecutionMetadata dynamic_meta;
   dynamic_meta.logical_input_to_pjrt_param = {0};

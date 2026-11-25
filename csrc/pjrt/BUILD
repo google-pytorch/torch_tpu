@@ -52,11 +52,54 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "runtime_shape_metadata_pool",
+    srcs = ["runtime_shape_metadata_pool.cc"],
+    hdrs = ["runtime_shape_metadata_pool.h"],
+    deps = [
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "runtime_shape_metadata_pool_test",
+    srcs = ["runtime_shape_metadata_pool_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":pjrt_state",
+        ":runtime_shape_metadata_pool",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@xla//xla:literal",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "pjrt_state",
     srcs = ["pjrt_state.cc"],
     hdrs = ["pjrt_state.h"],
     deps = [
         ":pjrt",
+        ":runtime_shape_metadata_pool",
         "//csrc/common:contain",
         "//csrc/common:device_type",
         "//csrc/common:dimension_types",
@@ -175,6 +218,7 @@ torch_tpu_cc_library(
     deps = [
         ":pjrt_state",
         ":pjrt_utils",
+        ":runtime_shape_metadata_pool",
         "//csrc/common:compilation",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",

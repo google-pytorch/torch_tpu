@@ -86,7 +86,9 @@ struct UnboundedDynamicExecutionMetadata {
   // be a logical input or a pre-allocated donated output; either way the
   // metadata reports the shape the executable actually receives, after any
   // physical shape mapping. Multiple payload operands sharing the same metadata
-  // parameter require only a single binding entry.
+  // parameter require only a single binding entry. Metadata parameters must
+  // use host-memory layout (`xla::Layout::kHostMemorySpace`); `Execute`
+  // supplies pinned host buffers from `RuntimeShapeMetadataPool`.
   struct MetadataParamBinding {
     int64_t buffer_pjrt_idx = 0;
     int64_t shape_pjrt_idx = 0;

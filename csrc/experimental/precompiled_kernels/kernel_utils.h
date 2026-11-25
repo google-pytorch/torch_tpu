@@ -76,8 +76,12 @@ xla::Shape MakeUnboundedShape(xla::PrimitiveType type, int64_t rank,
 // 128-element storage rows into a donated output.
 [[nodiscard]] xla::Shape MakeS32RowViewShape();
 
-// Returns the static S32[rank]{0:T(128)} shape for a disjoint runtime dimension
-// metadata parameter.
+// Returns the static S32[rank]{0:T(128)S(5)} shape of a disjoint runtime
+// dimension metadata parameter, which holds the runtime dimensions of a
+// rank-`rank` dynamic operand (see `operand_to_metadata` of
+// `BuildMosaicCustomCall`). The parameter is in pinned host memory, so that
+// each execution overwrites a pooled buffer rather than creating one: see
+// `RuntimeShapeMetadataPool`.
 [[nodiscard]] xla::Shape MakeRuntimeDimsShape(int64_t rank);
 
 // Returns execution metadata for a kernel with one logical input (param 0),
