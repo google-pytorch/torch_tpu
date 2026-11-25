@@ -26,6 +26,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
+#include "ATen/ops/zeros.h"
 #include "absl/algorithm/container.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
@@ -1068,19 +1069,104 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerNearestShlo(
   return gathered;
 }
 
-// Checks for the `input` and `padding_mode` arguments.
-// These are common for both 2D and 3D grid sampler implementations.
-absl::Status ValidateInputAndPaddingMode(const at::Tensor& input,
-                                         const int64_t padding_mode) {
+// Checks that `input` and `grid` have the expected rank, matching batch size,
+// valid coordinate dimension, and non-empty input spatial dimensions.
+absl::Status ValidateGridSamplerShapes(const at::Tensor& input,
+                                       const at::Tensor& grid,
+                                       const int64_t expected_dim) {
+  TT_RET_CHECK(input.dim() == expected_dim && grid.dim() == expected_dim,
+               error::kInvalidArgument)
+      << "expected " << expected_dim << "D input and grid, got " << input.dim()
+      << "D input and " << grid.dim() << "D grid";
+
+  TT_RET_CHECK(input.size(0) == grid.size(0), error::kInvalidArgument)
+      << "expected input and grid to have the same batch size, got "
+      << input.size(0) << " and " << grid.size(0);
+
+  const int64_t spatial_dims = expected_dim - 2;
+  TT_RET_CHECK(grid.size(-1) == spatial_dims, error::kInvalidArgument)
+      << "expected grid to have size " << spatial_dims
+      << " in the last dimension, got " << grid.size(-1);
+
+  for (int64_t i = 2; i < expected_dim; ++i) {
+    TT_RET_CHECK(input.size(i) > 0, error::kInvalidArgument)
+        << "expected input to have non-empty spatial dimensions, got shape "
+        << ToString(input.sizes()) << " with size 0 at dimension " << i;
+  }
+
+  return absl::OkStatus();
+}
+
+// Validates `padding_mode`, device match, and supported floating-point dtypes
+// for `input` and `grid` before shape checks so invalid devices/dtypes fail
+// uniformly regardless of shape.
+absl::Status ValidateGridSamplerHeader(const at::Tensor& input,
+                                       const at::Tensor& grid,
+                                       const int64_t padding_mode) {
   TT_RET_CHECK(padding_mode == 0 || padding_mode == 1 || padding_mode == 2,
                error::kPythonNotImplementedError)
       << "expected the padding mode to be 0 (zeros), 1 (border), or 2 "
          "(reflection), got "
       << padding_mode;
 
+  TT_RET_CHECK(input.device() == grid.device(), error::kInvalidArgument)
+      << "expected input and grid to be on the same device, got "
+      << input.device() << " and " << grid.device();
+
   TT_RET_CHECK(IsFloatingPoint(input), error::kInvalidArgument)
       << "expected the input dtype to be floating point, got "
       << ToString(input.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(input));
+
+  TT_RET_CHECK(input.scalar_type() == grid.scalar_type(),
+               error::kInvalidArgument)
+      << "expected input and grid to have the same dtype, got "
+      << ToString(input.scalar_type()) << " and "
+      << ToString(grid.scalar_type());
+
+  return absl::OkStatus();
+}
+
+// Checks for the `input`, `grid`, and `padding_mode` arguments.
+// These are common for both 2D and 3D grid sampler implementations.
+absl::Status ValidateGridSamplerCommon(const at::Tensor& input,
+                                       const at::Tensor& grid,
+                                       const int64_t expected_dim,
+                                       const int64_t padding_mode) {
+  TT_RETURN_IF_ERROR(ValidateGridSamplerHeader(input, grid, padding_mode));
+  return ValidateGridSamplerShapes(input, grid, expected_dim);
+}
+
+// Checks for the `grad_output`, `input`, `grid`, and `padding_mode` arguments
+// in backward passes.
+absl::Status ValidateGridSamplerBackward(const at::Tensor& grad_output,
+                                         const at::Tensor& input,
+                                         const at::Tensor& grid,
+                                         const int64_t expected_dim,
+                                         const int64_t padding_mode) {
+  TT_RETURN_IF_ERROR(ValidateGridSamplerHeader(input, grid, padding_mode));
+
+  TT_RET_CHECK(grad_output.device() == input.device(), error::kInvalidArgument)
+      << "expected grad_output and input to be on the same device, got "
+      << grad_output.device() << " and " << input.device();
+
+  TT_RET_CHECK(grad_output.scalar_type() == input.scalar_type(),
+               error::kInvalidArgument)
+      << "expected grad_output and input to have the same dtype, got "
+      << ToString(grad_output.scalar_type()) << " and "
+      << ToString(input.scalar_type());
+
+  TT_RETURN_IF_ERROR(ValidateGridSamplerShapes(input, grid, expected_dim));
+
+  Dimensions expected_grad_output_shape = {input.size(0), input.size(1)};
+  for (int64_t i = 1; i < expected_dim - 1; ++i) {
+    expected_grad_output_shape.push_back(grid.size(i));
+  }
+  TT_RET_CHECK(absl::c_equal(grad_output.sizes(), expected_grad_output_shape),
+               error::kInvalidArgument)
+      << "expected grad_output to have shape "
+      << ToString(expected_grad_output_shape) << ", got "
+      << ToString(grad_output.sizes());
 
   return absl::OkStatus();
 }
@@ -2000,14 +2086,22 @@ at::Tensor AtenGridSampler2d(const at::Tensor& input, const at::Tensor& grid,
         auto interpolation_mode_enum =
             static_cast<InterpolationMode>(interpolation_mode);
 
-        TT_THROW_IF_ERROR(ValidateInputAndPaddingMode(input, padding_mode));
+        TT_THROW_IF_ERROR(ValidateGridSamplerCommon(
+            input, grid, /*expected_dim=*/4, padding_mode));
         TT_THROW_IF_ERROR(Validate2DInterpolationMode(interpolation_mode_enum));
 
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(input.scalar_type()));
         auto grid_shape = grid.sizes();
         Dimensions output_dims = {grid_shape[0], input.size(1), grid_shape[1],
                                   grid_shape[2]};
+        if (input.numel() == 0 || grid.numel() == 0) {
+          TT_ASSIGN_OR_THROW(at::Tensor out,
+                             MakeEmptyTensor(output_dims, input.scalar_type(),
+                                             input.device()));
+          return out;
+        }
+
+        TT_ASSIGN_OR_THROW(auto element_type,
+                           ConvertTo<mlir::ElementType>(input.scalar_type()));
 
         PaddingMode pm = static_cast<PaddingMode>(padding_mode);
         auto op_builder =
@@ -2053,14 +2147,22 @@ at::Tensor AtenGridSampler3d(const at::Tensor& input, const at::Tensor& grid,
       (input, grid, interpolation_mode, padding_mode, align_corners), {
         auto interpolation_mode_enum =
             static_cast<InterpolationMode>(interpolation_mode);
-        TT_THROW_IF_ERROR(ValidateInputAndPaddingMode(input, padding_mode));
+        TT_THROW_IF_ERROR(ValidateGridSamplerCommon(
+            input, grid, /*expected_dim=*/5, padding_mode));
         TT_THROW_IF_ERROR(Validate3DInterpolationMode(interpolation_mode_enum));
 
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(input.scalar_type()));
         auto grid_shape = grid.sizes();
         Dimensions output_dims = {grid_shape[0], input.size(1), grid_shape[1],
                                   grid_shape[2], grid_shape[3]};
+        if (input.numel() == 0 || grid.numel() == 0) {
+          TT_ASSIGN_OR_THROW(at::Tensor out,
+                             MakeEmptyTensor(output_dims, input.scalar_type(),
+                                             input.device()));
+          return out;
+        }
+
+        TT_ASSIGN_OR_THROW(auto element_type,
+                           ConvertTo<mlir::ElementType>(input.scalar_type()));
 
         PaddingMode pm = static_cast<PaddingMode>(padding_mode);
 
@@ -2105,20 +2207,21 @@ std::tuple<at::Tensor, at::Tensor> AtenGridSampler2dBackward(
       {
         auto interpolation_mode_enum =
             static_cast<InterpolationMode>(interpolation_mode);
-        TT_THROW_IF_ERROR(ValidateInputAndPaddingMode(input, padding_mode));
+        TT_THROW_IF_ERROR(ValidateGridSamplerBackward(
+            grad_output, input, grid, /*expected_dim=*/4, padding_mode));
         TT_THROW_IF_ERROR(Validate2DInterpolationMode(interpolation_mode_enum));
 
-        TT_ASSIGN_OR_THROW(
-            const auto element_type,
-            ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+        if (grad_output.numel() > 0) {
+          TT_ASSIGN_OR_THROW(
+              const auto element_type,
+              ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
 
-        const PaddingMode pm = static_cast<PaddingMode>(padding_mode);
+          const PaddingMode pm = static_cast<PaddingMode>(padding_mode);
 
-        auto op_builder =
-            [&]() -> NAryMlirOpBuilder<3, 2> {  // REF_CAPTURE_OK=called locally
-          return [align_corners, pm, interpolation_mode_enum,
-                  output_mask](FixedSizeSpan<mlir::MlirOp, 3> inputs)
-                     -> absl::StatusOr<std::array<mlir::MlirOp, 2>> {
+          NAryMlirOpBuilder<3, 2> op_builder =
+              [align_corners, pm, interpolation_mode_enum,
+               output_mask](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+              -> absl::StatusOr<std::array<mlir::MlirOp, 2>> {
             if (interpolation_mode_enum == InterpolationMode::kNearest) {
               return BuildGridSamplerNearestBackwardShlo(
                   inputs[0], inputs[1], inputs[2], align_corners, pm,
@@ -2134,33 +2237,40 @@ std::tuple<at::Tensor, at::Tensor> AtenGridSampler2dBackward(
                   output_mask[0], output_mask[1]);
             }
           };
-        }();
 
-        auto input_dims = input.sizes();
-        auto grid_dims = grid.sizes();
+          auto input_dims = input.sizes();
+          auto grid_dims = grid.sizes();
 
-        const std::array<mlir::ElementType, 2> output_dtypes = {element_type,
-                                                                element_type};
-        const std::array<absl::Span<const int64_t>, 2> output_dims = {
-            input_dims, grid_dims};
+          const std::array<mlir::ElementType, 2> output_dtypes = {element_type,
+                                                                  element_type};
+          const std::array<absl::Span<const int64_t>, 2> output_dims = {
+              input_dims, grid_dims};
 
-        TT_ASSIGN_OR_THROW(
-            auto out_bufs,
-            (DispatchOp<3, 2>(std::move(op_builder), {grad_output, input, grid},
-                              {.out_dtypes = output_dtypes,
-                               .out_dims_list = output_dims,
-                               .op_param_cache_keys = std::move(param_keys)})));
+          TT_ASSIGN_OR_THROW(
+              auto out_bufs,
+              (DispatchOp<3, 2>(
+                  std::move(op_builder), {grad_output, input, grid},
+                  {.out_dtypes = output_dtypes,
+                   .out_dims_list = output_dims,
+                   .op_param_cache_keys = std::move(param_keys)})));
 
-        at::Tensor grad_input = at::empty(input_dims, grad_output.options());
-        at::Tensor grad_grid = at::empty(grid_dims, grad_output.options());
+          at::Tensor grad_input = at::empty(input_dims, grad_output.options());
+          at::Tensor grad_grid = at::empty(grid_dims, grad_output.options());
 
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(out_bufs[0]), grad_input));
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(out_bufs[1]), grad_grid));
+          TT_THROW_IF_ERROR(
+              AssignBufferToAtTensor(std::move(out_bufs[0]), grad_input));
+          TT_THROW_IF_ERROR(
+              AssignBufferToAtTensor(std::move(out_bufs[1]), grad_grid));
 
-        return std::make_tuple(grad_input, grad_grid);
+          return std::make_tuple(grad_input, grad_grid);
+        }
       });
+  // `grad_output` has no elements (`N == 0`, `C == 0`, or an output spatial
+  // dimension is 0). `at::zeros()` runs another kernel, so it must be called
+  // outside `TT_KERNEL`.
+  return std::make_tuple(
+      output_mask[0] ? at::zeros(input.sizes(), input.options()) : at::Tensor(),
+      output_mask[1] ? at::zeros(grid.sizes(), grid.options()) : at::Tensor());
 }
 
 std::tuple<at::Tensor, at::Tensor> AtenGridSampler3dBackward(
@@ -2174,19 +2284,20 @@ std::tuple<at::Tensor, at::Tensor> AtenGridSampler3dBackward(
       {
         auto interpolation_mode_enum =
             static_cast<InterpolationMode>(interpolation_mode);
-        TT_THROW_IF_ERROR(ValidateInputAndPaddingMode(input, padding_mode));
+        TT_THROW_IF_ERROR(ValidateGridSamplerBackward(
+            grad_output, input, grid, /*expected_dim=*/5, padding_mode));
         TT_THROW_IF_ERROR(Validate3DInterpolationMode(interpolation_mode_enum));
 
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_output.scalar_type()));
+        if (grad_output.numel() > 0) {
+          TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
+                                                    grad_output.scalar_type()));
 
-        PaddingMode pm = static_cast<PaddingMode>(padding_mode);
+          PaddingMode pm = static_cast<PaddingMode>(padding_mode);
 
-        auto op_builder =
-            [&]() -> NAryMlirOpBuilder<3, 2> {  // REF_CAPTURE_OK=called locally
-          return [align_corners, pm, interpolation_mode_enum,
-                  output_mask](FixedSizeSpan<mlir::MlirOp, 3> inputs)
-                     -> absl::StatusOr<std::array<mlir::MlirOp, 2>> {
+          NAryMlirOpBuilder<3, 2> op_builder =
+              [align_corners, pm, interpolation_mode_enum,
+               output_mask](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+              -> absl::StatusOr<std::array<mlir::MlirOp, 2>> {
             if (interpolation_mode_enum == InterpolationMode::kNearest) {
               return BuildGridSamplerNearestBackwardShlo(
                   inputs[0], inputs[1], inputs[2], align_corners, pm,
@@ -2203,28 +2314,35 @@ std::tuple<at::Tensor, at::Tensor> AtenGridSampler3dBackward(
                       "grid_sampler_3d_backward currently, got "
                    << static_cast<int>(interpolation_mode_enum);
           };
-        }();
 
-        Dimensions input_dims = CopyIntVector(input.sizes());
-        Dimensions grid_dims = CopyIntVector(grid.sizes());
+          Dimensions input_dims = CopyIntVector(input.sizes());
+          Dimensions grid_dims = CopyIntVector(grid.sizes());
 
-        TT_ASSIGN_OR_THROW(
-            auto out_bufs,
-            (DispatchOp<3, 2>(std::move(op_builder), {grad_output, input, grid},
-                              {.out_dtypes = {element_type, element_type},
-                               .out_dims_list = {input_dims, grid_dims},
-                               .op_param_cache_keys = std::move(param_keys)})));
+          TT_ASSIGN_OR_THROW(
+              auto out_bufs,
+              (DispatchOp<3, 2>(
+                  std::move(op_builder), {grad_output, input, grid},
+                  {.out_dtypes = {element_type, element_type},
+                   .out_dims_list = {input_dims, grid_dims},
+                   .op_param_cache_keys = std::move(param_keys)})));
 
-        at::Tensor grad_input = at::empty(input_dims, grad_output.options());
-        at::Tensor grad_grid = at::empty(grid_dims, grad_output.options());
+          at::Tensor grad_input = at::empty(input_dims, grad_output.options());
+          at::Tensor grad_grid = at::empty(grid_dims, grad_output.options());
 
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(out_bufs[0]), grad_input));
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(out_bufs[1]), grad_grid));
+          TT_THROW_IF_ERROR(
+              AssignBufferToAtTensor(std::move(out_bufs[0]), grad_input));
+          TT_THROW_IF_ERROR(
+              AssignBufferToAtTensor(std::move(out_bufs[1]), grad_grid));
 
-        return std::make_tuple(grad_input, grad_grid);
+          return std::make_tuple(grad_input, grad_grid);
+        }
       });
+  // `grad_output` has no elements (`N == 0`, `C == 0`, or an output spatial
+  // dimension is 0). `at::zeros()` runs another kernel, so it must be called
+  // outside `TT_KERNEL`.
+  return std::make_tuple(
+      output_mask[0] ? at::zeros(input.sizes(), input.options()) : at::Tensor(),
+      output_mask[1] ? at::zeros(grid.sizes(), grid.options()) : at::Tensor());
 }
 
 }  // namespace torch_tpu

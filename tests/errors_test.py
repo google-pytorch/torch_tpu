@@ -17754,6 +17754,430 @@ Note: this function is intended to be used with the output produced by torch.lin
           [True, True],
       )
 
+  def test_grid_sampler_2d_invalid_rank(self):
+    inp_3d = torch.randn(2, 3, 4, device=et.device())
+    grid_4d = torch.randn(2, 3, 3, 2, device=et.device())
+    inp_4d = torch.randn(2, 3, 4, 4, device=et.device())
+    grid_3d = torch.randn(2, 3, 2, device=et.device())
+    inp_5d = torch.randn(2, 3, 4, 4, 4, device=et.device())
+    grid_5d = torch.randn(2, 3, 3, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected 4D input and grid, got 3D input and 4D grid""",
+        gpu="""grid_sampler(): expected grid to have size 1 in last dimension, but got grid with sizes [2, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp_3d, grid_4d, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected 4D input and grid, got 4D input and 3D grid""",
+        gpu="""grid_sampler(): expected 4D input and grid with same number of dimensions, but got input with sizes [2, 3, 4, 4] and grid with sizes [2, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp_4d, grid_3d, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected 4D input and grid, got 5D input and 5D grid""",
+        gpu="""grid_sampler(): expected 4D input and grid with same number of dimensions, but got input with sizes [2, 3, 4, 4, 4] and grid with sizes [2, 3, 3, 3, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp_5d, grid_5d, 0, 0, False)
+
+  def test_grid_sampler_3d_invalid_rank(self):
+    inp_4d = torch.randn(2, 3, 4, 4, device=et.device())
+    grid_4d = torch.randn(2, 3, 3, 2, device=et.device())
+    inp_5d = torch.randn(2, 3, 4, 4, 4, device=et.device())
+    grid_4d_last3 = torch.randn(2, 3, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d(): expected 5D input and grid, got 4D input and 4D grid""",
+        gpu="""grid_sampler(): expected 5D input and grid with same number of dimensions, but got input with sizes [2, 3, 4, 4] and grid with sizes [2, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp_4d, grid_4d, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d(): expected 5D input and grid, got 5D input and 4D grid""",
+        gpu="""grid_sampler(): expected 5D input and grid with same number of dimensions, but got input with sizes [2, 3, 4, 4, 4] and grid with sizes [2, 3, 3, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp_5d, grid_4d_last3, 0, 0, False)
+
+  def test_grid_sampler_2d_batch_size_mismatch(self):
+    inp = torch.randn(2, 1, 4, 4, device=et.device())
+    grid = torch.randn(1, 3, 3, 2, device=et.device())
+    grad_out = torch.randn(2, 1, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected input and grid to have the same batch size, got 2 and 1""",
+        gpu="""grid_sampler(): expected grid and input to have same batch size, but got input with sizes [2, 1, 4, 4] and grid with sizes [1, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected input and grid to have the same batch size, got 2 and 1""",
+        gpu="""grid_sampler(): expected grid and input to have same batch size, but got input with sizes [2, 1, 4, 4] and grid with sizes [1, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out, inp, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_3d_batch_size_mismatch(self):
+    inp = torch.randn(2, 1, 4, 4, 4, device=et.device())
+    grid = torch.randn(1, 3, 3, 3, 3, device=et.device())
+    grad_out = torch.randn(2, 1, 3, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d(): expected input and grid to have the same batch size, got 2 and 1""",
+        gpu="""grid_sampler(): expected grid and input to have same batch size, but got input with sizes [2, 1, 4, 4, 4] and grid with sizes [1, 3, 3, 3, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp, grid, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected input and grid to have the same batch size, got 2 and 1""",
+        gpu="""grid_sampler(): expected grid and input to have same batch size, but got input with sizes [2, 1, 4, 4, 4] and grid with sizes [1, 3, 3, 3, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out, inp, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_2d_invalid_grid_last_dim(self):
+    inp = torch.randn(2, 1, 4, 4, device=et.device())
+    grid = torch.randn(2, 3, 3, 3, device=et.device())
+    grad_out = torch.randn(2, 1, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected grid to have size 2 in the last dimension, got 3""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [2, 3, 3, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected grid to have size 2 in the last dimension, got 3""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [2, 3, 3, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out, inp, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_3d_invalid_grid_last_dim(self):
+    inp = torch.randn(2, 1, 4, 4, 4, device=et.device())
+    grid = torch.randn(2, 3, 3, 3, 2, device=et.device())
+    grad_out = torch.randn(2, 1, 3, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d(): expected grid to have size 3 in the last dimension, got 2""",
+        gpu="""grid_sampler(): expected grid to have size 3 in last dimension, but got grid with sizes [2, 3, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp, grid, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected grid to have size 3 in the last dimension, got 2""",
+        gpu="""grid_sampler(): expected grid to have size 3 in last dimension, but got grid with sizes [2, 3, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out, inp, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_2d_empty_spatial_dim(self):
+    inp_h0 = torch.empty(2, 1, 0, 4, device=et.device())
+    inp_w0 = torch.empty(2, 1, 4, 0, device=et.device())
+    grid = torch.randn(2, 3, 3, 2, device=et.device())
+    grad_out = torch.randn(2, 1, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected input to have non-empty spatial dimensions, got shape [2, 1, 0, 4] with size 0 at dimension 2""",
+        gpu="""grid_sampler(): expected input to have non-empty spatial dimensions, but input has sizes [2, 1, 0, 4] with dimension 2 being empty""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp_h0, grid, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected input to have non-empty spatial dimensions, got shape [2, 1, 4, 0] with size 0 at dimension 3""",
+        gpu="""grid_sampler(): expected input to have non-empty spatial dimensions, but input has sizes [2, 1, 4, 0] with dimension 3 being empty""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp_w0, grid, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected input to have non-empty spatial dimensions, got shape [2, 1, 0, 4] with size 0 at dimension 2""",
+        gpu="""grid_sampler(): expected input to have non-empty spatial dimensions, but input has sizes [2, 1, 0, 4] with dimension 2 being empty""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out, inp_h0, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_3d_empty_spatial_dim(self):
+    inp_d0 = torch.empty(2, 1, 0, 4, 4, device=et.device())
+    grid = torch.randn(2, 3, 3, 3, 3, device=et.device())
+    grad_out = torch.randn(2, 1, 3, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d(): expected input to have non-empty spatial dimensions, got shape [2, 1, 0, 4, 4] with size 0 at dimension 2""",
+        gpu="""grid_sampler(): expected input to have non-empty spatial dimensions, but input has sizes [2, 1, 0, 4, 4] with dimension 2 being empty""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp_d0, grid, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected input to have non-empty spatial dimensions, got shape [2, 1, 0, 4, 4] with size 0 at dimension 2""",
+        gpu="""grid_sampler(): expected input to have non-empty spatial dimensions, but input has sizes [2, 1, 0, 4, 4] with dimension 2 being empty""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out, inp_d0, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_2d_dtype_mismatch(self):
+    inp = torch.randn(2, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    grid_f16 = torch.randn(2, 3, 3, 2, device=et.device(), dtype=torch.float16)
+    grid_f32 = torch.randn(2, 3, 3, 2, device=et.device(), dtype=torch.float32)
+    grad_out_f32 = torch.randn(
+        2, 1, 3, 3, device=et.device(), dtype=torch.float32
+    )
+    grad_out_f16 = torch.randn(
+        2, 1, 3, 3, device=et.device(), dtype=torch.float16
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected input and grid to have the same dtype, got float32 and float16""",
+        gpu="""expected scalar type Float but found Half""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid_f16, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected input and grid to have the same dtype, got float32 and float16""",
+        gpu="""expected scalar type Float but found Half""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out_f32, inp, grid_f16, 0, 0, False, [True, True]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected grad_output and input to have the same dtype, got float16 and float32""",
+        gpu="""expected scalar type Float but found Half""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out_f16, inp, grid_f32, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_3d_dtype_mismatch(self):
+    inp = torch.randn(2, 1, 4, 4, 4, device=et.device(), dtype=torch.float32)
+    grid_f16 = torch.randn(
+        2, 3, 3, 3, 3, device=et.device(), dtype=torch.float16
+    )
+    grid_f32 = torch.randn(
+        2, 3, 3, 3, 3, device=et.device(), dtype=torch.float32
+    )
+    grad_out_f32 = torch.randn(
+        2, 1, 3, 3, 3, device=et.device(), dtype=torch.float32
+    )
+    grad_out_f16 = torch.randn(
+        2, 1, 3, 3, 3, device=et.device(), dtype=torch.float16
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d(): expected input and grid to have the same dtype, got float32 and float16""",
+        gpu="""expected scalar type Float but found Half""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp, grid_f16, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected input and grid to have the same dtype, got float32 and float16""",
+        gpu="""expected scalar type Float but found Half""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out_f32, inp, grid_f16, 0, 0, False, [True, True]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected grad_output and input to have the same dtype, got float16 and float32""",
+        gpu="""expected scalar type Float but found Half""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out_f16, inp, grid_f32, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_2d_backward_invalid_grad_output_shape(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
+    inp = torch.randn(2, 3, 4, 4, device=et.device())
+    grid = torch.randn(2, 5, 5, 2, device=et.device())
+    bad_grad_out = torch.randn(1, 3, 5, 5, device=et.device())
+
+    with et.assert_raises_message(
+        err_type,
+        tpu="""grid_sampler_2d_backward(): expected grad_output to have shape [2, 3, 5, 5], got [1, 3, 5, 5]""",
+        gpu="""grid_sampler(): expected grad_output to have sizes [2, 3, 5, 5] but got grad_output with sizes [1, 3, 5, 5]""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          bad_grad_out, inp, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_3d_backward_invalid_grad_output_shape(self):
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
+    inp = torch.randn(2, 3, 4, 4, 4, device=et.device())
+    grid = torch.randn(2, 5, 5, 5, 3, device=et.device())
+    bad_grad_out = torch.randn(2, 1, 5, 5, 5, device=et.device())
+
+    with et.assert_raises_message(
+        err_type,
+        tpu="""grid_sampler_3d_backward(): expected grad_output to have shape [2, 3, 5, 5, 5], got [2, 1, 5, 5, 5]""",
+        gpu="""grid_sampler(): expected grad_output to have sizes [2, 3, 5, 5, 5] but got grad_output with sizes [2, 1, 5, 5, 5]""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          bad_grad_out, inp, grid, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_2d_backward_invalid_rank(self):
+    inp_3d = torch.randn(2, 3, 4, device=et.device())
+    grid_4d = torch.randn(2, 3, 3, 2, device=et.device())
+    grad_out = torch.randn(2, 3, 3, 3, device=et.device())
+    inp_5d = torch.randn(2, 3, 4, 4, 4, device=et.device())
+    grid_5d = torch.randn(2, 3, 3, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected 4D input and grid, got 3D input and 4D grid""",
+        gpu="""grid_sampler(): expected grid to have size 1 in last dimension, but got grid with sizes [2, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out, inp_3d, grid_4d, 0, 0, False, [True, True]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected 4D input and grid, got 5D input and 5D grid""",
+        gpu="""grid_sampler(): expected 4D input and grid with same number of dimensions, but got input with sizes [2, 3, 4, 4, 4] and grid with sizes [2, 3, 3, 3, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out, inp_5d, grid_5d, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_3d_backward_invalid_rank(self):
+    inp_4d = torch.randn(2, 3, 4, 4, device=et.device())
+    grid_4d = torch.randn(2, 3, 3, 2, device=et.device())
+    grad_out = torch.randn(2, 3, 3, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected 5D input and grid, got 4D input and 4D grid""",
+        gpu="""grid_sampler(): expected 5D input and grid with same number of dimensions, but got input with sizes [2, 3, 4, 4] and grid with sizes [2, 3, 3, 2]""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out, inp_4d, grid_4d, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_2d_device_mismatch(self):
+    inp_dev = torch.randn(2, 1, 4, 4, device=et.device())
+    grid_cpu = torch.randn(2, 3, 3, 2, device="cpu")
+    inp_cpu = torch.randn(2, 1, 4, 4, device="cpu")
+    grid_dev = torch.randn(2, 3, 3, 2, device=et.device())
+    grad_out_cpu = torch.randn(2, 1, 3, 3, device="cpu")
+    grad_out_dev = torch.randn(2, 1, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected input and grid to be on the same device, got tpu:0 and cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grid is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__grid_sampler_2d)""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp_dev, grid_cpu, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected input and grid to be on the same device, got cpu and tpu:0""",
+        gpu="""Expected all tensors to be on the same device, but got grid is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__grid_sampler_2d)""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp_cpu, grid_dev, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected grad_output and input to be on the same device, got cpu and tpu:0""",
+        gpu="""Expected all tensors to be on the same device, but got input is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__grid_sampler_2d_backward)""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out_cpu, inp_dev, grid_dev, 0, 0, False, [True, True]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected grad_output and input to be on the same device, got tpu:0 and cpu""",
+        gpu="""Expected all tensors to be on the same device, but got input is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__grid_sampler_2d_backward)""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out_dev, inp_cpu, grid_cpu, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_3d_device_mismatch(self):
+    inp_dev = torch.randn(2, 1, 4, 4, 4, device=et.device())
+    grid_cpu = torch.randn(2, 3, 3, 3, 3, device="cpu")
+    grid_dev = torch.randn(2, 3, 3, 3, 3, device=et.device())
+    grad_out_cpu = torch.randn(2, 1, 3, 3, 3, device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d(): expected input and grid to be on the same device, got tpu:0 and cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grid is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__grid_sampler_3d)""",
+    ):
+      torch.ops.aten.grid_sampler_3d(inp_dev, grid_cpu, 0, 0, False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected grad_output and input to be on the same device, got cpu and tpu:0""",
+        gpu="""Expected all tensors to be on the same device, but got input is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__grid_sampler_3d_backward)""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out_cpu, inp_dev, grid_dev, 0, 0, False, [True, True]
+      )
+
+  def test_grid_sampler_backward_invalid_input_dtype(self):
+    inp2d = torch.randint(
+        0, 10, (2, 1, 4, 4), device=et.device(), dtype=torch.int32
+    )
+    grid2d = torch.randn(2, 3, 3, 2, device=et.device(), dtype=torch.float32)
+    grad_out2d = torch.randn(
+        2, 1, 3, 3, device=et.device(), dtype=torch.float32
+    )
+    inp3d = torch.randint(
+        0, 10, (2, 1, 4, 4, 4), device=et.device(), dtype=torch.int32
+    )
+    grid3d = torch.randn(2, 3, 3, 3, 3, device=et.device(), dtype=torch.float32)
+    grad_out3d = torch.randn(
+        2, 1, 3, 3, 3, device=et.device(), dtype=torch.float32
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected the input dtype to be floating point, got int32""",
+        gpu=""""grid_sampler_2d_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out2d, inp2d, grid2d, 0, 0, False, [True, True]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_3d_backward(): expected the input dtype to be floating point, got int32""",
+        gpu=""""grid_sampler_3d_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.grid_sampler_3d_backward(
+          grad_out3d, inp3d, grid3d, 0, 0, False, [True, True]
+      )
+
   def test_threshold_backward_unsupported_dtype_complex(self):
     grad_output = torch.ones(2, device=et.device())
     self_tensor = torch.tensor([1 + 1j, 2 + 2j], device=et.device())

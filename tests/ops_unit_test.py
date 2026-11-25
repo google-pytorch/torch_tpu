@@ -27608,6 +27608,105 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             atol=0,
         )
 
+  @parameterized.named_parameters(
+      ("2d_empty_batch", (0, 2, 4, 4), (0, 3, 3, 2)),
+      ("2d_empty_channel", (2, 0, 4, 4), (2, 3, 3, 2)),
+      ("2d_empty_out_h", (2, 2, 4, 4), (2, 0, 3, 2)),
+      ("2d_empty_out_w", (2, 2, 4, 4), (2, 3, 0, 2)),
+      ("3d_empty_batch", (0, 2, 3, 4, 4), (0, 2, 3, 3, 3)),
+      ("3d_empty_channel", (2, 0, 3, 4, 4), (2, 2, 3, 3, 3)),
+      ("3d_empty_out_d", (2, 2, 3, 4, 4), (2, 0, 3, 3, 3)),
+      ("3d_empty_out_h", (2, 2, 3, 4, 4), (2, 2, 0, 3, 3)),
+      ("3d_empty_out_w", (2, 2, 3, 4, 4), (2, 2, 3, 0, 3)),
+  )
+  def test_grid_sample_empty_dims(
+      self,
+      in_shape: Sequence[int],
+      grid_shape: Sequence[int],
+  ) -> None:
+    modes = (
+        ["bilinear", "nearest", "bicubic"]
+        if len(in_shape) == 4
+        else ["bilinear", "nearest"]
+    )
+    for mode in modes:
+      for padding_mode in ("zeros", "border", "reflection"):
+        for align_corners in (False, True):
+          with self.subTest(
+              mode=mode,
+              padding_mode=padding_mode,
+              align_corners=align_corners,
+          ):
+            x_cpu = torch.zeros(
+                in_shape, dtype=torch.float32, requires_grad=True
+            )
+            grid_cpu = torch.zeros(
+                grid_shape, dtype=torch.float32, requires_grad=True
+            )
+            x_tpu = torch.zeros(
+                in_shape, device="tpu", dtype=torch.float32, requires_grad=True
+            )
+            grid_tpu = torch.zeros(
+                grid_shape,
+                device="tpu",
+                dtype=torch.float32,
+                requires_grad=True,
+            )
+
+            out_cpu = torch.nn.functional.grid_sample(
+                x_cpu,
+                grid_cpu,
+                mode=mode,
+                padding_mode=padding_mode,
+                align_corners=align_corners,
+            )
+            out_tpu = torch.nn.functional.grid_sample(
+                x_tpu,
+                grid_tpu,
+                mode=mode,
+                padding_mode=padding_mode,
+                align_corners=align_corners,
+            )
+
+            self.assertEqual(out_tpu.shape, out_cpu.shape)
+            self.assertEqual(out_tpu.dtype, out_cpu.dtype)
+            self.assertEqual(out_tpu.numel(), 0)
+
+            grad_out = torch.empty_like(out_cpu)
+            out_cpu.backward(grad_out)
+            out_tpu.backward(grad_out.to("tpu"))
+
+            self.assertEqual(x_tpu.grad.shape, x_cpu.grad.shape)
+            self.assertEqual(grid_tpu.grad.shape, grid_cpu.grad.shape)
+            utils.assert_close(actual=x_tpu.grad.cpu(), expected=x_cpu.grad)
+            utils.assert_close(
+                actual=grid_tpu.grad.cpu(), expected=grid_cpu.grad
+            )
+
+  @parameterized.named_parameters(
+      ("2d_empty_out_h", (2, 2, 4, 4), (2, 0, 3, 2)),
+      ("3d_empty_out_w", (2, 2, 3, 4, 4), (2, 2, 3, 0, 3)),
+  )
+  def test_grid_sample_empty_dims_output_mask(
+      self,
+      in_shape: Sequence[int],
+      grid_shape: Sequence[int],
+  ) -> None:
+    x_tpu = torch.zeros(
+        in_shape, device="tpu", dtype=torch.float32, requires_grad=False
+    )
+    grid_tpu = torch.zeros(
+        grid_shape, device="tpu", dtype=torch.float32, requires_grad=True
+    )
+    out_tpu = torch.nn.functional.grid_sample(x_tpu, grid_tpu)
+    out_tpu.backward(torch.empty_like(out_tpu))
+    self.assertIsNone(x_tpu.grad)
+    self.assertEqual(grid_tpu.grad.shape, grid_shape)
+    utils.assert_close(
+        actual=grid_tpu.grad.cpu(),
+        expected=torch.zeros(grid_shape, dtype=torch.float32),
+    )
+
 
 class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""
