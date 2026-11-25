@@ -23,29 +23,26 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenRepeatInterleave(const at::Tensor& self,
-                                const at::Tensor& repeats,
-                                std::optional<int64_t> dim,
-                                std::optional<int64_t> output_size);
+[[nodiscard]] at::Tensor AtenRepeatInterleave(
+    const at::Tensor& self, const at::Tensor& repeats,
+    std::optional<int64_t> dim, std::optional<int64_t> output_size);
 
-at::Tensor AtenRepeatInterleaveSelfInt(const at::Tensor& self,
-                                       c10::SymInt repeats,
-                                       std::optional<int64_t> dim,
-                                       std::optional<c10::SymInt> output_size);
+[[nodiscard]] at::Tensor AtenRepeatInterleaveSelfInt(
+    const at::Tensor& self, c10::SymInt repeats, std::optional<int64_t> dim,
+    std::optional<c10::SymInt> output_size);
 
-at::Tensor AtenRepeatInterleaveTensor(const at::Tensor& repeats,
-                                      std::optional<c10::SymInt> output_size);
+[[nodiscard]] at::Tensor AtenRepeatInterleaveTensor(
+    const at::Tensor& repeats, std::optional<c10::SymInt> output_size);
 
 at::Tensor& AtenRepeatInterleaveTensorOut(
     const at::Tensor& repeats, std::optional<c10::SymInt> output_size,
     at::Tensor& out);
 
-at::Tensor AtenRepeatInterleaveAutograd(const at::Tensor& self,
-                                        const at::Tensor& repeats,
-                                        std::optional<int64_t> dim,
-                                        std::optional<c10::SymInt> output_size);
+[[nodiscard]] at::Tensor AtenRepeatInterleaveAutograd(
+    const at::Tensor& self, const at::Tensor& repeats,
+    std::optional<int64_t> dim, std::optional<c10::SymInt> output_size);
 
-at::Tensor AtenRepeatInterleaveSelfIntAutograd(
+[[nodiscard]] at::Tensor AtenRepeatInterleaveSelfIntAutograd(
     const at::Tensor& self, c10::SymInt repeats, std::optional<int64_t> dim,
     std::optional<c10::SymInt> output_size);
 

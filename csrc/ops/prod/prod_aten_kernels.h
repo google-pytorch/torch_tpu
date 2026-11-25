@@ -25,8 +25,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenProd(const at::Tensor& self,
-                    std::optional<at::ScalarType> dtype);
+[[nodiscard]] at::Tensor AtenProd(const at::Tensor& self,
+                                  std::optional<at::ScalarType> dtype);
 at::Tensor& AtenProdDimOut(const at::Tensor& self, int64_t dim, bool keep_dim,
                            std::optional<at::ScalarType> dtype,
                            at::Tensor& out);

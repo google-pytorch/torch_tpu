@@ -44,7 +44,7 @@ at::Tensor& AtenArgmaxOut(const at::Tensor& self, c10::optional<int64_t> dim,
 at::Tensor& AtenArgminOut(const at::Tensor& self, c10::optional<int64_t> dim,
                           bool keep_dim, at::Tensor& out);
 
-at::Tensor AtenMax(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenMax(const at::Tensor& self);
 
 at::Tensor& AtenMaxUnaryOut(const at::Tensor& self, at::Tensor& out);
 
@@ -53,7 +53,7 @@ std::tuple<at::Tensor&, at::Tensor&> AtenMaxDimMax(const at::Tensor& self,
                                                    at::Tensor& max,
                                                    at::Tensor& max_indices);
 
-at::Tensor AtenMin(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenMin(const at::Tensor& self);
 
 std::tuple<at::Tensor&, at::Tensor&> AtenMinDimMin(const at::Tensor& self,
                                                    int64_t dim, bool keep_dim,

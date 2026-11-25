@@ -245,7 +245,7 @@ class InvalidOpParamCacheKeys {
   absl::Status SetParam(std::string_view, const T&);
   operator OpParamCacheKeys&() &;    // NOLINT
   operator OpParamCacheKeys&&() &&;  // NOLINT
-  OpParamCacheKeys Clone() const;
+  [[nodiscard]] OpParamCacheKeys Clone() const;
 };
 
 // Checks if an argument should be ignored in the cache key.

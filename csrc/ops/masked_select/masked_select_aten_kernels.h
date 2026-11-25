@@ -26,7 +26,8 @@ namespace torch_tpu {
 //
 // This method is equivalent to:
 //    torch.masked_select(x, mask, output_size=mask.sum().cpu())
-at::Tensor AtenMaskedSelect(const at::Tensor& self, const at::Tensor& mask);
+[[nodiscard]] at::Tensor AtenMaskedSelect(const at::Tensor& self,
+                                          const at::Tensor& mask);
 
 // This op is implemented by first calculating and materializing the output
 // shape then restarting tracing with a known data-dependent output shape

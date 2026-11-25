@@ -24,7 +24,8 @@ namespace torch_tpu {
 
 at::Tensor& AtenReflectionPad1dOut(const at::Tensor& self,
                                    at::IntArrayRef padding, at::Tensor& out);
-at::Tensor AtenReflectionPad2d(const at::Tensor& self, at::IntArrayRef padding);
+[[nodiscard]] at::Tensor AtenReflectionPad2d(const at::Tensor& self,
+                                             at::IntArrayRef padding);
 at::Tensor& AtenReflectionPad2dOut(const at::Tensor& self,
                                    at::IntArrayRef padding, at::Tensor& out);
 at::Tensor& AtenReflectionPad3dOut(const at::Tensor& self,
@@ -41,9 +42,9 @@ at::Tensor& AtenReflectionPad3dBackwardGradInput(const at::Tensor& grad_output,
                                                  const at::Tensor& self,
                                                  at::IntArrayRef padding,
                                                  at::Tensor& grad_input);
-at::Tensor AtenReflectionPad2dBackward(const at::Tensor& grad_output,
-                                       const at::Tensor& self,
-                                       at::IntArrayRef padding);
+[[nodiscard]] at::Tensor AtenReflectionPad2dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    at::IntArrayRef padding);
 
 }  // namespace torch_tpu
 

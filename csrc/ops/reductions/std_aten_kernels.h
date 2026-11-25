@@ -27,8 +27,10 @@
 namespace torch_tpu {
 
 // Implements aten::std.correction.
-at::Tensor AtenStd(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
-                   const std::optional<at::Scalar>& correction, bool keep_dim);
+[[nodiscard]] at::Tensor AtenStd(const at::Tensor& self,
+                                 c10::OptionalArrayRef<int64_t> dim,
+                                 const std::optional<at::Scalar>& correction,
+                                 bool keep_dim);
 
 // Implements aten::std.correction_out.
 at::Tensor& AtenStdOut(const at::Tensor& self,

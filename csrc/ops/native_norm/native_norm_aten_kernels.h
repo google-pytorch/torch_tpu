@@ -25,12 +25,12 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenNativeNormScalar(const at::Tensor& self, const at::Scalar& p);
+[[nodiscard]] at::Tensor AtenNativeNormScalar(const at::Tensor& self,
+                                              const at::Scalar& p);
 
-at::Tensor AtenNativeNormScalarOptDimDtype(const at::Tensor& self,
-                                           const std::optional<at::Scalar>& p,
-                                           at::IntArrayRef dim, bool keepdim,
-                                           std::optional<at::ScalarType> dtype);
+[[nodiscard]] at::Tensor AtenNativeNormScalarOptDimDtype(
+    const at::Tensor& self, const std::optional<at::Scalar>& p,
+    at::IntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype);
 
 }  // namespace torch_tpu
 

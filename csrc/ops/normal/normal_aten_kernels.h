@@ -27,22 +27,23 @@ namespace torch_tpu {
 at::Tensor& AtenNormal_(at::Tensor& self, double mean, double std,
                         std::optional<at::Generator> generator);
 
-at::Tensor AtenNormalFloatTensor(double mean, const at::Tensor& std,
-                                 std::optional<at::Generator> generator);
+[[nodiscard]] at::Tensor AtenNormalFloatTensor(
+    double mean, const at::Tensor& std, std::optional<at::Generator> generator);
 
 at::Tensor& AtenNormalFloatTensorOut(double mean, const at::Tensor& std,
                                      std::optional<at::Generator> generator,
                                      at::Tensor& out);
 
-at::Tensor AtenNormalTensorFloat(const at::Tensor& mean, double std,
-                                 std::optional<at::Generator> generator);
+[[nodiscard]] at::Tensor AtenNormalTensorFloat(
+    const at::Tensor& mean, double std, std::optional<at::Generator> generator);
 
 at::Tensor& AtenNormalTensorFloatOut(const at::Tensor& mean, double std,
                                      std::optional<at::Generator> generator,
                                      at::Tensor& out);
 
-at::Tensor AtenNormalTensorTensor(const at::Tensor& mean, const at::Tensor& std,
-                                  std::optional<at::Generator> generator);
+[[nodiscard]] at::Tensor AtenNormalTensorTensor(
+    const at::Tensor& mean, const at::Tensor& std,
+    std::optional<at::Generator> generator);
 
 at::Tensor& AtenNormalTensorTensorOut(const at::Tensor& mean,
                                       const at::Tensor& std,

@@ -36,16 +36,16 @@ at::Tensor& AtenReplicationPad2dBackwardGradInput(const at::Tensor& grad_output,
                                                   const at::Tensor& self,
                                                   at::IntArrayRef padding,
                                                   at::Tensor& grad_input);
-at::Tensor AtenReplicationPad2dBackward(const at::Tensor& grad_output,
-                                        const at::Tensor& self,
-                                        at::IntArrayRef padding);
+[[nodiscard]] at::Tensor AtenReplicationPad2dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    at::IntArrayRef padding);
 at::Tensor& AtenReplicationPad3dBackwardGradInput(const at::Tensor& grad_output,
                                                   const at::Tensor& self,
                                                   at::IntArrayRef padding,
                                                   at::Tensor& grad_input);
-at::Tensor AtenReplicationPad3dBackward(const at::Tensor& grad_output,
-                                        const at::Tensor& self,
-                                        at::IntArrayRef padding);
+[[nodiscard]] at::Tensor AtenReplicationPad3dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    at::IntArrayRef padding);
 
 }  // namespace torch_tpu
 

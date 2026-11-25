@@ -55,9 +55,11 @@ absl::StatusOr<at::Tensor> BuildAvgPoolBackwardGradInputNd(
     std::optional<int64_t> divisor_override, at::Tensor& grad_input,
     int64_t spatial_dim_count, OpParamCacheKeys param_keys);
 
-at::Tensor AtenAvgPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                         at::IntArrayRef stride, at::IntArrayRef padding,
-                         bool ceil_mode, bool count_include_pad);
+[[nodiscard]] at::Tensor AtenAvgPool1d(const at::Tensor& self,
+                                       at::IntArrayRef kernel_size,
+                                       at::IntArrayRef stride,
+                                       at::IntArrayRef padding, bool ceil_mode,
+                                       bool count_include_pad);
 
 at::Tensor& AtenAvgPool1dOut(const at::Tensor& self,
                              at::IntArrayRef kernel_size,
@@ -69,11 +71,9 @@ at::Tensor& AtenAvgPool1dOut(const at::Tensor& self,
 // CompositeImplicitAutograd. Because the PrivateUse1 kernel AtenAvgPool1d
 // replaces that decomposition, outputs would otherwise not be connected to the
 // autograd graph.
-at::Tensor AtenAvgPool1dAutograd(const at::Tensor& self,
-                                 at::IntArrayRef kernel_size,
-                                 at::IntArrayRef stride,
-                                 at::IntArrayRef padding, bool ceil_mode,
-                                 bool count_include_pad);
+[[nodiscard]] at::Tensor AtenAvgPool1dAutograd(
+    const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride,
+    at::IntArrayRef padding, bool ceil_mode, bool count_include_pad);
 
 at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
                              at::IntArrayRef kernel_size,

@@ -45,9 +45,9 @@ absl::StatusOr<Dimensions> CanonicalizeDims(const at::Tensor& tensor,
 
 // Returns the size array after a reduction is applied.
 // Reduction dimensions must be canonicalized.
-Dimensions GetSizesAfterReduction(at::IntArrayRef self_size,
-                                  ReductionMode reduction_mode,
-                                  at::IntArrayRef canonicalized_dims);
+[[nodiscard]] Dimensions GetSizesAfterReduction(
+    at::IntArrayRef self_size, ReductionMode reduction_mode,
+    at::IntArrayRef canonicalized_dims);
 
 // Returns the input:output ratio for the provided reduction.
 // When dim is provided, the ratio is the product of the sizes along the

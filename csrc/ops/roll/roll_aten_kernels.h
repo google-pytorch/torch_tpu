@@ -22,8 +22,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenRoll(const at::Tensor& self, at::IntArrayRef shifts,
-                    at::IntArrayRef dims);
+[[nodiscard]] at::Tensor AtenRoll(const at::Tensor& self,
+                                  at::IntArrayRef shifts, at::IntArrayRef dims);
 
 }  // namespace torch_tpu
 

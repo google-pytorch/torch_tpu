@@ -25,7 +25,7 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenNativeMultiHeadAttention(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     int64_t embed_dim, int64_t num_head, const at::Tensor& qkv_weight,
     const at::Tensor& qkv_bias, const at::Tensor& proj_weight,
