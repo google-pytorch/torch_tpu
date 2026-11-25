@@ -79,7 +79,6 @@ using kiln::Tile;
 // Distance field of a position word.
 constexpr int64_t kDistanceShift = kTileShift;
 constexpr int64_t kWindow = 16384;    // Scratch capacity, not an input limit.
-constexpr int64_t kZeroRows = 16;     // Storage rows per high-word zero DMA.
 constexpr int64_t kWindowShift = 14;  // kWindow == 1 << kWindowShift
 
 // Storage rows per 128 coordinate tuples in each word plane of the S64[K,rank]
@@ -179,37 +178,17 @@ class NonzeroKernel {
         pos_(sublane_ * kLanes + lane_),
         tri_(PrefixTriangle()),
         staged_(output, x.rank(), TileRows(x.rank()), output.Dim(0) >> 1),
-        zeros_(kiln::AllocaVmem(kiln::i32(kZeroRows, kLanes))),
         // A rank-one input is a single row.
         m_(x.rank() == 1 ? kiln::I32(1) : x.Dim(x.rank() - 2)),
         n_(x.Dim(x.rank() - 1)) {}
 
   void Build() {
-    ZeroHighWords();
+    ZeroHighWords(output_);
     ProcessInput();
     staged_.Finish();
   }
 
  private:
-  // View `rows` 128-word storage rows of the S32 output at `q`.
-  kiln::HbmRef OutputRows(Scalar q, int64_t rows) {
-    return output_(kiln::Slice(q, rows), kiln::Slice(0, kLanes));
-  }
-
-  // Zero the high-word half of S64 storage in 16-row DMAs plus 1-row tails.
-  void ZeroHighWords() {
-    const Scalar rows = output_.Dim(0);
-    const Scalar half = rows >> 1;
-    const Scalar end = rows - (half & (kZeroRows - 1));
-    kiln::Store(zeros_, kiln::Zeros(kiln::i32(kZeroRows, kLanes)));
-    kiln::For(half, end, kZeroRows, [this](Scalar q) {
-      kiln::SyncCopy(zeros_, OutputRows(q, kZeroRows));
-    });
-    kiln::For(end, rows, [this](Scalar q) {
-      kiln::SyncCopy(zeros_(kiln::Slice(0, 1)), OutputRows(q, 1));
-    });
-  }
-
   // Scan a rank-one input by row windows. Otherwise scan each [M,N] slice in
   // row-major order, with its leading indices in `lead_`.
   void ProcessInput() {
@@ -374,7 +353,6 @@ class NonzeroKernel {
   kiln::HbmRef output_;              // S32 view of native S64 storage
   Tile lane_, sublane_, pos_, tri_;  // Constant vectors
   StagedOutput staged_;              // Double-buffered HBM output writer
-  kiln::VmemRef zeros_;              // Zero source for ZeroHighWords
   Scalar m_, n_;                     // Runtime extents of an [M,N] slice
   // Leading indices of the [M,N] slice being emitted.
   std::vector<Scalar> lead_;

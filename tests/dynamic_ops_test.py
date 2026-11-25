@@ -44,11 +44,13 @@ class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
       served: bool,
       static_compilations: int = 1,
       expected: Any = None,
+      dynamic_hits: int = 1,
   ) -> tuple[list[torch.Tensor], Any]:
     """Checks `op(*inputs)` on TPU vs CPU, input preservation, and cache stats.
 
-    Expects 1 unbounded dynamic hit and 0 compilations if `served`, else 0
-    dynamic hits and `static_compilations` cache misses and compilations.
+    Expects `dynamic_hits` unbounded dynamic hits and 0 compilations if
+    `served`, else 0 dynamic hits and `static_compilations` cache misses and
+    compilations.
     """
     tpu_inputs = [x.to("tpu") for x in inputs]
     torch.accelerator.synchronize()
@@ -79,7 +81,9 @@ class UnboundedDynamicKernelTestBase(op_testing.TorchTpuVsCpuTestBase):
         before.num_cache_reqs - before.num_cache_hits
     )
     expected_compilations = 0 if served else static_compilations
-    self.assertEqual(hits, 1 if served else 0, "unbounded dynamic hits")
+    self.assertEqual(
+        hits, dynamic_hits if served else 0, "unbounded dynamic hits"
+    )
     self.assertEqual(compilations, expected_compilations, "compilations")
     self.assertEqual(misses, expected_compilations, "cache misses")
     return tpu_inputs, result
@@ -294,6 +298,45 @@ _MM_NOT_SERVED_CASES = (
 )
 
 
+def _unique_case(
+    n: int, u: int, dtype: torch.dtype = torch.int32
+) -> tuple[str, torch.Tensor]:
+  """Returns a (name, input) case of `n` shuffled elements with `u` uniques."""
+  name = f"n{n}_u{u}_{str(dtype).removeprefix('torch.')}"
+  generator = torch.Generator().manual_seed(n + u)
+  values = torch.arange(u) - u // 2
+  x = values[torch.arange(n) % u][torch.randperm(n, generator=generator)]
+  return name, x.to(dtype)
+
+
+# The kernels serve the values and counts graphs of int32 inputs of any rank
+# (`UniqueSortAndCount` flattens to a 1-D sorted tensor), one kernel per graph
+# and XLA default 1-D input tile (N rounded up to a power of two in
+# [128, 1024]).
+_UNIQUE_SERVED_CASES = (
+    # All four input tiles T(128..1024) and all four output tiles T(128..1024).
+    _unique_case(1, 1),
+    _unique_case(129, 2),
+    _unique_case(257, 200),
+    _unique_case(512, 300),
+    _unique_case(1025, 1025),
+    # Multi-window input with staging flushes and a partial tail.
+    _unique_case(40000, 1025),
+    # Many unique values, where the XLA path is slowest.
+    _unique_case(262144, 262144),
+    # Higher-rank input flattened by UniqueSortAndCount.
+    (
+        "shape_32x128_u300_int32",
+        _unique_case(32 * 128, 300)[1].reshape(32, 128),
+    ),
+)
+
+_UNIQUE_NOT_SERVED_CASES = (
+    _unique_case(3000, 777, torch.float32),
+    _unique_case(3000, 777, torch.int64),
+)
+
+
 class DynamicOpsTest(UnboundedDynamicKernelTestBase):
 
   @parameterized.named_parameters(*_NONZERO_SERVED_CASES)
@@ -450,6 +493,46 @@ class DynamicOpsTest(UnboundedDynamicKernelTestBase):
       self.assert_close(
           golden_result=torch.mm(a, b), torch_tpu_result=result.cpu()
       )
+
+  @parameterized.named_parameters(
+      (
+          f"{name}_inverse{return_inverse}_counts{return_counts}",
+          x,
+          return_inverse,
+          return_counts,
+      )
+      for name, x in _UNIQUE_SERVED_CASES
+      for return_inverse in (False, True)
+      for return_counts in (False, True)
+  )
+  def test_unique_served(
+      self, x: torch.Tensor, return_inverse: bool, return_counts: bool
+  ):
+    unique = functools.partial(
+        torch.unique, return_inverse=return_inverse, return_counts=return_counts
+    )
+    # Warm up this size's sort graph, and the kernels, with one unique value.
+    unique(torch.zeros_like(x).to("tpu"))
+
+    _, result = self.run_and_check_cache(
+        unique, x, served=True, dynamic_hits=2 if return_counts else 1
+    )
+    outputs = result if isinstance(result, tuple) else (result,)
+    served_outputs = [outputs[0]] + ([outputs[-1]] if return_counts else [])
+    out_tile = min(max(128, 1 << (outputs[0].numel() - 1).bit_length()), 1024)
+    for output in served_outputs:
+      # (minor_to_major, tiles, element_size_in_bits); see unique.h.
+      self.assertEqual(
+          torch.tpu.get_device_layout_if_materialized(output),
+          ([0], [[out_tile]], 0),
+      )
+
+  @parameterized.named_parameters(*_UNIQUE_NOT_SERVED_CASES)
+  def test_unique_not_served(self, x: torch.Tensor):
+    torch.tpu._clear_cache()  # pylint: disable=protected-access
+    torch.unique(torch.zeros_like(x).to("tpu"))  # Warm up the sort graph.
+
+    self.run_and_check_cache(torch.unique, x, served=False)
 
 
 if __name__ == "__main__":
