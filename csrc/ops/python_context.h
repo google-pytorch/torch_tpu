@@ -340,7 +340,7 @@ class ScopedPythonContextProvider {
 
   // Returns the top python context on the singleton context provider stack for
   // the current thread, or std::nullopt if the stack is empty.
-  static const std::optional<PythonContext>& MaybeGetContext() {
+  [[nodiscard]] static const std::optional<PythonContext>& MaybeGetContext() {
     return top_context_;
   }
 

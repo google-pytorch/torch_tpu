@@ -25,11 +25,10 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenSearchsortedTensor(const at::Tensor& sorted_sequence,
-                                  const at::Tensor& values, bool out_int32,
-                                  bool right,
-                                  c10::optional<std::string_view> side,
-                                  const c10::optional<at::Tensor>& sorter);
+[[nodiscard]] at::Tensor AtenSearchsortedTensor(
+    const at::Tensor& sorted_sequence, const at::Tensor& values, bool out_int32,
+    bool right, c10::optional<std::string_view> side,
+    const c10::optional<at::Tensor>& sorter);
 
 at::Tensor& AtenSearchsortedTensorOut(const at::Tensor& sorted_sequence,
                                       const at::Tensor& values, bool out_int32,
@@ -38,11 +37,10 @@ at::Tensor& AtenSearchsortedTensorOut(const at::Tensor& sorted_sequence,
                                       const c10::optional<at::Tensor>& sorter,
                                       at::Tensor& out);
 
-at::Tensor AtenSearchsortedScalar(const at::Tensor& sorted_sequence,
-                                  const at::Scalar& value, bool out_int32,
-                                  bool right,
-                                  c10::optional<std::string_view> side,
-                                  const c10::optional<at::Tensor>& sorter);
+[[nodiscard]] at::Tensor AtenSearchsortedScalar(
+    const at::Tensor& sorted_sequence, const at::Scalar& value, bool out_int32,
+    bool right, c10::optional<std::string_view> side,
+    const c10::optional<at::Tensor>& sorter);
 
 at::Tensor& AtenSearchsortedScalarOut(const at::Tensor& sorted_sequence,
                                       const at::Scalar& value, bool out_int32,

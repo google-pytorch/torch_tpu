@@ -52,7 +52,8 @@ bool RegisterCustomKernel(std::string_view name, std::string_view kwargs,
 // Returns true if a kernel was found, false otherwise.
 // This can be used to avoid re-tracing kernels if the argument shapes and
 // keyword arguments are the same.
-bool LookupCustomKernel(std::string_view name, std::string_view kwargs);
+[[nodiscard]] bool LookupCustomKernel(std::string_view name,
+                                      std::string_view kwargs);
 
 // Calls a registered custom kernel with the given inputs.
 // If this is the first call to this kernel in this builder, it will be loaded

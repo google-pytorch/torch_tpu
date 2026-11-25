@@ -34,10 +34,10 @@
 
 namespace torch_tpu {
 
-at::Tensor ApplyNullaryOp(MlirNullaryOpBuilder op_builder,
-                          c10::ScalarType out_dtype, at::IntArrayRef out_dims,
-                          OpParamCacheKeys op_param_cache_keys,
-                          OpSplitMode split_mode = OpSplitMode::kNone);
+[[nodiscard]] at::Tensor ApplyNullaryOp(
+    MlirNullaryOpBuilder op_builder, c10::ScalarType out_dtype,
+    at::IntArrayRef out_dims, OpParamCacheKeys op_param_cache_keys,
+    OpSplitMode split_mode = OpSplitMode::kNone);
 
 absl::Status ApplyNullaryOpOut(at::Tensor& out, MlirNullaryOpBuilder op_builder,
                                c10::ScalarType out_dtype,
@@ -45,7 +45,7 @@ absl::Status ApplyNullaryOpOut(at::Tensor& out, MlirNullaryOpBuilder op_builder,
                                OpParamCacheKeys op_param_cache_keys,
                                OpSplitMode split_mode = OpSplitMode::kNone);
 
-at::Tensor AtenEmptyMemoryFormat(
+[[nodiscard]] at::Tensor AtenEmptyMemoryFormat(
     at::IntArrayRef size,                     //
     c10::optional<at::ScalarType> dtype_opt,  // Defaults to the global default.
     c10::optional<at::Layout> layout_opt,     // Defaults to Strided.
@@ -54,18 +54,16 @@ at::Tensor AtenEmptyMemoryFormat(
     c10::optional<at::MemoryFormat>
         memory_format_opt);  // Defaults to Contiguous.
 
-at::Tensor AtenEmptyStrided(c10::SymIntArrayRef size_sym,
-                            c10::SymIntArrayRef stride_sym,
-                            c10::optional<at::ScalarType> dtype_opt,
-                            c10::optional<at::Layout> layout_opt,
-                            c10::optional<at::Device> device_opt,
-                            c10::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenEmptyStrided(
+    c10::SymIntArrayRef size_sym, c10::SymIntArrayRef stride_sym,
+    c10::optional<at::ScalarType> dtype_opt,
+    c10::optional<at::Layout> layout_opt, c10::optional<at::Device> device_opt,
+    c10::optional<bool> pin_memory_opt);
 
-at::Tensor AtenEfficientZeroTensor(at::IntArrayRef size,
-                                   c10::optional<at::ScalarType> dtype_opt,
-                                   c10::optional<at::Layout> layout_opt,
-                                   c10::optional<at::Device> device_opt,
-                                   c10::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenEfficientZeroTensor(
+    at::IntArrayRef size, c10::optional<at::ScalarType> dtype_opt,
+    c10::optional<at::Layout> layout_opt, c10::optional<at::Device> device_opt,
+    c10::optional<bool> pin_memory_opt);
 
 }  // namespace torch_tpu
 

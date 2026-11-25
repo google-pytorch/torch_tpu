@@ -110,7 +110,7 @@ absl::Status BinaryOpOut(const at::Tensor& tensor, const OtherType& other,
 
 // NOLINTBEGIN
 // clang-format off
-// go/keep-sorted start ignore_prefixes=at::Tensor,at::Tensor& newline_separated=yes
+// go/keep-sorted start ignore_prefixes=["[[nodiscard]] at::Tensor","at::Tensor","at::Tensor&"] newline_separated=yes
 // clang-format on
 // NOLINTEND
 at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
@@ -119,11 +119,13 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
                            const at::Scalar& alpha, at::Tensor& out);
 
-at::Tensor AtenAddReluScalar(const at::Tensor& self, const at::Scalar& other,
-                             const at::Scalar& alpha);
+[[nodiscard]] at::Tensor AtenAddReluScalar(const at::Tensor& self,
+                                           const at::Scalar& other,
+                                           const at::Scalar& alpha);
 
-at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
-                             const at::Scalar& alpha);
+[[nodiscard]] at::Tensor AtenAddReluTensor(const at::Tensor& self,
+                                           const at::Tensor& other,
+                                           const at::Scalar& alpha);
 
 at::Tensor& AtenAddRelu_Scalar(at::Tensor& self, const at::Scalar& other,
                                const at::Scalar& alpha);
@@ -167,7 +169,8 @@ at::Tensor& AtenEqScalarOut(const at::Tensor& self, const at::Scalar& other,
 at::Tensor& AtenEqTensorOut(const at::Tensor& self, const at::Tensor& other,
                             at::Tensor& out);
 
-at::Tensor AtenFloorDivide(const at::Tensor& self, const at::Tensor& other);
+[[nodiscard]] at::Tensor AtenFloorDivide(const at::Tensor& self,
+                                         const at::Tensor& other);
 
 at::Tensor& AtenFloorDivideOut(const at::Tensor& self, const at::Tensor& other,
                                at::Tensor& out);
@@ -200,7 +203,8 @@ at::Tensor& AtenIrshiftTensor(at::Tensor& self, const at::Tensor& other);
 at::Tensor& AtenLdexpOut(const at::Tensor& self, const at::Tensor& other,
                          at::Tensor& out);
 
-at::Tensor AtenLdexpTensor(const at::Tensor& self, const at::Tensor& other);
+[[nodiscard]] at::Tensor AtenLdexpTensor(const at::Tensor& self,
+                                         const at::Tensor& other);
 
 at::Tensor& AtenLdexp_(at::Tensor& self, const at::Tensor& other);
 
@@ -210,9 +214,11 @@ at::Tensor& AtenLeScalarOut(const at::Tensor& self, const at::Scalar& other,
 at::Tensor& AtenLeTensorOut(const at::Tensor& self, const at::Tensor& other,
                             at::Tensor& out);
 
-at::Tensor AtenLshiftScalar(const at::Tensor& self, const at::Scalar& other);
+[[nodiscard]] at::Tensor AtenLshiftScalar(const at::Tensor& self,
+                                          const at::Scalar& other);
 
-at::Tensor AtenLshiftTensor(const at::Tensor& self, const at::Tensor& other);
+[[nodiscard]] at::Tensor AtenLshiftTensor(const at::Tensor& self,
+                                          const at::Tensor& other);
 
 at::Tensor& AtenLtScalarOut(const at::Tensor& self, const at::Scalar& other,
                             at::Tensor& out);
@@ -247,18 +253,21 @@ at::Tensor& AtenPowTensorScalarOut(const at::Tensor& self,
 at::Tensor& AtenPowTensorTensorOut(const at::Tensor& self,
                                    const at::Tensor& exponent, at::Tensor& out);
 
-at::Tensor AtenRemainderScalarTensor(const at::Scalar& self,
-                                     const at::Tensor& other);
+[[nodiscard]] at::Tensor AtenRemainderScalarTensor(const at::Scalar& self,
+                                                   const at::Tensor& other);
 
 at::Tensor& AtenRemainderTensorOut(const at::Tensor& self,
                                    const at::Tensor& other, at::Tensor& out);
 
-at::Tensor AtenRshiftScalar(const at::Tensor& self, const at::Scalar& other);
+[[nodiscard]] at::Tensor AtenRshiftScalar(const at::Tensor& self,
+                                          const at::Scalar& other);
 
-at::Tensor AtenRshiftTensor(const at::Tensor& self, const at::Tensor& other);
+[[nodiscard]] at::Tensor AtenRshiftTensor(const at::Tensor& self,
+                                          const at::Tensor& other);
 
-at::Tensor AtenRsubTensor(const at::Tensor& self, const at::Tensor& other,
-                          const at::Scalar& alpha);
+[[nodiscard]] at::Tensor AtenRsubTensor(const at::Tensor& self,
+                                        const at::Tensor& other,
+                                        const at::Scalar& alpha);
 
 at::Tensor& AtenSubOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out);
