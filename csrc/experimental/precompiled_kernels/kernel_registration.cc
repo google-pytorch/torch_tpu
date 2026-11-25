@@ -26,6 +26,7 @@
 #include "csrc/experimental/precompiled_kernels/matmul.h"
 #include "csrc/experimental/precompiled_kernels/nonzero_indices.h"
 #include "csrc/experimental/precompiled_kernels/sort/sort.h"
+#include "csrc/experimental/precompiled_kernels/unique.h"
 
 namespace torch_tpu {
 namespace {
@@ -96,6 +97,7 @@ class UnboundedDynamicKernelRegistrar {
 TT_REGISTER_DYNAMIC_KERNELS(GetMatmulUnboundedDynamicKernels());
 TT_REGISTER_DYNAMIC_KERNELS(GetNonzeroUnboundedDynamicKernels());
 TT_REGISTER_DYNAMIC_KERNEL(GetSortUnboundedDynamicKernel());
+TT_REGISTER_DYNAMIC_KERNELS(GetUniqueUnboundedDynamicKernels());
 
 }  // namespace
 }  // namespace torch_tpu

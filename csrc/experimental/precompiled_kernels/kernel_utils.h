@@ -64,6 +64,10 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
     const xla::Shape& output, absl::Span<const int64_t> operand_to_metadata,
     int aliased_parameter = -1, OperandsTransform operands_transform = nullptr);
 
+// Returns XLA's default 1-D tile minor dimension for a 32-bit or 64-bit tensor
+// of length `size`: `size` rounded up to a power of two in [128, 1024].
+[[nodiscard]] int64_t Default1DTileMinor(int64_t size);
+
 // Returns a 1-D layout `{0:T(tile_minor)}`.
 [[nodiscard]] xla::Layout Default1DLayout(int64_t tile_minor);
 

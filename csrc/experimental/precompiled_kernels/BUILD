@@ -167,6 +167,31 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "unique",
+    srcs = ["unique.cc"],
+    hdrs = ["unique.h"],
+    deps = [
+        ":kernel_utils",
+        ":stream_compaction",
+        "//csrc/common:compilation",
+        "//csrc/common:compilation_spec",
+        "//csrc/common:dimension_types",
+        "//csrc/common:error_utils",
+        "//csrc/common:shape",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
+        "//csrc/internal/mosaic/kiln",
+        "//csrc/ops:op_names",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
 # Registers every precompiled unbounded dynamic kernel with
 # //csrc/common:unbounded_dynamic_kernel_registry when
 # loaded. Nothing references its symbols, hence `alwayslink`. Depends on
@@ -177,6 +202,7 @@ torch_tpu_cc_library(
     deps = [
         ":matmul",
         ":nonzero_indices",
+        ":unique",
         "//csrc/common:unbounded_dynamic_kernel_registry",
         "//csrc/experimental/precompiled_kernels/sort",
         "@com_google_absl//absl/log:absl_check",
@@ -240,6 +266,22 @@ torch_tpu_cc_test(
         ":nonzero_indices",
         "//csrc/common:compilation",
         "//csrc/common:dimension_types",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:shape",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "unique_test",
+    srcs = ["unique_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":unique",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",
         "//csrc/common:unbounded_dynamic_kernel_registry",
