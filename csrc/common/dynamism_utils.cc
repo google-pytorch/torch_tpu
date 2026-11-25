@@ -40,8 +40,11 @@ absl::StatusOr<std::vector<DeviceRefDimensions>> GetTraversalOutputDimensions(
       llvm::cast<mlir::func::ReturnOp>(func.getBody().front().getTerminator());
   auto output_values = return_op.getOperands();
 
-  TT_RET_CHECK(output_values.size() == traversal.outputs().size(),
-               error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Internal invariant;
+                 // Traversal::BuildMlirModule returns one value per traversal
+                 // output.
+      output_values.size() == traversal.outputs().size(),
+      error::kFailedPrecondition)
       << "output values size: " << output_values.size()
       << " does not match traversal outputs size: "
       << traversal.outputs().size();

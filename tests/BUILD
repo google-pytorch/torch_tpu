@@ -2284,7 +2284,8 @@ torch_tpu_py_test(
     main = "errors_test.py",
     nolocal = "Skipping in local runs by default as it requires --config=cuda.",
     notest_oss = True,  # NOTEST_OSS_OK=Low value in maintaining for both internal and OSS and they run different versions of PyTorch.
-    shard_count = 8,
+    # 16 shards keep synchronous CUDA execution well under the 900s long timeout on slower GPU workers.
+    shard_count = 16,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.

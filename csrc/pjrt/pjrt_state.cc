@@ -311,7 +311,9 @@ absl::Status PjrtBackend::InitializeInternal() {
           << "failed to initialize distributed environment: ";
     }
   } else {
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=device_type is hardcoded to "tpu"
+                      // outside C++ pjrt_init_test.
+               error::kInvalidArgument)
            << "unsupported device type: " << options_.device_type;
   }
   // Move active thread into container for memory tracking, if the flag is
@@ -437,7 +439,10 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceCount() {
   TT_RETURN_IF_ERROR(EnsureInitialized());
   absl::ReaderMutexLock lock(mutex_);
   if (client_ == nullptr) {
-    return TT_ERROR(error::kInternal) << "PjRt is not initialized";
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                      // with a successful EnsureInitialized().
+               error::kInternal)
+           << "PjRt is not initialized";
   }
   return global_device_count_;
 }
@@ -456,7 +461,10 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {
   TT_RETURN_IF_ERROR(EnsureInitialized());
   absl::ReaderMutexLock lock(mutex_);
   if (client_ == nullptr) {
-    return TT_ERROR(error::kInternal) << "PjRt is not initialized";
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                      // with a successful EnsureInitialized().
+               error::kInternal)
+           << "PjRt is not initialized";
   }
   return global_device_id_;
 }
@@ -470,7 +478,10 @@ absl::StatusOr<PjRtDeviceAttributes> PjrtBackend::GetDeviceAttributes() {
   TT_RETURN_IF_ERROR(EnsureInitialized());
   absl::ReaderMutexLock lock(mutex_);
   if (device_ == nullptr) {
-    return TT_ERROR(error::kInternal) << "PjRt device is not initialized";
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                      // with a successful EnsureInitialized().
+               error::kInternal)
+           << "PjRt device is not initialized";
   }
 
   const xla::PjRtDevice* const device = device_;
@@ -501,7 +512,9 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
       host_allocator != nullptr) {
     return host_allocator;
   }
-  return TT_ERROR(error::kPythonNotImplementedError)
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=TPU PJRT client implements
+                    // GetHostMemoryAllocator().
+             error::kPythonNotImplementedError)
          << "host memory allocator is not implemented for this client";
 }
 

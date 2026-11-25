@@ -73,9 +73,12 @@ namespace torch_tpu {
 namespace {
 
 using absl_testing::StatusIs;
+using testing::AllOf;
 using testing::ElementsAre;
 using testing::EndsWith;
 using testing::HasSubstr;
+using testing::Not;
+using testing::StartsWith;
 
 class OpBuilderUtilsBuilder {
  public:
@@ -940,12 +943,13 @@ TEST(ApplyBroadcastIfNeeded, DynamicShape) {
   EXPECT_FALSE(bcast_op2_dims[1].boundOp.has_value());
 }
 
-// Returns a [?, 3] tensor with upper bound 10 on dimension 0.
-mlir::MlirOp MakeBoundedTensor(mlir::MlirBuilder& builder) {
+// Returns a [?, trailing_dim] tensor with upper bound 10 on dimension 0.
+mlir::MlirOp MakeBoundedTensor(mlir::MlirBuilder& builder,
+                               int64_t trailing_dim = 3) {
   mlir::OpBuilder& op_builder = builder.getOpBuilder();
   mlir::MlirOp size = MakeConstant(builder, 5, op_builder.getI32Type(), {});
   mlir::MlirOp padded =
-      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 3});
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, trailing_dim});
   return mlir::stablehlo::SetDimensionSize(padded, size, /*dim=*/0);
 }
 
@@ -972,10 +976,107 @@ TEST(ApplyBroadcastIfNeeded, SpanBoundedAndStaticDimensionsFailure) {
 
   auto result = ApplyBroadcastIfNeeded(
       std::vector<mlir::MlirOp>{bounded, static_op});  // NOLINT
-  EXPECT_THAT(result.status(),
-              StatusIs(error::kInvalidArgument,
-                       HasSubstr("cannot mix bounded and static dimensions")));
+  EXPECT_THAT(
+      result.status(),
+      StatusIs(error::kInvalidArgument,
+               AllOf(StartsWith("failed to broadcast tensors: "),
+                     Not(HasSubstr("<unknown>:0: error: ")),
+                     HasSubstr("cannot mix bounded and static dimensions"))));
   ExpectRaisedAsC10Error(result.status());
+}
+
+TEST(ApplyBroadcastIfNeeded, FileLineColLocOmitsLocationPrefix) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::MlirOp bounded = MakeBoundedTensor(builder);
+  bounded.getValue().getDefiningOp()->setLoc(mlir::FileLineColLoc::get(
+      builder.getOpBuilder().getContext(), "MyModel.py", 12, 4));
+  mlir::MlirOp static_op =
+      MakeConstant(builder, 2.0f, builder.getOpBuilder().getF32Type(), {10, 3});
+
+  auto result = ApplyBroadcastIfNeeded(std::vector<mlir::MlirOp>{
+      bounded, static_op});  // NOLINT: tests span overload
+  EXPECT_THAT(
+      result.status(),
+      StatusIs(error::kInvalidArgument,
+               AllOf(StartsWith("failed to broadcast tensors: "),
+                     Not(HasSubstr("MyModel.py")), Not(HasSubstr(": error:")),
+                     HasSubstr("cannot mix bounded and static dimensions"))));
+  ExpectRaisedAsC10Error(result.status());
+}
+
+TEST(ApplyBroadcastIfNeeded, MultiOperandFailureJoinsShapesWithCommas) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::Type f32 = builder.getOpBuilder().getF32Type();
+  mlir::MlirOp op1 = MakeConstant(builder, 1.0f, f32, {1, 2});
+  mlir::MlirOp op2 = MakeConstant(builder, 2.0f, f32, {2, 3});
+  mlir::MlirOp op3 = MakeConstant(builder, 3.0f, f32, {1, 2});
+
+  auto result =
+      ApplyBroadcastIfNeeded(std::vector<mlir::MlirOp>{op1, op2, op3});
+  EXPECT_THAT(
+      result.status(),
+      StatusIs(error::kInvalidArgument,
+               "failed to broadcast tensors with shapes [1, 2], [2, 3], [1, "
+               "2]: incompatible sizes 2 and 3 at trailing dimension -1"));
+  ExpectRaisedAsC10Error(result.status());
+}
+
+TEST(ApplyBroadcastIfNeeded,
+     DynamicDimensionWithStaticMismatchFormatsQuestionMark) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::MlirOp bounded_3 = MakeBoundedTensor(builder, /*trailing_dim=*/3);
+  mlir::MlirOp bounded_4 = MakeBoundedTensor(builder, /*trailing_dim=*/4);
+
+  auto result =
+      ApplyBroadcastIfNeeded(std::vector<mlir::MlirOp>{bounded_3, bounded_4});
+  EXPECT_THAT(
+      result.status(),
+      StatusIs(error::kInvalidArgument,
+               "failed to broadcast tensors with shapes [?, 3] and [?, 4]: "
+               "incompatible sizes 3 and 4 at trailing dimension -1"));
+  ExpectRaisedAsC10Error(result.status());
+}
+
+TEST(MakeConstant, UnsupportedElementTypeWithoutScalarTypeDoesNotCrash) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  const mlir::ElementType unmapped_types[] = {
+      mlir::ElementType::F6E2M3FN,  mlir::ElementType::F6E3M2FN,
+      mlir::ElementType::F8E3M4,    mlir::ElementType::F8E4M3B11FNUZ,
+      mlir::ElementType::F8E5M3FNU,
+  };
+  for (const mlir::ElementType elem_type : unmapped_types) {
+    SCOPED_TRACE(ToShortString(elem_type));
+    auto result = MakeConstant(builder, at::Scalar(1.0), elem_type, {2, 2});
+    EXPECT_THAT(result.status(),
+                StatusIs(error::kInvalidArgument,
+                         absl::StrCat("unsupported scalar constant dtype ",
+                                      ToShortString(elem_type))));
+    ExpectRaisedAsC10Error(result.status());
+  }
+}
+
+TEST(GetVerifiedMinFiniteValue, RejectsNonFloatAndUnmappedElementTypes) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+
+  mlir::RankedTensorType i32_tensor =
+      mlir::RankedTensorType::get({2, 2}, op_builder.getI32Type());
+  EXPECT_THAT(GetVerifiedMinFiniteValue(builder, i32_tensor).status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("expected floating-point input dtype, got "
+                                 "int32")));
+
+  mlir::RankedTensorType index_tensor =
+      mlir::RankedTensorType::get({2, 2}, op_builder.getIndexType());
+  EXPECT_THAT(GetVerifiedMinFiniteValue(builder, index_tensor).status(),
+              StatusIs(error::kInvalidArgument,
+                       HasSubstr("expected floating-point input dtype, got "
+                                 "index")));
 }
 
 TEST(GetNumElements, StaticShape) {
@@ -1197,8 +1298,9 @@ TEST(DynamicReshapeFromStaticDimensions, ErrorExpandDynamicToMultiple) {
                         static_output_shape, op_builder_utils_builder);
   ASSERT_FALSE(result.reshaped_op.ok());
   EXPECT_EQ(result.reshaped_op.status().code(), error::kInvalidArgument);
-  EXPECT_THAT(result.reshaped_op.status().message(),
-              testing::HasSubstr("expands to multiple non one output dims"));
+  EXPECT_THAT(
+      result.reshaped_op.status().message(),
+      testing::HasSubstr("splits into multiple non-unit output dimensions"));
 }
 
 TEST(DynamicReshapeFromStaticDimensions, ErrorNonTransposeLikeReshape) {
@@ -1754,6 +1856,19 @@ TEST(ReshapeToStaticDimensions, ErrorExpandBoundedDimToMultiple) {
       ReshapeToStaticDimensions(op, {2, 5, 6});
   ASSERT_FALSE(reshaped.ok());
   EXPECT_EQ(reshaped.status().code(), error::kInvalidArgument);
+}
+
+TEST(ReshapeToStaticDimensions, ErrorExpandBoundedDimOnlyToUnitDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp op = MakeBoundedArg(fb, {4, 1}, /*bound_dims=*/{1});
+  absl::StatusOr<mlir::MlirOp> reshaped =
+      ReshapeToStaticDimensions(op, {4, 1, 1});
+  EXPECT_THAT(
+      reshaped.status(),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("maps only to unit output dimensions [1, 2]")));
+  ExpectRaisedAsC10Error(reshaped.status());
 }
 
 // Returns the stablehlo.iota op that produces `op`, looking through any
@@ -2681,11 +2796,11 @@ TEST(ConvolutionLike, MismatchedResultDimsReturnsNotImplementedError) {
       result.status().message(),
       testing::HasSubstr(
           "expected the convolution result shape inferred at the upper bounds "
-          "of the lhs operand of type tensor<1x4x?xf32, "
-          "#stablehlo.bounds<?, ?, 8>> and the rhs operand of type "
-          "tensor<4x1x3xf32> to be [1, 4, 9], got [1, 4, 10]; only the batch "
-          "and spatial dimensions of the input (and of grad_output in "
-          "convolution_backward) may be bounded dynamic"));
+          "of the lhs operand of a float32 tensor with shape [1, 4, 8] and the "
+          "rhs operand of a float32 tensor with shape [4, 1, 3] to be [1, 4, "
+          "9], got [1, 4, 10]; only the batch and spatial dimensions of the "
+          "input (and of grad_output in convolution_backward) may be bounded "
+          "dynamic"));
 }
 
 class ConvolutionLikeUnsupportedTest

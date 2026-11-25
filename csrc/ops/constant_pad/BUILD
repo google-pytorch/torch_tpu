@@ -28,6 +28,7 @@ torch_tpu_cc_library(
     srcs = ["constant_pad_aten_kernels.cc"],
     hdrs = ["constant_pad_aten_kernels.h"],
     deps = [
+        "//csrc/common:api_error_utils",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

@@ -69,8 +69,10 @@ const absl::StatusOr<int64_t>& GetPremappedBufferSizeFromEnvOnce() {
           return default_bytes;
         }
         int64_t env_val = 0;
-        TT_RET_CHECK(absl::SimpleAtoi(raw_val, &env_val),
-                     error::kFailedPrecondition)
+        TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Status is swallowed by
+                       // .value_or(0) in pjrt_state.cc; covered in C++
+                       // discovery_test.
+            absl::SimpleAtoi(raw_val, &env_val), error::kFailedPrecondition)
             << "the " << kTpuPremappedBufferSizeEnvVar
             << " environment variable is not a valid integer: " << raw_val;
         return env_val;

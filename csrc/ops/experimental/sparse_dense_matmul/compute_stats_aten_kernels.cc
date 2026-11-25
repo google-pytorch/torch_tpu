@@ -22,6 +22,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/container/flat_hash_set.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/error_utils.h"
 #include "torch/library.h"
 
@@ -100,7 +101,7 @@ std::tuple<int64_t, int64_t> ComputeStatsImpl(const at::Tensor& indices,
       const int64_t end = static_cast<int64_t>(offsets_ptr[i + 1]);
       TT_CHECK_THROW(start >= 0 && end >= start && end <= num_indices,
                      error::kInvalidArgument)
-          << "Invalid offsets range [" << start << ", " << end << ") for "
+          << "invalid offsets range [" << start << ", " << end << ") for "
           << "indices size " << num_indices;
 
       AccumulateSampleStats(indices_ptr, start, end, num_partitions,
@@ -122,37 +123,42 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
       [](const at::Tensor& input_indices, const at::Tensor& input_offsets,
          int64_t global_device_count,
          int64_t num_sc_per_device) -> std::tuple<int64_t, int64_t> {
-    TT_CHECK_THROW(
-        input_indices.dtype() == at::kInt || input_indices.dtype() == at::kLong,
-        error::kInvalidArgument)
-        << "indices must be int32 or int64";
-    TT_CHECK_THROW(
-        input_offsets.dtype() == at::kInt || input_offsets.dtype() == at::kLong,
-        error::kInvalidArgument)
-        << "offsets must be int32 or int64";
-    TT_CHECK_THROW(global_device_count > 0, error::kInvalidArgument)
-        << "global_device_count must be positive";
-    TT_CHECK_THROW(num_sc_per_device > 0, error::kInvalidArgument)
-        << "num_sc_per_device must be positive";
-    TT_CHECK_THROW(input_offsets.numel() > 0, error::kInvalidArgument)
-        << "offsets cannot be empty";
+    return RunWithApiErrorHandling(
+        "compute_sparse_dense_matmul_stats",
+        [&input_indices, &input_offsets, global_device_count,
+         num_sc_per_device]() -> std::tuple<int64_t, int64_t> {
+          TT_CHECK_THROW(input_indices.dtype() == at::kInt ||
+                             input_indices.dtype() == at::kLong,
+                         error::kInvalidArgument)
+              << "indices must be int32 or int64";
+          TT_CHECK_THROW(input_offsets.dtype() == at::kInt ||
+                             input_offsets.dtype() == at::kLong,
+                         error::kInvalidArgument)
+              << "offsets must be int32 or int64";
+          TT_CHECK_THROW(global_device_count > 0, error::kInvalidArgument)
+              << "global_device_count must be positive";
+          TT_CHECK_THROW(num_sc_per_device > 0, error::kInvalidArgument)
+              << "num_sc_per_device must be positive";
+          TT_CHECK_THROW(input_offsets.numel() > 0, error::kInvalidArgument)
+              << "offsets cannot be empty";
 
-    auto indices = input_indices.contiguous();
-    auto offsets = input_offsets.contiguous();
-    if (indices.dtype() == at::kLong) {
-      if (offsets.dtype() == at::kLong) {
-        return ComputeStatsImpl<int64_t, int64_t>(
-            indices, offsets, global_device_count, num_sc_per_device);
-      }
-      return ComputeStatsImpl<int64_t, int32_t>(
-          indices, offsets, global_device_count, num_sc_per_device);
-    }
-    if (offsets.dtype() == at::kLong) {
-      return ComputeStatsImpl<int32_t, int64_t>(
-          indices, offsets, global_device_count, num_sc_per_device);
-    }
-    return ComputeStatsImpl<int32_t, int32_t>(
-        indices, offsets, global_device_count, num_sc_per_device);
+          auto indices = input_indices.contiguous();
+          auto offsets = input_offsets.contiguous();
+          if (indices.dtype() == at::kLong) {
+            if (offsets.dtype() == at::kLong) {
+              return ComputeStatsImpl<int64_t, int64_t>(
+                  indices, offsets, global_device_count, num_sc_per_device);
+            }
+            return ComputeStatsImpl<int64_t, int32_t>(
+                indices, offsets, global_device_count, num_sc_per_device);
+          }
+          if (offsets.dtype() == at::kLong) {
+            return ComputeStatsImpl<int32_t, int64_t>(
+                indices, offsets, global_device_count, num_sc_per_device);
+          }
+          return ComputeStatsImpl<int32_t, int32_t>(
+              indices, offsets, global_device_count, num_sc_per_device);
+        });
   };
 
   m.def(

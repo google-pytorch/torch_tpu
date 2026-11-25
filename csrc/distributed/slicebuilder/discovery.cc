@@ -108,11 +108,12 @@ GetDistributedWorkerConfiguration() {
 
   if (sb_addrs.empty()) {
     return TT_ERROR(error::kFailedPrecondition)
-           << kTorchTpuSlicebuilderAddressesEnvVar << " is empty.";
+           << "the " << kTorchTpuSlicebuilderAddressesEnvVar
+           << " environment variable must not be empty";
   }
   if (rank < 0) {
     return TT_ERROR(error::kFailedPrecondition)
-           << "RANK " << rank << " is out of bounds (negative)";
+           << "expected environment variable RANK to be >= 0, got " << rank;
   }
   std::vector<std::string> addresses = absl::StrSplit(sb_addrs, ',');
   int slice_rank = rank % static_cast<int>(addresses.size());
@@ -122,9 +123,10 @@ GetDistributedWorkerConfiguration() {
   std::vector<std::string> my_parts = absl::StrSplit(my_addr, ':');
   if (my_parts.size() != 2) {
     return TT_ERROR(error::kFailedPrecondition)
-           << "Invalid address format in "
-           << kTorchTpuSlicebuilderAddressesEnvVar
-           << " for current rank: " << my_addr;
+           << "expected the " << kTorchTpuSlicebuilderAddressesEnvVar
+           << " environment variable to be in the '<host>:<port>' format for "
+              "rank "
+           << rank << ", got '" << my_addr << "'";
   }
   std::string sb_port = my_parts[1];
 

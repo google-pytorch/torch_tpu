@@ -163,7 +163,10 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
+        "//csrc/common:api_error_utils",
         "//csrc/common:error_utils",
+        "//csrc/common:status_builder",
+        "//csrc/ops:python_context",
     ],
     alwayslink = 1,
 )
@@ -172,6 +175,7 @@ torch_tpu_cc_library(
     name = "compute_stats_aten_kernels",
     srcs = ["compute_stats_aten_kernels.cc"],
     deps = [
+        "//csrc/common:api_error_utils",
         "//csrc/common:error_utils",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",

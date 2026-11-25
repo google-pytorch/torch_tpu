@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -597,8 +598,9 @@ TEST_F(DispatchScanTest, CpuTensorInputsError) {
                    {dummy_output}, /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(create_scan_op,
-              Throws<TtError>(Property(&TtError::what,
-                                       HasSubstr("expected tensor to be on"))));
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
+                  HasSubstr("expected tensor to be on"))));
 }
 
 TEST_F(DispatchScanTest, InvalidMlirModuleError) {
@@ -614,8 +616,9 @@ TEST_F(DispatchScanTest, InvalidMlirModuleError) {
                    {dummy_output}, /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(create_scan_op,
-              Throws<TtError>(
-                  Property(&TtError::what, HasSubstr("invalid body module"))));
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
+                  HasSubstr("invalid body module"))));
 }
 
 TEST_F(DispatchScanTest, MissingMainError) {
@@ -627,8 +630,8 @@ TEST_F(DispatchScanTest, MissingMainError) {
                    {dummy_output}, /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(create_scan_op,
-              Throws<TtError>(Property(
-                  &TtError::what,
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
                   HasSubstr("expected 'main' function in body MLIR module"))));
 }
 
@@ -641,10 +644,10 @@ TEST_F(DispatchScanTest, EmptyInputsError) {
     PyCreateScanOp({carry_init}, {}, body_module, ScanDirection::kForward,
                    {dummy_output}, /*num_scan_inputs=*/0);
   };
-  EXPECT_THAT(
-      create_scan_op,
-      Throws<TtError>(Property(&TtError::what,
-                               HasSubstr("expected at least 1 input tensor"))));
+  EXPECT_THAT(create_scan_op,
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
+                  HasSubstr("expected at least 1 input tensor"))));
 }
 
 TEST_F(DispatchScanTest, MismatchedDummyOutputsError) {
@@ -659,10 +662,10 @@ TEST_F(DispatchScanTest, MismatchedDummyOutputsError) {
     PyCreateScanOp({carry_init}, {input}, body_module, ScanDirection::kForward,
                    {dummy_output1, dummy_output2}, /*num_scan_inputs=*/1);
   };
-  EXPECT_THAT(
-      create_scan_op,
-      Throws<TtError>(Property(&TtError::what,
-                               HasSubstr("expected 1 dummy outputs, got 2"))));
+  EXPECT_THAT(create_scan_op,
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
+                  HasSubstr("expected 1 dummy outputs, got 2"))));
 }
 
 TEST_F(DispatchScanTest, TooFewResultsError) {
@@ -681,8 +684,8 @@ TEST_F(DispatchScanTest, TooFewResultsError) {
   };
   EXPECT_THAT(
       create_scan_op,
-      Throws<TtError>(Property(
-          &TtError::what,
+      Throws<TtError>(testing::ResultOf(
+          [](const TtError& e) { return e.std::runtime_error::what(); },
           HasSubstr("expected step function to have at least 3 result types "
                     "(corresponding to carries), but it only has 2"))));
 }
@@ -759,8 +762,9 @@ TEST_P(DispatchScanNumScanInputsTest, InvalidNumScanInputs) {
                    {dummy_output}, num_scan_inputs);
   };
   EXPECT_THAT(create_scan_op,
-              Throws<TtError>(
-                  Property(&TtError::what, HasSubstr(param.expected_error))));
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
+                  HasSubstr(param.expected_error))));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1193,21 +1197,22 @@ TEST_F(DispatchScanTest, AssociativeScanErrorValidation) {
   const std::shared_ptr<ContextedModule> body_module =
       CreateBodyModule(kAssociativeAddCombineMlir);
 
-  EXPECT_THAT(
-      ([&] {
-        PyCreateAssociativeScanOp({}, body_module, ScanDirection::kForward,
-                                  /*dim=*/0, /*num_scan_inputs=*/1);
-      }),
-      Throws<TtError>(Property(&TtError::what,
-                               HasSubstr("expected at least 1 input tensor"))));
+  EXPECT_THAT(([&] {
+                PyCreateAssociativeScanOp({}, body_module,
+                                          ScanDirection::kForward,
+                                          /*dim=*/0, /*num_scan_inputs=*/1);
+              }),
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
+                  HasSubstr("expected at least 1 input tensor"))));
 
   EXPECT_THAT(([&] {
                 PyCreateAssociativeScanOp({input}, body_module,
                                           ScanDirection::kForward,
                                           /*dim=*/0, /*num_scan_inputs=*/0);
               }),
-              Throws<TtError>(Property(
-                  &TtError::what,
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
                   HasSubstr("expected num_scan_inputs to be greater than 0"))));
 
   EXPECT_THAT(
@@ -1216,8 +1221,8 @@ TEST_F(DispatchScanTest, AssociativeScanErrorValidation) {
                                   ScanDirection::kForward,
                                   /*dim=*/0, /*num_scan_inputs=*/2);
       }),
-      Throws<TtError>(Property(
-          &TtError::what,
+      Throws<TtError>(testing::ResultOf(
+          [](const TtError& e) { return e.std::runtime_error::what(); },
           HasSubstr("expected associative combine function to have 2 result "
                     "types, but it has 1"))));
 
@@ -1226,8 +1231,8 @@ TEST_F(DispatchScanTest, AssociativeScanErrorValidation) {
                                           ScanDirection::kForward,
                                           /*dim=*/0, /*num_scan_inputs=*/1);
               }),
-              Throws<TtError>(Property(
-                  &TtError::what,
+              Throws<TtError>(testing::ResultOf(
+                  [](const TtError& e) { return e.std::runtime_error::what(); },
                   HasSubstr("expected associative combine function to have 3 "
                             "arguments, but it has 2"))));
 }

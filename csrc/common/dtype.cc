@@ -305,14 +305,18 @@ absl::StatusOr<mlir::ElementType> ToElementType(
     case xla::PrimitiveType::U1:
     // go/keep-sorted end
     default:
-      return TT_ERROR(error::kInvalidArgument)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=All TorchTPU tensor dtypes map
+                        // to supported XLA PrimitiveTypes.
+                 error::kInvalidArgument)
              << "unsupported XLA PrimitiveType: " << xla_type;
       // Deliberately omitting the default case. Without the default case, if an
       // enum value is added in the future and the author forgets to update this
       // switch statement, the C++ compiler will generate a warning (treated as
       // an error), forcing the author to handle the new case.
   }
-  return TT_ERROR(error::kInvalidArgument)
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=Unreachable code after switch
+                    // statement with default return.
+             error::kInvalidArgument)
          << "invalid XLA PrimitiveType: " << xla_type;
 }
 
@@ -377,7 +381,9 @@ absl::StatusOr<mlir::ElementType> ToElementType(mlir::Type type) {
           .Default([](mlir::Type) { return std::nullopt; });
 
   if (!element_type) {
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=All MLIR types produced by
+                      // TorchTPU lowerings are supported.
+               error::kInvalidArgument)
            << "unsupported MLIR type: " << ToString(type);
   }
   return *element_type;
@@ -660,8 +666,9 @@ template <typename Container>
 
 absl::StatusOr<int64_t> ValidateTensorByteSize(at::IntArrayRef size,
                                                mlir::ElementType element_type) {
-  TT_RET_CHECK(IsSupportedBufferType(element_type),
-               error::kPythonNotImplementedError)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=All ScalarTypes accepted by
+                 // ToElementType are in IsSupportedBufferType.
+      IsSupportedBufferType(element_type), error::kPythonNotImplementedError)
       << "element type " << ToShortString(element_type)
       << " is not supported as a tensor element type";
   const auto negative_dims = GetNegativeValuesIn(size);

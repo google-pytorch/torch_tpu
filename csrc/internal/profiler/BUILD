@@ -59,6 +59,7 @@ torch_tpu_cc_library(
     ],
     deps = [
         ":xprof_callback_handler",
+        "//csrc/common:api_error_utils",
         "//csrc/common:device_type",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",

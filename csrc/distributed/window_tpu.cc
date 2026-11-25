@@ -28,6 +28,7 @@
 
 #include "ATen/core/TensorBody.h"
 #include "c10/util/intrusive_ptr.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/macro_utils.h"
 #include "csrc/pjrt/pjrt_transfer.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
@@ -93,12 +94,48 @@ int PyComputeWindowStripeCount(int64_t total_bytes) {
 
 #if TT_TORCH_VERSION_GE(2, 14)
 
+namespace {
+
+int64_t ComputeAndValidateDmaOffsetBytes(const at::Tensor& tensor,
+                                         int64_t target_offset_nelems,
+                                         int64_t registered_bytes) {
+  TT_CHECK_THROW(target_offset_nelems >= 0, error::kInvalidArgument)
+      << "expected target offset to be >= 0, got " << target_offset_nelems;
+  const int64_t element_size = tensor.element_size();
+  TT_ASSIGN_OR_THROW(
+      const int64_t dst_byte_offset,
+      SafeMultiply(target_offset_nelems, element_size),
+      _.SetPrepend() << "target byte offset overflowed for offset "
+                     << target_offset_nelems << " elements and element size "
+                     << element_size << " bytes: ");
+  const int64_t copy_bytes = tensor.nbytes();
+  TT_ASSIGN_OR_THROW(
+      const int64_t end_byte_offset, SafeAdd(dst_byte_offset, copy_bytes),
+      _.SetPrepend() << "target end byte offset overflowed for offset "
+                     << dst_byte_offset << " bytes and size " << copy_bytes
+                     << " bytes: ");
+  TT_CHECK_THROW(end_byte_offset <= registered_bytes, error::kInvalidArgument)
+      << "expected target offset (" << dst_byte_offset << " bytes) + size ("
+      << copy_bytes << " bytes) to be <= registered window buffer size ("
+      << registered_bytes << " bytes), got " << end_byte_offset << " bytes";
+  return dst_byte_offset;
+}
+
+}  // namespace
+
 WindowTpu::WindowTpu(c10::intrusive_ptr<c10d::Backend> backend, int64_t rank)
     : backend_(std::move(backend)), local_rank_(rank) {}
 
 void WindowTpu::tensor_register(const at::Tensor& tensor, bool owning) {
+  RunWithApiErrorHandling("tensor_register", &WindowTpu::TensorRegisterImpl,
+                          this, tensor, owning);
+}
+
+void WindowTpu::TensorRegisterImpl(const at::Tensor& tensor, bool owning) {
   TT_CHECK_THROW(tensor.is_contiguous(), error::kInvalidArgument)
-      << "Window tensor must be contiguous.";
+      << "expected window tensor to be contiguous, got non-contiguous tensor "
+         "with shape "
+      << tensor.sizes() << " and strides " << tensor.strides();
   registered_tensor_ = tensor;
 }
 
@@ -107,16 +144,12 @@ void WindowTpu::tensor_deregister() { registered_tensor_.reset(); }
 c10::intrusive_ptr<c10d::Work> WindowTpu::PutDeviceToHostDma(
     const at::Tensor& tensor, int64_t targetOffsetNelems, bool asyncOp) {
   TT_CHECK_THROW(tensor.is_contiguous(), error::kInvalidArgument)
-      << "Source device tensor must be contiguous for zero-copy DMA.";
-  const int64_t element_size = tensor.element_size();
-  const int64_t dst_byte_offset = targetOffsetNelems * element_size;
+      << "expected source TPU tensor to be contiguous for zero-copy DMA, got "
+         "non-contiguous tensor with shape "
+      << tensor.sizes() << " and strides " << tensor.strides();
+  const int64_t dst_byte_offset = ComputeAndValidateDmaOffsetBytes(
+      tensor, targetOffsetNelems, registered_tensor_->nbytes());
   const int64_t copy_bytes = tensor.nbytes();
-  const int64_t registered_bytes = registered_tensor_->nbytes();
-
-  TT_CHECK_THROW(dst_byte_offset + copy_bytes <= registered_bytes,
-                 error::kInvalidArgument)
-      << "Target offset and size exceeds registered window buffer size: "
-      << dst_byte_offset + copy_bytes << " > " << registered_bytes;
 
   uint8_t* dst_ptr =
       reinterpret_cast<uint8_t*>(registered_tensor_->data_ptr()) +
@@ -139,16 +172,12 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::PutDeviceToHostDma(
 c10::intrusive_ptr<c10d::Work> WindowTpu::PutHostToDeviceDma(
     const at::Tensor& tensor, int64_t targetOffsetNelems, bool asyncOp) {
   TT_CHECK_THROW(tensor.is_contiguous(), error::kInvalidArgument)
-      << "Source host tensor must be contiguous for zero-copy DMA.";
-  const int64_t element_size = tensor.element_size();
-  const int64_t dst_byte_offset = targetOffsetNelems * element_size;
+      << "expected source CPU tensor to be contiguous for zero-copy DMA, got "
+         "non-contiguous tensor with shape "
+      << tensor.sizes() << " and strides " << tensor.strides();
+  const int64_t dst_byte_offset = ComputeAndValidateDmaOffsetBytes(
+      tensor, targetOffsetNelems, registered_tensor_->nbytes());
   const int64_t copy_bytes = tensor.nbytes();
-  const int64_t registered_bytes = registered_tensor_->nbytes();
-
-  TT_CHECK_THROW(dst_byte_offset + copy_bytes <= registered_bytes,
-                 error::kInvalidArgument)
-      << "Target offset and size exceeds registered window buffer size: "
-      << dst_byte_offset + copy_bytes << " > " << registered_bytes;
 
   const uint8_t* src_ptr = reinterpret_cast<const uint8_t*>(tensor.data_ptr());
 
@@ -167,6 +196,20 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::PutHostToDeviceDma(
   return work;
 }
 
+bool WorkTpu::wait(std::chrono::milliseconds timeout) {
+  return RunWithApiErrorHandling("wait", &WorkTpu::WaitImpl, this, timeout);
+}
+
+void WorkTpu::synchronize() {
+  RunWithApiErrorHandling("synchronize", &WorkTpu::WaitImpl, this, kNoTimeout);
+}
+
+bool WorkTpu::WaitImpl(std::chrono::milliseconds /*timeout*/) {
+  TT_THROW_IF_ERROR(future_.Await()).SetPrepend()
+      << "failed to wait for TPU window DMA: ";
+  return true;
+}
+
 bool CompositeWorkTpu::isCompleted() {
   for (const auto& w : sub_works_) {
     if (w && !w->isCompleted()) return false;
@@ -175,6 +218,16 @@ bool CompositeWorkTpu::isCompleted() {
 }
 
 bool CompositeWorkTpu::wait(std::chrono::milliseconds timeout) {
+  return RunWithApiErrorHandling("wait", &CompositeWorkTpu::WaitImpl, this,
+                                 timeout);
+}
+
+void CompositeWorkTpu::synchronize() {
+  RunWithApiErrorHandling("synchronize", &CompositeWorkTpu::WaitImpl, this,
+                          kNoTimeout);
+}
+
+bool CompositeWorkTpu::WaitImpl(std::chrono::milliseconds timeout) {
   if (timeout == kNoTimeout) {
     for (auto& w : sub_works_) {
       if (w && !w->wait(kNoTimeout)) {
@@ -257,8 +310,16 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::put(const at::Tensor& tensor,
                                               int64_t targetOffsetNelems,
                                               bool asyncOp,
                                               const c10d::PutOptions& opts) {
+  return RunWithApiErrorHandling("put", &WindowTpu::PutImpl, this, tensor,
+                                 dstRank, targetOffsetNelems, asyncOp, opts);
+}
+
+c10::intrusive_ptr<c10d::Work> WindowTpu::PutImpl(
+    const at::Tensor& tensor, int64_t dstRank, int64_t targetOffsetNelems,
+    bool asyncOp, const c10d::PutOptions& opts) {
   TT_CHECK_THROW(registered_tensor_.has_value(), error::kFailedPrecondition)
-      << "Window tensor must be registered before calling put.";
+      << "expected a registered window tensor before calling put(), got "
+         "unregistered window";
 
   const bool is_device_window =
       registered_tensor_->device().type() == GetPrivateUse1DeviceType();
@@ -276,8 +337,9 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::put(const at::Tensor& tensor,
 
   // Case 3: Peer Rank P2P transfer (currently emulated via ProcessGroup P2P)
   TT_CHECK_THROW(targetOffsetNelems == 0, error::kInvalidArgument)
-      << "Non-zero targetOffsetNelems (" << targetOffsetNelems
-      << ") is not supported for remote peer P2P transfers.";
+      << "expected target_offset_nelems to be 0 for remote peer P2P "
+         "transfers, got "
+      << targetOffsetNelems;
   return PutPeerP2P(tensor, dstRank, asyncOp);
 }
 
@@ -285,8 +347,15 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::put(const at::Tensor& tensor,
 // counters once peer P2P transfers are true one-sided RDMA.
 c10::intrusive_ptr<c10d::Work> WindowTpu::signal(
     int64_t peerRank, bool asyncOp, const c10d::SignalOptions& opts) {
+  return RunWithApiErrorHandling("signal", &WindowTpu::SignalImpl, this,
+                                 peerRank, asyncOp, opts);
+}
+
+c10::intrusive_ptr<c10d::Work> WindowTpu::SignalImpl(
+    int64_t peerRank, bool asyncOp, const c10d::SignalOptions& opts) {
   TT_CHECK_THROW(registered_tensor_.has_value(), error::kFailedPrecondition)
-      << "Window tensor must be registered before calling signal.";
+      << "expected a registered window tensor before calling signal(), got "
+         "unregistered window";
   const int num_stripes =
       PyComputeWindowStripeCount(registered_tensor_->nbytes());
   if (num_stripes <= 1) {
@@ -317,8 +386,15 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::signal(
 
 c10::intrusive_ptr<c10d::Work> WindowTpu::wait_signal(
     int64_t peerRank, bool asyncOp, const c10d::WaitSignalOptions& opts) {
+  return RunWithApiErrorHandling("wait_signal", &WindowTpu::WaitSignalImpl,
+                                 this, peerRank, asyncOp, opts);
+}
+
+c10::intrusive_ptr<c10d::Work> WindowTpu::WaitSignalImpl(
+    int64_t peerRank, bool asyncOp, const c10d::WaitSignalOptions& opts) {
   TT_CHECK_THROW(registered_tensor_.has_value(), error::kFailedPrecondition)
-      << "Window tensor must be registered before calling wait_signal.";
+      << "expected a registered window tensor before calling wait_signal(), "
+         "got unregistered window";
   const int num_stripes =
       PyComputeWindowStripeCount(registered_tensor_->nbytes());
   if (num_stripes <= 1) {
@@ -348,8 +424,13 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::wait_signal(
 }
 
 at::Tensor WindowTpu::map_remote_tensor(int64_t rank) {
+  return RunWithApiErrorHandling("map_remote_tensor",
+                                 &WindowTpu::MapRemoteTensorImpl, this, rank);
+}
+
+at::Tensor WindowTpu::MapRemoteTensorImpl(int64_t rank) {
   TT_CHECK_THROW(registered_tensor_.has_value(), error::kFailedPrecondition)
-      << "Window tensor must be registered.";
+      << "expected a registered window tensor, got unregistered window";
   return *registered_tensor_;
 }
 

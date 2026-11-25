@@ -36,7 +36,9 @@ absl::StatusOr<absl_nonnull std::unique_ptr<xla::PjRtClient>> GetPjRtClient(
             "tpu", {{"premapped_buffer_size", tpu_premapped_buffer_size}}),
         /*context=*/"failed to retrieve the PjRt client");
   }
-  return TT_ERROR(error::kInvalidArgument)
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=pjrt_state.cc checks device_type ==
+                    // "tpu" before calling GetPjRtClient.
+             error::kInvalidArgument)
          << "unable to get PJRT client for unsupported device type: "
          << device_type;
 }
