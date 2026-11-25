@@ -35,7 +35,8 @@ TEST(ContextStateAccessDeathTest, CrashOnGetContextStateIfDisallowed) {
       {
         std::thread t([&]() {
           DisallowThisThreadToAccessContextState();
-          GetContextState<EagerModeContextState>();
+          (void)  // VOID_CAST_OK=death test only checks the crash
+              GetContextState<EagerModeContextState>();
         });
         t.join();
       },
@@ -79,7 +80,8 @@ TEST(ContextStateAccess, IsIsolatedAcrossThreads) {
       {
         std::thread worker([&]() {
           DisallowThisThreadToAccessContextState();
-          GetContextState<EagerModeContextState>();
+          (void)  // VOID_CAST_OK=death test only checks the crash
+              GetContextState<EagerModeContextState>();
         });
         worker.join();
       },

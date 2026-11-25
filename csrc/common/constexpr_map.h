@@ -93,7 +93,7 @@ class ConstexprMap {
 
   // Element access
   template <typename K>
-  constexpr const Value& at(const K& key) const {
+  [[nodiscard]] constexpr const Value& at(const K& key) const {
     const auto it = find(key);
     if (it == end()) {
       throw std::out_of_range(  // throw needed to mimic std::map.
@@ -103,7 +103,7 @@ class ConstexprMap {
   }
 
   template <typename K>
-  constexpr const Value& operator[](const K& key) const {
+  [[nodiscard]] constexpr const Value& operator[](const K& key) const {
     return at(key);
   }
 
@@ -146,7 +146,7 @@ class ConstexprMap {
 
   // Returns true if k1 is less than k2 according to the key comparator.
   template <typename K1, typename K2>
-  constexpr bool KeyLess(const K1& k1, const K2& k2) const {
+  [[nodiscard]] constexpr bool KeyLess(const K1& k1, const K2& k2) const {
     if constexpr (std::is_invocable_r_v<bool, const Compare&, const K1&,
                                         const K2&>) {
       return comp_(k1, k2);
@@ -161,7 +161,8 @@ class ConstexprMap {
 
   // Returns true if k1 and k2 are equivalent according to the key comparator.
   template <typename K1, typename K2>
-  constexpr bool KeysEquivalent(const K1& k1, const K2& k2) const {
+  [[nodiscard]] constexpr bool KeysEquivalent(const K1& k1,
+                                              const K2& k2) const {
     return !KeyLess(k1, k2) && !KeyLess(k2, k1);
   }
 

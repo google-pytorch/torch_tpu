@@ -59,7 +59,7 @@ namespace torch_tpu {
 
 // The primary template is for types where ToString(const T&) is not defined.
 template <typename T>
-std::string ToString(const T& x);
+[[nodiscard]] std::string ToString(const T& x);
 
 template <typename T>
 [[nodiscard]] std::string ToString(absl::Span<T> span);

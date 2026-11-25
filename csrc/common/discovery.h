@@ -45,7 +45,8 @@ namespace torch_tpu {
 //   Cloud TPU v7x, 4 chips         |   960 GiB    |    8    | 4 GiB
 //
 // This function is memoized, so the environment variable is only read once.
-const absl::StatusOr<int64_t>& GetPremappedBufferSizeFromEnvOnce();
+[[nodiscard]] const absl::StatusOr<int64_t>&
+GetPremappedBufferSizeFromEnvOnce();
 
 }  // namespace torch_tpu
 

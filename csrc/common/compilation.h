@@ -144,7 +144,7 @@ class LoadedExecutableWithMetadata {
           unbounded_dynamic_execution_metadata = std::nullopt,
       std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt);
 
-  static SharedLoadedExecutableWithMetadata WithArgumentIndices(
+  [[nodiscard]] static SharedLoadedExecutableWithMetadata WithArgumentIndices(
       const SharedLoadedExecutableWithMetadata& existing,
       Indices argument_indices) {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
@@ -156,7 +156,8 @@ class LoadedExecutableWithMetadata {
             existing->subslice_origin_));
   }
 
-  static SharedLoadedExecutableWithMetadata WithDynamicExecutionMetadata(
+  [[nodiscard]] static SharedLoadedExecutableWithMetadata
+  WithDynamicExecutionMetadata(
       const SharedLoadedExecutableWithMetadata& existing,
       UnboundedDynamicExecutionMetadata unbounded_dynamic_execution_metadata) {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
@@ -168,21 +169,23 @@ class LoadedExecutableWithMetadata {
             existing->subslice_origin_));
   }
 
-  const xla::PjRtExecutable* GetExecutable() const {
+  [[nodiscard]] const xla::PjRtExecutable* GetExecutable() const {
     return executable_->GetExecutable();
   }
 
-  const xla::PjRtLoadedExecutable* GetLoadedExecutable() const {
+  [[nodiscard]] const xla::PjRtLoadedExecutable* GetLoadedExecutable() const {
     return executable_.get();
   }
 
   // Flattened output shapes of the executable (one per output buffer).
-  absl::Span<const xla::Shape> output_shapes() const { return *output_shapes_; }
+  [[nodiscard]] absl::Span<const xla::Shape> output_shapes() const {
+    return *output_shapes_;
+  }
   // For each flat argument buffer the executable takes, the on-device shape
   // (including layout and bounded-dynamic dimension flags) it was compiled for.
   // Tuple parameters take one buffer per element and can't be nested. Empty if
   // the executable doesn't report them.
-  absl::Span<const xla::Shape> parameter_device_shapes() const {
+  [[nodiscard]] absl::Span<const xla::Shape> parameter_device_shapes() const {
     return parameter_device_shapes_;
   }
   // Shared immutable list of on-device shapes (including layout and
@@ -190,18 +193,20 @@ class LoadedExecutableWithMetadata {
   // produces, allowing materialized DeviceBufferLists to retain output shapes
   // without keeping `executable_` alive. Null if the executable doesn't report
   // them or if an `output_transform` rewrites output buffers after execution.
-  absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
+  [[nodiscard]] absl_nullable std::shared_ptr<const std::vector<xla::Shape>>
   shared_output_device_shapes() const {
     return output_shapes_kind_ == OutputShapesKind::kOnDevice ? output_shapes_
                                                               : nullptr;
   }
-  absl::Span<const xla::Shape> output_device_shapes() const {
+  [[nodiscard]] absl::Span<const xla::Shape> output_device_shapes() const {
     return output_shapes_kind_ == OutputShapesKind::kOnDevice
                ? absl::MakeConstSpan(*output_shapes_)
                : absl::Span<const xla::Shape>{};
   }
-  const Indices& argument_indices() const { return argument_indices_; }
-  const std::optional<UnboundedDynamicExecutionMetadata>&
+  [[nodiscard]] const Indices& argument_indices() const {
+    return argument_indices_;
+  }
+  [[nodiscard]] const std::optional<UnboundedDynamicExecutionMetadata>&
   unbounded_dynamic_execution_metadata() const {
     return unbounded_dynamic_execution_metadata_;
   }
@@ -209,7 +214,8 @@ class LoadedExecutableWithMetadata {
   // The subslice origin the executable was loaded at (see GetSubsliceOrigin);
   // nullopt if it was loaded for the full topology. Needed to load it again,
   // e.g. after pickling.
-  const std::optional<xla::PjRtDeviceDimensions>& subslice_origin() const {
+  [[nodiscard]] const std::optional<xla::PjRtDeviceDimensions>&
+  subslice_origin() const {
     return subslice_origin_;
   }
 
@@ -366,7 +372,7 @@ CompileAndLoadMlirModule(xla::PjRtClient& client,
                          xla::CompileOptions options);
 
 // Creates an MLIR context and registers all required TPU dialects.
-absl_nonnull std::unique_ptr<mlir::MLIRContext> MakeMlirContext();
+[[nodiscard]] absl_nonnull std::unique_ptr<mlir::MLIRContext> MakeMlirContext();
 
 // Synchronously compiles a program, without any cache behavior.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(

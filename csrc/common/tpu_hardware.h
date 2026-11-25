@@ -115,12 +115,12 @@ struct TpuSpec {
 
   [[nodiscard]] static const TpuSpec& ForVersion(TpuVersion version);
 
-  static const TpuSpec& V5p();
-  static const TpuSpec& V5e();
-  static const TpuSpec& V6e();
-  static const TpuSpec& V7();
-  static const TpuSpec& V8i();
-  static const TpuSpec& V8t();
+  [[nodiscard]] static const TpuSpec& V5p();
+  [[nodiscard]] static const TpuSpec& V5e();
+  [[nodiscard]] static const TpuSpec& V6e();
+  [[nodiscard]] static const TpuSpec& V7();
+  [[nodiscard]] static const TpuSpec& V8i();
+  [[nodiscard]] static const TpuSpec& V8t();
 
   // Returns the mapping from PCI device ID (e.g. "0x0076") to the
   // corresponding `TpuSpec`.

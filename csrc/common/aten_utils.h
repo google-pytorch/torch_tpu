@@ -42,16 +42,16 @@
 namespace torch_tpu {
 
 // Returns the scalar type of the given tensor.
-inline at::ScalarType GetScalarType(const at::Tensor& tensor) {
+[[nodiscard]] inline at::ScalarType GetScalarType(const at::Tensor& tensor) {
   return tensor.scalar_type();
 }
 
 // Returns the scalar type of the given scalar.
-inline at::ScalarType GetScalarType(const at::Scalar& scalar) {
+[[nodiscard]] inline at::ScalarType GetScalarType(const at::Scalar& scalar) {
   return scalar.type();
 }
 
-inline at::ScalarType GetScalarType(at::ScalarType scalar_type) {
+[[nodiscard]] inline at::ScalarType GetScalarType(at::ScalarType scalar_type) {
   return scalar_type;
 }
 
@@ -132,7 +132,7 @@ inline absl::Status ValidateOutDtype(const at::Tensor& out,
 //   - const at::Scalar&
 //   - at::ScalarType
 template <typename T>
-bool IsBool(const T& thing) {
+[[nodiscard]] bool IsBool(const T& thing) {
   return GetScalarType(thing) == at::ScalarType::Bool;
 }
 
@@ -144,23 +144,23 @@ bool IsBool(const T& thing) {
 //   - const at::Scalar&
 //   - at::ScalarType
 template <typename T>
-bool IsComplex(const T& thing) {
+[[nodiscard]] bool IsComplex(const T& thing) {
   return c10::isComplexType(GetScalarType(thing));
 }
 
 // Returns whether `tensor` holds floating-point data.
-inline bool IsFloatingPoint(const at::Tensor& tensor) {
+[[nodiscard]] inline bool IsFloatingPoint(const at::Tensor& tensor) {
   return tensor.is_floating_point();
 }
 
 // Returns whether `tensor` holds `float32` (float) or `float64` (double) data.
-inline bool IsFloatOrDouble(const at::Tensor& tensor) {
+[[nodiscard]] inline bool IsFloatOrDouble(const at::Tensor& tensor) {
   return tensor.scalar_type() == at::ScalarType::Float ||
          tensor.scalar_type() == at::ScalarType::Double;
 }
 
 // Returns whether `tensor` holds `float16` (half) data.
-inline bool IsHalf(const at::Tensor& tensor) {
+[[nodiscard]] inline bool IsHalf(const at::Tensor& tensor) {
   return tensor.scalar_type() == at::ScalarType::Half;
 }
 
@@ -174,7 +174,7 @@ inline bool IsHalf(const at::Tensor& tensor) {
 //   - const at::Scalar&
 //   - at::ScalarType
 template <typename T>
-bool IsLowPrecisionFloat(const T& thing) {
+[[nodiscard]] bool IsLowPrecisionFloat(const T& thing) {
   const at::ScalarType dtype = GetScalarType(thing);
   return c10::isFloat8Type(dtype) || dtype == at::ScalarType::Float4_e2m1fn_x2;
 }
@@ -189,7 +189,7 @@ absl::Status ValidateNotLowPrecisionFloat(const T& thing) {
 }
 
 // Returns whether `tensor` holds integer data.
-inline bool IsInteger(const at::Tensor& tensor) {
+[[nodiscard]] inline bool IsInteger(const at::Tensor& tensor) {
   return c10::isIntegralType(tensor.scalar_type(), /* includeBool= */ false);
 }
 
@@ -201,29 +201,29 @@ inline bool IsInteger(const at::Tensor& tensor) {
 //   - const at::Scalar&
 //   - at::ScalarType
 template <typename T>
-bool IsIntegral(const T& thing) {
+[[nodiscard]] bool IsIntegral(const T& thing) {
   return c10::isIntegralType(GetScalarType(thing), /* includeBool= */ true);
 }
 
 // Returns whether `tensor` holds Long typed data.
-inline bool IsLong(const at::Tensor& tensor) {
+[[nodiscard]] inline bool IsLong(const at::Tensor& tensor) {
   return tensor.scalar_type() == at::ScalarType::Long;
 }
 
 // Returns whether `tensor` device is PrivateUse1.
-inline bool IsPrivateUse1Device(const at::Tensor& tensor) {
+[[nodiscard]] inline bool IsPrivateUse1Device(const at::Tensor& tensor) {
   return tensor.device().type() == GetPrivateUse1DeviceType();
 }
 
 // Returns whether `tensor` device is CPU.
-inline bool IsCpuDevice(const at::Tensor& tensor) {
+[[nodiscard]] inline bool IsCpuDevice(const at::Tensor& tensor) {
   return tensor.device().type() == c10::DeviceType::CPU;
 }
 
 // Unfortunately, the PyTorch dispatcher can call us by passing an optional
 // tensor containing a tensor that is not defined. This helper function can be
 // used to properly handle those scenarios.
-inline std::optional<at::Tensor> SanitizeOptionalTensor(
+[[nodiscard]] inline std::optional<at::Tensor> SanitizeOptionalTensor(
     std::optional<at::Tensor> t) {
   return t && t->defined() ? t : std::nullopt;
 }
@@ -239,7 +239,8 @@ struct HashableScalar {
 
 // at::Scalars also lack an == operator by default, so we need to define one
 // ourselves as well to support absl containers.
-bool operator==(const HashableScalar& lhs, const HashableScalar& rhs);
+[[nodiscard]] bool operator==(const HashableScalar& lhs,
+                              const HashableScalar& rhs);
 
 // Returns true if `scalar` can be cast to `scalar_type` without overflow,
 // or false if overflow would occur.

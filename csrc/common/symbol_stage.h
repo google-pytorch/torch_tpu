@@ -65,17 +65,20 @@ class SymbolStage {
                                    const SymbolStage& rhs) = default;
 
   // Factory methods.
-  static constexpr SymbolStage InternalImplementation() {
+  [[nodiscard]] static constexpr SymbolStage InternalImplementation() {
     return SymbolStage(Stage::kInternalImplementation);
   };
-  static constexpr SymbolStage InternalApi() {
+  [[nodiscard]] static constexpr SymbolStage InternalApi() {
     return SymbolStage(Stage::kInternalApi);
   };
-  static constexpr SymbolStage Experimental() {
+  [[nodiscard]] static constexpr SymbolStage Experimental() {
     return SymbolStage(Stage::kExperimental);
   };
-  static constexpr SymbolStage Stable() { return SymbolStage(Stage::kStable); };
-  static constexpr SymbolStage Deprecated(std::string_view version) {
+  [[nodiscard]] static constexpr SymbolStage Stable() {
+    return SymbolStage(Stage::kStable);
+  };
+  [[nodiscard]] static constexpr SymbolStage Deprecated(
+      std::string_view version) {
     return SymbolStage(Stage::kDeprecated, version);
   };
 

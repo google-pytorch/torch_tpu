@@ -173,14 +173,14 @@ class [[nodiscard]] StatusBuilder {
     ~Rep();
     void InitStream();
 
-    static std::unique_ptr<Rep> InitRep(const absl::Status& s) {
+    [[nodiscard]] static std::unique_ptr<Rep> InitRep(const absl::Status& s) {
       if (s.ok()) {
         return nullptr;
       }
       return std::make_unique<Rep>(s);
     }
 
-    static std::unique_ptr<Rep> InitRep(absl::Status&& s) {
+    [[nodiscard]] static std::unique_ptr<Rep> InitRep(absl::Status&& s) {
       if (s.ok()) {
         return nullptr;
       }

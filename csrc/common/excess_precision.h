@@ -36,7 +36,8 @@ void LockAllowExcessPrecision();
 [[nodiscard]] bool IsAllowExcessPrecisionLocked();
 
 // Returns the cached default `xla::ExecutableBuildOptions` instance.
-const xla::ExecutableBuildOptions& GetDefaultExecutableBuildOptions();
+[[nodiscard]] const xla::ExecutableBuildOptions&
+GetDefaultExecutableBuildOptions();
 
 }  // namespace torch_tpu
 

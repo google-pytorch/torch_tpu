@@ -39,8 +39,8 @@ struct BoundedDynamicDimension {
   int64_t lower_bound;
   int64_t upper_bound;
 
-  friend bool operator==(const BoundedDynamicDimension& lhs,
-                         const BoundedDynamicDimension& rhs) {
+  [[nodiscard]] friend bool operator==(const BoundedDynamicDimension& lhs,
+                                       const BoundedDynamicDimension& rhs) {
     return lhs.dimension == rhs.dimension &&
            lhs.lower_bound == rhs.lower_bound &&
            lhs.upper_bound == rhs.upper_bound;
@@ -60,30 +60,33 @@ class Shape {
         dtype_(dtype),
         dynamic_dimensions_(std::move(dynamic_dimensions)) {}
 
-  const Dimensions& dimensions() const { return dimensions_; }
-  Dimensions& dimensions() { return dimensions_; }
+  [[nodiscard]] const Dimensions& dimensions() const { return dimensions_; }
+  [[nodiscard]] Dimensions& dimensions() { return dimensions_; }
 
-  mlir::ElementType dtype() const { return dtype_; }
+  [[nodiscard]] mlir::ElementType dtype() const { return dtype_; }
 
-  bool on_device_shape_is_dynamic() const {
+  [[nodiscard]] bool on_device_shape_is_dynamic() const {
     return on_device_shape_is_dynamic_;
   }
   void set_on_device_shape_is_dynamic(bool on_device_shape_is_dynamic) {
     on_device_shape_is_dynamic_ = on_device_shape_is_dynamic;
   }
 
-  const absl::InlinedVector<BoundedDynamicDimension, 1>& dynamic_dimensions()
-      const {
+  [[nodiscard]] const absl::InlinedVector<BoundedDynamicDimension, 1>&
+  dynamic_dimensions() const {
     return dynamic_dimensions_;
   }
-  absl::InlinedVector<BoundedDynamicDimension, 1>& dynamic_dimensions() {
+  [[nodiscard]] absl::InlinedVector<BoundedDynamicDimension, 1>&
+  dynamic_dimensions() {
     return dynamic_dimensions_;
   }
 
-  const std::optional<CustomLayout>& layout() const { return layout_; }
+  [[nodiscard]] const std::optional<CustomLayout>& layout() const {
+    return layout_;
+  }
   void set_layout(CustomLayout layout) { layout_ = std::move(layout); }
 
-  friend bool operator==(const Shape& lhs, const Shape& rhs) {
+  [[nodiscard]] friend bool operator==(const Shape& lhs, const Shape& rhs) {
     return lhs.dtype_ == rhs.dtype_ && lhs.dimensions_ == rhs.dimensions_ &&
            lhs.on_device_shape_is_dynamic_ == rhs.on_device_shape_is_dynamic_ &&
            lhs.dynamic_dimensions_ == rhs.dynamic_dimensions_ &&
@@ -107,9 +110,9 @@ static_assert(sizeof(Shape) == 232);
 absl::StatusOr<Shape> MakeShape(const xla::Shape& xla_shape);
 
 // Converts a torch_tpu layout to an XLA layout.
-xla::Layout ToXlaLayout(const CustomLayout& layout);
+[[nodiscard]] xla::Layout ToXlaLayout(const CustomLayout& layout);
 
-std::string ToString(const Shape& s);
+[[nodiscard]] std::string ToString(const Shape& s);
 
 }  // namespace torch_tpu
 

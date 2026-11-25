@@ -65,19 +65,19 @@ class FixedSizeSpan : public absl::Span<T> {
 // 3. The `get` function to access the I-th element.
 // This must be in the same namespace as the Array class to be found by ADL.
 template <int I, typename T, int N>
-T& get(FixedSizeSpan<T, N>& span) {
+[[nodiscard]] T& get(FixedSizeSpan<T, N>& span) {
   static_assert(0 <= I && I < N, "Index out of bounds");
   return span[I];
 }
 
 template <int I, typename T, int N>
-const T& get(const FixedSizeSpan<T, N>& span) {
+[[nodiscard]] const T& get(const FixedSizeSpan<T, N>& span) {
   static_assert(0 <= I && I < N, "Index out of bounds");
   return span[I];
 }
 
 template <int I, typename T, int N>
-T&& get(FixedSizeSpan<T, N>&& span) {
+[[nodiscard]] T&& get(FixedSizeSpan<T, N>&& span) {
   static_assert(0 <= I && I < N, "Index out of bounds");
   return std::move(span[I]);
 }
@@ -85,8 +85,8 @@ T&& get(FixedSizeSpan<T, N>&& span) {
 namespace internal {
 
 template <typename T, int N, std::size_t... Is>
-std::array<T, N> MoveToStdArrayImpl(FixedSizeSpan<T, N> span,
-                                    std::index_sequence<Is...>) {
+[[nodiscard]] std::array<T, N> MoveToStdArrayImpl(FixedSizeSpan<T, N> span,
+                                                  std::index_sequence<Is...>) {
   return {std::move(span[Is])...};
 }
 

@@ -109,7 +109,7 @@ inline constexpr bool kDebugMode = true;
 #endif  // NDEBUG
 
 // Checks for whitespace at compile time.
-[[nodiscard]] inline constexpr bool IsWhitespace(char c) noexcept {
+[[nodiscard]] constexpr bool IsWhitespace(char c) noexcept {
   switch (c) {
     case ' ':
     case '\t':
@@ -124,14 +124,13 @@ inline constexpr bool kDebugMode = true;
 }
 
 // Checks for identifier characters at compile time.
-[[nodiscard]] inline constexpr bool IsIdentifierChar(char c) noexcept {
+[[nodiscard]] constexpr bool IsIdentifierChar(char c) noexcept {
   return ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') ||
          ('A' <= c && c <= 'Z') || c == '_';
 }
 
 // Checks if a string is a valid identifier.
-[[nodiscard]] inline constexpr bool IsValidIdentifier(
-    std::string_view s) noexcept {
+[[nodiscard]] constexpr bool IsValidIdentifier(std::string_view s) noexcept {
   if (s == "true" || s == "false") return false;
   if (s.empty()) return false;
   for (char c : s) {
@@ -143,7 +142,7 @@ inline constexpr bool kDebugMode = true;
 // Returns true if the string is a comma-separated list where each item is an
 // identifier name or "IgnoreInCacheKey(identifier, reason)". This must be
 // evaluated at compile time as we don't want to incur any runtime overhead.
-[[nodiscard]] inline consteval bool ArgsAreIdentifiers(
+[[nodiscard]] consteval bool ArgsAreIdentifiers(
     const std::string_view csv_string) noexcept {
   if (csv_string.empty()) return true;
 
@@ -225,7 +224,8 @@ inline constexpr bool kDebugMode = true;
 
 // Splits a comma-separated string into a vector of items, each trimmed of
 // whitespace.
-std::vector<std::string_view> ArgsAsStrings(std::string_view csv_string);
+[[nodiscard]] std::vector<std::string_view> ArgsAsStrings(
+    std::string_view csv_string);
 
 // Normalize `path`, if it's inside the build directory (e.g. starts with
 // "bazel-out/"), to be relative to whichever of the 2 is present in the path:
@@ -253,7 +253,7 @@ std::vector<std::string_view> ArgsAsStrings(std::string_view csv_string);
 // To make it easier for developers to find the file in different build
 // environments, we normalize the header location to be relative to the repo
 // root instead.
-const char* NormalizeIfInsideBuildDirectory(const char* path);
+[[nodiscard]] const char* NormalizeIfInsideBuildDirectory(const char* path);
 
 }  // namespace internal
 }  // namespace torch_tpu

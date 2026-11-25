@@ -47,7 +47,7 @@ class ThreadPool {
     pool_.Schedule([task = std::move(task)]() { (*task)(); });
   }
 
-  int NumThreads() const { return pool_.NumThreads(); }
+  [[nodiscard]] int NumThreads() const { return pool_.NumThreads(); }
 
  private:
   tsl::thread::ThreadPool pool_;

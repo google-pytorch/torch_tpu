@@ -87,8 +87,10 @@ class ContextManagerNode : public c10::DebugInfoBase {
   ContextManagerNode& operator=(ContextManagerNode&&) = delete;
 
   // Accessors.
-  const ContextManagerState& state() const { return state_; }
-  const ContextManagerNode* absl_nullable parent() const { return parent_; }
+  [[nodiscard]] const ContextManagerState& state() const { return state_; }
+  [[nodiscard]] const ContextManagerNode* absl_nullable parent() const {
+    return parent_;
+  }
 
  private:
   ContextManagerState state_;
@@ -99,7 +101,7 @@ class ContextManagerNode : public c10::DebugInfoBase {
 // thread's context. Returns nullopt if no context state of the given type
 // is found.
 template <typename T>
-std::optional<T> GetContextState() {
+[[nodiscard]] std::optional<T> GetContextState() {
   // Statically check that T is one of the options for ContextManagerState.
   static_assert(
       internal::is_alternative_v<T, ContextManagerState>,
@@ -130,7 +132,7 @@ std::optional<T> GetContextState() {
 // thread's context. Returns get_default_value() if no context state of the
 // given type is found.
 template <typename T, typename GetDefaultStateT>
-T GetContextState(GetDefaultStateT get_default_state) {
+[[nodiscard]] T GetContextState(GetDefaultStateT get_default_state) {
   auto maybe_state = GetContextState<T>();
   return maybe_state.has_value() ? std::move(maybe_state).value()
                                  : get_default_state();
