@@ -208,9 +208,7 @@ class GetPerFileCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
     [coverage] = error_coverage_lib.get_per_file_coverage(file_to_locs, covered)
 
     self.assertEqual(coverage.cpp_file, "csrc/foo.cc")
-    self.assertEqual(
-        coverage.to_dict(), {"infeasible": 1, "remaining": 1, "total": 3}
-    )
+    self.assertEqual(coverage.to_dict(), {"infeasible": 1, "total": 3})
 
 
 class RunCovTestsTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
@@ -306,15 +304,15 @@ class CoverageDataTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
 
   def test_load_reads_the_stats_of_each_file(self):
     path = self._write(
-        "csrc/a.cc: {remaining: 1, total: 2, infeasible: 0}\n"
-        "csrc/b.cc: {remaining: 0, total: 1, infeasible: 1}\n"
+        "csrc/a.cc: {total: 2, infeasible: 0}\n"
+        "csrc/b.cc: {total: 1, infeasible: 1}\n"
     )
 
     self.assertEqual(
         error_coverage_lib.load_coverage_data(path),
         {
-            "csrc/a.cc": {"infeasible": 0, "remaining": 1, "total": 2},
-            "csrc/b.cc": {"infeasible": 1, "remaining": 0, "total": 1},
+            "csrc/a.cc": {"infeasible": 0, "total": 2},
+            "csrc/b.cc": {"infeasible": 1, "total": 1},
         },
     )
 
@@ -335,7 +333,7 @@ class CoverageDataTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
       error_coverage_lib.load_coverage_data(path)
 
   def test_format_file_adds_the_license_header(self):
-    data = {"csrc/a.cc": {"infeasible": 0, "remaining": 3, "total": 4}}
+    data = {"csrc/a.cc": {"infeasible": 0, "total": 4}}
 
     content = error_coverage_lib.format_coverage_data_file(data)
 
@@ -346,7 +344,7 @@ class CoverageDataTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
     )
 
   def test_formatted_file_round_trips_through_load(self):
-    data = {"csrc/a.cc": {"infeasible": 0, "remaining": 3, "total": 4}}
+    data = {"csrc/a.cc": {"infeasible": 0, "total": 4}}
     path = self._write(error_coverage_lib.format_coverage_data_file(data))
 
     self.assertEqual(error_coverage_lib.load_coverage_data(path), data)
@@ -354,11 +352,11 @@ class CoverageDataTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
   def test_dump_writes_one_sorted_line_per_file(self):
     self.assertEqual(
         error_coverage_lib.dump_coverage_data({
-            "csrc/b.cc": {"total": 2, "remaining": 1, "infeasible": 0},
-            "csrc/a.cc": {"total": 1, "remaining": 0, "infeasible": 1},
+            "csrc/b.cc": {"total": 2, "infeasible": 0},
+            "csrc/a.cc": {"total": 1, "infeasible": 1},
         }),
-        "csrc/a.cc: {remaining: 0, total: 1, infeasible: 1}\n"
-        "csrc/b.cc: {remaining: 1, total: 2, infeasible: 0}\n",
+        "csrc/a.cc: {total: 1, infeasible: 1}\n"
+        "csrc/b.cc: {total: 2, infeasible: 0}\n",
     )
 
 
@@ -376,16 +374,16 @@ def _coverage(
   )
 
 
-def _stats(infeasible: int, remaining: int, total: int) -> Mapping[str, int]:
-  return {"infeasible": infeasible, "remaining": remaining, "total": total}
+def _stats(infeasible: int, total: int) -> Mapping[str, int]:
+  return {"infeasible": infeasible, "total": total}
 
 
 class CheckCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
 
   def test_passes_when_the_baseline_matches(self):
     result = error_coverage_lib.check_coverage(
-        {"csrc/a.cc": _stats(infeasible=1, remaining=1, total=3)},
-        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1], infeasible=[3])],
+        {"csrc/a.cc": _stats(infeasible=1, total=3)},
+        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1, 2], infeasible=[3])],
     )
 
     self.assertEqual(result.regressions, [])
@@ -393,17 +391,18 @@ class CheckCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
     self.assertEqual(result.infeasible_but_covered, [])
     self.assertEqual(result.warnings, [])
 
-  def test_reports_a_regression_with_the_before_and_after_counts(self):
+  def test_reports_a_regression_when_macros_are_uncovered(self):
     result = error_coverage_lib.check_coverage(
-        {"csrc/a.cc": _stats(infeasible=0, remaining=1, total=3)},
+        {"csrc/a.cc": _stats(infeasible=0, total=3)},
         [_coverage("csrc/a.cc", [1, 2, 3], covered=[1])],
     )
 
     [regression] = result.regressions
     self.assertIn("csrc/a.cc has an error coverage regression", regression)
-    self.assertIn("Before, 1 such macros", regression)
-    self.assertIn("2 such macros in the file are uncovered", regression)
+    self.assertIn("2 error macros in the file are uncovered", regression)
     self.assertIn("csrc/a.cc:2: TO BE COVERED", regression)
+    self.assertIn("csrc/a.cc:3: TO BE COVERED", regression)
+    self.assertIn("Make sure all 2 of them are covered", regression)
     self.assertEqual(result.outdated, [])
 
   def test_reports_uncovered_macros_in_a_file_missing_from_the_baseline(self):
@@ -417,26 +416,11 @@ class CheckCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
     self.assertIn("csrc/new.cc:9: TO BE COVERED", regression)
     self.assertEqual(result.outdated, [])
 
-  def test_reports_an_outdated_baseline_when_coverage_improved(self):
-    result = error_coverage_lib.check_coverage(
-        {"csrc/a.cc": _stats(infeasible=0, remaining=3, total=3)},
-        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1, 2])],
-    )
-
-    self.assertEqual(result.regressions, [])
-    [outdated] = result.outdated
-    self.assertIn("csrc/a.cc", outdated)
-    self.assertIn("expects 3 uncovered error macros", outdated)
-    self.assertIn("only 1", outdated)
-    self.assertIn("Lower its `remaining` from 3 to 1", outdated)
-
   def test_reports_an_outdated_entry_for_a_gone_file(self):
     result = error_coverage_lib.check_coverage(
         {
-            "csrc/gone.cc": _stats(infeasible=0, remaining=2, total=4),
-            "csrc/gone_and_covered.cc": _stats(
-                infeasible=1, remaining=0, total=4
-            ),
+            "csrc/gone.cc": _stats(infeasible=0, total=4),
+            "csrc/gone_and_covered.cc": _stats(infeasible=1, total=4),
         },
         [],
     )
@@ -458,7 +442,7 @@ class CheckCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
     actual = error_coverage_lib.get_per_file_coverage(file_to_locs, set())
 
     result = error_coverage_lib.check_coverage(
-        {"csrc/a.cc": _stats(infeasible=0, remaining=0, total=1)}, actual
+        {"csrc/a.cc": _stats(infeasible=0, total=1)}, actual
     )
 
     [outdated] = result.outdated
@@ -467,7 +451,7 @@ class CheckCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
 
   def test_reports_infeasible_macros_that_are_covered(self):
     result = error_coverage_lib.check_coverage(
-        {"csrc/a.cc": _stats(infeasible=2, remaining=0, total=3)},
+        {"csrc/a.cc": _stats(infeasible=2, total=3)},
         [_coverage("csrc/a.cc", [1, 2, 3], covered=[1, 2], infeasible=[2, 3])],
     )
 
@@ -489,8 +473,8 @@ class CheckCoverageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
 
   def test_only_warns_about_total_and_infeasible_drift(self):
     result = error_coverage_lib.check_coverage(
-        {"csrc/a.cc": _stats(infeasible=2, remaining=1, total=9)},
-        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1], infeasible=[3])],
+        {"csrc/a.cc": _stats(infeasible=2, total=9)},
+        [_coverage("csrc/a.cc", [1, 2, 3], covered=[1, 2], infeasible=[3])],
     )
 
     self.assertEqual(result.regressions, [])
@@ -535,6 +519,7 @@ class FailureMessageTest(absltest.TestCase):  # ABSLTEST_OK=No RNG used.
     self.assertIn("REGRESSION IN csrc/a.cc", message)
     self.assertIn("tests/errors_test.py", message)
     self.assertIn("ERROR_COV_INFEASIBLE", message)
+    self.assertNotIn(error_coverage_lib.COVERAGE_DATA_PATH, message)
 
   def test_explains_infeasible_macros_that_are_covered(self):
     result = self._result(infeasible_but_covered=["csrc/a.cc:2"])

@@ -572,24 +572,33 @@ std::optional<std::string> ValidateDimensionalityFormat(
   return std::nullopt;
 }
 
-// Validates that the XLA compiler error sentinel is preceded
-// by a non-empty context and has no surrounding spaces.
+// External error sentinels whose trailing messages are not under TorchTPU's
+// control and are skipped by the error format checker.
+constexpr std::array<std::string_view, 2> kExternalErrorSentinels = {
+    kXlaCompilerFailedWith,
+    kJaxFailedWith,
+};
+
+// Validates that an external error sentinel is preceded by a non-empty context
+// and has no surrounding spaces.
 //
-// Pre-condition: The error message must contain the sentinel.
-std::optional<std::string> ValidateXlaSentinelFormat(
-    const std::string_view message) {
-  const size_t sentinel_start = message.find(kXlaCompilerFailedWith);
+// Pre-condition: The error message must contain `sentinel`.
+std::optional<std::string> ValidateExternalSentinelFormat(
+    const std::string_view message, const std::string_view sentinel) {
+  const size_t sentinel_start = message.find(sentinel);
   ABSL_CHECK(  // CRASH_OK
       sentinel_start != std::string_view::npos)
       << kErrorMessageCheckPreconditionViolated;
 
   const std::string_view context = message.substr(0, sentinel_start);
-  const size_t sentinel_end = sentinel_start + kXlaCompilerFailedWith.size();
-  const std::string_view xla_error = message.substr(sentinel_end);
+  const size_t sentinel_end = sentinel_start + sentinel.size();
+  const std::string_view external_error = message.substr(sentinel_end);
 
   if (absl::StripAsciiWhitespace(context).empty()) {
-    return "The TorchTPU context must not be empty when using the XLA error "
-           "sentinel string. Make sure to add a context string before.";
+    return absl::StrCat(
+        "The TorchTPU context must not be empty when using the external error "
+        "sentinel \"",
+        sentinel, "\". Make sure to add a context string before.");
   }
 
   // We already know that `context` contains at least one non-space character
@@ -598,17 +607,15 @@ std::optional<std::string> ValidateXlaSentinelFormat(
   const size_t leading_spaces_count = context.size() - leading_spaces_start;
   if (leading_spaces_count != 0) {
     return absl::StrCat(
-        "Expected no spaces before the XLA compiler error sentinel \"",
-        kXlaCompilerFailedWith, "\" (it already begins with one), got ",
-        leading_spaces_count, ".");
+        "Expected no spaces before the external error sentinel \"", sentinel,
+        "\" (it already begins with one), got ", leading_spaces_count, ".");
   }
 
-  const size_t trailing_spaces_count = xla_error.find_first_not_of(' ');
+  const size_t trailing_spaces_count = external_error.find_first_not_of(' ');
   if (trailing_spaces_count != 0) {
     return absl::StrCat(
-        "Expected no spaces after the XLA compiler error sentinel \"",
-        kXlaCompilerFailedWith, "\" (it already ends with one), got ",
-        trailing_spaces_count, ".");
+        "Expected no spaces after the external error sentinel \"", sentinel,
+        "\" (it already ends with one), got ", trailing_spaces_count, ".");
   }
 
   return std::nullopt;
@@ -669,14 +676,22 @@ struct ContextPrefixSplit {
   return SplitAfterContextPrefixes(message).remaining;
 }
 
-// Strips the XLA compiler error sentinel and anything after it.
+// Strips the earliest external error sentinel and anything after it.
 //
-// Returns the substring before `kXlaCompilerFailedWith`, or the original
-// message if the sentinel is not present.
-[[nodiscard]] std::string_view RemoveXlaCompilerError(
+// Returns the substring before the earliest sentinel, or the original message
+// if no sentinel is present.
+[[nodiscard]] std::string_view RemoveExternalError(
     const std::string_view message) {
-  const size_t pos = message.find(kXlaCompilerFailedWith);
-  return pos != std::string_view::npos ? message.substr(0, pos) : message;
+  size_t earliest_pos = std::string_view::npos;
+  for (const std::string_view sentinel : kExternalErrorSentinels) {
+    const size_t pos = message.find(sentinel);
+    if (pos != std::string_view::npos && pos < earliest_pos) {
+      earliest_pos = pos;
+    }
+  }
+  return earliest_pos != std::string_view::npos
+             ? message.substr(0, earliest_pos)
+             : message;
 }
 
 // Checks that error messages follow the TorchTPU error handling guidelines
@@ -721,14 +736,16 @@ class ErrorFormatChecker {
     std::string_view to_check = message;
     context_ = kFullMessageContext;
 
-    // Does this message contain an XLA compiler error?
-    const bool has_xla_error =
-        absl::StrContains(to_check, kXlaCompilerFailedWith);
-    if (has_xla_error) {
-      // Yes. First check that the XLA error sentinel is formatted correctly.
-      AppendIfViolation(ValidateXlaSentinelFormat(to_check));
-      // Remove the XLA compiler error.
-      to_check = RemoveXlaCompilerError(to_check);
+    // Does this message contain an external (XLA/JAX) error sentinel?
+    bool has_external_error = false;
+    for (const std::string_view sentinel : kExternalErrorSentinels) {
+      if (absl::StrContains(to_check, sentinel)) {
+        has_external_error = true;
+        AppendIfViolation(ValidateExternalSentinelFormat(to_check, sentinel));
+      }
+    }
+    if (has_external_error) {
+      to_check = RemoveExternalError(to_check);
       context_ = kNoXlaErrorContext;
     }
 
@@ -761,8 +778,8 @@ class ErrorFormatChecker {
         RemoveAllContextPrefixes(to_check);
     if (no_context_prefixes != to_check) {
       to_check = no_context_prefixes;
-      context_ = has_xla_error ? kNoContextPrefixAndXlaErrorContext
-                               : kNoContextPrefixContext;
+      context_ = has_external_error ? kNoContextPrefixAndXlaErrorContext
+                                    : kNoContextPrefixContext;
     }
 
     CheckCoreMessage(to_check);
@@ -803,8 +820,10 @@ class ErrorFormatChecker {
   // This function applies TorchTPU error guidelines on the core error message,
   // after removing external errors and context prefixes.
   void CheckCoreMessage(const std::string_view message) {
-    ABSL_CHECK(!absl::StrContains(message, kXlaCompilerFailedWith))  // CRASH_OK
-        << kErrorMessageCheckPreconditionViolated;
+    for (const std::string_view sentinel : kExternalErrorSentinels) {
+      ABSL_CHECK(!absl::StrContains(message, sentinel))  // CRASH_OK
+          << kErrorMessageCheckPreconditionViolated;
+    }
     ABSL_CHECK(!StartsWithContextPrefix(message))  // CRASH_OK
         << kErrorMessageCheckPreconditionViolated;
     CheckWhitespaceFormat(message);
@@ -1055,14 +1074,28 @@ absl::Status TranslateXlaTensorOomError(absl::Status status,
   return status;
 }
 
-absl::Status WrapXlaError(const absl::Status& status,
-                          const std::string_view context) {
+namespace {
+
+absl::Status WrapExternalError(const absl::Status& status,
+                               const std::string_view context,
+                               const std::string_view sentinel) {
   if (status.ok()) {
     return status;
   }
 
-  return StatusBuilder(status).SetPrepend()
-         << context << kXlaCompilerFailedWith;
+  return StatusBuilder(status).SetPrepend() << context << sentinel;
+}
+
+}  // namespace
+
+absl::Status WrapXlaError(const absl::Status& status,
+                          const std::string_view context) {
+  return WrapExternalError(status, context, kXlaCompilerFailedWith);
+}
+
+absl::Status WrapJaxError(const absl::Status& status,
+                          const std::string_view context) {
+  return WrapExternalError(status, context, kJaxFailedWith);
 }
 
 namespace {

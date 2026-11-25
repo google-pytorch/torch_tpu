@@ -384,14 +384,10 @@ class ProcessGroupTpu : public c10d::Backend {
   // actively participate and specify matching tags for the transfer to
   // complete.
   c10::intrusive_ptr<c10d::Work> send(std::vector<at::Tensor>& tensors,
-                                      int dstRank, int tag) override {
-    return experimental_send(tensors, dstRank, tag);
-  }
+                                      int dstRank, int tag) override;
 
   c10::intrusive_ptr<c10d::Work> recv(std::vector<at::Tensor>& tensors,
-                                      int srcRank, int tag) override {
-    return experimental_recv(tensors, srcRank, tag);
-  }
+                                      int srcRank, int tag) override;
 
   // TODO(cbasile): Drop experimental_send in the future and merge its
   // functionality directly into the ProcessGroup send method.
@@ -418,6 +414,12 @@ class ProcessGroupTpu : public c10d::Backend {
 #endif
 
  private:
+  void Init(int rank, int group_size);
+  c10::intrusive_ptr<c10d::Work> ExperimentalSendImpl(
+      std::vector<at::Tensor>& tensors, int dst_rank, int tag);
+  c10::intrusive_ptr<c10d::Work> ExperimentalRecvImpl(
+      std::vector<at::Tensor>& tensors, int src_rank, int tag);
+
   // Helper to reduce logging boilerplate. Must use only from implementation
   // methods of collective ops, so we know everything here is initialized.
   std::string OpDebugString(std::string_view method) {

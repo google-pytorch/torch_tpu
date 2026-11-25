@@ -29,6 +29,7 @@
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
 #include "c10/util/UniqueVoidPtr.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/warnings.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -42,13 +43,28 @@ namespace {
 class TpuPinnedAllocator final : public at::HostAllocator {
  public:
   c10::DataPtr allocate(size_t nbytes) override {
+    return RunWithApiErrorHandling(
+        "allocate", &TpuPinnedAllocator::AllocateImpl, this, nbytes);
+  }
+
+  void copy_data(void* dest, const void* src,
+                 std::size_t count) const override {
+    default_copy_data(dest, src, count);
+  }
+
+  c10::DeleterFnPtr raw_deleter() const override {
+    return &DeleteTpuPinnedBufferStatic;
+  }
+
+ private:
+  c10::DataPtr AllocateImpl(size_t nbytes) {
     if (nbytes == 0) {
       return {nullptr, nullptr, &DeleteTpuPinnedBufferStatic,
               c10::Device(c10::DeviceType::CPU)};
     }
     TT_ASSIGN_OR_THROW(xla::HostMemoryAllocator * host_allocator,
                        PjrtBackend::GetInstance().GetHostAllocator(),
-                       _ << "Failed to get PJRT host allocator");
+                       _ << "failed to get PJRT host allocator");
     xla::HostMemoryAllocator::OwnedPtr data = host_allocator->Allocate(nbytes);
     TT_CHECK_THROW(data != nullptr, error::kResourceExhausted)
         << "failed to allocate " << nbytes << " bytes of pinned host memory";
@@ -65,15 +81,7 @@ class TpuPinnedAllocator final : public at::HostAllocator {
             c10::Device(c10::DeviceType::CPU)};
   }
 
-  void copy_data(void* dest, const void* src,
-                 std::size_t count) const override {
-    default_copy_data(dest, src, count);
-  }
-
-  c10::DeleterFnPtr raw_deleter() const override {
-    return &DeleteTpuPinnedBufferStatic;
-  }
-
+ public:
   bool record_event(void* ptr, void* ctx, c10::Stream stream) override {
     // TPU does not yet support asynchronous stream-based events for pinned
     // memory in the same way CUDA does. Returning false indicates that

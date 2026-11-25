@@ -96,26 +96,13 @@ absl::Status StatusBuilder::JoinMessageToStatus(absl::Status s,
                                             : std::string(msg);
   absl::Status new_status(s.code(), new_msg);
 
-  if (CppStackTracesEnabled()) {
-    // Preserve the C++ context in the original Status if any.
-    auto old_context = s.GetPayload(internal::kCppErrorTraceUrl);
-    if (old_context.has_value()) {
-      new_status.SetPayload(internal::kCppErrorTraceUrl,
-                            std::move(old_context).value());
+  s.ForEachPayload([&new_status](std::string_view type_url,
+                                 const absl::Cord& payload) {
+    if (type_url == internal::kCppErrorTraceUrl && !CppStackTracesEnabled()) {
+      return;
     }
-  }
-
-  // Preserve the root op name in the original Status if any.
-  auto old_root_op_name = s.GetPayload(internal::kRootOpNameUrl);
-  if (old_root_op_name.has_value()) {
-    new_status.SetPayload(internal::kRootOpNameUrl,
-                          std::move(old_root_op_name).value());
-  }
-
-  // Preserve the "is user message" state in the original Status if any.
-  if (internal::IsUserMessage(s)) {
-    new_status.SetPayload(internal::kIsUserMessageUrl, absl::Cord());
-  }
+    new_status.SetPayload(type_url, payload);
+  });
 
   return new_status;
 }

@@ -109,7 +109,9 @@ class TpuProfilerSession {
 
 absl::Status TpuProfilerServer::Start(int port) ABSL_LOCKS_EXCLUDED(mutex_) {
   absl::MutexLock lock(mutex_);
-  TT_RET_CHECK(server_ == nullptr, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by profiler_backend_test.py;
+                 // _impl.py guards public usage.
+      server_ == nullptr, error::kFailedPrecondition)
       << "the profiler server has already been started";
   server_ = std::make_unique<tsl::profiler::ProfilerServer>();
   server_->StartProfilerServer(port);
@@ -118,7 +120,9 @@ absl::Status TpuProfilerServer::Start(int port) ABSL_LOCKS_EXCLUDED(mutex_) {
 
 absl::Status TpuProfilerServer::Stop() ABSL_LOCKS_EXCLUDED(mutex_) {
   absl::MutexLock lock(mutex_);
-  TT_RET_CHECK(server_ != nullptr, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by profiler_backend_test.py;
+                 // _impl.py guards public usage.
+      server_ != nullptr, error::kFailedPrecondition)
       << "the profiler server has not been started or has already been "
          "stopped";
   server_.reset();
@@ -128,7 +132,9 @@ absl::Status TpuProfilerServer::Stop() ABSL_LOCKS_EXCLUDED(mutex_) {
 absl::Status TpuProfilerSession::Start(const std::string& logdir,
                                        py::object options_obj) {
   absl::MutexLock lock(mutex_);
-  TT_RET_CHECK(session_ == nullptr, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by profiler_backend_test.py;
+                 // _impl.py guards public usage.
+      session_ == nullptr, error::kFailedPrecondition)
       << "the profiler session has already been started";
 
   tensorflow::ProfileOptions opts = tsl::ProfilerSession::DefaultOptions();
@@ -163,7 +169,9 @@ absl::Status TpuProfilerSession::Start(const std::string& logdir,
 
 absl::Status TpuProfilerSession::Stop(const std::string& filename) {
   absl::MutexLock lock(mutex_);
-  TT_RET_CHECK(session_ != nullptr, error::kFailedPrecondition)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by profiler_backend_test.py;
+                 // _impl.py guards public usage.
+      session_ != nullptr, error::kFailedPrecondition)
       << "the profiler session has not been started or has already been "
          "stopped";
 
@@ -197,7 +205,9 @@ absl::Status TpuProfilerSession::Stop(const std::string& filename) {
 
   // Serialize the collected XSpace data to a string.
   std::string serialized_proto;
-  TT_RET_CHECK(xspace.SerializeToString(&serialized_proto), error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=proto3 XSpace serialization cannot fail
+                 // on in-memory data.
+      xspace.SerializeToString(&serialized_proto), error::kInternal)
       << "failed to serialize profile data";
   ABSL_LOG(INFO) << "Writing " << serialized_proto.size() << " bytes to "
                  << filename;

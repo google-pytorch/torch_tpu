@@ -133,6 +133,10 @@ inline constexpr absl::StatusCode kPythonRuntimeError =
 inline constexpr std::string_view kXlaCompilerFailedWith =
     " -- the XLA compiler failed with: ";
 
+// Sentinel string used to separate the TorchTPU error message from the
+// external JAX error message.
+inline constexpr std::string_view kJaxFailedWith = " -- JAX failed with: ";
+
 // Returns true if debug checks are enabled via the
 // TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable. This function is
 // memorized, so calling it is cheap and will always return the same value even
@@ -216,6 +220,26 @@ absl::StatusOr<T> WrapXlaError(absl::StatusOr<T> status_or,
     return status_or;
   }
   return WrapXlaError(std::move(status_or).status(), context);
+}
+
+// Attaches a TorchTPU context to an error from JAX.
+//
+// If `status` is OK, returns it unchanged.
+//
+// If `status` contains an error, returns a new status with the message
+// `context` + `kJaxFailedWith` + the original message, preserving the original
+// status code and any payloads (metadata). The original message is passed
+// through verbatim (not reformatted to TorchTPU guidelines): the sentinel marks
+// where it begins, and the error format checks skip everything after it.
+absl::Status WrapJaxError(const absl::Status& status, std::string_view context);
+
+template <typename T>
+absl::StatusOr<T> WrapJaxError(absl::StatusOr<T> status_or,
+                               const std::string_view context) {
+  if (status_or.ok()) {
+    return status_or;
+  }
+  return WrapJaxError(std::move(status_or).status(), context);
 }
 
 // Rewrites a VFIO device-collision error into an actionable message instructing

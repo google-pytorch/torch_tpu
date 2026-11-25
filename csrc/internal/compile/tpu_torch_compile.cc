@@ -378,7 +378,8 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
   std::optional<SmallInt64Vector> unpacked_shape;
   if (dtype == at::kFloat4_e2m1fn_x2) {
     TT_CHECK_THROW(!shape.empty(), error::kInvalidArgument)
-        << "tensors of float4_e2m1fn_x2 dtype must be at least 1D";
+        << "expected tensors of float4_e2m1fn_x2 dtype to have at least 1 "
+           "dimension, got 0";
     unpacked_shape = CopyIntVector(shape);
     unpacked_shape->back() *= 2;
     xla_shape = *unpacked_shape;
@@ -487,7 +488,9 @@ std::shared_ptr<ContextedModule> PyBuildMlir(
   mlir::BaseScopedDiagnosticHandler diag_handler(&module.context());
   if (failed(mlir::verify(module.get()))) {
     TT_THROW_IF_ERROR(
-        TT_ERROR(error::kInternal)
+        TT_ERROR(  // ERROR_COV_INFEASIBLE=BuildMlirModule produces valid MLIR
+                   // or returns an error earlier.
+            error::kInternal)
         << "MLIR module is invalid:\n"
         << diag_handler.ConsumeStatus().message() << "\n"
         << DebugString(module.get(), DebugStringOptions::kEnableDebugInfo));
@@ -514,7 +517,9 @@ std::shared_ptr<ContextedModule> PyParseMlirText(const std::string& mlir_text) {
 
   if (failed(mlir::verify(module.get()))) {
     TT_THROW_IF_ERROR(
-        TT_ERROR(error::kInternal)
+        TT_ERROR(  // ERROR_COV_INFEASIBLE=mlir::parseSourceString already
+                   // verifies the module during parsing.
+            error::kInternal)
         << "MLIR module is invalid.\n"
         << DebugString(module.get(), DebugStringOptions::kEnableDebugInfo));
   }
@@ -978,7 +983,7 @@ absl::StatusOr<CompileResult> CompileModuleWithCache(
   // builder.
   if (build_mlir_module || is_caching_disabled) {
     TT_ASSIGN_OR_RETURN(contexted_module, ContextedModule::Make(builder),
-                        _ << "failed to build MLIR module");
+                        _.SetPrepend() << "failed to build MLIR module: ");
   }
 
   if (is_caching_disabled) {
@@ -1168,7 +1173,7 @@ CompileResult PyGetDynamicPadModule(
   std::optional<ContextedModule> contexted_module;
 
   TT_ASSIGN_OR_THROW(contexted_module, ContextedModule::Make(pad_builder),
-                     _ << "failed to build MLIR module");
+                     _.SetPrepend() << "failed to build MLIR module: ");
 
   TT_ASSIGN_OR_THROW(
       SharedLoadedExecutableWithMetadata executable,
@@ -1388,9 +1393,9 @@ at::Tensor ForceStrides(const at::Tensor& tensor,
                         const Dimensions& target_strides,
                         int64_t target_storage_offset) {
   TT_CHECK_THROW(tensor.dim() == target_strides.size(), error::kInvalidArgument)
-      << "target strides must have the same number of dimensions "
-      << "as the tensor, got " << tensor.ndimension() << " and "
-      << target_strides.size();
+      << "expected target strides to have the same number of dimensions as "
+      << "the tensor, got " << target_strides.size() << " vs "
+      << tensor.ndimension();
   TT_CHECK_THROW(target_storage_offset >= 0, error::kInvalidArgument)
       << "expected target_storage_offset to be >= 0, got "
       << target_storage_offset;
