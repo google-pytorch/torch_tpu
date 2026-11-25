@@ -53,10 +53,10 @@ class AsyncCopyDescriptor {
   // Waits until writing to `dst_ref` has completed (`tpu.wait_dma`).
   void Wait() const;
 
-  const Ref& src_ref() const { return src_ref_; }
-  const Ref& dst_ref() const { return dst_ref_; }
-  const Semaphore& sem() const { return sem_; }
-  const AsyncCopyOptions& options() const { return options_; }
+  [[nodiscard]] const Ref& src_ref() const { return src_ref_; }
+  [[nodiscard]] const Ref& dst_ref() const { return dst_ref_; }
+  [[nodiscard]] const Semaphore& sem() const { return sem_; }
+  [[nodiscard]] const AsyncCopyOptions& options() const { return options_; }
 
  private:
   Ref src_ref_;
@@ -86,12 +86,16 @@ class AsyncRemoteCopyDescriptor {
   // Waits until receiving into `dst_ref` has completed (`wait_target = true`).
   void WaitRecv() const;
 
-  const Ref& src_ref() const { return src_ref_; }
-  const Ref& dst_ref() const { return dst_ref_; }
-  const Semaphore& send_sem() const { return send_sem_; }
-  const Semaphore& recv_sem() const { return recv_sem_; }
-  const std::optional<Scalar>& device_id() const { return device_id_; }
-  const std::optional<Scalar>& core_id() const { return core_id_; }
+  [[nodiscard]] const Ref& src_ref() const { return src_ref_; }
+  [[nodiscard]] const Ref& dst_ref() const { return dst_ref_; }
+  [[nodiscard]] const Semaphore& send_sem() const { return send_sem_; }
+  [[nodiscard]] const Semaphore& recv_sem() const { return recv_sem_; }
+  [[nodiscard]] const std::optional<Scalar>& device_id() const {
+    return device_id_;
+  }
+  [[nodiscard]] const std::optional<Scalar>& core_id() const {
+    return core_id_;
+  }
 
  private:
   Ref src_ref_;
@@ -104,13 +108,15 @@ class AsyncRemoteCopyDescriptor {
 
 // Creates a descriptor for an asynchronous DMA copy without starting it
 // (Pallas `pltpu.make_async_copy`).
-AsyncCopyDescriptor MakeAsyncCopy(Ref src_ref, Ref dst_ref, Semaphore sem,
-                                  AsyncCopyOptions options = {});
+[[nodiscard]] AsyncCopyDescriptor MakeAsyncCopy(Ref src_ref, Ref dst_ref,
+                                                Semaphore sem,
+                                                AsyncCopyOptions options = {});
 
 // Creates and immediately starts an asynchronous DMA copy from `src_ref` to
 // `dst_ref` (Pallas `pltpu.async_copy`).
-AsyncCopyDescriptor AsyncCopy(Ref src_ref, Ref dst_ref, Semaphore sem,
-                              AsyncCopyOptions options = {});
+[[nodiscard]] AsyncCopyDescriptor AsyncCopy(Ref src_ref, Ref dst_ref,
+                                            Semaphore sem,
+                                            AsyncCopyOptions options = {});
 
 // Copies `src_ref` to `dst_ref` and waits for completion, using a DMA semaphore
 // scoped to the copy (Pallas `pltpu.sync_copy`). Both refs are safe to reuse
@@ -119,20 +125,18 @@ void SyncCopy(Ref src_ref, Ref dst_ref);
 
 // Creates a descriptor for a remote asynchronous DMA copy without starting it
 // (Pallas `pltpu.make_async_remote_copy`).
-AsyncRemoteCopyDescriptor MakeAsyncRemoteCopy(Ref src_ref, Ref dst_ref,
-                                              Semaphore send_sem,
-                                              Semaphore recv_sem,
-                                              AsyncRemoteCopyOptions options);
+[[nodiscard]] AsyncRemoteCopyDescriptor MakeAsyncRemoteCopy(
+    Ref src_ref, Ref dst_ref, Semaphore send_sem, Semaphore recv_sem,
+    AsyncRemoteCopyOptions options);
 
 // Creates and immediately starts a remote asynchronous DMA copy
 // (Pallas `pltpu.async_remote_copy`).
-AsyncRemoteCopyDescriptor AsyncRemoteCopy(Ref src_ref, Ref dst_ref,
-                                          Semaphore send_sem,
-                                          Semaphore recv_sem,
-                                          AsyncRemoteCopyOptions options);
+[[nodiscard]] AsyncRemoteCopyDescriptor AsyncRemoteCopy(
+    Ref src_ref, Ref dst_ref, Semaphore send_sem, Semaphore recv_sem,
+    AsyncRemoteCopyOptions options);
 
 // Queries the runtime device ID as an i32 Scalar (`tpu.device_id`).
-Scalar DeviceId();
+[[nodiscard]] Scalar DeviceId();
 
 }  // namespace torch_tpu::kiln
 

@@ -54,17 +54,17 @@ class Shape {
   llvm::ArrayRef<int64_t> dims() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
     return dims_;
   }
-  DType dtype() const { return dtype_; }
-  int64_t rank() const { return dims_.size(); }
+  [[nodiscard]] DType dtype() const { return dtype_; }
+  [[nodiscard]] int64_t rank() const { return dims_.size(); }
 
-  friend bool operator==(const Shape& lhs, const Shape& rhs) {
+  [[nodiscard]] friend bool operator==(const Shape& lhs, const Shape& rhs) {
     return lhs.dims_ == rhs.dims_ && lhs.dtype_ == rhs.dtype_;
   }
-  friend bool operator!=(const Shape& lhs, const Shape& rhs) {
+  [[nodiscard]] friend bool operator!=(const Shape& lhs, const Shape& rhs) {
     return !(lhs == rhs);
   }
 
-  std::string ToString() const {
+  [[nodiscard]] std::string ToString() const {
     return absl::StrCat(dtype_, "[",
                         absl::StrJoin(dims_, ", ",
                                       [](std::string* out, int64_t dim) {

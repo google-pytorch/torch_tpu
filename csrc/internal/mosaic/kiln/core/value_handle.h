@@ -31,7 +31,7 @@ class ValueHandle {
  public:
   // Defined out of line; see the `mlir::Value` forward declaration above.
   explicit ValueHandle(mlir::Value value);
-  mlir::Value value() const;
+  [[nodiscard]] mlir::Value value() const;
 
  private:
   // Opaque pointer of the held `mlir::Value`.

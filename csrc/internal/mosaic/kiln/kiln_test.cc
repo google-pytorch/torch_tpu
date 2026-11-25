@@ -1186,26 +1186,31 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
         Scalar s_i = I32(1);
         Scalar s_u = U32(1);
         Scalar s_f = F32(1.0);
-        EXPECT_DEATH(s_i + s_f, "\\+ requires operands of the same dtype");
-        EXPECT_DEATH(s_i + s_u, "\\+ requires operands of the same dtype");
-        EXPECT_DEATH(!s_i, "! requires a bool operand");
+        EXPECT_DEATH((void)(s_i + s_f),  // VOID_CAST_OK=expects a crash
+                     "\\+ requires operands of the same dtype");
+        EXPECT_DEATH((void)(s_i + s_u),  // VOID_CAST_OK=expects a crash
+                     "\\+ requires operands of the same dtype");
+        EXPECT_DEATH((void)!s_i,  // VOID_CAST_OK=expects a crash
+                     "! requires a bool operand");
         EXPECT_DEATH(If(s_i, [] {}),
                      "If\\(\\) condition must be a bool scalar");
-        EXPECT_DEATH(If(
+        EXPECT_DEATH((void)If(  // VOID_CAST_OK=expects a crash
                          I32(0) == I32(1), [&] { return Load(f_in); },
                          [&] { return Load(i_in); }),
                      "If\\(\\) else-branch result 0 changed shape");
         EXPECT_DEATH(
-            If(
+            (void)If(  // VOID_CAST_OK=expects a crash
                 I32(0) == I32(1), [&] { return s_i; }, [&] { return s_f; }),
             "If\\(\\) else-branch result 0 changed dtype: expected i32, got "
             "f32");
         EXPECT_DEATH(
-            If(
+            (void)If(  // VOID_CAST_OK=expects a crash
                 I32(0) == I32(1), [&] { return std::tuple{s_i, Load(f_in)}; },
                 [&] { return std::tuple{s_i, Zeros(f32(8, 128))}; }),
             "If\\(\\) else-branch result 1 changed shape");
-        EXPECT_DEATH(Select(s_i, s_i, s_i), "Select\\(\\) mask must be bool");
+        EXPECT_DEATH((void)Select(  // VOID_CAST_OK=expects a crash
+                         s_i, s_i, s_i),
+                     "Select\\(\\) mask must be bool");
         EXPECT_DEATH(For(s_f, [](Scalar) {}),
                      "IndexArg requires an integer scalar");
 
@@ -1222,15 +1227,19 @@ TEST(KilnDeathTest, TileMismatchedTypesFail) {
         Tile t_f = Load(f_in);
         Tile t_i = Load(i_in);
         Tile t_u = Load(u_in);
-        EXPECT_DEATH(t_f + t_i, "\\+ requires operands of the same dtype");
-        EXPECT_DEATH(t_i + t_u, "\\+ requires operands of the same dtype");
+        EXPECT_DEATH((void)(t_f + t_i),  // VOID_CAST_OK=expects a crash
+                     "\\+ requires operands of the same dtype");
+        EXPECT_DEATH((void)(t_i + t_u),  // VOID_CAST_OK=expects a crash
+                     "\\+ requires operands of the same dtype");
         EXPECT_DEATH(static_cast<void>(t_i == t_u),
                      "Comparison requires operands of the same dtype");
-        EXPECT_DEATH(Min(t_i, t_u),
+        EXPECT_DEATH((void)Min(t_i, t_u),  // VOID_CAST_OK=expects a crash
                      "Min\\(\\) requires operands of the same dtype");
-        EXPECT_DEATH(t_f & t_f, "& requires integer or bool operands");
-        EXPECT_DEATH(!t_i, "! requires a bool operand");
-        EXPECT_DEATH(Reciprocal(t_i),
+        EXPECT_DEATH((void)(t_f & t_f),  // VOID_CAST_OK=expects a crash
+                     "& requires integer or bool operands");
+        EXPECT_DEATH((void)!t_i,  // VOID_CAST_OK=expects a crash
+                     "! requires a bool operand");
+        EXPECT_DEATH((void)Reciprocal(t_i),  // VOID_CAST_OK=expects a crash
                      "Reciprocal\\(\\) requires a floating-point tile");
 
         Store(out, t_f);
@@ -1245,24 +1254,36 @@ TEST(KilnDeathTest, InvalidRefAccessesFail) {
       [](VmemRef f_in, VmemRef i_in, VmemRef out) {
         Tile t_f = Load(f_in);
         Tile t_i = Load(i_in);
-        EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
-        EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
-        EXPECT_DEATH(Load(f_in, {0}, {8, 128}),
+        EXPECT_DEATH((void)f_in(0, 0, 0),  // VOID_CAST_OK=expects a crash
+                     "Too many slice indices");
+        EXPECT_DEATH((void)f_in(  // VOID_CAST_OK=expects a crash
+                         0, Slice(0, 0)),
+                     "Slice size must be positive");
+        EXPECT_DEATH((void)Load(  // VOID_CAST_OK=expects a crash
+                         f_in, {0}, {8, 128}),
                      "Load\\(\\) requires one offset per ref dimension");
-        EXPECT_DEATH(Load(f_in, {0, 0}, {8}),
+        EXPECT_DEATH((void)Load(  // VOID_CAST_OK=expects a crash
+                         f_in, {0, 0}, {8}),
                      "Load\\(\\) requires one size per ref dimension");
-        EXPECT_DEATH(Load(f_in, {0, 0}, {0, 128}),
+        EXPECT_DEATH((void)Load(  // VOID_CAST_OK=expects a crash
+                         f_in, {0, 0}, {0, 128}),
                      "Load\\(\\) size must be positive");
-        EXPECT_DEATH(Load(f_in, {24, 0}, {16, 128}),
+        EXPECT_DEATH((void)Load(  // VOID_CAST_OK=expects a crash
+                         f_in, {24, 0}, {16, 128}),
                      "Load\\(\\) offset \\+ size must not exceed dimension");
-        EXPECT_DEATH(Concat({}, 0), "Concat\\(\\) requires at least one tile");
-        EXPECT_DEATH(Concat({t_f, t_f}, 2),
+        EXPECT_DEATH((void)Concat({}, 0),  // VOID_CAST_OK=expects a crash
+                     "Concat\\(\\) requires at least one tile");
+        EXPECT_DEATH((void)Concat(  // VOID_CAST_OK=expects a crash
+                         {t_f, t_f}, 2),
                      "Concat\\(\\) axis 2 out of bounds");
-        EXPECT_DEATH(Concat({t_f, t_i}, 0),
+        EXPECT_DEATH((void)Concat(  // VOID_CAST_OK=expects a crash
+                         {t_f, t_i}, 0),
                      "Concat\\(\\) requires all tiles to have the same dtype");
-        EXPECT_DEATH(Concat({t_f, Zeros(f32(32, 128, 1))}, 0),
+        EXPECT_DEATH((void)Concat(  // VOID_CAST_OK=expects a crash
+                         {t_f, Zeros(f32(32, 128, 1))}, 0),
                      "Concat\\(\\) requires all tiles to have the same rank");
-        EXPECT_DEATH(Concat({t_f, Zeros(f32(8, 256))}, 0),
+        EXPECT_DEATH((void)Concat(  // VOID_CAST_OK=expects a crash
+                         {t_f, Zeros(f32(8, 256))}, 0),
                      "Concat\\(\\) dimension mismatch on axis 1");
         EXPECT_DEATH(Store(out, t_f, {.mask = t_i}),
                      "Masked Store\\(\\) requires an i1 mask tile");
@@ -2220,57 +2241,70 @@ TEST(KilnDeathTest, DmaValidationErrors) {
         VmemRef vmem_i32 = AllocaVmem(i32(8, 128));
         SmemRef smem_f32 = AllocaSmem(f32(8, 128));
 
-        EXPECT_DEATH(AsyncCopy(hbm_tile, vmem_i32, dma_sems(0)),
+        EXPECT_DEATH((void)AsyncCopy(  // VOID_CAST_OK=expects a crash
+                         hbm_tile, vmem_i32, dma_sems(0)),
                      "DMA source and destination Refs must have matching "
                      "shapes");
-        EXPECT_DEATH(AsyncCopy(hbm_in, vmem_out, dma_sems(0)),
+        EXPECT_DEATH((void)AsyncCopy(  // VOID_CAST_OK=expects a crash
+                         hbm_in, vmem_out, dma_sems(0)),
                      "DMA source and destination Refs must have matching "
                      "shapes");
+        EXPECT_DEATH((void)AsyncCopy(  // VOID_CAST_OK=expects a crash
+                         hbm_tile, vmem_out, dma_sems(0), {.priority = -1}),
+                     "DMA priority must be 0 or 1");
+        EXPECT_DEATH((void)AsyncCopy(  // VOID_CAST_OK=expects a crash
+                         hbm_tile, vmem_out, dma_sems(0), {.priority = 2}),
+                     "DMA priority must be 0 or 1");
+        EXPECT_DEATH((void)MakeAsyncCopy(  // VOID_CAST_OK=expects a crash
+                         hbm_tile, smem_f32, reg_sem),
+                     "Non-DMA semaphores are not supported for DMAs involving "
+                     "SMEM");
+        EXPECT_DEATH((void)MakeAsyncCopy(  // VOID_CAST_OK=expects a crash
+                         smem_f32, vmem_out, reg_sem),
+                     "Non-DMA semaphores are not supported for DMAs involving "
+                     "SMEM");
         EXPECT_DEATH(
-            AsyncCopy(hbm_tile, vmem_out, dma_sems(0), {.priority = -1}),
-            "DMA priority must be 0 or 1");
+            (void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                smem_f32, vmem_out, reg_sem, reg_sem, {.device_id = 0}),
+            "Non-DMA semaphores are not supported for DMAs involving "
+            "SMEM");
         EXPECT_DEATH(
-            AsyncCopy(hbm_tile, vmem_out, dma_sems(0), {.priority = 2}),
-            "DMA priority must be 0 or 1");
-        EXPECT_DEATH(MakeAsyncCopy(hbm_tile, smem_f32, reg_sem),
-                     "Non-DMA semaphores are not supported for DMAs involving "
-                     "SMEM");
-        EXPECT_DEATH(MakeAsyncCopy(smem_f32, vmem_out, reg_sem),
-                     "Non-DMA semaphores are not supported for DMAs involving "
-                     "SMEM");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(smem_f32, vmem_out, reg_sem, reg_sem,
-                                         {.device_id = 0}),
-                     "Non-DMA semaphores are not supported for DMAs involving "
-                     "SMEM");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, smem_f32, reg_sem, reg_sem,
-                                         {.device_id = 0}),
-                     "Non-DMA semaphores are not supported for DMAs involving "
-                     "SMEM");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         dma_sems(1), {}),
+            (void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                vmem_out, smem_f32, reg_sem, reg_sem, {.device_id = 0}),
+            "Non-DMA semaphores are not supported for DMAs involving "
+            "SMEM");
+        EXPECT_DEATH((void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                         vmem_out, vmem_out, dma_sems(0), dma_sems(1), {}),
                      "Remote DMA requires device_id or core_id");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         dma_sems(1), {.device_id = -1}),
+        EXPECT_DEATH((void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                         vmem_out, vmem_out, dma_sems(0), dma_sems(1),
+                         {.device_id = -1}),
                      "AsyncRemoteCopyOptions::device_id must be non-negative");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         dma_sems(1), {.core_id = -1}),
-                     "AsyncRemoteCopyOptions::core_id must be non-negative");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         dma_sems(1), {.device_id = I32(-1)}),
+        EXPECT_DEATH(
+            (void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                vmem_out, vmem_out, dma_sems(0), dma_sems(1), {.core_id = -1}),
+            "AsyncRemoteCopyOptions::core_id must be non-negative");
+        EXPECT_DEATH((void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                         vmem_out, vmem_out, dma_sems(0), dma_sems(1),
+                         {.device_id = I32(-1)}),
                      "AsyncRemoteCopyOptions::device_id must be non-negative");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         dma_sems(1), {.core_id = I32(-1)}),
+        EXPECT_DEATH((void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                         vmem_out, vmem_out, dma_sems(0), dma_sems(1),
+                         {.core_id = I32(-1)}),
                      "AsyncRemoteCopyOptions::core_id must be non-negative");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         dma_sems(1), {.device_id = 1LL << 40}),
+        EXPECT_DEATH((void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                         vmem_out, vmem_out, dma_sems(0), dma_sems(1),
+                         {.device_id = 1LL << 40}),
                      "AsyncRemoteCopyOptions::device_id exceeds int32_t max");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         dma_sems(1), {.core_id = 1LL << 40}),
+        EXPECT_DEATH((void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                         vmem_out, vmem_out, dma_sems(0), dma_sems(1),
+                         {.core_id = 1LL << 40}),
                      "AsyncRemoteCopyOptions::core_id exceeds int32_t max");
-        EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, dma_sems(0),
-                                         reg_sem, {.device_id = 0}),
-                     "DMA source and target semaphores must have the same "
-                     "kind");
+        EXPECT_DEATH(
+            (void)MakeAsyncRemoteCopy(  // VOID_CAST_OK=expects a crash
+                vmem_out, vmem_out, dma_sems(0), reg_sem, {.device_id = 0}),
+            "DMA source and target semaphores must have the same "
+            "kind");
         EXPECT_DEATH(MakeAsyncCopy(hbm_tile, vmem_out, reg_sem).Wait(),
                      "Wait\\(\\) requires a DMA semaphore");
         EXPECT_DEATH(MakeAsyncRemoteCopy(vmem_out, vmem_out, reg_sem, reg_sem,
@@ -2428,9 +2462,13 @@ using RefBitcastDeathTest = TestWithParam<RefBitcastDeathTestCase>;
 TEST_P(RefBitcastDeathTest, RejectsInvalidShapesAndDTypes) {
   const RefBitcastDeathTestCase& tc = GetParam();
   EXPECT_THAT(
-      CreateKernel(
-          GridSpec{.name = "ref_bitcast"}, InSpec::Vmem(tc.from),
-          [&](VmemRef in) { EXPECT_DEATH(in.Bitcast(tc.to), tc.error); }),
+      CreateKernel(GridSpec{.name = "ref_bitcast"}, InSpec::Vmem(tc.from),
+                   [&](VmemRef in) {
+                     EXPECT_DEATH(
+                         (void)in.Bitcast(  // VOID_CAST_OK=expects a crash
+                             tc.to),
+                         tc.error);
+                   }),
       IsOk());
 }
 

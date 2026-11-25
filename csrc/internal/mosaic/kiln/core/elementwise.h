@@ -39,46 +39,46 @@ namespace internal {
 template <typename T>
 struct ElementwiseOps {
   // Type conversion.
-  static T AsType(T v, DType target);
-  static T Bitcast(T v, DType target);
+  [[nodiscard]] static T AsType(T v, DType target);
+  [[nodiscard]] static T Bitcast(T v, DType target);
 
   // Arithmetic.
-  static T Neg(T v);
-  static T Add(T lhs, T rhs);
-  static T Sub(T lhs, T rhs);
-  static T Mul(T lhs, T rhs);
-  static T Div(T lhs, T rhs);
-  static T Rem(T lhs, T rhs);
-  static T Min(T lhs, T rhs);
-  static T Max(T lhs, T rhs);
+  [[nodiscard]] static T Neg(T v);
+  [[nodiscard]] static T Add(T lhs, T rhs);
+  [[nodiscard]] static T Sub(T lhs, T rhs);
+  [[nodiscard]] static T Mul(T lhs, T rhs);
+  [[nodiscard]] static T Div(T lhs, T rhs);
+  [[nodiscard]] static T Rem(T lhs, T rhs);
+  [[nodiscard]] static T Min(T lhs, T rhs);
+  [[nodiscard]] static T Max(T lhs, T rhs);
 
   // Bitwise / logical.
-  static T And(T lhs, T rhs);
-  static T Or(T lhs, T rhs);
-  static T Xor(T lhs, T rhs);
-  static T ShiftLeft(T lhs, T rhs);
-  static T ShiftRight(T lhs, T rhs);
-  static T LogicalNot(T v);
+  [[nodiscard]] static T And(T lhs, T rhs);
+  [[nodiscard]] static T Or(T lhs, T rhs);
+  [[nodiscard]] static T Xor(T lhs, T rhs);
+  [[nodiscard]] static T ShiftLeft(T lhs, T rhs);
+  [[nodiscard]] static T ShiftRight(T lhs, T rhs);
+  [[nodiscard]] static T LogicalNot(T v);
 
   // Comparison.
-  static T Eq(T lhs, T rhs);
-  static T Ne(T lhs, T rhs);
-  static T Lt(T lhs, T rhs);
-  static T Le(T lhs, T rhs);
-  static T Gt(T lhs, T rhs);
-  static T Ge(T lhs, T rhs);
+  [[nodiscard]] static T Eq(T lhs, T rhs);
+  [[nodiscard]] static T Ne(T lhs, T rhs);
+  [[nodiscard]] static T Lt(T lhs, T rhs);
+  [[nodiscard]] static T Le(T lhs, T rhs);
+  [[nodiscard]] static T Gt(T lhs, T rhs);
+  [[nodiscard]] static T Ge(T lhs, T rhs);
 
-  static T Select(T mask, T if_true, T if_false);
+  [[nodiscard]] static T Select(T mask, T if_true, T if_false);
 
   // Unary math.
-  static T Exp(T v);
-  static T Exp2(T v);
-  static T Log(T v);
-  static T Log2(T v);
-  static T Sqrt(T v);
-  static T Rsqrt(T v);
-  static T Tanh(T v);
-  static T Abs(T v);
+  [[nodiscard]] static T Exp(T v);
+  [[nodiscard]] static T Exp2(T v);
+  [[nodiscard]] static T Log(T v);
+  [[nodiscard]] static T Log2(T v);
+  [[nodiscard]] static T Sqrt(T v);
+  [[nodiscard]] static T Rsqrt(T v);
+  [[nodiscard]] static T Tanh(T v);
+  [[nodiscard]] static T Abs(T v);
 };
 
 }  // namespace internal
@@ -95,37 +95,39 @@ class WithElementwiseOps {
 
  public:
   // Element type conversion (float<->float, int<->float, int widths).
-  Derived AsType(DType target) const { return Ops::AsType(derived(), target); }
+  [[nodiscard]] Derived AsType(DType target) const {
+    return Ops::AsType(derived(), target);
+  }
   // Reinterprets the bit pattern of each element as `target` (must have the
   // same bit width).
-  Derived Bitcast(DType target) const {
+  [[nodiscard]] Derived Bitcast(DType target) const {
     return Ops::Bitcast(derived(), target);
   }
-  Derived ToBool() const { return AsType(bool_); }
-  Derived ToI32() const { return AsType(i32); }
-  Derived ToU8() const { return AsType(u8); }
-  Derived ToU16() const { return AsType(u16); }
-  Derived ToU32() const { return AsType(u32); }
-  Derived ToU64() const { return AsType(u64); }
-  Derived ToF32() const { return AsType(f32); }
-  Derived ToBF16() const { return AsType(bf16); }
+  [[nodiscard]] Derived ToBool() const { return AsType(bool_); }
+  [[nodiscard]] Derived ToI32() const { return AsType(i32); }
+  [[nodiscard]] Derived ToU8() const { return AsType(u8); }
+  [[nodiscard]] Derived ToU16() const { return AsType(u16); }
+  [[nodiscard]] Derived ToU32() const { return AsType(u32); }
+  [[nodiscard]] Derived ToU64() const { return AsType(u64); }
+  [[nodiscard]] Derived ToF32() const { return AsType(f32); }
+  [[nodiscard]] Derived ToBF16() const { return AsType(bf16); }
 
   // Arithmetic on integer or floating-point operands.
-  friend Derived operator-(Derived v) { return Ops::Neg(v); }
-  friend Derived operator+(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator-(Derived v) { return Ops::Neg(v); }
+  [[nodiscard]] friend Derived operator+(Derived lhs, Derived rhs) {
     return Ops::Add(lhs, rhs);
   }
-  friend Derived operator-(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator-(Derived lhs, Derived rhs) {
     return Ops::Sub(lhs, rhs);
   }
-  friend Derived operator*(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator*(Derived lhs, Derived rhs) {
     return Ops::Mul(lhs, rhs);
   }
-  friend Derived operator/(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator/(Derived lhs, Derived rhs) {
     return Ops::Div(lhs, rhs);
   }
   // Remainder; integer operands only.
-  friend Derived operator%(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator%(Derived lhs, Derived rhs) {
     return Ops::Rem(lhs, rhs);
   }
 
@@ -147,19 +149,19 @@ class WithElementwiseOps {
 
   // Bitwise / logical ops on integer and bool (mask) operands. `>>` is an
   // arithmetic shift for signed types, and logical shift for unsigned types.
-  friend Derived operator&(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator&(Derived lhs, Derived rhs) {
     return Ops::And(lhs, rhs);
   }
-  friend Derived operator|(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator|(Derived lhs, Derived rhs) {
     return Ops::Or(lhs, rhs);
   }
-  friend Derived operator^(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator^(Derived lhs, Derived rhs) {
     return Ops::Xor(lhs, rhs);
   }
-  friend Derived operator<<(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator<<(Derived lhs, Derived rhs) {
     return Ops::ShiftLeft(lhs, rhs);
   }
-  friend Derived operator>>(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator>>(Derived lhs, Derived rhs) {
     return Ops::ShiftRight(lhs, rhs);
   }
 
@@ -178,49 +180,60 @@ class WithElementwiseOps {
   friend Derived& operator>>=(Derived& lhs, Derived rhs) {
     return lhs = lhs >> rhs;
   }
-  friend Derived operator!(Derived v) { return Ops::LogicalNot(v); }
+  [[nodiscard]] friend Derived operator!(Derived v) {
+    return Ops::LogicalNot(v);
+  }
 
   // Comparisons on bool, integer, or floating-point operands.
-  friend Derived operator==(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator==(Derived lhs, Derived rhs) {
     return Ops::Eq(lhs, rhs);
   }
-  friend Derived operator!=(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator!=(Derived lhs, Derived rhs) {
     return Ops::Ne(lhs, rhs);
   }
-  friend Derived operator<(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator<(Derived lhs, Derived rhs) {
     return Ops::Lt(lhs, rhs);
   }
-  friend Derived operator<=(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator<=(Derived lhs, Derived rhs) {
     return Ops::Le(lhs, rhs);
   }
-  friend Derived operator>(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator>(Derived lhs, Derived rhs) {
     return Ops::Gt(lhs, rhs);
   }
-  friend Derived operator>=(Derived lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator>=(Derived lhs, Derived rhs) {
     return Ops::Ge(lhs, rhs);
   }
 
   // Elementwise min / max / select. On bool operands `Min` / `Max` are
   // logical and / or.
-  friend Derived Min(Derived lhs, Derived rhs) { return Ops::Min(lhs, rhs); }
-  friend Derived Max(Derived lhs, Derived rhs) { return Ops::Max(lhs, rhs); }
-  friend Derived Select(Derived mask, Derived if_true, Derived if_false) {
+  [[nodiscard]] friend Derived Min(Derived lhs, Derived rhs) {
+    return Ops::Min(lhs, rhs);
+  }
+  [[nodiscard]] friend Derived Max(Derived lhs, Derived rhs) {
+    return Ops::Max(lhs, rhs);
+  }
+  [[nodiscard]] friend Derived Select(Derived mask, Derived if_true,
+                                      Derived if_false) {
     return Ops::Select(mask, if_true, if_false);
   }
 
   // Unary math on floating-point operands (`Abs` also accepts integers).
-  friend Derived Exp(Derived v) { return Ops::Exp(v); }
-  friend Derived Exp2(Derived v) { return Ops::Exp2(v); }
-  friend Derived Log(Derived v) { return Ops::Log(v); }
-  friend Derived Log2(Derived v) { return Ops::Log2(v); }
-  friend Derived Sqrt(Derived v) { return Ops::Sqrt(v); }
-  friend Derived Rsqrt(Derived v) { return Ops::Rsqrt(v); }
-  friend Derived Tanh(Derived v) { return Ops::Tanh(v); }
-  friend Derived Abs(Derived v) { return Ops::Abs(v); }
-  friend Derived Bitcast(Derived v, DType target) { return v.Bitcast(target); }
+  [[nodiscard]] friend Derived Exp(Derived v) { return Ops::Exp(v); }
+  [[nodiscard]] friend Derived Exp2(Derived v) { return Ops::Exp2(v); }
+  [[nodiscard]] friend Derived Log(Derived v) { return Ops::Log(v); }
+  [[nodiscard]] friend Derived Log2(Derived v) { return Ops::Log2(v); }
+  [[nodiscard]] friend Derived Sqrt(Derived v) { return Ops::Sqrt(v); }
+  [[nodiscard]] friend Derived Rsqrt(Derived v) { return Ops::Rsqrt(v); }
+  [[nodiscard]] friend Derived Tanh(Derived v) { return Ops::Tanh(v); }
+  [[nodiscard]] friend Derived Abs(Derived v) { return Ops::Abs(v); }
+  [[nodiscard]] friend Derived Bitcast(Derived v, DType target) {
+    return v.Bitcast(target);
+  }
 
  private:
-  const Derived& derived() const { return static_cast<const Derived&>(*this); }
+  [[nodiscard]] const Derived& derived() const {
+    return static_cast<const Derived&>(*this);
+  }
 };
 
 }  // namespace torch_tpu::kiln

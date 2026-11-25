@@ -25,27 +25,27 @@ namespace torch_tpu::kiln {
 
 // Allocates a scratch ref in VMEM / SMEM inside the current region/function
 // (`memref.alloca`).
-VmemRef AllocaVmem(const Shape& shape);
-SmemRef AllocaSmem(const Shape& shape);
+[[nodiscard]] VmemRef AllocaVmem(const Shape& shape);
+[[nodiscard]] SmemRef AllocaSmem(const Shape& shape);
 
 // Allocates a 0-D DMA semaphore inside the current region/function
 // (`tpu.sem_alloc` with `!tpu.dma_semaphore`).
-Semaphore AllocaDmaSemaphore();
+[[nodiscard]] Semaphore AllocaDmaSemaphore();
 
 // Allocates a multi-dimensional array of DMA semaphores inside the current
 // region/function (`tpu.sem_alloc` with `!tpu.dma_semaphore`).
-SemaphoreArray AllocaDmaSemaphore(Dimensions shape);
+[[nodiscard]] SemaphoreArray AllocaDmaSemaphore(Dimensions shape);
 
 // Allocates a 0-D regular semaphore inside the current region/function
 // (`tpu.sem_alloc` with `!tpu.semaphore`).
-Semaphore AllocaSemaphore();
+[[nodiscard]] Semaphore AllocaSemaphore();
 
 // Allocates a multi-dimensional array of regular semaphores inside the current
 // region/function (`tpu.sem_alloc` with `!tpu.semaphore`).
-SemaphoreArray AllocaSemaphore(Dimensions shape);
+[[nodiscard]] SemaphoreArray AllocaSemaphore(Dimensions shape);
 
 // Returns the barrier semaphore for collective kernels (`tpu.sem_barrier`).
-Semaphore GetBarrierSemaphore();
+[[nodiscard]] Semaphore GetBarrierSemaphore();
 
 }  // namespace torch_tpu::kiln
 
