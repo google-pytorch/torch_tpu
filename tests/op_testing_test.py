@@ -1057,8 +1057,182 @@ class OpTestingTest(op_testing.OpInfoTestBase):
     self.assertTrue(
         op_testing._is_golden_compiler_failure(BackendCompilerFailed("x"))
     )
+    self.assertTrue(
+        op_testing._is_golden_compiler_failure(
+            BackendCompilerFailed(
+                "backend='inductor' raised:\n"
+                "RuntimeError: expand: the requested shape has too few"
+                " dimensions!"
+            )
+        )
+    )
+    self.assertTrue(
+        op_testing._is_golden_compiler_failure(
+            BackendCompilerFailed(
+                "backend='inductor' raised:\n"
+                "NotImplementedError: Casting from torch.float64 to"
+                " torch.int4 is not supported"
+            )
+        )
+    )
+    self.assertTrue(
+        op_testing._is_golden_compiler_failure(
+            BackendCompilerFailed(
+                "backend='inductor' raised:\n"
+                'NotImplementedError: "fill_out" not implemented for'
+                " 'Float4_e2m1fn_x2'"
+            )
+        )
+    )
+    self.assertFalse(
+        op_testing._is_golden_compiler_failure(
+            BackendCompilerFailed(
+                "backend='inductor' raised:\n"
+                "NotImplementedError: Subtraction, the `-` operator, with two"
+                " bool tensors is not supported."
+            )
+        )
+    )
+    self.assertFalse(
+        op_testing._is_golden_compiler_failure(
+            BackendCompilerFailed(
+                "backend='inductor' raised:\n"
+                'NotImplementedError: "ufunc_add_CUDA" not implemented for'
+                " 'Float8_e4m3fn'"
+            )
+        )
+    )
     self.assertFalse(op_testing._is_golden_compiler_failure(RuntimeError("x")))
     self.assertFalse(op_testing._is_golden_compiler_failure(42))
+
+  def test_sample_inputs_scaled_grouped_mm_v2_valid(self):
+    samples = list(
+        op_testing._sample_inputs_scaled_grouped_mm_v2(
+            None,
+            torch.device("cpu"),
+            torch.float8_e4m3fn,
+        )
+    )
+    self.assertLen(samples, 5)
+    for sample in samples:
+      self.assertIsInstance(sample.input, torch.Tensor)
+      # (mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b)
+      self.assertLen(sample.args, 7)
+      self.assertIsInstance(sample.args[0], torch.Tensor)
+
+  def test_out_casting_tests_recording_unions_unexcluded_pairs(self):
+    op = op_testing._get_op("add")
+    dtypes = (
+        torch.bool,
+        torch.uint8,
+        torch.int32,
+        torch.float32,
+        torch.float64,
+    )
+    # Excluding uint8/bool shifts find_cast_pairs from bool->uint8 to int32->...
+    excluded = (torch.bool, torch.uint8)
+    replay_pairs = op_testing._out_casting_tests(
+        op,
+        dtypes,
+        exclude_dtypes=excluded,
+        check_op_failures=True,
+        compute_grad=False,
+        use_compiled=False,
+        recording=False,
+    )
+    recorded_pairs = op_testing._out_casting_tests(
+        op,
+        dtypes,
+        exclude_dtypes=excluded,
+        check_op_failures=True,
+        compute_grad=False,
+        use_compiled=False,
+        recording=True,
+    )
+    flat_replay = {
+        (src, dst)
+        for src, targets in replay_pairs.items()
+        for dst, _ in targets
+    }
+    flat_recorded = {
+        (src, dst)
+        for src, targets in recorded_pairs.items()
+        for dst, _ in targets
+    }
+    # Current replay pairs must be preserved inside recorded pairs.
+    self.assertTrue(flat_replay.issubset(flat_recorded))
+    # Unexcluded cast pairs are also present without needing regeneration.
+    unexcluded_cast = op_testing.find_cast_pairs(dtypes)
+    self.assertIn(unexcluded_cast.allowed_pair, flat_recorded)
+    self.assertIn(unexcluded_cast.illegal_pair, flat_recorded)
+    # No duplicate (src, dst) entries for the same source dtype.
+    for targets in recorded_pairs.values():
+      dsts = [dst for dst, _ in targets]
+      self.assertLen(dsts, len(set(dsts)))
+
+  def test_do_test_op_recording_ignores_check_grad_and_check_out_variant(self):
+    recorded_variants: set[op_testing.OpVariant] = set()
+
+    def fake_run(
+        op,
+        dtype,
+        variant,
+        *,
+        compute_grad,
+        use_compiled,
+        check_value,
+        check_dtype,
+        check_device,
+        check_op_failures,
+        skip_output_indices,
+        skip_if,
+        max_samples_per_op_dtype,
+        out_dtype_override=None,
+    ):
+      del (
+          op,
+          dtype,
+          compute_grad,
+          use_compiled,
+          check_value,
+          check_dtype,
+          check_device,
+          check_op_failures,
+          skip_output_indices,
+          skip_if,
+          max_samples_per_op_dtype,
+          out_dtype_override,
+      )
+      recorded_variants.add(variant)
+
+    with (
+        flagsaver.flagsaver(
+            test_mode=op_testing.TestMode.GEN_GPU_GOLDEN,
+            compute_grad=True,
+            dtypes=["float32"],
+        ),
+        mock.patch.object(
+            self,
+            "_test_torch_tpu_vs_golden",
+            autospec=True,
+            side_effect=fake_run,
+        ),
+    ):
+      self.do_test_op("add", check_grad=False, check_out_variant=False)
+    self.assertIn(op_testing.OpVariant.BASE, recorded_variants)
+    self.assertIn(op_testing.OpVariant.OUT, recorded_variants)
+
+    # Confirm non-recording replay mode still honors check_grad=False.
+    self._do_test_op_called = False
+    with flagsaver.flagsaver(
+        test_mode=op_testing.TestMode.TORCH_TPU_VS_GPU,
+        compute_grad=True,
+        dtypes=["float32"],
+    ):
+      with self.assertRaises(  # ASSERT_RAISES_OK=Testing framework skip path.
+          unittest.SkipTest
+      ):
+        self.do_test_op("add", check_grad=False, check_out_variant=False)
 
   def test_compiled_supports_op_rejects_empty_tensor_in_kwargs(self):
     op = op_testing._get_op("add")

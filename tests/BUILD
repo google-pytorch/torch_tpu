@@ -47,6 +47,8 @@ package(
 
 exports_files([
     "cpp_style_test_data.cc",
+    "goldens.pin",
+    "ops_test.py",
 ])
 
 # ops_test records its GPU goldens on two architectures, because neither one
@@ -160,18 +162,21 @@ split_gpu_goldens(
     name = "ops_test_gpu_golden_per_test_case",
     base_srcs = _GPU_GOLDENS_BASE,
     hopper_srcs = _GPU_GOLDENS_HOPPER,
+    visibility = ["//:__subpackages__"],
 )
 
 split_gpu_goldens(
     name = "ops_test_gpu_golden_grad_per_test_case",
     base_srcs = _GPU_GOLDENS_GRAD_BASE,
     hopper_srcs = _GPU_GOLDENS_GRAD_HOPPER,
+    visibility = ["//:__subpackages__"],
 )
 
 split_gpu_goldens(
     name = "ops_test_gpu_golden_compiled_per_test_case",
     base_srcs = _GPU_GOLDENS_COMPILED_BASE,
     hopper_srcs = _GPU_GOLDENS_COMPILED_HOPPER,
+    visibility = ["//:__subpackages__"],
 )
 
 # TODO(b/576014545): Add per-test-case loading in OSS so OSS tests can also use
@@ -620,6 +625,9 @@ torch_tpu_py_library(
 # * ops_test: TPU vs GPU (by default, we test against GPU).
 # * ops_test_gen_gpu_golden: generates the golden file for the GPU backend.
 # * ops_test_gen_gpu_golden_compiled: generates the golden file under torch.compile.
+# * ops_test_gen_gpu_golden_compiled_part{0..3}: 4×50 disjoint partitions of
+#   ops_test_gen_gpu_golden_compiled expanded by update_gpu_goldens.py on full runs.
+# * ops_test_gen_gpu_golden_compiled_smoke: 1 sample/op/dtype pre-flight check.
 # * ops_test_grad_tpu_vs_gpu: gradient on TPU vs GPU.
 # * ops_test_gen_gpu_golden_grad: generates the golden file for gradients.
 # * ops_test_gen_gpu_golden*_hopper: the same, on Hopper, for tests tagged
@@ -1307,47 +1315,149 @@ torch_tpu_py_test(
     ],
 )
 
-[
-    torch_tpu_py_test(
-        name = "ops_test_gen_gpu_golden_compiled_part{}".format(_part),
-        timeout = "eternal",
-        srcs = ["ops_test.py"],
-        args = [
-            "--test_mode=gen_gpu_golden",
-            "--use_compiled=True",
-            "--max_samples_per_op_dtype=20",
-            "--golden_partition={}/{}".format(
-                _part,
-                _COMPILED_GOLDEN_PARTITIONS,
-            ),
-        ],
-        env = {
-            "TORCHINDUCTOR_COMPILE_THREADS": "0",
-        },
-        main = "ops_test.py",
-        nolocal = "slow test",
-        notap = "slow test - only need to run on demand for updating goldens",
-        platform = _GPU_GOLDEN_PLATFORM,
-        shard_count = _COMPILED_GOLDEN_SHARD_COUNT,
-        tags = [
-            "cpu:4",
-            "requires-mem:28g",
-        ],
-        deps = [
-            ":dynamism_test_utils",
-            ":op_testing",
-            ":oss_utils",
-            ":quantize_utils",
-            "//csrc/eager:tpu_aten_kernels",
-            "//shims/absl_py/flags",
-            "//shims/absl_py/testing:absltest",
-            "//shims/torch:pytorch",
-            "//src/torch_tpu",
-            "//src/torch_tpu/_internal/utils:test_utils",
-        ],
-    )
-    for _part in range(_COMPILED_GOLDEN_PARTITIONS)
-]
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_compiled_part0",
+    timeout = "eternal",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--use_compiled=True",
+        "--max_samples_per_op_dtype=20",
+        "--golden_partition=0/{}".format(_COMPILED_GOLDEN_PARTITIONS),
+    ],
+    env = {
+        "TORCHINDUCTOR_COMPILE_THREADS": "0",
+    },
+    main = "ops_test.py",
+    nolocal = "slow test",
+    notap = "slow test - only need to run on demand for updating goldens",
+    platform = _GPU_GOLDEN_PLATFORM,
+    shard_count = _COMPILED_GOLDEN_SHARD_COUNT,
+    tags = [
+        "cpu:4",
+        "requires-mem:28g",
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_compiled_part1",
+    timeout = "eternal",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--use_compiled=True",
+        "--max_samples_per_op_dtype=20",
+        "--golden_partition=1/{}".format(_COMPILED_GOLDEN_PARTITIONS),
+    ],
+    env = {
+        "TORCHINDUCTOR_COMPILE_THREADS": "0",
+    },
+    main = "ops_test.py",
+    nolocal = "slow test",
+    notap = "slow test - only need to run on demand for updating goldens",
+    platform = _GPU_GOLDEN_PLATFORM,
+    shard_count = _COMPILED_GOLDEN_SHARD_COUNT,
+    tags = [
+        "cpu:4",
+        "requires-mem:28g",
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_compiled_part2",
+    timeout = "eternal",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--use_compiled=True",
+        "--max_samples_per_op_dtype=20",
+        "--golden_partition=2/{}".format(_COMPILED_GOLDEN_PARTITIONS),
+    ],
+    env = {
+        "TORCHINDUCTOR_COMPILE_THREADS": "0",
+    },
+    main = "ops_test.py",
+    nolocal = "slow test",
+    notap = "slow test - only need to run on demand for updating goldens",
+    platform = _GPU_GOLDEN_PLATFORM,
+    shard_count = _COMPILED_GOLDEN_SHARD_COUNT,
+    tags = [
+        "cpu:4",
+        "requires-mem:28g",
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_compiled_part3",
+    timeout = "eternal",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--use_compiled=True",
+        "--max_samples_per_op_dtype=20",
+        "--golden_partition=3/{}".format(_COMPILED_GOLDEN_PARTITIONS),
+    ],
+    env = {
+        "TORCHINDUCTOR_COMPILE_THREADS": "0",
+    },
+    main = "ops_test.py",
+    nolocal = "slow test",
+    notap = "slow test - only need to run on demand for updating goldens",
+    platform = _GPU_GOLDEN_PLATFORM,
+    shard_count = _COMPILED_GOLDEN_SHARD_COUNT,
+    tags = [
+        "cpu:4",
+        "requires-mem:28g",
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
 
 # Like ops_test_gen_gpu_golden_compiled, capped at 1 sample per (op, dtype) to
 # quickly verify all ~795 Blackwell ATen OpInfos serialize cleanly under

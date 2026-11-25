@@ -3459,12 +3459,23 @@ class TestOps(op_testing.OpInfoTestBase):
         "_masked_softmax",
         # _masked_softmax only supports floating-point dtypes on GPU and TPU.
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # TODO(b/589923495): On 0-D input with dim=-1, Inductor returns shape
-        # (1,) instead of scalar shape ().
+        # TODO(b/589923495): Upstream PyTorch CUDA `SoftMax.cu` bugs on 0-D
+        # scalar inputs:
+        # - Forward (`dim=-1`): `masked_softmax_cuda` leaves `dim=-1` unwrapped
+        #   after `.view(1)`, hitting the fallback and returning shape `(1,)`
+        #   instead of `()`.
+        # - Backward (`dim=None`): `masked_softmax_backward_cuda` sets
+        #   `dim = output.dim() - 1 = -1` before `.view(1)`, tripping its own
+        #   `TORCH_CHECK(dim >= 0)`.
         skip_if=lambda _variant, op_input: (
-            op_testing.is_tpu_vs_gpu_compiled()
-            and op_input.input_value.ndim == 0
-            and op_input.kwargs.get("dim") == -1
+            op_input.input_value.ndim == 0
+            and (
+                op_input.kwargs.get("dim") == -1
+                or (
+                    op_testing._COMPUTE_GRAD.value
+                    and op_input.kwargs.get("dim") is None
+                )
+            )
         ),
     )
 

@@ -1432,8 +1432,8 @@ def _sample_inputs_scaled_grouped_mm_v2(
   # 1. 2D x 3D (ragged M) with RowWise scaling (recipe=1, swizzle=0)
   yield core.SampleInput(
       make_mat_row_major((48, 32)),
-      make_mat_col_major((2, 32, 64)),
       args=(
+          make_mat_col_major((2, 32, 64)),
           [make_scale((48,))],
           [1],
           [0],
@@ -1450,8 +1450,8 @@ def _sample_inputs_scaled_grouped_mm_v2(
   # 2. 2D x 3D (ragged M) with zero-sized group and default out_dtype (None)
   yield core.SampleInput(
       make_mat_row_major((48, 32)),
-      make_mat_col_major((3, 32, 64)),
       args=(
+          make_mat_col_major((3, 32, 64)),
           [make_scale((48,))],
           [1],
           [0],
@@ -1468,8 +1468,8 @@ def _sample_inputs_scaled_grouped_mm_v2(
   # 3. 3D x 3D (batched, offs=None) with RowWise scaling
   yield core.SampleInput(
       make_mat_row_major((2, 32, 32)),
-      make_mat_col_major((2, 32, 64)),
       args=(
+          make_mat_col_major((2, 32, 64)),
           [make_scale((2, 32))],
           [1],
           [0],
@@ -1486,8 +1486,8 @@ def _sample_inputs_scaled_grouped_mm_v2(
   # 4. 2D x 2D (ragged K) with RowWise scaling
   yield core.SampleInput(
       make_mat_row_major((32, 48)),
-      make_mat_col_major((48, 64)),
       args=(
+          make_mat_col_major((48, 64)),
           [make_scale((2, 32))],
           [1],
           [0],
@@ -1504,8 +1504,8 @@ def _sample_inputs_scaled_grouped_mm_v2(
   # 5. 3D x 2D (ragged N) with RowWise scaling
   yield core.SampleInput(
       make_mat_row_major((2, 32, 32)),
-      make_mat_col_major((32, 48)),
       args=(
+          make_mat_col_major((32, 48)),
           [make_scale((2, 32))],
           [1],
           [0],
@@ -6632,11 +6632,38 @@ _COMPILED_GOLDEN_DEVICE_ASSERT_SKIP_DTYPES: Final[
 }
 
 
+def _is_wrapped_semantic_error(exc: Exception) -> bool:
+  """Returns whether `BackendCompilerFailed` wraps a semantic ATen rejection.
+
+  TorchDynamo/AOTAutograd wraps eager and decomposition exceptions inside
+  `BackendCompilerFailed: backend='inductor' raised:\n<ExcType>: <msg>`.
+  Non-sub-byte `NotImplementedError`s (e.g. `bool` subtraction/negation or
+  missing Float8 CUDA kernels) represent real ATen rejections and should be
+  checked for failure parity rather than masked as compiler bugs. Other inner
+  types (`RuntimeError` alias/expand errors, `KeyError`, `TypeError`,
+  `ValueError`) and sub-byte `int4`/`float4_e2m1fn_x2` Inductor gaps remain
+  classified as compiler failures.
+  """
+  if type(exc).__name__ != "BackendCompilerFailed":
+    return False
+  lines = str(exc).splitlines()
+  if len(lines) < 2 or not lines[0].strip().startswith("backend="):
+    return False
+  inner_line = lines[1].strip()
+  if not inner_line.startswith("NotImplementedError:"):
+    return False
+  lower_inner = inner_line.lower()
+  if "int4" in lower_inner or "float4_e2m1fn_x2" in lower_inner:
+    return False
+  return True
+
+
 def _is_golden_compiler_failure(golden_result: Any) -> bool:
   """Returns whether `golden_result` is a golden-device compiler error."""
   return (
       isinstance(golden_result, Exception)
       and type(golden_result).__name__ in _GOLDEN_COMPILER_EXCEPTION_TYPES
+      and not _is_wrapped_semantic_error(golden_result)
   )
 
 
@@ -6979,25 +7006,54 @@ def _out_casting_tests(
   # float32 -> int32) from the dtypes to be tested. These will be used
   # below to test out-variant dtype casting and exception parity between
   # TorchTPU and GPU.
-  cast_pairs = find_cast_pairs([
+  filtered_dtypes = [
       d
       for d in dtypes_to_test
       if not _should_skip_dtype(d, exclude_dtypes=exclude_dtypes)
-  ])
-  tests = collections.defaultdict(list)
-  # For the input dtype of the allowed cast pair, run an additional
-  # out-variant test with out_dtype_override set to the target upcast dtype to
-  # verify that TorchTPU correctly supports out-variant promotional upcasting.
-  if cast_pairs.allowed_pair is not None:
-    src, dst = cast_pairs.allowed_pair
-    tests[src].append((dst, check_op_failures))
-  # For the input dtype of the illegal cast pair, run an additional out-variant
-  # test with out_dtype_override set to the target downcast dtype to verify
-  # that TorchTPU raises the same RuntimeError (exception parity) as
-  # PyTorch/GPU.
-  if cast_pairs.illegal_pair is not None:
-    src, dst = cast_pairs.illegal_pair
-    tests[src].append((dst, True))
+  ]
+  candidate_lists: list[list[torch.dtype]] = [filtered_dtypes]
+  if recording:
+    # Also record cast pairs under replay's dtype set (both with and without
+    # `exclude_dtypes`) and the full unexcluded recording dtype set so removing
+    # `exclude_dtypes` entries later never shifts `find_cast_pairs()` onto an
+    # unrecorded `(src, dst)` pair.
+    replay_dtypes = list(_dtypes_to_test_for_op(op, recording=False))
+    replay_filtered = [
+        d
+        for d in replay_dtypes
+        if not _should_skip_dtype(d, exclude_dtypes=exclude_dtypes)
+    ]
+    for extra in (replay_filtered, replay_dtypes, list(dtypes_to_test)):
+      if extra not in candidate_lists:
+        candidate_lists.append(extra)
+
+  tests: dict[torch.dtype, list[tuple[torch.dtype, bool]]] = (
+      collections.defaultdict(list)
+  )
+  seen_pairs: set[tuple[torch.dtype, torch.dtype]] = set()
+  for candidates in candidate_lists:
+    cast_pairs = find_cast_pairs(candidates)
+    # For the input dtype of the allowed cast pair, run an additional
+    # out-variant test with out_dtype_override set to the target upcast dtype
+    # to verify TorchTPU supports out-variant promotional upcasting.
+    if (
+        cast_pairs.allowed_pair is not None
+        and cast_pairs.allowed_pair not in seen_pairs
+    ):
+      seen_pairs.add(cast_pairs.allowed_pair)
+      src, dst = cast_pairs.allowed_pair
+      tests[src].append((dst, check_op_failures))
+    # For the input dtype of the illegal cast pair, run an additional
+    # out-variant test with out_dtype_override set to the target downcast dtype
+    # to verify TorchTPU raises the same RuntimeError (exception parity) as
+    # PyTorch/GPU.
+    if (
+        cast_pairs.illegal_pair is not None
+        and cast_pairs.illegal_pair not in seen_pairs
+    ):
+      seen_pairs.add(cast_pairs.illegal_pair)
+      src, dst = cast_pairs.illegal_pair
+      tests[src].append((dst, True))
   return tests
 
 
@@ -8856,7 +8912,7 @@ class OpInfoTestBase(TorchTpuTestBase):
 
       Currently only the out variant can be disabled (via check_out_variant).
       """
-      if compute_grad and not check_grad:
+      if not recording and compute_grad and not check_grad:
         message = (
             f"Skipping gradient tests for {op_name} as check_grad is False."
         )
@@ -8902,7 +8958,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       # --check_symbolic_shapes skips the out variant: it dispatches to the same
       # autograd and Meta kernels as the base variant on FakeTensors.
       if (
-          check_out_variant
+          (recording or check_out_variant)
           and _supports_out(op)
           and not _CHECK_SYMBOLIC_SHAPES.value
       ):
