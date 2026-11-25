@@ -52,9 +52,9 @@ absl::Status ValidateSparseIotaInputs(const at::Tensor& row_pointers,
  *
  * @return A 1D tensor of shape [max_non_zeroes] containing the sparse iota.
  */
-at::Tensor AtenSparseIota(const at::Tensor& row_pointers,
-                          int64_t max_non_zeroes,
-                          int64_t max_non_zeroes_per_row);
+[[nodiscard]] at::Tensor AtenSparseIota(const at::Tensor& row_pointers,
+                                        int64_t max_non_zeroes,
+                                        int64_t max_non_zeroes_per_row);
 
 }  // namespace torch_tpu
 

@@ -56,7 +56,7 @@ namespace torch_tpu {
  * @return The updated \p embedding_table tensor.
  */
 
-at::Tensor AtenSparseDenseMatmulGradWithSgd(
+[[nodiscard]] at::Tensor AtenSparseDenseMatmulGradWithSgd(
     const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
     const at::Tensor& sample_ids, const at::Tensor& gains,
     const at::Tensor& embedding_table, const at::Tensor& activations_grad,

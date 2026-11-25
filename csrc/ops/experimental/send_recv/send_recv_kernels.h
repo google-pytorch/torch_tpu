@@ -24,9 +24,11 @@
 
 namespace torch_tpu {
 
-c10::IValue TorchTpuSend(at::ITensorListRef tensors, int64_t dst, int64_t tag);
+[[nodiscard]] c10::IValue TorchTpuSend(at::ITensorListRef tensors, int64_t dst,
+                                       int64_t tag);
 
-c10::IValue TorchTpuRecv(at::ITensorListRef tensors, int64_t src, int64_t tag);
+[[nodiscard]] c10::IValue TorchTpuRecv(at::ITensorListRef tensors, int64_t src,
+                                       int64_t tag);
 
 }  // namespace torch_tpu
 

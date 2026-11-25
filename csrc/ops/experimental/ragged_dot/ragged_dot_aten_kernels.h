@@ -48,8 +48,9 @@ namespace torch_tpu {
 //
 // Returns:
 //   A 2D tensor of shape (m, n).
-at::Tensor AtenRaggedDot(const at::Tensor& lhs, const at::Tensor& rhs,
-                         const at::Tensor& group_sizes);
+[[nodiscard]] at::Tensor AtenRaggedDot(const at::Tensor& lhs,
+                                       const at::Tensor& rhs,
+                                       const at::Tensor& group_sizes);
 
 // Ragged dot product of two arrays (out variant).
 //
@@ -88,18 +89,19 @@ at::Tensor& AtenRaggedDotOut(const at::Tensor& lhs, const at::Tensor& rhs,
 //
 // Returns:
 //   A 3D tensor of shape (g, k, n).
-at::Tensor AtenRaggedDotWeightGrad(const at::Tensor& lhs,
-                                   const at::Tensor& grad_output,
-                                   const at::Tensor& group_sizes);
+[[nodiscard]] at::Tensor AtenRaggedDotWeightGrad(const at::Tensor& lhs,
+                                                 const at::Tensor& grad_output,
+                                                 const at::Tensor& group_sizes);
 
 // Autograd function for ragged dot product.
 struct AtenRaggedDotAutograd
     : public torch::autograd::Function<AtenRaggedDotAutograd> {
-  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
-                            const at::Tensor& lhs, const at::Tensor& rhs,
-                            const at::Tensor& group_sizes);
+  [[nodiscard]] static at::Tensor forward(torch::autograd::AutogradContext* ctx,
+                                          const at::Tensor& lhs,
+                                          const at::Tensor& rhs,
+                                          const at::Tensor& group_sizes);
 
-  static torch::autograd::variable_list backward(
+  [[nodiscard]] static torch::autograd::variable_list backward(
       torch::autograd::AutogradContext* ctx,
       torch::autograd::variable_list grad_outputs);
 };

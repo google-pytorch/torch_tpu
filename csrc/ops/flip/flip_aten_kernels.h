@@ -22,7 +22,8 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenFlip(const at::Tensor& self, at::IntArrayRef flip_dims);
+[[nodiscard]] at::Tensor AtenFlip(const at::Tensor& self,
+                                  at::IntArrayRef flip_dims);
 
 }  // namespace torch_tpu
 

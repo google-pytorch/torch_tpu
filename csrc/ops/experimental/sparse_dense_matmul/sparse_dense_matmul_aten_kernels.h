@@ -53,7 +53,7 @@ namespace torch_tpu {
  * [B, D] where B is the device_batch_size.
  */
 
-at::Tensor AtenSparseDenseMatmul(
+[[nodiscard]] at::Tensor AtenSparseDenseMatmul(
     const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
     const at::Tensor& sample_ids, const at::Tensor& gains,
     const at::Tensor& embedding_table, int64_t device_batch_size,

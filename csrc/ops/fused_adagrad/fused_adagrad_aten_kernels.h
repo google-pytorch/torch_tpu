@@ -74,8 +74,8 @@ void MetaFusedAdagradTensorLr(at::TensorList self, at::TensorList grads,
                               const std::optional<at::Tensor>& grad_scale,
                               const std::optional<at::Tensor>& found_inf);
 
-std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>, std::vector<at::Tensor>>
+[[nodiscard]] std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>, std::vector<at::Tensor>>
 MetaFusedAdagradFunctional(at::TensorList self, at::TensorList grads,
                            at::TensorList state_sums,
                            at::TensorList state_steps, double lr,
@@ -84,8 +84,8 @@ MetaFusedAdagradFunctional(at::TensorList self, at::TensorList grads,
                            const std::optional<at::Tensor>& grad_scale,
                            const std::optional<at::Tensor>& found_inf);
 
-std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
-           std::vector<at::Tensor>>
+[[nodiscard]] std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+                         std::vector<at::Tensor>>
 MetaFusedAdagradFunctionalTensorLr(at::TensorList self, at::TensorList grads,
                                    at::TensorList state_sums,
                                    at::TensorList state_steps,

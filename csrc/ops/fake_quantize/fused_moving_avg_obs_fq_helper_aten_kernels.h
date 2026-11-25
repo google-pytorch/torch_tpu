@@ -24,7 +24,7 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor> FusedMovingAvgObsFqHelper(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> FusedMovingAvgObsFqHelper(
     const at::Tensor& self, const at::Tensor& observer_on,
     const at::Tensor& fake_quant_on, at::Tensor& running_min,
     at::Tensor& running_max, at::Tensor& scale, at::Tensor& zero_point,

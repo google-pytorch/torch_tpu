@@ -38,13 +38,15 @@ absl::StatusOr<mlir::MlirOp> BuildEinsumShlo(
 // transforms, and forward AD via `at::native::einsum` while dispatching
 // standard TPU tensors and `FakeTensor`s (`torch.compile` / `torch.export`)
 // through `EinsumBackwardNode` and `AtenEinsum`.
-at::Tensor AtenEinsumAutograd(std::string_view equation, at::TensorList tensors,
-                              at::OptionalIntArrayRef path);
+[[nodiscard]] at::Tensor AtenEinsumAutograd(std::string_view equation,
+                                            at::TensorList tensors,
+                                            at::OptionalIntArrayRef path);
 
 // Implements `aten::einsum` (`einsum.default`) on `PrivateUse1`, lowering
 // directly to `stablehlo.dot_general` without intermediate 3D `bmm` reshapes.
-at::Tensor AtenEinsum(std::string_view equation, at::TensorList tensors,
-                      at::OptionalIntArrayRef path);
+[[nodiscard]] at::Tensor AtenEinsum(std::string_view equation,
+                                    at::TensorList tensors,
+                                    at::OptionalIntArrayRef path);
 
 }  // namespace torch_tpu
 
