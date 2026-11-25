@@ -128,14 +128,13 @@ absl::Status AtenLeakyReluBackwardTensorHelper(const at::Tensor& grad_output,
   TT_ASSIGN_OR_RETURN(const auto dtype,
                       ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
   TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
-      << "boolean dtypes are not supported, got "
-      << ToString(grad_output.scalar_type());
+      << "bool input is unsupported";
   TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
                error::kInvalidArgument)
-      << "integer dtypes are not supported, got "
+      << "expected non-integer dtype, got "
       << ToString(grad_output.scalar_type());
   TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
-      << "complex dtypes are not supported, got "
+      << "expected non-complex dtype, got "
       << ToString(grad_output.scalar_type());
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,

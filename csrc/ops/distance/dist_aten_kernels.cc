@@ -614,7 +614,7 @@ absl::Status ValidateCdistBackwardInputs(const at::Tensor& grad,
   TT_RETURN_IF_ERROR(ValidateIsFloatingPoint(grad, "gradient"));
   TT_RETURN_IF_ERROR(ValidateIsFloatingPoint(cdist, "cdist"));
   TT_RET_CHECK(p >= 0, error::kInvalidArgument)
-      << "expected the p value to be >= 0, got " << p;
+      << "expected p to be >= 0, got " << p;
   return absl::OkStatus();
 }
 

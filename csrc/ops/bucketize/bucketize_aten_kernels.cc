@@ -129,7 +129,9 @@ absl::StatusOr<mlir::MlirOp> BuildCompareAllShlo(mlir::MlirOp self_op,
           },
           /*dimensions=*/{reduction_dim});
 
-  TT_RET_CHECK(reduce_results.size() == 1, error::kInternal)
+  TT_RET_CHECK(reduce_results.size() == 1,  // ERROR_COV_INFEASIBLE=Reduce with
+                                            // 1 input always returns 1 result.
+               error::kInternal)
       << "expected 1 result from reduce op, got " << reduce_results.size();
   mlir::MlirOp result_op = reduce_results[0];
   if (IsFloatType(GetTensorTypeOrDie(self_op))) {

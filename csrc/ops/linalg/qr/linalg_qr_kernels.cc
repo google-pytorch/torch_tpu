@@ -173,8 +173,8 @@ absl::StatusOr<QrDims> ComputeQrDims(const at::Tensor& self,
     r_dims.push_back(n);
   } else {
     return TT_ERROR(error::kInvalidArgument)
-           << "expected mode to be one of 'reduced', 'complete', or 'r', got "
-           << mode;
+           << "expected mode to be one of 'reduced', 'complete', or 'r', got '"
+           << mode << "'";
   }
 
   return QrDims{std::move(q_dims), std::move(r_dims)};

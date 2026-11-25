@@ -19666,6 +19666,129 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
       ):
         torch.flip(t_scalar, [0, -1])
 
+  def test_index_reduce_invalid_reduce(self):
+    self_tensor = torch.ones((2, 2), device=et.device())
+    index = torch.tensor([0], device=et.device())
+    source = torch.ones((1, 2), device=et.device())
+    out = torch.empty_like(self_tensor)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_reduce(): expected reduce to be one of 'prod', 'mean', 'amax', or 'amin', got 'invalid'""",
+        gpu="""index_reduce(): Expected reduce to be one of prod, mean, amax or amin but got invalid.""",
+    ):
+      torch.ops.aten.index_reduce.out(
+          self_tensor, 0, index, source, "invalid", out=out
+      )
+
+  @et.gpu_crashes_or_raises(
+      "CUDA hits illegal memory access when save_mean and save_invstd are None"
+      " with training=True."
+  )
+  def test_native_batch_norm_backward_missing_save_stats(self):
+    grad_out = torch.ones((2, 3, 4, 4), device=et.device())
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): save_mean and save_invstd must be provided when training=True""",
+        gpu="""CUDA error: an illegal memory access was encountered""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          None,
+          None,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+      torch.accelerator.synchronize()
+
+  def test_div_unsupported_mode(self):
+    lhs = torch.ones((2, 2), device=et.device())
+    rhs = torch.ones((2, 2), device=et.device())
+    out = torch.empty_like(lhs)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""div(): unsupported mode for div: 'invalid'""",
+        gpu="""div expected rounding_mode to be one of None, 'trunc', or 'floor' but found 'invalid'""",
+    ):
+      torch.ops.aten.div.out_mode(lhs, rhs, rounding_mode="invalid", out=out)
+
+  def test_binary_cross_entropy_invalid_reduction(self):
+    inp = torch.full((2, 2), 0.5, device=et.device())
+    target = torch.ones((2, 2), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""binary_cross_entropy(): expected valid reduction mode (Sum, Mean, or None), got 99""",
+        gpu="""src is undefined""",
+    ):
+      torch.ops.aten.binary_cross_entropy(inp, target, reduction=99)
+      torch.accelerator.synchronize()
+
+  def test_linalg_qr_insufficient_dims_and_invalid_mode(self):
+    x_1d = torch.ones((3,), device=et.device())
+    q_1d = torch.empty((0,), device=et.device())
+    r_1d = torch.empty((0,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_qr(): expected input tensor to have at least 2 dimensions, got 1""",
+        gpu="""linalg.qr: The input tensor A must have at least 2 dimensions.""",
+    ):
+      torch.ops.aten.linalg_qr.out(x_1d, "reduced", Q=q_1d, R=r_1d)
+
+    x_2d = torch.ones((2, 2), device=et.device())
+    q_2d = torch.empty((2, 2), device=et.device())
+    r_2d = torch.empty((2, 2), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_qr(): expected mode to be one of 'reduced', 'complete', or 'r', got 'invalid'""",
+        gpu="""qr received unrecognized mode 'invalid' but expected one of 'reduced' (default), 'r', or 'complete'""",
+    ):
+      torch.ops.aten.linalg_qr.out(x_2d, "invalid", Q=q_2d, R=r_2d)
+
+  @parameterized.named_parameters(
+      ("bool", torch.bool, "bool", "Bool"),
+      ("int32", torch.int32, "int32", "Int"),
+      ("complex64", torch.complex64, "complex64", "ComplexFloat"),
+  )
+  def test_leaky_relu_backward_unsupported_dtypes(
+      self, dtype, tpu_dtype, gpu_dtype
+  ):
+    tpu_msgs = {
+        "bool": "bool input is unsupported",
+        "int32": "expected non-integer dtype, got int32",
+        "complex64": "expected non-complex dtype, got complex64",
+    }
+    grad_out = torch.ones((2, 2), device=et.device()).to(dtype)
+    self_tensor = torch.ones((2, 2), device=et.device()).to(dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""leaky_relu_backward(): {tpu_msgs[tpu_dtype]}""",
+        gpu=f""""leaky_relu_backward_cuda" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten.leaky_relu_backward(grad_out, self_tensor, 0.1, False)
+
+  def test_leaky_relu_backward_grad_input_negative_slope_with_self_is_result(
+      self,
+  ):
+    grad_out = torch.ones((2, 2), device=et.device())
+    result = torch.ones((2, 2), device=et.device())
+    grad_in = torch.empty_like(grad_out)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): expected slopes to be >= 0 for self_is_result=true, got -0.1""",
+        gpu="""In-place leakyReLu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead. File an issue at https://github.com/pytorch/pytorch if you do require supporting in-place leakRelu backward calculation with negative slope""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, result, -0.1, True, grad_input=grad_in
+      )
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 

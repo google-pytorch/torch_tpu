@@ -5540,6 +5540,18 @@ module {
     ):
       torch.ops.aten._fused_dropout(x, p=p, generator=cpu_gen)
 
+  @et.why_tpu_only("PyTorch CUDA _cdist_backward does not validate negative p.")
+  def test_cdist_backward_negative_p(self):
+    grad = torch.ones(2, 2, device=et.device())
+    x1 = torch.ones(2, 2, device=et.device())
+    x2 = torch.ones(2, 2, device=et.device())
+    cdist = torch.ones(2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_backward(): expected p to be >= 0, got -1""",
+    ):
+      torch.ops.aten._cdist_backward(grad, x1, x2, -1.0, cdist)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
@@ -6620,6 +6632,23 @@ class DimensionalCollectivesErrorTest(et.TpuOnlyErrorTestBase):
         tpu="""reduce_scatter_dim(): expected the TPU backend of process group 0 to be an unwrapped ProcessGroupTpu, got a wrapped or non-TPU backend""",
     ):
       torch.ops.tpu._reduce_scatter_dim(x, "sum", 0, 2, "0")
+
+
+class MaxPoolErrorsTest(et.ErrorTestBase):
+
+  @et.why_tpu_only("torch.tpu.ops.max_pool2d_backward is a TPU-specific API.")
+  def test_max_pool2d_backward_non_trivial_dilation(self):
+    grad_output = torch.ones(
+        (1, 1, 2, 2), dtype=torch.float32, device=et.device()
+    )
+    x = torch.ones((1, 1, 4, 4), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_pool2d_backward(): expected all dilation values to be 1, got [2, 2]""",
+    ):
+      torch.tpu.ops.max_pool2d_backward(
+          grad_output, x, [2, 2], [1, 1], [0, 0], [2, 2], False
+      ).cpu()
 
 
 if __name__ == "__main__":
