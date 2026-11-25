@@ -144,6 +144,12 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
   auto batch2_shape = GetTensorTypeOrDie(batch2_op).getShape();
   Dimensions out_shape = {batch1_shape[0], batch1_shape[1], batch2_shape[2]};
   auto& builder = batch1_op.getBuilder();
+  // Like CUDA, multiply, scale and add in the computation dtype (float32 for
+  // float16 and bfloat16) and convert to out_dtype only at the end, so that
+  // intermediate values neither overflow nor get rounded to out_dtype. beta_op
+  // and alpha_op already have the computation dtype.
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
 
   // Case 1: beta is zero. Baddbmm result is just alpha * (batch1 @ batch2).
   if (beta.IsZero()) {
@@ -152,19 +158,20 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
     }
     TT_ASSIGN_OR_RETURN(
         mlir::MlirOp bmm_res,
-        BuildBmmShlo(batch1_op, batch2_op, out_dtype, precision));
+        BuildBmmShlo(batch1_op, batch2_op, compute_dtype, precision));
     if (alpha.IsOne()) {
-      return bmm_res;
+      return mlir::stablehlo::ConvertElementType(bmm_res, out_dtype);
     }
     // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
     TT_ASSIGN_OR_RETURN(auto alpha_tensor,
                         BroadcastIfNeeded(*alpha_op, bmm_res));
-    return mlir::stablehlo::Mul(bmm_res, alpha_tensor);
+    return mlir::stablehlo::ConvertElementType(
+        mlir::stablehlo::Mul(bmm_res, alpha_tensor), out_dtype);
   }
 
   // Case 2: beta is not zero. self_op is guaranteed to have a value.
   TT_ASSIGN_OR_RETURN(mlir::MlirOp self_cast,
-                      CastIfNeeded(*self_op, out_dtype));
+                      CastIfNeeded(*self_op, compute_dtype));
 
   // Case 2a: alpha is zero. Baddbmm result is just beta * self.
   if (alpha.IsZero()) {
@@ -176,12 +183,13 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
                           BroadcastIfNeeded(*beta_op, self_bcst));
       self_bcst = mlir::stablehlo::Mul(self_bcst, beta_tensor);
     }
-    return self_bcst;
+    return mlir::stablehlo::ConvertElementType(self_bcst, out_dtype);
   }
 
   // Case 2b: alpha is not zero. Compute bmm_res = alpha * (batch1 @ batch2).
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp bmm_res,
-                      BuildBmmShlo(batch1_op, batch2_op, out_dtype, precision));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp bmm_res,
+      BuildBmmShlo(batch1_op, batch2_op, compute_dtype, precision));
   if (!alpha.IsOne()) {
     // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
     TT_ASSIGN_OR_RETURN(auto alpha_tensor,
@@ -197,7 +205,8 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
     self_bcst = mlir::stablehlo::Mul(self_bcst, beta_tensor);
   }
 
-  return mlir::stablehlo::Add(self_bcst, bmm_res);
+  return mlir::stablehlo::ConvertElementType(
+      mlir::stablehlo::Add(self_bcst, bmm_res), out_dtype);
 }
 
 auto GetBaddbmmOpBuilder(MaybePromotedScalar beta, MaybePromotedScalar alpha,
@@ -301,13 +310,16 @@ ReturnType ResolveAndDispatchBaddbmm(
     MaybePromotedScalar beta, MaybePromotedScalar alpha,
     at::ScalarType out_dtype, OpParamCacheKeys& param_keys,
     std::optional<OpName> op_name_override, DispatchFn&& dispatch_fn) {
+  // BuildBaddbmmShlo() scales in the computation dtype, so materialize beta and
+  // alpha in that dtype instead of rounding them to out_dtype on the host.
+  const at::ScalarType compute_dtype = InferComputationDtype(out_dtype);
   std::optional<at::Tensor> beta_tensor;
   if (!beta.ValueMatchesExclude()) {
-    TT_ASSIGN_OR_RETURN(beta_tensor, beta.GetTensor(out_dtype));
+    TT_ASSIGN_OR_RETURN(beta_tensor, beta.GetTensor(compute_dtype));
   }
   std::optional<at::Tensor> alpha_tensor;
   if (!alpha.ValueMatchesExclude()) {
-    TT_ASSIGN_OR_RETURN(alpha_tensor, alpha.GetTensor(out_dtype));
+    TT_ASSIGN_OR_RETURN(alpha_tensor, alpha.GetTensor(compute_dtype));
   }
   return DispatchBaddbmm<ReturnType>(
       self, batch1, batch2, std::move(beta), std::move(beta_tensor),

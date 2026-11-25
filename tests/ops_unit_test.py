@@ -14239,6 +14239,181 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     expected = self_input * beta
     self.assert_close(golden_result=expected, torch_tpu_result=tpu_res.cpu())
 
+  def _assert_baddbmm_variants_close_tpu_vs_cpu(
+      self,
+      dtype: torch.dtype,
+      self_value: float,
+      batch1_value: float,
+      batch2_value: float,
+      beta: float,
+      alpha: float,
+  ) -> None:
+    """Checks functional, in-place and out= torch.baddbmm() against CPU.
+
+    Every tensor has shape (2, 2, 2) and is filled with one value, so each
+    element of the result is
+    `beta * self_value + alpha * 2 * batch1_value * batch2_value`.
+
+    Args:
+      dtype: The dtype of the three input tensors.
+      self_value: The value of each element of the input tensor.
+      batch1_value: The value of each element of the first batch of matrices.
+      batch2_value: The value of each element of the second batch of matrices.
+      beta: The multiplier for the input tensor.
+      alpha: The multiplier for the batched matrix product.
+    """
+    shape = (2, 2, 2)
+
+    def compute(variant: str, device: torch.device | str) -> torch.Tensor:
+      self_tensor = torch.full(shape, self_value, dtype=dtype).to(device)
+      batch1 = torch.full(shape, batch1_value, dtype=dtype).to(device)
+      batch2 = torch.full(shape, batch2_value, dtype=dtype).to(device)
+      if variant == "inplace":
+        return self_tensor.baddbmm_(batch1, batch2, beta=beta, alpha=alpha)
+      out = None
+      if variant == "out":
+        out = torch.empty(shape, dtype=dtype, device=device)
+      return torch.baddbmm(
+          self_tensor, batch1, batch2, beta=beta, alpha=alpha, out=out
+      )
+
+    for variant in ("functional", "inplace", "out"):
+      with self.subTest(variant=variant):
+        # Every case is exact in float32 and has a result that the dtype can
+        # represent, so TPU must match CPU exactly. The tolerances only need to
+        # be positive.
+        self.assert_close_tpu_vs_cpu(
+            functools.partial(compute, variant), rtol=1e-6, atol=1e-6
+        )
+
+  @parameterized.named_parameters(
+      # float16 cannot represent 70000 (its maximum is 65504), but it can
+      # represent the result 70000 * 0.125 = 8750 (rounded to 8752).
+      dict(
+          testcase_name="float16_alpha_above_dtype_max",
+          dtype=torch.float16,
+          self_value=0.0,
+          batch1_value=0.25,
+          batch2_value=0.25,
+          beta=0.0,
+          alpha=70000.0,
+      ),
+      # 70000 is also too large for beta: 70000 * 0.125 + 2 * 1 = 8752.
+      dict(
+          testcase_name="float16_beta_above_dtype_max",
+          dtype=torch.float16,
+          self_value=0.125,
+          batch1_value=1.0,
+          batch2_value=0.5,
+          beta=70000.0,
+          alpha=2.0,
+      ),
+      # 2 * 40000 = 80000 is above the float16 maximum, but the result
+      # -49984 + 80000 = 30016 is not (float16 rounds -50000 to -49984).
+      dict(
+          testcase_name="float16_scaled_product_above_dtype_max",
+          dtype=torch.float16,
+          self_value=-50000.0,
+          batch1_value=100.0,
+          batch2_value=200.0,
+          beta=1.0,
+          alpha=2.0,
+      ),
+      # bfloat16 rounds 1.005 to 1.0078125, which would give 201.5625 (rounded
+      # to 202) instead of 1.005 * 200 = 201.
+      dict(
+          testcase_name="bfloat16_alpha_not_representable",
+          dtype=torch.bfloat16,
+          self_value=0.0,
+          batch1_value=100.0,
+          batch2_value=1.0,
+          beta=0.0,
+          alpha=1.005,
+      ),
+      # 1.005 * 200 + 2 * 0.5 = 202. Rounding beta to 1.0078125 would give
+      # 201.5625 (rounded to 202) + 1 = 203.
+      dict(
+          testcase_name="bfloat16_beta_not_representable",
+          dtype=torch.bfloat16,
+          self_value=200.0,
+          batch1_value=1.0,
+          batch2_value=0.25,
+          beta=1.005,
+          alpha=2.0,
+      ),
+      # bfloat16 rounds the product 2 * 19 * 13.5 = 513 to 512, which would give
+      # 0 instead of -512 + 513 = 1.
+      dict(
+          testcase_name="bfloat16_product_not_representable",
+          dtype=torch.bfloat16,
+          self_value=-512.0,
+          batch1_value=19.0,
+          batch2_value=13.5,
+          beta=1.0,
+          alpha=1.0,
+      ),
+      # Case 2a (alpha=0, beta!=0): 70000 * 0.125 = 8750 (exact in float16).
+      dict(
+          testcase_name="float16_alpha_zero_beta_above_dtype_max",
+          dtype=torch.float16,
+          self_value=0.125,
+          batch1_value=1.0,
+          batch2_value=1.0,
+          beta=70000.0,
+          alpha=0.0,
+      ),
+      # Case 2a (alpha=0, beta!=0): 1.005 * 200 = 201 (exact in bfloat16).
+      dict(
+          testcase_name="bfloat16_alpha_zero_beta_not_representable",
+          dtype=torch.bfloat16,
+          self_value=200.0,
+          batch1_value=1.0,
+          batch2_value=1.0,
+          beta=1.005,
+          alpha=0.0,
+      ),
+      # Case 1 (beta=0, alpha=1): 2 * 100 * 1 = 200 (exact in bfloat16).
+      dict(
+          testcase_name="bfloat16_beta_zero_alpha_one",
+          dtype=torch.bfloat16,
+          self_value=0.0,
+          batch1_value=100.0,
+          batch2_value=1.0,
+          beta=0.0,
+          alpha=1.0,
+      ),
+  )
+  def test_baddbmm_half_precision_computes_in_float32(
+      self,
+      dtype: torch.dtype,
+      self_value: float,
+      batch1_value: float,
+      batch2_value: float,
+      beta: float,
+      alpha: float,
+  ):
+    """torch.baddbmm() on 16-bit floats should scale and add in float32."""
+    self._assert_baddbmm_variants_close_tpu_vs_cpu(
+        dtype, self_value, batch1_value, batch2_value, beta, alpha
+    )
+
+  @parameterized.named_parameters(
+      ("float16", torch.float16),
+      ("bfloat16", torch.bfloat16),
+  )
+  def test_baddbmm_half_precision_zero_beta_ignores_nan_input(
+      self, dtype: torch.dtype
+  ):
+    """torch.baddbmm() with zero beta should ignore NaN 16-bit input."""
+    self._assert_baddbmm_variants_close_tpu_vs_cpu(
+        dtype,
+        self_value=float("nan"),
+        batch1_value=1.0,
+        batch2_value=1.0,
+        beta=0.0,
+        alpha=3.0,
+    )
+
   def test_elu_backward_is_result(self):
     """Tests torch.ops.aten.elu_backward with is_result=True and negative values."""
     grad_output = torch.tensor([-1.0, 2.0, -3.0], dtype=torch.float32)
