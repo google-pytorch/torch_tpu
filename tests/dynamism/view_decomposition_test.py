@@ -648,6 +648,244 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
       view_decomposition.decompose_into_view_sequence(t)
 
+  def test_decompose_unsupported_non_multiple_stride(self):
+    """Tests that non-multiple strides raise NotImplementedError."""
+    t = torch.arange(20.0).as_strided((2, 2), (3, 2))
+    with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
+      view_decomposition.decompose_into_view_sequence(t)
+    with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
+      view_decomposition.get_base_tensor(t)
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_strided_slices_static_replay(self):
+    """Tests static view decomposition and replay for non-unit slice steps."""
+    x_2d = torch.randn(4, 11)
+    self._assert_view_replay(
+        x_2d[:, ::2],
+        expected_base_shape=[4, 11],
+        expected_view_ops=[("slice", (1, 0, 11, 2))],
+    )
+    self._assert_view_replay(
+        x_2d[:, 1::2],
+        expected_base_shape=[4, 11],
+        expected_view_ops=[("slice", (1, 1, 10, 2))],
+    )
+
+    x_1d = torch.randn(10)
+    self._assert_view_replay(
+        x_1d[::2],
+        expected_base_shape=[9],
+        expected_view_ops=[("slice", (0, 0, 9, 2))],
+    )
+    self._assert_view_replay(
+        x_1d[1::2],
+        expected_base_shape=[10],
+        expected_view_ops=[("slice", (0, 1, 10, 2))],
+    )
+
+    x_3d = torch.randn(2, 8, 10)
+    self._assert_view_replay(
+        x_3d.transpose(1, 2)[:, ::2, :],
+        expected_base_shape=[2, 8, 10],
+        expected_view_ops=[
+            ("slice", (2, 0, 9, 2)),
+            ("permute", ([0, 2, 1],)),
+        ],
+    )
+    x_3d_odd = torch.randn(2, 11, 4)
+    self._assert_view_replay(
+        x_3d_odd[:, ::2, :],
+        expected_base_shape=[2, 11, 4],
+        expected_view_ops=[("slice", (1, 0, 11, 2))],
+    )
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_stray_unit_dim_stride_fallback(self):
+    """Tests fallback to unit-free tail when size-1 stride fails bounds."""
+    # Size-1 dim 0 has an arbitrary bogus stride (3 < size 8 of dim 2), so
+    # _build_body fails bounds validation on the stride-sorted layout and must
+    # fall back to _build_unit_free_tail.
+    base = torch.arange(32.0)
+    view = base.as_strided((1, 4, 8), (3, 8, 1)).transpose(1, 2)
+    self._assert_view_replay(
+        view,
+        expected_base_shape=[4, 8, 1],
+        expected_view_ops=[("permute", ([2, 1, 0],))],
+    )
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_dynamic_strided_views_no_parity_guards(self):
+    """Tests decomposing dynamic strided views adds no parity (% 2) guards."""
+    cases = [
+        ("even_dim1_step2", (4, 10), 1, lambda x: x[:, ::2], 1, 2),
+        ("odd_dim1_step2", (4, 11), 1, lambda x: x[:, ::2], 1, 2),
+        ("even_dim1_offset1_step2", (4, 10), 1, lambda x: x[:, 1::2], 1, 2),
+        ("odd_dim1_offset1_step2", (4, 11), 1, lambda x: x[:, 1::2], 1, 2),
+        (
+            "even_transpose_step2",
+            (2, 4, 10),
+            2,
+            lambda x: x.transpose(1, 2)[:, :, ::2],
+            2,
+            1,
+        ),
+        (
+            "odd_transpose_step2",
+            (2, 4, 11),
+            2,
+            lambda x: x.transpose(1, 2)[:, :, ::2],
+            2,
+            1,
+        ),
+        (
+            "even_transpose_inner_step2",
+            (2, 4, 10),
+            2,
+            lambda x: x.transpose(1, 2)[:, ::2, :],
+            2,
+            2,
+        ),
+        (
+            "odd_transpose_inner_step2",
+            (2, 4, 11),
+            2,
+            lambda x: x.transpose(1, 2)[:, ::2, :],
+            2,
+            2,
+        ),
+        (
+            "even_mid_dim1_step2",
+            (2, 10, 4),
+            1,
+            lambda x: x[:, ::2, :],
+            1,
+            2,
+        ),
+        (
+            "odd_mid_dim1_step2",
+            (2, 11, 4),
+            1,
+            lambda x: x[:, ::2, :],
+            1,
+            2,
+        ),
+        (
+            "mod0_dim1_step3",
+            (4, 12),
+            1,
+            lambda x: x[:, ::3],
+            1,
+            3,
+        ),
+        (
+            "mod1_dim1_step3",
+            (4, 10),
+            1,
+            lambda x: x[:, 1::3],
+            1,
+            3,
+        ),
+        (
+            "mod2_mid_dim1_step3",
+            (2, 11, 4),
+            1,
+            lambda x: x[:, 2::3, :],
+            1,
+            3,
+        ),
+    ]
+    for name, base_shape, dyn_dim, view_fn, slice_dim, expected_step in cases:
+      with self.subTest(case=name):
+        base_static = torch.randn(base_shape)
+        view_static = view_fn(base_static)
+        tensor_decomp = view_decomposition.decompose_into_view_sequence(
+            view_static
+        )
+        self.assertIsNotNone(tensor_decomp)
+        static_base_shape, _ = tensor_decomp
+        self.assertLessEqual(
+            list(view_decomposition.get_base_tensor(view_static).shape),
+            static_base_shape,
+        )
+
+        base_dyn = torch.randn(base_shape)
+        torch._dynamo.mark_dynamic(
+            base_dyn, dyn_dim, min=max(4, 2 * expected_step), max=100
+        )
+        view_node, node_decomp = self._capture_view_node(base_dyn, view_fn)
+        self._print_decomposition(view_node, node_decomp)
+        self._print_guards()
+
+        self.assertIsNotNone(node_decomp)
+        node_base_shape, node_view_ops = node_decomp
+        # On static even shapes (e.g. [2, 10, 4][:, ::2, :]), concrete strides
+        # [40, 8, 1] are divisible by 8 and may coalesce to [2, 5, 8], whereas
+        # the dynamic trace keeps [2, s0, 4] with step=2 to avoid a parity
+        # guard; both represent the same base storage layout.
+        expected_base = (
+            list(base_shape) if expected_step > 1 else static_base_shape
+        )
+        self._assert_base_shapes_match(node_base_shape, expected_base)
+        slice_ops = [args for op, args in node_view_ops if op == "slice"]
+        self.assertNotEmpty(slice_ops)
+        self.assertEqual(slice_ops[0][0], slice_dim)
+        self.assertEqual(slice_ops[0][3], expected_step)
+        self.assertEqual(self.guards_after, self.guards_before)
+
+  def _capture_placeholder_decompositions(
+      self, views: Sequence[torch.Tensor]
+  ) -> list[tuple[list[int | torch.SymInt], list[tuple[str, tuple[Any, ...]]]]]:
+    """Compiles a simple add on `views` and records placeholder decompositions."""
+    torch._dynamo.reset()
+    decomps = []
+
+    def fw_compiler(graph_module, example_inputs):
+      del example_inputs
+      for node in graph_module.graph.nodes:
+        if node.op == "placeholder" and isinstance(
+            node.meta.get("val"), torch.Tensor
+        ):
+          decomps.append(view_decomposition.decompose_into_view_sequence(node))
+          break
+      return graph_module
+
+    compiled_add = torch.compile(
+        lambda v: v + 1,
+        backend=aot_autograd(fw_compiler=fw_compiler),
+        dynamic=None,
+    )
+    for v in views:
+      utils.assert_close(compiled_add(v), v + 1)
+    return decomps
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_automatic_dynamic_opaque_outer_stride_slices(self):
+    """Tests opaque Dynamo outer strides with unit/strided inner slices."""
+    for view_fn, sizes, expected_steps in [
+        (
+            lambda b: b[:, 1:3, 2:6],
+            ((2, 20, 8), (2, 30, 8), (2, 40, 8)),
+            [1, 1],
+        ),
+        (
+            lambda b: b[:, ::2, 2:6],
+            ((2, 10, 8), (2, 11, 8), (2, 12, 8)),
+            [2, 1],
+        ),
+    ]:
+      with self.subTest(expected_steps=expected_steps):
+        decomps = self._capture_placeholder_decompositions(
+            [view_fn(torch.randn(shape)) for shape in sizes]
+        )
+        # Call 0 compiles static, call 1 compiles dynamic; call 2 must reuse it.
+        self.assertLen(decomps, 2)
+        dyn_base_shape, dyn_view_ops = decomps[1]
+        self.assertEqual(dyn_base_shape[2:], [8])
+        self.assertEqual(
+            [args[3] for op, args in dyn_view_ops if op == "slice"],
+            expected_steps,
+        )
+
   def test_get_base_tensor_sliced(self):
     """Tests get_base_tensor on sliced view tensor."""
     orig = torch.randn(16, 32, 64)
@@ -691,10 +929,20 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     for op_type, op_args in view_ops:
       if op_type == "slice":
         dim_idx, start, end, step = op_args
-        replayed = replayed.narrow(dim_idx, start, end - start)
-        self.assertEqual(step, 1)
-      else:
+        replayed = torch.ops.aten.slice.Tensor(
+            replayed, dim_idx, start, end, step
+        )
+      elif op_type == "select":
+        dim_idx, index = op_args
+        replayed = torch.ops.aten.select.int(replayed, dim_idx, index)
+      elif op_type == "view":
+        replayed = replayed.view(*op_args[0])
+      elif op_type == "expand":
+        replayed = replayed.expand(*op_args[0])
+      elif op_type == "permute":
         replayed = replayed.permute(*op_args[0])
+      else:
+        self.fail(f"Unexpected view op: {op_type}")
     self.assertEqual(replayed.shape, view.shape)
     self.assertEqual(replayed.data_ptr(), view.data_ptr())
     # Strides of size-1 dims are layout-irrelevant and may differ.
@@ -761,6 +1009,38 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
         expected_view_ops=[("slice", (0, 2, 3, 1)), ("slice", (1, 1, 5, 1))],
     )
 
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_unit_dim_from_unsqueeze_after_transpose(self):
+    """Tests a transposed view unsqueezed at dim 0, as in vision attention."""
+    q = torch.randn(256, 16 * 80).view(256, 16, 80)
+    view = q.transpose(0, 1).unsqueeze(0)  # [1, 16, 256, 80]
+    self.assertEqual(view.stride(), (1280, 80, 1280, 1))
+
+    self._assert_view_replay(
+        view,
+        expected_base_shape=[256, 16, 80, 1],
+        expected_view_ops=[("permute", ([3, 1, 0, 2],))],
+    )
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_dynamic_unit_dim_from_unsqueeze_after_transpose(self):
+    """Tests the dynamic variant of an unsqueezed transposed view."""
+    base_dyn = torch.randn(256, 16, 80)
+    torch._dynamo.mark_dynamic(base_dyn, 0, min=10, max=1024)
+
+    view_node, node_decomp = self._capture_view_node(
+        base_dyn, lambda x: x.transpose(0, 1).unsqueeze(0)
+    )
+    self._print_decomposition(view_node, node_decomp)
+    self._print_guards()
+
+    self.assertIsNotNone(node_decomp)
+    node_base_shape, node_view_ops = node_decomp
+    self.assertIsInstance(node_base_shape[0], torch.SymInt)
+    self._assert_base_shapes_match(node_base_shape, [256, 16, 80, 1])
+    self.assertEqual(node_view_ops, [("permute", ([3, 1, 0, 2],))])
+    self.assertEqual(self.guards_after, self.guards_before)
+
   def test_decompose_dynamic_unit_dim_transpose(self):
     """Tests a dynamic transposed view with a size-1 dim adds no guards."""
     base_dyn = torch.randn(1, 20, 8, 64)
@@ -826,6 +1106,162 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
         self.assertNotEqual(view.storage_offset(), 0)
         self.assertIsNone(view_decomposition.decompose_into_view_sequence(view))
         self.assertIs(view_decomposition.get_base_tensor(view), view)
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_zero_dim_view_with_storage_offset_decomposes(self):
+    """Tests that 0-d views with a storage offset decompose into select."""
+    cases = [
+        (torch.tensor([0.0, 1.0]).select(0, 1), [2], [("select", (0, 1))]),
+        (
+            torch.arange(6.0).view(2, 3)[1, 2],
+            [6],
+            [("select", (0, 5))],
+        ),
+    ]
+    for view, expected_base_shape, expected_ops in cases:
+      with self.subTest(view=view):
+        self.assertEqual(view.shape, ())
+        self.assertNotEqual(view.storage_offset(), 0)
+        self._assert_view_replay(
+            view,
+            expected_base_shape=expected_base_shape,
+            expected_view_ops=expected_ops,
+        )
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_broadcast_views(self):
+    """Tests broadcast views (stride == 0, size > 1) via expand."""
+    self._assert_view_replay(
+        torch.randn(1, 8).expand(4, 8),
+        expected_base_shape=[8, 1],
+        expected_view_ops=[
+            ("permute", ([1, 0],)),
+            ("expand", ([4, 8],)),
+        ],
+    )
+    self._assert_view_replay(
+        torch.randn(2, 1, 8).expand(2, 4, 8),
+        expected_base_shape=[2, 8, 1],
+        expected_view_ops=[
+            ("permute", ([0, 2, 1],)),
+            ("expand", ([2, 4, 8],)),
+        ],
+    )
+    self._assert_view_replay(
+        torch.randn(8).expand(2, 4, 8),
+        expected_base_shape=[8, 1, 1],
+        expected_view_ops=[
+            ("permute", ([1, 2, 0],)),
+            ("expand", ([2, 4, 8],)),
+        ],
+    )
+    self._assert_view_replay(
+        torch.arange(10.0)[5].expand(3, 4),
+        expected_base_shape=[6, 1],
+        expected_view_ops=[
+            ("slice", (0, 5, 6, 1)),
+            ("expand", ([3, 4],)),
+        ],
+    )
+    self._assert_view_replay(
+        torch.randn(10, 8)[2:5, 1:2].expand(3, 6),
+        expected_base_shape=[5, 8],
+        expected_view_ops=[
+            ("slice", (0, 2, 5, 1)),
+            ("slice", (1, 1, 2, 1)),
+            ("expand", ([3, 6],)),
+        ],
+    )
+
+    base_dyn = torch.randn(10, 1, 8)
+    torch._dynamo.mark_dynamic(base_dyn, 0, min=4, max=32)
+    view_node, node_decomp = self._capture_view_node(
+        base_dyn, lambda x: x.expand(x.shape[0], 4, 8)
+    )
+    self._print_decomposition(view_node, node_decomp)
+    self._print_guards()
+    self.assertIsNotNone(node_decomp)
+    dyn_base_shape, dyn_view_ops = node_decomp
+    self.assertEqual(dyn_base_shape[1:], [8, 1])
+    self.assertEqual([op for op, _ in dyn_view_ops], ["permute", "expand"])
+    self.assertEqual(self.guards_after, self.guards_before)
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_unaligned_flat_buffer_views(self):
+    """Tests unaligned 1D buffer slices reshaped into multi-dim views."""
+    flat = torch.arange(20000.0)
+    self._assert_view_replay(
+        flat[4103 : 4103 + 16 * 64].view(16, 64),
+        expected_base_shape=[4103 + 16 * 64],
+        expected_view_ops=[
+            ("slice", (0, 4103, 4103 + 16 * 64, 1)),
+            ("view", ([16, 64],)),
+        ],
+    )
+    self._assert_view_replay(
+        flat[4103 : 4103 + 16 * 64].view(16, 64).t(),
+        expected_base_shape=[4103 + 16 * 64],
+        expected_view_ops=[
+            ("slice", (0, 4103, 4103 + 16 * 64, 1)),
+            ("view", ([16, 64],)),
+            ("permute", ([1, 0],)),
+        ],
+    )
+    self._assert_view_replay(
+        flat[4103 : 4103 + 16 * 64].view(1, 16, 64).expand(3, 16, 64),
+        expected_base_shape=[4103 + 16 * 64],
+        expected_view_ops=[
+            ("slice", (0, 4103, 4103 + 16 * 64, 1)),
+            ("view", ([16, 64, 1],)),
+            ("permute", ([2, 0, 1],)),
+            ("expand", ([3, 16, 64],)),
+        ],
+    )
+
+    for offset, shape_seq in [
+        (4103, ((8, 64), (12, 64), (16, 64))),
+        (5, ((16, 4), (16, 8), (16, 12))),
+    ]:
+      with self.subTest(offset=offset):
+        decomps = self._capture_placeholder_decompositions([
+            flat[offset : offset + rows * cols].view(rows, cols)
+            for rows, cols in shape_seq
+        ])
+        self.assertLen(decomps, 2)
+        dyn_base_shape, dyn_view_ops = decomps[1]
+        self.assertLen(dyn_base_shape, 1)
+        self.assertEqual([op for op, _ in dyn_view_ops], ["slice", "view"])
+
+  @absltest.skip("TODO(b/582377587): Enable with general view decomposition.")
+  def test_decompose_rope_cache_select_inner_stride(self):
+    """Tests select views with innermost stride != 1 and non-zero offset."""
+    rope_cache = torch.randn(20, 32, 2)
+    self._assert_view_replay(
+        rope_cache[..., 1],
+        expected_base_shape=[20, 64],
+        expected_view_ops=[("slice", (1, 1, 64, 2))],
+    )
+    self._assert_view_replay(
+        rope_cache[2:, ..., 1],
+        expected_base_shape=[20, 64],
+        expected_view_ops=[
+            ("slice", (0, 2, 20, 1)),
+            ("slice", (1, 1, 64, 2)),
+        ],
+    )
+
+    rope_dyn = torch.randn(20, 32, 2)
+    torch._dynamo.mark_dynamic(rope_dyn, 0, min=4, max=64)
+    view_node, node_decomp = self._capture_view_node(
+        rope_dyn, lambda r: r[..., 1]
+    )
+    self._print_decomposition(view_node, node_decomp)
+    self._print_guards()
+    self.assertIsNotNone(node_decomp)
+    dyn_base_shape, dyn_view_ops = node_decomp
+    self._assert_base_shapes_match(dyn_base_shape, [20, 64])
+    self.assertEqual(dyn_view_ops, [("slice", (1, 1, 64, 2))])
+    self.assertEqual(self.guards_after, self.guards_before)
 
   def test_delinearize_storage_offset_zero_dims(self):
     """Tests that a non-zero offset over zero dims raises, and 0 returns []."""

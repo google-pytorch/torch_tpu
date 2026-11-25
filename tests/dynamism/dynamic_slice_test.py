@@ -26,6 +26,7 @@ from typing import Any, NamedTuple
 
 from absl.testing import absltest
 import torch
+from torch._dynamo import testing as dynamo_testing
 from torch._dynamo.backends.common import aot_autograd
 import torch.nn.functional as F
 from torch_tpu._internal import testing as tt_testing
@@ -374,6 +375,263 @@ class HandleSliceLikeOpsPassTest(seed_test_utils.RepeatableTest):
       _capture_and_run_slice_pass(lambda x_in: F.pad(x_in, (-1, 2)), [x])
     self.assertIsInstance(cm.exception.inner_exception, NotImplementedError)
     self.assertIn("negative or dynamic pads", str(cm.exception.inner_exception))
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice lowering.")
+  def test_pass_adds_no_guards_for_strided_slice(self) -> None:
+    for hint in (10, 11):
+      x = torch.ones(2, hint)
+      torch._dynamo.mark_dynamic(x, 1, min=2, max=16)
+      for fn in (
+          lambda x_in: x_in[:, ::2],
+          lambda x_in: x_in[:, 1::2],
+      ):
+        result = _capture_and_run_slice_pass(fn, [x])
+        slice_node = self._assert_single_dynamic_slice(result)
+        self.assertEqual(slice_node.args[0].target, torch.ops.aten.view.default)
+        squeeze_nodes = list(
+            result.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.squeeze.dim
+            )
+        )
+        self.assertLen(squeeze_nodes, 1)
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice lowering.")
+  def test_pass_adds_no_guards_for_dynamic_start_strided_slice(self) -> None:
+    x = torch.ones(2, 12)
+    k = torch.ones(1, 3)
+    torch._dynamo.mark_dynamic(x, 1, min=8, max=16)
+    torch._dynamo.mark_dynamic(k, 1, min=1, max=6)
+    result = _capture_and_run_slice_pass(
+        lambda x_in, k_in: x_in[:, k_in.shape[-1] :: 2], [x, k]
+    )
+    slice_node = self._assert_single_dynamic_slice(result)
+    self.assertEqual(slice_node.args[0].target, torch.ops.aten.view.default)
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice lowering.")
+  def test_pass_empty_strided_slice_and_rejects_dynamic_step(self) -> None:
+    x = torch.ones(2, 10)
+    torch._dynamo.mark_dynamic(x, 1, min=6, max=16)
+    empty_res = _capture_and_run_slice_pass(lambda x_in: x_in[:, 5:3:2], [x])
+    slice_node = self._assert_single_dynamic_slice(empty_res)
+    self.assertEqual(slice_node.args[2][-1], 0)
+
+    k = torch.ones(1, 2)
+    torch._dynamo.mark_dynamic(k, 1, min=1, max=4)
+    with self.assertRaises(  # ASSERT_RAISES_OK=Compiler pass unit test.
+        torch._dynamo.exc.BackendCompilerFailed
+    ) as cm:
+      _capture_and_run_slice_pass(
+          lambda x_in, k_in: torch.ops.aten.slice.Tensor(
+              x_in, 1, 0, x_in.shape[1], k_in.shape[-1]
+          ),
+          [x, k],
+      )
+    self.assertIsInstance(cm.exception.inner_exception, NotImplementedError)
+    self.assertIn("step", str(cm.exception.inner_exception).lower())
+
+  @absltest.skip("TODO(b/582377587): Enable with slice_scatter lowering.")
+  def test_pass_lowers_slice_scatter_unit_and_strided(self) -> None:
+    x = torch.ones(2, 12)
+    k = torch.ones(1, 3)
+    torch._dynamo.mark_dynamic(x, 1, min=6, max=16)
+    torch._dynamo.mark_dynamic(k, 1, min=1, max=6)
+
+    # Unit start=0 scatter lowers to where without index_select.
+    s_unit = torch.ones(2, 3)
+    torch._dynamo.mark_dynamic(s_unit, 1, min=1, max=6)
+    res_unit = _capture_and_run_slice_pass(
+        lambda x_in, src_in: torch.ops.aten.slice_scatter.default(
+            x_in, src_in, 1, 0, src_in.shape[1], 1
+        ),
+        [x, s_unit],
+    )
+    self.assertEmpty(res_unit.new_guards)
+    self.assertEmpty(
+        list(
+            res_unit.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.index_select.default
+            )
+        )
+    )
+    self.assertLen(
+        list(
+            res_unit.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.where.self
+            )
+        ),
+        1,
+    )
+
+    # Strided 0 <= start < step lowers via phase folding without guards/gather.
+    s_phase = torch.ones(2, 5)
+    torch._dynamo.mark_dynamic(s_phase, 1, min=2, max=8)
+    res_phase = _capture_and_run_slice_pass(
+        lambda x_in, src_in: torch.ops.aten.slice_scatter.default(
+            x_in, src_in, 1, 1, x_in.shape[1], 2
+        ),
+        [x, s_phase],
+    )
+    self.assertEmpty(res_phase.new_guards)
+    self.assertEmpty(
+        list(
+            res_phase.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.index_select.default
+            )
+        )
+    )
+    self.assertLen(
+        list(
+            res_phase.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.where.self
+            )
+        ),
+        1,
+    )
+
+    # Dynamic start + step=2 lowers cleanly without guards.
+    s_dyn = torch.ones(2, 4)
+    torch._dynamo.mark_dynamic(s_dyn, 1, min=1, max=8)
+    res_dyn = _capture_and_run_slice_pass(
+        lambda x_in, src_in, k_in: torch.ops.aten.slice_scatter.default(
+            x_in,
+            src_in,
+            1,
+            k_in.shape[1],
+            k_in.shape[1] + src_in.shape[1] * 2,
+            2,
+        ),
+        [x, s_dyn, k],
+    )
+    self.assertEmpty(res_dyn.new_guards)
+    self.assertLen(
+        list(
+            res_dyn.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.index_select.default
+            )
+        ),
+        1,
+    )
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice_backward.")
+  def test_pass_slice_backward_strided_step_uses_scatter_and_rejects_dynamic(
+      self,
+  ) -> None:
+    x = torch.ones(2, 12)
+    g = torch.ones(2, 6)
+    torch._dynamo.mark_dynamic(x, 1, min=6, max=16)
+    torch._dynamo.mark_dynamic(g, 1, min=3, max=8)
+
+    result = _capture_and_run_slice_pass(
+        lambda g_in, x_in: torch.ops.aten.slice_backward.default(
+            g_in, x_in.shape, 1, 1, x_in.shape[1], 2
+        ),
+        [g, x],
+    )
+    self.assertEmpty(result.new_guards)
+    self.assertEmpty(
+        list(
+            result.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.slice_backward.default
+            )
+        )
+    )
+    self.assertEmpty(
+        list(
+            result.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.index_select.default
+            )
+        )
+    )
+    self.assertLen(
+        list(
+            result.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.where.self
+            )
+        ),
+        1,
+    )
+
+    k = torch.ones(1, 2)
+    torch._dynamo.mark_dynamic(k, 1, min=1, max=4)
+    with self.assertRaises(  # ASSERT_RAISES_OK=Compiler pass unit test.
+        torch._dynamo.exc.BackendCompilerFailed
+    ) as cm:
+      _capture_and_run_slice_pass(
+          lambda g_in, x_in, k_in: torch.ops.aten.slice_backward.default(
+              g_in, x_in.shape, 1, 0, x_in.shape[1], k_in.shape[-1]
+          ),
+          [g, x, k],
+      )
+    self.assertIsInstance(cm.exception.inner_exception, NotImplementedError)
+    self.assertIn("step", str(cm.exception.inner_exception).lower())
+
+  @absltest.skip("TODO(b/582377587): Enable with select_scatter lowering.")
+  def test_pass_lowers_select_scatter_and_select_backward(self) -> None:
+    x = torch.ones(2, 12, 4)
+    src = torch.ones(2, 4)
+    k = torch.ones(3)
+    torch._dynamo.mark_dynamic(x, 1, min=6, max=16)
+    torch._dynamo.mark_dynamic(k, 0, min=1, max=5)
+
+    res_scat = _capture_and_run_slice_pass(
+        lambda x_in, src_in: torch.ops.aten.select_scatter.default(
+            x_in, src_in, 1, -1
+        ),
+        [x, src],
+    )
+    self.assertEmpty(res_scat.new_guards)
+    self.assertEmpty(
+        list(
+            res_scat.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.select_scatter.default
+            )
+        )
+    )
+    self.assertEmpty(
+        list(
+            res_scat.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.index_select.default
+            )
+        )
+    )
+    self.assertLen(
+        list(
+            res_scat.gm.graph.find_nodes(
+                op="call_function", target=torch.ops.aten.where.self
+            )
+        ),
+        1,
+    )
+
+    for fn in (
+        lambda g_in, x_in, _k: torch.ops.aten.select_backward.default(
+            g_in, x_in.shape, 1, 0
+        ),
+        lambda g_in, x_in, _k: torch.ops.aten.select_backward.default(
+            g_in, x_in.shape, 1, -1
+        ),
+        lambda g_in, x_in, k_in: torch.ops.aten.select_backward.default(
+            g_in, x_in.shape, 1, k_in.shape[0]
+        ),
+    ):
+      res_bwd = _capture_and_run_slice_pass(fn, [src, x, k])
+      self.assertEmpty(res_bwd.new_guards)
+      self.assertEmpty(
+          list(
+              res_bwd.gm.graph.find_nodes(
+                  op="call_function",
+                  target=torch.ops.aten.select_backward.default,
+              )
+          )
+      )
+      self.assertLen(
+          list(
+              res_bwd.gm.graph.find_nodes(
+                  op="call_function", target=torch.ops.aten.where.self
+              )
+          ),
+          1,
+      )
 
 
 class ReplaceDynamicOutputBroadcastOpsPreGradPassTest(
@@ -765,6 +1023,417 @@ class BoundedDynamicSliceTest(seed_test_utils.RepeatableTest):
         self.assertIsNotNone(x2_tpu.grad)
         self.assertIsNotNone(x2_cpu.grad)
         utils.assert_close(x2_tpu.grad.cpu(), x2_cpu.grad)
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice lowering.")
+  def test_strided_slice_even_and_odd_no_recompile(self) -> None:
+    def gptj_rotary(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+      return x[Ellipsis, ::2], x[Ellipsis, 1::2]
+
+    cases = [
+        ("step2_returned", lambda x: x[Ellipsis, ::2]),
+        ("step2_mul", lambda x: x[Ellipsis, ::2] * 2.0),
+        ("offset1_step2_mul", lambda x: x[Ellipsis, 1::2] * 2.0),
+        ("interior_step2_mul", lambda x: x[Ellipsis, 1:-1:2] * 2.0),
+        ("gptj_rotary_pair", gptj_rotary),
+        (
+            "gptj_rotary_interleave",
+            lambda x: torch.cat([-x[Ellipsis, 1::2], x[Ellipsis, ::2]], dim=-1),
+        ),
+    ]
+    for name, fn in cases:
+      with self.subTest(case=name):
+        torch._dynamo.reset()
+        counter = dynamo_testing.CompileCounterWithBackend("tpu")
+        fn_tpu = torch.compile(fn, backend=counter, dynamic=None)
+        with torch.no_grad():
+          for n in (10, 11, 12, 13, 15, 16):
+            x_cpu = torch.arange(2 * 3 * n, dtype=torch.float32).reshape(
+                2, 3, n
+            )
+            x_tpu = x_cpu.to(self.device)
+            torch._dynamo.mark_dynamic(x_tpu, 2, min=6, max=32)
+            out_tpu = fn_tpu(x_tpu)
+            out_cpu = fn(x_cpu)
+            if isinstance(out_cpu, tuple):
+              self.assertIsInstance(out_tpu, tuple)
+              self.assertLen(out_tpu, len(out_cpu))
+              for t_tpu, t_cpu in zip(out_tpu, out_cpu, strict=True):
+                utils.assert_close(t_tpu.cpu(), t_cpu)
+            else:
+              utils.assert_close(out_tpu.cpu(), out_cpu)
+        self.assertEqual(counter.frame_count, 1)
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice lowering.")
+  def test_strided_slice_dynamic_start_no_recompile(self) -> None:
+    fn = lambda x, k: x[:, k.shape[-1] :: 2] * 2.0
+    torch._dynamo.reset()
+    counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fn_tpu = torch.compile(fn, backend=counter, dynamic=None)
+
+    with torch.no_grad():
+      for n, start_k in ((12, 2), (13, 3), (15, 4), (16, 5), (11, 2)):
+        x_cpu = torch.arange(4 * n, dtype=torch.float32).reshape(4, n)
+        k_cpu = torch.ones(1, start_k)
+        x_tpu = x_cpu.to(self.device)
+        k_tpu = k_cpu.to(self.device)
+        torch._dynamo.mark_dynamic(x_tpu, 1, min=6, max=24)
+        torch._dynamo.mark_dynamic(k_tpu, 1, min=2, max=6)
+        out_tpu = fn_tpu(x_tpu, k_tpu)
+        utils.assert_close(out_tpu.cpu(), fn(x_cpu, k_cpu))
+    self.assertEqual(counter.frame_count, 1)
+
+  @absltest.skip("TODO(b/582377587): Enable with strided dynamic view support.")
+  def test_dynamic_strided_view_as_graph_input_no_recompile(self) -> None:
+    fn = lambda v: v + 1.0
+    cases = [
+        ("slice_mid_step2", (2, 10, 4), 1, lambda b: b[:, ::2, :]),
+        (
+            "transpose_slice_step2",
+            (2, 8, 10, 4),
+            2,
+            lambda b: b.transpose(1, 2)[:, :, ::2, :],
+        ),
+        (
+            "transpose_slice_dyn_step2",
+            (2, 4, 10),
+            2,
+            lambda b: b.transpose(1, 2)[:, ::2, :],
+        ),
+    ]
+    for name, base_shape, dyn_dim, view_fn in cases:
+      with self.subTest(case=name):
+        torch._dynamo.reset()
+        counter = dynamo_testing.CompileCounterWithBackend("tpu")
+        fn_tpu = torch.compile(fn, backend=counter, dynamic=None)
+        compilations: list[int] = []
+        with torch.no_grad():
+          for n in (10, 11, 12, 13, 15, 16):
+            shape = list(base_shape)
+            shape[dyn_dim] = n
+            base_cpu = torch.arange(
+                torch.Size(shape).numel(), dtype=torch.float32
+            ).reshape(shape)
+            view_cpu = view_fn(base_cpu)
+            view_tpu = view_fn(base_cpu.to(self.device))
+            before = counter.frame_count
+            out_tpu = fn_tpu(view_tpu)
+            compilations.append(counter.frame_count - before)
+            utils.assert_close(out_tpu.cpu(), fn(view_cpu))
+        # Call 0 compiles static, call 1 compiles dynamic, calls 2..5 must not
+        # recompile across even or odd lengths.
+        self.assertEqual(compilations, [1, 1, 0, 0, 0, 0])
+
+  @absltest.skip("TODO(b/582377587): Enable with slice_scatter lowering.")
+  def test_inplace_strided_slice_mutation_even_and_odd_no_recompile(
+      self,
+  ) -> None:
+    def mut_even(x: torch.Tensor) -> torch.Tensor:
+      x[Ellipsis, ::2].add_(1.0)
+      return x
+
+    def mut_odd(x: torch.Tensor) -> torch.Tensor:
+      x[Ellipsis, 1::2].mul_(2.0)
+      return x
+
+    def mut_interior(x: torch.Tensor) -> torch.Tensor:
+      x[Ellipsis, 1:-1:2].add_(3.0)
+      return x
+
+    for name, fn in (
+        ("inplace_even", mut_even),
+        ("inplace_odd", mut_odd),
+        ("inplace_interior", mut_interior),
+    ):
+      with self.subTest(case=name):
+        torch._dynamo.reset()
+        counter = dynamo_testing.CompileCounterWithBackend("tpu")
+        fn_tpu = torch.compile(fn, backend=counter, dynamic=None)
+        with torch.no_grad():
+          for n in (10, 11, 12, 13, 15, 16):
+            x_cpu = torch.arange(2 * 3 * n, dtype=torch.float32).reshape(
+                2, 3, n
+            )
+            x_tpu = x_cpu.clone().to(self.device)
+            torch._dynamo.mark_dynamic(x_tpu, 2, min=6, max=32)
+            out_tpu = fn_tpu(x_tpu)
+            out_cpu = fn(x_cpu.clone())
+            utils.assert_close(out_tpu.cpu(), out_cpu)
+            utils.assert_close(x_tpu.cpu(), out_cpu)
+        self.assertEqual(counter.frame_count, 1)
+
+    # Dynamic unit-stride prefix mutation and dynamic-start strided scatter.
+    def mut_dyn_prefix(x: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+      x[Ellipsis, : k.shape[-1]].add_(5.0)
+      return x
+
+    def scatter_dyn_start(
+        x: torch.Tensor, src: torch.Tensor, k: torch.Tensor
+    ) -> torch.Tensor:
+      start = k.shape[-1] - 1
+      end = start + src.shape[-1] * 2
+      return torch.slice_scatter(x, src, dim=2, start=start, end=end, step=2)
+
+    torch._dynamo.reset()
+    prefix_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    compiled_prefix = torch.compile(
+        mut_dyn_prefix, backend=prefix_counter, dynamic=None
+    )
+    torch._dynamo.reset()
+    scatter_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    compiled_scatter = torch.compile(
+        scatter_dyn_start, backend=scatter_counter, dynamic=None
+    )
+    with torch.no_grad():
+      for n, k_len, src_len in (
+          (12, 3, 3),
+          (13, 4, 4),
+          (15, 5, 5),
+          (16, 3, 6),
+          (11, 2, 2),
+      ):
+        x_cpu = torch.arange(2 * 3 * n, dtype=torch.float32).reshape(2, 3, n)
+        # Keep k_len >= 2 so Dynamo doesn't specialize k_len == 1, while
+        # start = k_len - 1 exercises both odd (1, 3) and even (2, 4) starts.
+        k_cpu = torch.ones(1, k_len)
+        src_cpu = (
+            torch.arange(2 * 3 * src_len, dtype=torch.float32).reshape(
+                2, 3, src_len
+            )
+            + 1000.0
+        )
+
+        x_prefix_tpu = x_cpu.clone().to(self.device)
+        k_tpu = k_cpu.to(self.device)
+        torch._dynamo.mark_dynamic(x_prefix_tpu, 2, min=6, max=24)
+        torch._dynamo.mark_dynamic(k_tpu, 1, min=2, max=8)
+        out_prefix_tpu = compiled_prefix(x_prefix_tpu, k_tpu)
+        out_prefix_cpu = mut_dyn_prefix(x_cpu.clone(), k_cpu)
+        utils.assert_close(out_prefix_tpu.cpu(), out_prefix_cpu)
+        utils.assert_close(x_prefix_tpu.cpu(), out_prefix_cpu)
+
+        x_scat_tpu = x_cpu.to(self.device)
+        src_tpu = src_cpu.to(self.device)
+        torch._dynamo.mark_dynamic(x_scat_tpu, 2, min=6, max=24)
+        torch._dynamo.mark_dynamic(src_tpu, 2, min=2, max=10)
+        torch._dynamo.mark_dynamic(k_tpu, 1, min=2, max=8)
+        out_scat_tpu = compiled_scatter(x_scat_tpu, src_tpu, k_tpu)
+        out_scat_cpu = scatter_dyn_start(x_cpu, src_cpu, k_cpu)
+        utils.assert_close(out_scat_tpu.cpu(), out_scat_cpu)
+    self.assertEqual(prefix_counter.frame_count, 1)
+    self.assertEqual(scatter_counter.frame_count, 1)
+
+  @absltest.skip("TODO(b/582377587): Enable with slice_scatter lowering.")
+  def test_inplace_strided_slice_mutation_with_dynamic_outer_dim(
+      self,
+  ) -> None:
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      x[:, ::2].add_(1.0)
+      return x
+
+    torch._dynamo.reset()
+    counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fn_tpu = torch.compile(fn, backend=counter, dynamic=None)
+    with torch.no_grad():
+      for b, n in ((2, 10), (3, 11), (4, 12), (5, 13), (3, 15)):
+        x_cpu = torch.arange(b * n, dtype=torch.float32).reshape(b, n)
+        x_tpu = x_cpu.clone().to(self.device)
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=8)
+        torch._dynamo.mark_dynamic(x_tpu, 1, min=6, max=24)
+        out_tpu = fn_tpu(x_tpu)
+        out_cpu = fn(x_cpu.clone())
+        utils.assert_close(out_tpu.cpu(), out_cpu)
+        utils.assert_close(x_tpu.cpu(), out_cpu)
+    self.assertEqual(counter.frame_count, 1)
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice_backward.")
+  def test_strided_slice_backward_even_and_odd_no_recompile(self) -> None:
+    def pair_loss(x: torch.Tensor) -> torch.Tensor:
+      return (x[Ellipsis, ::2] * 2.0).sum() + (x[Ellipsis, 1::2] * 3.0).sum()
+
+    torch._dynamo.reset()
+    pair_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    pair_tpu = torch.compile(pair_loss, backend=pair_counter, dynamic=None)
+    for n in (10, 11, 12, 13, 15, 16):
+      x_base = torch.arange(2 * 3 * n, dtype=torch.float32).reshape(2, 3, n)
+      x_cpu = x_base.clone().requires_grad_(True)
+      pair_loss(x_cpu).backward()
+      x_tpu = x_base.clone().to(self.device).requires_grad_(True)
+      torch._dynamo.mark_dynamic(x_tpu, 2, min=6, max=32)
+      pair_tpu(x_tpu).backward()
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+    self.assertEqual(pair_counter.frame_count, 1)
+
+    def interior_strided_loss(x: torch.Tensor) -> torch.Tensor:
+      return (x[:, 1:-1:2] * 1.5).sum()
+
+    torch._dynamo.reset()
+    interior_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    interior_tpu = torch.compile(
+        interior_strided_loss, backend=interior_counter, dynamic=None
+    )
+    for n in (10, 11, 12, 13, 15, 16):
+      x_base = torch.arange(2 * n, dtype=torch.float32).reshape(2, n)
+      x_cpu = x_base.clone().requires_grad_(True)
+      interior_strided_loss(x_cpu).backward()
+      x_tpu = x_base.clone().to(self.device).requires_grad_(True)
+      torch._dynamo.mark_dynamic(x_tpu, 1, min=6, max=32)
+      interior_tpu(x_tpu).backward()
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+    self.assertEqual(interior_counter.frame_count, 1)
+
+    def scatter_loss(x: torch.Tensor, src: torch.Tensor) -> torch.Tensor:
+      out = torch.slice_scatter(x, src, dim=1, start=1, end=x.shape[1], step=2)
+      return (out * 2.5).sum()
+
+    torch._dynamo.reset()
+    scatter_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    scatter_tpu = torch.compile(
+        scatter_loss, backend=scatter_counter, dynamic=None
+    )
+    for n in (10, 11, 12, 13, 15, 16):
+      src_len = n // 2
+      x_base = torch.arange(2 * n, dtype=torch.float32).reshape(2, n)
+      src_base = (
+          torch.arange(2 * src_len, dtype=torch.float32).reshape(2, src_len)
+          + 100.0
+      )
+      x_cpu = x_base.clone().requires_grad_(True)
+      src_cpu = src_base.clone().requires_grad_(True)
+      scatter_loss(x_cpu, src_cpu).backward()
+
+      x_tpu = x_base.clone().to(self.device).requires_grad_(True)
+      src_tpu = src_base.clone().to(self.device).requires_grad_(True)
+      torch._dynamo.mark_dynamic(x_tpu, 1, min=6, max=32)
+      torch._dynamo.mark_dynamic(src_tpu, 1, min=3, max=16)
+      scatter_tpu(x_tpu, src_tpu).backward()
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+      utils.assert_close(src_tpu.grad.cpu(), src_cpu.grad)
+    self.assertEqual(scatter_counter.frame_count, 1)
+
+  @absltest.skip("TODO(b/582377587): Enable with select_scatter lowering.")
+  def test_select_scatter_and_select_backward_no_recompile(self) -> None:
+    def select_mut_loss(x: torch.Tensor) -> torch.Tensor:
+      y = x.clone()
+      y.select(1, -1).mul_(3.0)
+      return y.sum()
+
+    torch._dynamo.reset()
+    mut_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    mut_tpu = torch.compile(select_mut_loss, backend=mut_counter, dynamic=None)
+    for n in (6, 9, 10, 13):
+      x_base = torch.arange(2 * n * 4, dtype=torch.float32).reshape(2, n, 4)
+      x_cpu = x_base.clone().requires_grad_(True)
+      select_mut_loss(x_cpu).backward()
+      x_tpu = x_base.clone().to(self.device).requires_grad_(True)
+      torch._dynamo.mark_dynamic(x_tpu, 1, min=4, max=24)
+      mut_tpu(x_tpu).backward()
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+    self.assertEqual(mut_counter.frame_count, 1)
+
+    def select_dyn_idx_bwd(x: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+      return (
+          x[:, 0, :].sum()
+          + x[:, -1, :].sum() * 2.0
+          + x[:, k.shape[0], :].sum() * 4.0
+      )
+
+    torch._dynamo.reset()
+    bwd_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    bwd_tpu = torch.compile(
+        select_dyn_idx_bwd, backend=bwd_counter, dynamic=None
+    )
+    for n, idx in ((6, 2), (9, 4), (10, 3), (13, 5)):
+      x_base = torch.arange(2 * n * 4, dtype=torch.float32).reshape(2, n, 4)
+      k_cpu = torch.ones(idx)
+      x_cpu = x_base.clone().requires_grad_(True)
+      select_dyn_idx_bwd(x_cpu, k_cpu).backward()
+
+      x_tpu = x_base.clone().to(self.device).requires_grad_(True)
+      k_tpu = k_cpu.to(self.device)
+      torch._dynamo.mark_dynamic(x_tpu, 1, min=4, max=24)
+      torch._dynamo.mark_dynamic(k_tpu, 0, min=1, max=8)
+      bwd_tpu(x_tpu, k_tpu).backward()
+      utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+    self.assertEqual(bwd_counter.frame_count, 1)
+
+  @absltest.skip("TODO(b/582377587): Enable with strided slice lowering.")
+  def test_non_power_of_two_step3_unaligned_bucket_no_recompile(self) -> None:
+    """Verifies step=3 across n % 3 in {0, 1, 2} on unaligned bucket max=16."""
+    # max=16 is not divisible by 3 (16 -> aligned 18), exercising bucket tail
+    # padding on forward slice and post-scatter tail trimming on write-back.
+    fwd_fn = lambda x: (
+        x[Ellipsis, ::3] * 2.0,
+        x[Ellipsis, 1::3] + 1.0,
+        x[Ellipsis, 2::3] - 3.0,
+    )
+    torch._dynamo.reset()
+    fwd_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    fwd_tpu = torch.compile(fwd_fn, backend=fwd_counter, dynamic=None)
+
+    def mut_step3(x: torch.Tensor) -> torch.Tensor:
+      x[Ellipsis, ::3].add_(10.0)
+      x[Ellipsis, 2::3].mul_(2.0)
+      return x
+
+    torch._dynamo.reset()
+    mut_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    mut_tpu = torch.compile(mut_step3, backend=mut_counter, dynamic=None)
+
+    def bwd_step3(x: torch.Tensor) -> torch.Tensor:
+      return (
+          (x[Ellipsis, ::3] * 2.0).sum()
+          + (x[Ellipsis, 1::3] * 3.0).sum()
+          + (x[Ellipsis, 2::3] * 4.0).sum()
+      )
+
+    torch._dynamo.reset()
+    bwd_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    bwd_tpu = torch.compile(bwd_step3, backend=bwd_counter, dynamic=None)
+
+    for n in (9, 10, 11, 12, 13, 14):
+      x_base = torch.arange(2 * 3 * n, dtype=torch.float32).reshape(2, 3, n)
+
+      with torch.no_grad():
+        x_fwd_tpu = x_base.to(self.device)
+        torch._dynamo.mark_dynamic(x_fwd_tpu, 2, min=6, max=16)
+        out_fwd_tpu = fwd_tpu(x_fwd_tpu)
+        out_fwd_cpu = fwd_fn(x_base)
+        for t_tpu, t_cpu in zip(out_fwd_tpu, out_fwd_cpu, strict=True):
+          utils.assert_close(t_tpu.cpu(), t_cpu)
+
+        x_mut_tpu = x_base.clone().to(self.device)
+        torch._dynamo.mark_dynamic(x_mut_tpu, 2, min=6, max=16)
+        out_mut_tpu = mut_tpu(x_mut_tpu)
+        out_mut_cpu = mut_step3(x_base.clone())
+        utils.assert_close(out_mut_tpu.cpu(), out_mut_cpu)
+        utils.assert_close(x_mut_tpu.cpu(), out_mut_cpu)
+
+      x_bwd_cpu = x_base.clone().requires_grad_(True)
+      bwd_step3(x_bwd_cpu).backward()
+      x_bwd_tpu = x_base.clone().to(self.device).requires_grad_(True)
+      torch._dynamo.mark_dynamic(x_bwd_tpu, 2, min=6, max=16)
+      bwd_tpu(x_bwd_tpu).backward()
+      utils.assert_close(x_bwd_tpu.grad.cpu(), x_bwd_cpu.grad)
+
+    self.assertEqual(fwd_counter.frame_count, 1)
+    self.assertEqual(mut_counter.frame_count, 1)
+    self.assertEqual(bwd_counter.frame_count, 1)
+
+    # Also verify step=3 dynamic view passed as a graph input (n % 3 = 0, 1, 2).
+    torch._dynamo.reset()
+    in_counter = dynamo_testing.CompileCounterWithBackend("tpu")
+    in_tpu = torch.compile(lambda v: v + 5.0, backend=in_counter, dynamic=None)
+    in_compiles: list[int] = []
+    with torch.no_grad():
+      for n in (8, 11, 12, 13, 14, 15):
+        b_cpu = torch.arange(2 * n * 4, dtype=torch.float32).reshape(2, n, 4)
+        v_cpu = b_cpu[:, 1::3, :]
+        v_tpu = b_cpu.to(self.device)[:, 1::3, :]
+        before = in_counter.frame_count
+        out_in_tpu = in_tpu(v_tpu)
+        in_compiles.append(in_counter.frame_count - before)
+        utils.assert_close(out_in_tpu.cpu(), v_cpu + 5.0)
+    self.assertEqual(in_compiles, [1, 1, 0, 0, 0, 0])
 
 
 if __name__ == "__main__":
