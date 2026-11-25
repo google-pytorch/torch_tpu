@@ -33,6 +33,7 @@
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/macro_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -100,13 +101,48 @@ inline absl::StatusOr<Dimensions> ConcreteSizeToDimensions(
   return CopyIntVector(*dims);
 }
 
+// Returns whether `dtype` is a shell dtype with no defined value conversions
+// (`float4_e2m1fn_x2`, `bits*`, or sub-byte integers), delegating to PyTorch's
+// `c10::isShellType` on PyTorch >= 2.16.
+[[nodiscard]] inline bool IsShellDtype(const at::ScalarType dtype) {
+#if TT_TORCH_VERSION_GE(2, 16)
+  return c10::isShellType(dtype);
+#else
+  // PyTorch < 2.16 (OSS multi-ABI wheel glues 2.11-2.15) does not define
+  // `c10::isShellType` or `c10::isSubByteIntType`.
+  if (dtype == at::ScalarType::Float4_e2m1fn_x2 || c10::isBitsType(dtype)) {
+    return true;
+  }
+  switch (dtype) {
+    case at::ScalarType::UInt1:
+    case at::ScalarType::UInt2:
+    case at::ScalarType::UInt3:
+    case at::ScalarType::UInt4:
+    case at::ScalarType::UInt5:
+    case at::ScalarType::UInt6:
+    case at::ScalarType::UInt7:
+    case at::ScalarType::Int1:
+    case at::ScalarType::Int2:
+    case at::ScalarType::Int3:
+    case at::ScalarType::Int4:
+    case at::ScalarType::Int5:
+    case at::ScalarType::Int6:
+    case at::ScalarType::Int7:
+      return true;
+    default:
+      return false;
+  }
+#endif
+}
+
 // Verifies that result_dtype matches or can be safely cast to the out tensor's
 // dtype according to PyTorch type casting rules.
 //
 // If allow_out_dtype_cast is false, requires out.scalar_type() == result_dtype
 // (matching PyTorch TensorIterator's check_all_same_dtype(true)).
 // Otherwise, verifies that result_dtype can be safely cast to out.scalar_type()
-// via c10::canCast.
+// via c10::canCast, and then rejects casts involving shell dtypes (matching
+// PyTorch TensorIterator's check_shell_dtype_cast).
 inline absl::Status ValidateOutDtype(const at::Tensor& out,
                                      const at::ScalarType result_dtype,
                                      const bool allow_out_dtype_cast = true) {
@@ -121,6 +157,12 @@ inline absl::Status ValidateOutDtype(const at::Tensor& out,
       << "result type " << ToString(result_dtype)
       << " can't be cast to the desired output type "
       << ToString(out.scalar_type());
+  TT_RET_CHECK(
+      out.scalar_type() == result_dtype ||
+          (!IsShellDtype(result_dtype) && !IsShellDtype(out.scalar_type())),
+      error::kPythonNotImplementedError)
+      << "casting from " << ToString(result_dtype) << " to "
+      << ToString(out.scalar_type()) << " is not supported";
   return absl::OkStatus();
 }
 

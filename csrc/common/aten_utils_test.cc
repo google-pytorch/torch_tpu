@@ -16,17 +16,26 @@
 
 #include "csrc/common/aten_utils.h"
 
+#include "ATen/ops/empty.h"
+#include "absl/status/status_matchers.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
+#include "c10/core/TensorOptions.h"
 #include "c10/util/DimVector.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/error_utils.h"
 #include "csrc/common/status_test_utils.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
+
+using absl_testing::IsOk;
+using absl_testing::StatusIs;
+using testing::HasSubstr;
 
 TEST(AtenUtilsTest, ConcreteSizeToDimensionsConvertsConcreteSizes) {
   const c10::SymDimVector sizes = {c10::SymInt(2), c10::SymInt(0),
@@ -128,6 +137,161 @@ TEST(AtenUtilsTest, InferComputationDtypeIntegralAndUnsigned) {
                             InferComputationDtype(elem_type));
     EXPECT_EQ(comp_type, elem_type);
   }
+}
+
+TEST(AtenUtilsTest, IsShellDtypeIdentifiesShellAndNonShellDtypes) {
+  for (const at::ScalarType shell_dtype : {
+           at::ScalarType::Float4_e2m1fn_x2,
+           at::ScalarType::Bits1x8,
+           at::ScalarType::Bits2x4,
+           at::ScalarType::Bits4x2,
+           at::ScalarType::Bits8,
+           at::ScalarType::Bits16,
+           at::ScalarType::UInt1,
+           at::ScalarType::UInt2,
+           at::ScalarType::UInt3,
+           at::ScalarType::UInt4,
+           at::ScalarType::UInt5,
+           at::ScalarType::UInt6,
+           at::ScalarType::UInt7,
+           at::ScalarType::Int1,
+           at::ScalarType::Int2,
+           at::ScalarType::Int3,
+           at::ScalarType::Int4,
+           at::ScalarType::Int5,
+           at::ScalarType::Int6,
+           at::ScalarType::Int7,
+       }) {
+    EXPECT_TRUE(IsShellDtype(shell_dtype)) << shell_dtype;
+  }
+
+  for (const at::ScalarType non_shell_dtype : {
+           at::ScalarType::Bool,
+           at::ScalarType::Byte,
+           at::ScalarType::Char,
+           at::ScalarType::Short,
+           at::ScalarType::Int,
+           at::ScalarType::Long,
+           at::ScalarType::UInt16,
+           at::ScalarType::UInt32,
+           at::ScalarType::UInt64,
+           at::ScalarType::Half,
+           at::ScalarType::BFloat16,
+           at::ScalarType::Float,
+           at::ScalarType::Double,
+           at::ScalarType::Float8_e4m3fn,
+           at::ScalarType::Float8_e5m2,
+           at::ScalarType::Float8_e8m0fnu,
+           at::ScalarType::ComplexFloat,
+           at::ScalarType::ComplexDouble,
+       }) {
+    EXPECT_FALSE(IsShellDtype(non_shell_dtype)) << non_shell_dtype;
+  }
+}
+
+TEST(AtenUtilsTest, ValidateOutDtypeShellDtypesAndOrdering) {
+  // Same-dtype shell pass-through is allowed regardless of
+  // allow_out_dtype_cast.
+  for (const at::ScalarType shell_dtype : {
+           at::ScalarType::Float4_e2m1fn_x2,
+           at::ScalarType::Bits8,
+           at::ScalarType::Int4,
+           at::ScalarType::UInt2,
+       }) {
+    const at::Tensor out =
+        at::empty({4}, at::TensorOptions().dtype(shell_dtype));
+    EXPECT_THAT(
+        ValidateOutDtype(out, shell_dtype, /*allow_out_dtype_cast=*/true),
+        IsOk());
+    EXPECT_THAT(
+        ValidateOutDtype(out, shell_dtype, /*allow_out_dtype_cast=*/false),
+        IsOk());
+  }
+
+  // Shell-as-output casts that c10::canCast permits raise NotImplementedError.
+  EXPECT_THAT(
+      ValidateOutDtype(at::empty({4}, at::TensorOptions().dtype(
+                                          at::ScalarType::Float4_e2m1fn_x2)),
+                       at::ScalarType::Float),
+      StatusIs(
+          error::kPythonNotImplementedError,
+          HasSubstr(
+              "casting from float32 to float4_e2m1fn_x2 is not supported")));
+  EXPECT_THAT(
+      ValidateOutDtype(
+          at::empty({4}, at::TensorOptions().dtype(at::ScalarType::Bits8)),
+          at::ScalarType::Float),
+      StatusIs(error::kPythonNotImplementedError,
+               HasSubstr("casting from float32 to bits8 is not supported")));
+  EXPECT_THAT(
+      ValidateOutDtype(
+          at::empty({4}, at::TensorOptions().dtype(at::ScalarType::Int4)),
+          at::ScalarType::Int),
+      StatusIs(error::kPythonNotImplementedError,
+               HasSubstr("casting from int32 to int4 is not supported")));
+  EXPECT_THAT(
+      ValidateOutDtype(
+          at::empty({4}, at::TensorOptions().dtype(at::ScalarType::UInt2)),
+          at::ScalarType::Int),
+      StatusIs(error::kPythonNotImplementedError,
+               HasSubstr("casting from int32 to uint2 is not supported")));
+
+  EXPECT_THAT(
+      ValidateOutDtype(
+          at::empty({4}, at::TensorOptions().dtype(at::ScalarType::Int4)),
+          at::ScalarType::Float),
+      StatusIs(error::kPythonNotImplementedError,
+               HasSubstr("casting from float32 to int4 is not supported")));
+
+  // Shell-as-source casts that c10::canCast permits raise NotImplementedError.
+  const at::Tensor float_out =
+      at::empty({4}, at::TensorOptions().dtype(at::ScalarType::Float));
+  EXPECT_THAT(
+      ValidateOutDtype(float_out, at::ScalarType::Float4_e2m1fn_x2),
+      StatusIs(
+          error::kPythonNotImplementedError,
+          HasSubstr(
+              "casting from float4_e2m1fn_x2 to float32 is not supported")));
+  EXPECT_THAT(
+      ValidateOutDtype(float_out, at::ScalarType::Bits8),
+      StatusIs(error::kPythonNotImplementedError,
+               HasSubstr("casting from bits8 to float32 is not supported")));
+  EXPECT_THAT(
+      ValidateOutDtype(float_out, at::ScalarType::Int4),
+      StatusIs(error::kPythonNotImplementedError,
+               HasSubstr("casting from int4 to float32 is not supported")));
+
+  // c10::canCast runs before the shell-dtype check, so casts forbidden by
+  // canCast keep returning kInvalidArgument (RuntimeError).
+  EXPECT_THAT(
+      ValidateOutDtype(at::empty({4}, at::TensorOptions().dtype(
+                                          at::ScalarType::Float4_e2m1fn_x2)),
+                       at::ScalarType::ComplexFloat),
+      StatusIs(error::kInvalidArgument, HasSubstr("can't be cast")));
+  EXPECT_THAT(
+      ValidateOutDtype(
+          at::empty({4}, at::TensorOptions().dtype(at::ScalarType::Int)),
+          at::ScalarType::Float4_e2m1fn_x2),
+      StatusIs(error::kInvalidArgument, HasSubstr("can't be cast")));
+  EXPECT_THAT(
+      ValidateOutDtype(
+          at::empty({4}, at::TensorOptions().dtype(at::ScalarType::Bool)),
+          at::ScalarType::Float4_e2m1fn_x2),
+      StatusIs(error::kInvalidArgument, HasSubstr("can't be cast")));
+  EXPECT_THAT(
+      ValidateOutDtype(
+          at::empty({4}, at::TensorOptions().dtype(at::ScalarType::Int4)),
+          at::ScalarType::ComplexFloat),
+      StatusIs(error::kInvalidArgument, HasSubstr("can't be cast")));
+
+  // allow_out_dtype_cast=false still enforces exact dtype equality first.
+  EXPECT_THAT(
+      ValidateOutDtype(at::empty({4}, at::TensorOptions().dtype(
+                                          at::ScalarType::Float4_e2m1fn_x2)),
+                       at::ScalarType::Float, /*allow_out_dtype_cast=*/false),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected the output dtype to be float32, got "
+                         "float4_e2m1fn_x2")));
 }
 
 }  // namespace
