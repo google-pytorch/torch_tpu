@@ -35,16 +35,16 @@
 namespace torch_tpu::kiln::internal {
 
 template <typename T>
-inline mlir::MemRefType MemRefTypeOf(const T& val) {
+[[nodiscard]] inline mlir::MemRefType MemRefTypeOf(const T& val) {
   return llvm::cast<mlir::MemRefType>(unwrap(val).getType());
 }
 
 // Get the mlir::VectorType corresponding to the given Shape.
-mlir::VectorType ToMlirVectorType(const Shape& shape);
+[[nodiscard]] mlir::VectorType ToMlirVectorType(const Shape& shape);
 
 // Get the mlir::MemRefType corresponding to the given Shape and MemorySpace.
-mlir::MemRefType ToMlirMemRefType(const Shape& shape, MemorySpace space,
-                                  mlir::MLIRContext* absl_nonnull ctx);
+[[nodiscard]] mlir::MemRefType ToMlirMemRefType(
+    const Shape& shape, MemorySpace space, mlir::MLIRContext* absl_nonnull ctx);
 
 enum class IndexBounds {
   kNonNegative,
@@ -57,24 +57,26 @@ void ValidateI32IndexArg(const IndexArg& arg, IndexBounds bounds,
                          std::string_view name);
 
 // Validates `arg` against `bounds` and converts it to an i32 mlir::Value.
-mlir::Value ToValidatedI32Value(const IndexArg& arg, IndexBounds bounds,
-                                std::string_view name);
+[[nodiscard]] mlir::Value ToValidatedI32Value(const IndexArg& arg,
+                                              IndexBounds bounds,
+                                              std::string_view name);
 
 // Converts an optional I32 IndexArg to an optional Scalar, validating the
 // IndexArg in the process so literals are not rematerialized on each use.
-std::optional<Scalar> OptionalI32Scalar(const std::optional<IndexArg>& arg,
-                                        std::string_view name);
+[[nodiscard]] std::optional<Scalar> OptionalI32Scalar(
+    const std::optional<IndexArg>& arg, std::string_view name);
 
 // Unwraps an optional Scalar to its underlying mlir::Value, or returns nullptr
 // if it is std::nullopt.
-mlir::Value UnwrapOptionalScalar(const std::optional<Scalar>& s);
+[[nodiscard]] mlir::Value UnwrapOptionalScalar(const std::optional<Scalar>& s);
 
-mlir::Value OptionalI32Value(const std::optional<IndexArg>& arg,
-                             std::string_view name);
+[[nodiscard]] mlir::Value OptionalI32Value(const std::optional<IndexArg>& arg,
+                                           std::string_view name);
 
 // Converts `arg` to an `index`-typed mlir::Value: an `arith.constant` for
 // integer literals, otherwise an `arith.index_cast[ui]` of the Scalar.
-mlir::Value ToIndex(mlir::ImplicitLocOpBuilder& b, const IndexArg& arg);
+[[nodiscard]] mlir::Value ToIndex(mlir::ImplicitLocOpBuilder& b,
+                                  const IndexArg& arg);
 
 }  // namespace torch_tpu::kiln::internal
 

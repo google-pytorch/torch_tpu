@@ -42,7 +42,7 @@ using ControlFlowValues = llvm::SmallVector<ControlFlowValue, 4>;
 // Builds an `scf.if` with one result per value that the branches return. The
 // result types come from `then_body`; `else_body` must return as many values,
 // each with the same kind (`Scalar` or `Tile`), dtype and shape.
-ControlFlowValues IfWithResults(
+[[nodiscard]] ControlFlowValues IfWithResults(
     Scalar cond, absl::FunctionRef<ControlFlowValues()> then_body,
     absl::FunctionRef<ControlFlowValues()> else_body);
 
@@ -53,8 +53,12 @@ struct IfResult;
 
 template <typename T>
 struct IfSingleResult {
-  static ControlFlowValues Pack(const T& v) { return {ControlFlowValue(v)}; }
-  static T Unpack(const ControlFlowValues& v) { return std::get<T>(v[0]); }
+  [[nodiscard]] static ControlFlowValues Pack(const T& v) {
+    return {ControlFlowValue(v)};
+  }
+  [[nodiscard]] static T Unpack(const ControlFlowValues& v) {
+    return std::get<T>(v[0]);
+  }
 };
 
 template <>
@@ -70,14 +74,14 @@ struct IfResult<std::tuple<Ts...>> {
                  ...),
                 "If() branches may only return tuples of Tile and Scalar");
 
-  static ControlFlowValues Pack(const std::tuple<Ts...>& t) {
+  [[nodiscard]] static ControlFlowValues Pack(const std::tuple<Ts...>& t) {
     return std::apply(
         [](const Ts&... v) {
           return ControlFlowValues{ControlFlowValue(v)...};
         },
         t);
   }
-  static std::tuple<Ts...> Unpack(const ControlFlowValues& v) {
+  [[nodiscard]] static std::tuple<Ts...> Unpack(const ControlFlowValues& v) {
     return [&v]<size_t... I>(std::index_sequence<I...>) {
       return std::tuple<Ts...>(std::get<Ts>(v[I])...);
     }(std::index_sequence_for<Ts...>{});
@@ -109,7 +113,7 @@ void If(Scalar cond, absl::FunctionRef<void()> then_body,
 template <typename ThenFn, typename ElseFn,
           typename Result = std::invoke_result_t<ThenFn&>>
   requires(!std::is_void_v<Result>)  // Void branches use the overload above.
-Result If(Scalar cond, ThenFn&& then_body, ElseFn&& else_body) {
+[[nodiscard]] Result If(Scalar cond, ThenFn&& then_body, ElseFn&& else_body) {
   static_assert(std::is_same_v<Result, std::invoke_result_t<ElseFn&>>,
                 "If() branches must return the same type");
   using Converter = internal::IfResult<Result>;

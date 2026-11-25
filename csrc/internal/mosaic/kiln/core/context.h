@@ -33,10 +33,10 @@ namespace torch_tpu::kiln::internal {
 
 // Returns the active MLIR ImplicitLocOpBuilder for the current thread.
 // Must be called within an active BuildKernel() or IndexMap execution.
-mlir::ImplicitLocOpBuilder& CurrentBuilder();
+[[nodiscard]] mlir::ImplicitLocOpBuilder& CurrentBuilder();
 
-mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx);
-mlir::Type ToMlirType(DType dtype);
+[[nodiscard]] mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx);
+[[nodiscard]] mlir::Type ToMlirType(DType dtype);
 
 // CHECK-fails unless the element type of `handle` (or its type, if it isn't
 // shaped) is the IR type of `dtype`. `type_name` names the Kiln type being
@@ -45,20 +45,22 @@ void CheckElementType(ValueHandle handle, DType dtype,
                       std::string_view type_name);
 
 template <typename T>
-inline mlir::Value unwrap(const T& value) {
+[[nodiscard]] inline mlir::Value unwrap(const T& value) {
   return value.handle().value();
 }
 
 template <typename T, typename... Args>
-T wrap(mlir::Value value, Args&&... args) {
+[[nodiscard]] T wrap(mlir::Value value, Args&&... args) {
   return T(ValueHandle(value), std::forward<Args>(args)...);
 }
 
-mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,
-                              Literal literal);
+[[nodiscard]] mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b,
+                                            DType dtype, Literal literal);
 
-mlir::Value EmitCast(mlir::Value value, DType source, DType target);
-mlir::Value EmitBitcast(mlir::Value value, DType source, DType target);
+[[nodiscard]] mlir::Value EmitCast(mlir::Value value, DType source,
+                                   DType target);
+[[nodiscard]] mlir::Value EmitBitcast(mlir::Value value, DType source,
+                                      DType target);
 
 }  // namespace torch_tpu::kiln::internal
 

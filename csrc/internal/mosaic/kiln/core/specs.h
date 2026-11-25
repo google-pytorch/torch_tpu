@@ -68,15 +68,16 @@ struct BasicBlockSpec {
   Shape shape;
   IndexMap map;
 
-  static BasicBlockSpec<Role, MemorySpace::kVmem> Vmem(
+  [[nodiscard]] static BasicBlockSpec<Role, MemorySpace::kVmem> Vmem(
       Shape shape, IndexMap map = IndexMap()) {
     return {std::move(shape), std::move(map)};
   }
-  static BasicBlockSpec<Role, MemorySpace::kSmem> Smem(
+  [[nodiscard]] static BasicBlockSpec<Role, MemorySpace::kSmem> Smem(
       Shape shape, IndexMap map = IndexMap()) {
     return {std::move(shape), std::move(map)};
   }
-  static BasicBlockSpec<Role, MemorySpace::kHbm> Hbm(Shape shape) {
+  [[nodiscard]] static BasicBlockSpec<Role, MemorySpace::kHbm> Hbm(
+      Shape shape) {
     return {std::move(shape), IndexMap()};
   }
 };
@@ -94,10 +95,10 @@ struct BasicScratchSpec {
                 "Scratch operands cannot use HBM memory space");
   Shape shape;
 
-  static BasicScratchSpec<MemorySpace::kVmem> Vmem(Shape shape) {
+  [[nodiscard]] static BasicScratchSpec<MemorySpace::kVmem> Vmem(Shape shape) {
     return {std::move(shape)};
   }
-  static BasicScratchSpec<MemorySpace::kSmem> Smem(Shape shape) {
+  [[nodiscard]] static BasicScratchSpec<MemorySpace::kSmem> Smem(Shape shape) {
     return {std::move(shape)};
   }
 };
