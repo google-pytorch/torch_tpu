@@ -46,9 +46,9 @@ enum class GraphSplitMode {
 // points. The returned traversals are guaranteed to have only one output, and
 // are organized according to the execution order of the original traversal.
 // This function returns traversals in topological order.
-std::vector<absl_nonnull std::unique_ptr<Traversal>> SplitTraversal(
-    absl_nonnull std::unique_ptr<Traversal> traversal,
-    absl::flat_hash_set<const DeviceBufferList*>& required_outputs);
+[[nodiscard]] std::vector<absl_nonnull std::unique_ptr<Traversal>>
+SplitTraversal(absl_nonnull std::unique_ptr<Traversal> traversal,
+               absl::flat_hash_set<const DeviceBufferList*>& required_outputs);
 
 }  // namespace torch_tpu
 

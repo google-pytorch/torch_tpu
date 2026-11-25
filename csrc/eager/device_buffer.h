@@ -119,18 +119,19 @@ enum class OpSplitMode {
   kSplitBoth,
 };
 
-inline bool IsSplitBefore(OpSplitMode split_mode) {
+[[nodiscard]] inline bool IsSplitBefore(OpSplitMode split_mode) {
   return split_mode == OpSplitMode::kSplitBefore ||
          split_mode == OpSplitMode::kSplitBoth;
 }
 
-inline bool IsSplitAfter(OpSplitMode split_mode) {
+[[nodiscard]] inline bool IsSplitAfter(OpSplitMode split_mode) {
   return split_mode == OpSplitMode::kSplitAfter ||
          split_mode == OpSplitMode::kSplitBoth;
 }
 
 // Returns true if the PjRtBuffer is host offloaded.
-bool IsPinnedHostBuffer(const xla::PjRtBuffer* absl_nullable buffer);
+[[nodiscard]] bool IsPinnedHostBuffer(
+    const xla::PjRtBuffer* absl_nullable buffer);
 
 class DeviceBufferList;
 class DeferredOp;
@@ -456,16 +457,18 @@ class DeferredOp {
   DeferredOp& operator=(DeferredOp&& other) = default;
 
   // A quick hash, but prone to collisions.
-  size_t Hash() const;
+  [[nodiscard]] size_t Hash() const;
 
   // The name of the deferred op, like "add" or "matmul".
-  OpName op_name() const { return op_name_; }
+  [[nodiscard]] OpName op_name() const { return op_name_; }
 
   // The MlirOpBuilder that will be used to compile the deferred op.
-  const MlirOpBuilder& op_builder() const { return op_builder_; }
+  [[nodiscard]] const MlirOpBuilder& op_builder() const { return op_builder_; }
 
   // The inputs to the deferred op.
-  absl::Span<const DeviceBufferRef> inputs() const { return inputs_; }
+  [[nodiscard]] absl::Span<const DeviceBufferRef> inputs() const {
+    return inputs_;
+  }
 
   // Context where the op is used in the user's PyTorch code.
   [[nodiscard]] const PythonContext& op_context() const { return op_context_; }
@@ -795,7 +798,7 @@ class DeviceBufferList {
   // means earlier.
   [[nodiscard]] uint64_t creation_index() const { return creation_index_; }
 
-  std::string DebugString() const;
+  [[nodiscard]] std::string DebugString() const;
 
   // Returns the number of other DeferredOps that have been created which depend
   // on this one. This is also called the "fanout" of the node.
@@ -1108,11 +1111,11 @@ class DeviceBufferList {
     // Otherwise, returns nullptr.
     // Returns nullptr for placeholders, or if the DeviceBufferList::Data is
     // pending materialization or fully materialized.
-    absl_nullable std::shared_ptr<DeferredOp> deferred_op() const;
+    [[nodiscard]] absl_nullable std::shared_ptr<DeferredOp> deferred_op() const;
 
     // Returns the future that will be set when materialization is started or
     // failed.
-    xla::Future<> materialization_future() const {
+    [[nodiscard]] xla::Future<> materialization_future() const {
       return materialization_future_;
     }
 

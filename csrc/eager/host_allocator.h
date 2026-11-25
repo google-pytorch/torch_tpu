@@ -26,11 +26,11 @@ namespace torch_tpu {
 // Not to be confused with TpuAllocator (see tensor_to_buffer.h) which is the
 // device-side allocator; this allocator is for host-side memory that is managed
 // by the TPU backend.
-at::HostAllocator* GetTpuPinnedAllocator();
+[[nodiscard]] at::HostAllocator* GetTpuPinnedAllocator();
 
 // Returns true if the given pointer was allocated by the Tpu pinned memory
 // allocator.
-bool IsTpuPinnedPtr(const void* ptr);
+[[nodiscard]] bool IsTpuPinnedPtr(const void* ptr);
 
 // If the pointer is pinned using the TPU pinned host memory allocator, this
 // instructs the allocator to keep the pointer alive until the future

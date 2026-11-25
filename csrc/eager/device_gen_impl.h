@@ -91,9 +91,11 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
   explicit DeviceGeneratorState(at::Tensor device_state_tensor)
       : device_state_tensor_(std::move(device_state_tensor)) {}
 
-  c10::intrusive_ptr<DeviceGeneratorState> clone() const;
+  [[nodiscard]] c10::intrusive_ptr<DeviceGeneratorState> clone() const;
 
-  at::Tensor DeviceStateTensor() const { return device_state_tensor_; }
+  [[nodiscard]] at::Tensor DeviceStateTensor() const {
+    return device_state_tensor_;
+  }
 
   // Sets the device-resident RNG state tensor.
   absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor);
@@ -129,13 +131,16 @@ class ExportModeDeviceGeneratorState : public c10::intrusive_ptr_target {
   explicit ExportModeDeviceGeneratorState(at::Tensor device_state_tensor)
       : device_state_tensor_(std::move(device_state_tensor)) {}
 
-  c10::intrusive_ptr<ExportModeDeviceGeneratorState> clone() const {
+  [[nodiscard]] c10::intrusive_ptr<ExportModeDeviceGeneratorState> clone()
+      const {
     return c10::make_intrusive<ExportModeDeviceGeneratorState>(
         device_state_tensor_.defined() ? device_state_tensor_.clone()
                                        : device_state_tensor_);
   }
 
-  at::Tensor DeviceStateTensor() const { return device_state_tensor_; }
+  [[nodiscard]] at::Tensor DeviceStateTensor() const {
+    return device_state_tensor_;
+  }
   absl::Status SetDeviceStateTensor(at::Tensor t) {
     device_state_tensor_ = std::move(t);
     return absl::OkStatus();
@@ -146,7 +151,7 @@ class ExportModeDeviceGeneratorState : public c10::intrusive_ptr_target {
 };
 
 // Forward declarations for friends.
-at::Tensor PyGetDeviceStateTensor(const at::Generator& gen);
+[[nodiscard]] at::Tensor PyGetDeviceStateTensor(const at::Generator& gen);
 void PySetDeviceStateTensor(const at::Generator& gen, at::Tensor rng_state);
 
 // Abstract base class defining the common interface and pure virtual state
@@ -167,9 +172,9 @@ class DeviceGeneratorImplBase : public c10::GeneratorImpl {
                                         int64_t bit_width);
 
   // Returns the active TPU RNG state tensor {seed, offset}.
-  virtual at::Tensor DeviceStateTensor() const = 0;
+  [[nodiscard]] virtual at::Tensor DeviceStateTensor() const = 0;
 
-  static c10::DeviceType device_type();
+  [[nodiscard]] static c10::DeviceType device_type();
 
   // Validates the shape, dtype, and device of the RNG state tensor.
   absl::Status ValidateDeviceStateTensor(const at::Tensor& rng_state) const;
@@ -218,7 +223,7 @@ class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
   EagerModeDeviceGeneratorImpl(c10::DeviceIndex device_index,
                                c10::intrusive_ptr<DeviceGeneratorState> state);
 
-  at::Tensor DeviceStateTensor() const override;
+  [[nodiscard]] at::Tensor DeviceStateTensor() const override;
 
   // Implement eager RNG read accessors.
   uint64_t get_offset() const override;
@@ -271,7 +276,7 @@ class ExportModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
   ExportModeDeviceGeneratorImpl(c10::DeviceIndex device_index,
                                 at::Tensor device_state_tensor);
 
-  at::Tensor DeviceStateTensor() const override;
+  [[nodiscard]] at::Tensor DeviceStateTensor() const override;
 
   // Export mode does not support eager read accessors.
   // Implemented to trigger fatal check failures.

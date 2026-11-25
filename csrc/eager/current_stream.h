@@ -30,7 +30,7 @@ using DeviceIndex = int8_t;
 using StreamId = int64_t;
 
 // Returns the current device index for the calling thread.
-DeviceIndex GetCurrentDeviceIndex();
+[[nodiscard]] DeviceIndex GetCurrentDeviceIndex();
 
 // Sets the current device index for the calling thread and returns the previous
 // device index.
@@ -38,7 +38,7 @@ DeviceIndex ExchangeCurrentDeviceIndex(DeviceIndex new_device_index);
 
 // Returns the current stream ID for the given device index on the calling
 // thread.
-StreamId GetCurrentStreamId(DeviceIndex device_index);
+[[nodiscard]] StreamId GetCurrentStreamId(DeviceIndex device_index);
 
 // Sets the current stream ID for the given device index on the calling thread
 // and returns the previous stream ID.
@@ -54,10 +54,10 @@ struct DeviceStreamId {
 };
 
 // Returns the current device and stream IDs for the calling thread.
-DeviceStreamId GetCurrentDeviceStreamId();
+[[nodiscard]] DeviceStreamId GetCurrentDeviceStreamId();
 
 // Returns the next available stream ID for the given device index.
-StreamId NextStreamId(DeviceIndex device_index);
+[[nodiscard]] StreamId NextStreamId(DeviceIndex device_index);
 
 // Resets the stream ID counters for all devices.
 // After calling this, the next call to NextStreamId() will return 1 for all

@@ -155,7 +155,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
 // If device_idx is not provided, the device index of the DeviceBufferRef is
 // used, so that the tensor's device metadata matches the device (and events
 // queue) the buffer actually belongs to.
-c10::Storage MakeStorage(
+[[nodiscard]] c10::Storage MakeStorage(
     DeviceBufferRef buffer_ref,
     std::optional<c10::DeviceIndex> device_idx = std::nullopt);
 
@@ -169,7 +169,7 @@ c10::Storage MakeStorage(
 // be contiguous.
 // If device_idx is not provided, the device index of the DeviceBufferRef is
 // used (see MakeStorage).
-at::Tensor MakeTensor(
+[[nodiscard]] at::Tensor MakeTensor(
     DeviceBufferRef device_buffer_ref,
     std::optional<c10::DeviceIndex> device_idx = std::nullopt);
 
@@ -197,8 +197,8 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
 
 // Returns true if `tensor` is a pure reinterpretation of all the bytes of
 // `base` (the base DeviceBufferRef of its storage).
-bool IsFullStorageReinterpretView(const at::Tensor& tensor,
-                                  const DeviceBufferRef& base);
+[[nodiscard]] bool IsFullStorageReinterpretView(const at::Tensor& tensor,
+                                                const DeviceBufferRef& base);
 
 // Replaces the base DeviceBufferRef of `tensor`'s storage with `new_base`,
 // without moving any data.
@@ -213,7 +213,7 @@ absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
 // Not to be confused with TpuPinnedAllocator (see host_allocator.h) which is
 // the host-side allocator; this allocator is for device-side memory that is
 // managed by the TPU backend.
-c10::Allocator* GetTpuAllocator();
+[[nodiscard]] c10::Allocator* GetTpuAllocator();
 
 // Registers the TpuAllocator as the allocator for the PrivateUse1 device,
 // and the TpuPinnedAllocator as the pinned host allocator.

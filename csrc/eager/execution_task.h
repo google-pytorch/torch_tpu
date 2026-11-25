@@ -104,7 +104,9 @@ class ExecutionTask {
   // Sets all output nodes as having a specified error.
   void SetOutputNodesAsError(absl::Status status);
 
-  absl::Span<const DeviceBufferRef> outputs() const { return outputs_; }
+  [[nodiscard]] absl::Span<const DeviceBufferRef> outputs() const {
+    return outputs_;
+  }
 
   [[nodiscard]] CorePinningMode core_pinning_mode() const {
     return core_pinning_mode_;
@@ -177,7 +179,7 @@ struct MakeExecutionTasksResult {
 // Converts a sequence of Traversals to a sequence of ExecutionTasks.
 // There will be one ExecutionTask per traversal, unless there are any
 // task creation failures, in which case first_error will be set.
-MakeExecutionTasksResult MakeExecutionTasks(
+[[nodiscard]] MakeExecutionTasksResult MakeExecutionTasks(
     std::vector<absl_nonnull std::unique_ptr<Traversal>>&& traversals,
     mlir::MLIRContext& mlir_context,
     const CompilationContext& compilation_context,

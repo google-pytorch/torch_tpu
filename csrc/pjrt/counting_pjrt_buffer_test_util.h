@@ -58,7 +58,7 @@ class CountingPjRtBuffer final : public xla::PjRtBuffer {
       : wrapped_(std::move(wrapped)),
         on_device_shape_calls_(std::move(on_device_shape_calls)) {}
 
-  xla::PjRtBuffer* wrapped() const { return wrapped_.get(); }
+  [[nodiscard]] xla::PjRtBuffer* wrapped() const { return wrapped_.get(); }
 
   xla::PrimitiveType element_type() const override {
     return wrapped_->element_type();
@@ -151,7 +151,7 @@ class CountingPjRtBuffer final : public xla::PjRtBuffer {
 // Returns the underlying `PjRtBuffer` if `buf` is a `CountingPjRtBuffer`
 // (allowing tests to inspect `on_device_shape()` without incrementing the
 // counter), or `buf` itself otherwise.
-inline xla::PjRtBuffer* absl_nullable UnwrapCountingPjRtBuffer(
+[[nodiscard]] inline xla::PjRtBuffer* absl_nullable UnwrapCountingPjRtBuffer(
     xla::PjRtBuffer* absl_nullable buf) {
   if (const auto* counting = dynamic_cast<CountingPjRtBuffer*>(buf)) {
     return counting->wrapped();
@@ -234,7 +234,7 @@ class CountingPjRtLoadedExecutable final : public xla::PjRtLoadedExecutable {
   }
 
  private:
-  static std::vector<xla::PjRtBuffer*> UnwrapBuffers(
+  [[nodiscard]] static std::vector<xla::PjRtBuffer*> UnwrapBuffers(
       absl::Span<xla::PjRtBuffer* const> buffers) {
     std::vector<xla::PjRtBuffer*> unwrapped;
     unwrapped.reserve(buffers.size());

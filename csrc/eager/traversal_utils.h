@@ -37,7 +37,7 @@ enum class SkinnySparseCoreOffload {
 
 // Returns whether the automatic collective offload is enabled.
 // See kTorchTpuInternalSkinnyScOffloadEnvVar in env_vars.h for more details.
-SkinnySparseCoreOffload GetSkinnySparseCoreOffloadMode();
+[[nodiscard]] SkinnySparseCoreOffload GetSkinnySparseCoreOffloadMode();
 
 // Configuration options for PrepareTraversals.
 struct PrepareTraversalsOptions {
@@ -67,10 +67,10 @@ struct PrepareTraversalsOptions {
 //
 // The sequence of returned Traversals will be in a valid topological order and
 // will be pinned to the appropriate core as specified by `core_pinning_mode`.
-std::vector<absl_nonnull std::unique_ptr<Traversal>> PrepareTraversals(
-    std::vector<SharedDeviceBufferList> must_execute,
-    absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
-    const PrepareTraversalsOptions& options);
+[[nodiscard]] std::vector<absl_nonnull std::unique_ptr<Traversal>>
+PrepareTraversals(std::vector<SharedDeviceBufferList> must_execute,
+                  absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
+                  const PrepareTraversalsOptions& options);
 
 }  // namespace torch_tpu
 

@@ -92,14 +92,14 @@ using RefToOpMap = absl::flat_hash_map<DeviceBufferRef, mlir::MlirOp>;
 
 // Annotates an existing GraphKey with argument layouts without rebuilding the
 // graph. It returns the input graph key as is when argument_layouts is empty.
-GraphKey AnnotateGraphKeyWithArgumentLayouts(
+[[nodiscard]] GraphKey AnnotateGraphKeyWithArgumentLayouts(
     const GraphKey& graph_key, absl::Span<const CustomLayout> argument_layouts);
 
 // Annotates an existing GraphKey with the set of donated input indices.
 // `donated_inputs` may be unsorted and contain duplicates; both are ignored
 // when forming the cache identity. Returns `graph_key` unchanged when
 // `donated_inputs` is empty.
-GraphKey AnnotateGraphKeyWithDonatedInputs(
+[[nodiscard]] GraphKey AnnotateGraphKeyWithDonatedInputs(
     const GraphKey& graph_key, absl::Span<const int64_t> donated_inputs);
 
 // A traversed graph of deferred ops, ready to be compiled and (optionally)
@@ -142,7 +142,7 @@ class Traversal {
   // Returns a stable cache key for this graph and all compilation inputs that
   // affect executable semantics. `donated_inputs` is treated as a set: it may
   // be unsorted and contain duplicates.
-  CompilationCacheKey GetCacheKey(
+  [[nodiscard]] CompilationCacheKey GetCacheKey(
       CompileOptionsKey compile_options_key,
       absl::Span<const CustomLayout> argument_layouts,
       absl::Span<const int64_t> donated_inputs) const;
@@ -180,7 +180,7 @@ class Traversal {
   // Returns a string representation of the Traversal for debugging purposes.
   // This is extremely verbose and should not be exposed in user-facing error
   // messages.
-  std::string DebugString() const;
+  [[nodiscard]] std::string DebugString() const;
 
   // Returns an FX-style human-readable graph dump suitable for the
   // aten_graph_payload of a StructuredLogEvent.
@@ -190,7 +190,7 @@ class Traversal {
   //   %0: f32[1, 2, 3] = input
   //   %1: f32[2, 3] = mm.default(%0, %2)    # file.py:25 in forward
   //   return %1
-  std::string ReadableString(MaterializationReason reason) const;
+  [[nodiscard]] std::string ReadableString(MaterializationReason reason) const;
 
   // Builds the MLIR module for the Traversal.
   absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> BuildMlirModule(
@@ -254,7 +254,7 @@ class Traversal {
   }
 
   // Returns the Python context for the Traversal.
-  const PythonContext* absl_nullable GetPythonContext() const;
+  [[nodiscard]] const PythonContext* absl_nullable GetPythonContext() const;
 
   // Sorts the Traversal's execution_order by op creation index.
   void SortByCreationOrder() {
@@ -307,7 +307,7 @@ class Traversal {
         execution_order_(std::move(execution_order)),
         outputs_(std::move(outputs)) {}
 
-  GraphKey BuildGraphKey() const;
+  [[nodiscard]] GraphKey BuildGraphKey() const;
 
   // Validates that the traversal is sound.
   absl::Status Validate() const;
@@ -321,7 +321,7 @@ class Traversal {
   // Returns an updated CompilationSpec copy if the traversal requires
   // SparseCore replica overrides, custom device assignments, or pinned-host
   // placement overrides, or std::nullopt if no overrides are needed.
-  std::optional<CompilationSpec> MaybeUpdateSpecWithLayout(
+  [[nodiscard]] std::optional<CompilationSpec> MaybeUpdateSpecWithLayout(
       const CompilationSpec& spec, absl::Span<const int64_t> resolved_da) const;
   // Helper function for BuildMlirFunction.
   // Returns the MLIR op corresponding to the provided buffer ref,
@@ -363,7 +363,7 @@ class Traversal {
 // - Graphs which directly output their arguments
 // - Graphs which materialize multiple deferred ops at once
 // - Graphs which output subset or reordering of a single deferred op's outputs
-bool IsSimpleNodeTraversal(const Traversal& traversal);
+[[nodiscard]] bool IsSimpleNodeTraversal(const Traversal& traversal);
 
 // Returns a graphviz compatible representation of the Traversal for debugging
 // purposes, tries to label each buffer with the corresponding python

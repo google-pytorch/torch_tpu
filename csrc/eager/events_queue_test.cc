@@ -672,13 +672,15 @@ TEST_F(EventsQueueTest, DeviceMustMaterializeEmptyTensors) {
   const auto stream_id = empty_list->stream_id();
 
   // A normal device materialization does not materialize the empty tensor.
-  RecordDeviceSnapshots(device_index);
+  (void)RecordDeviceSnapshots(  // VOID_CAST_OK=test checks GetReadyWork instead
+      device_index);
   auto ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 1);
   EXPECT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
 
   // A device materialization that must materialize the empty tensor does so.
-  RecordDeviceSnapshots(device_index, {empty_list});
+  (void)RecordDeviceSnapshots(  // VOID_CAST_OK=test checks GetReadyWork instead
+      device_index, {empty_list});
   ready_work = GetReadyWork(device_index, stream_id);
   ASSERT_EQ(ready_work.size(), 2);
   ASSERT_TRUE(std::holds_alternative<EagerExecution>(ready_work[0]));

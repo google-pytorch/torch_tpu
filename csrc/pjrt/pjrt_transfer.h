@@ -45,8 +45,8 @@ class HostToDeviceTransfer {
  public:
   // Defines a host-to-device transfer from a zero-filled buffer.
   // Constructs a bytes vector of the required size and calls FromBytesVector.
-  static HostToDeviceTransfer FromZeroes(mlir::ElementType element_type,
-                                         absl::Span<const int64_t> dimensions);
+  [[nodiscard]] static HostToDeviceTransfer FromZeroes(
+      mlir::ElementType element_type, absl::Span<const int64_t> dimensions);
 
   // Defines a host-to-device transfer from a tensor's data pointer and storage
   // pointer.
@@ -54,14 +54,14 @@ class HostToDeviceTransfer {
   // delegate to FromBytesVector.
   // If tensor_storage_ptr is a pinned pointer, it will be used to keep the
   // host data alive until the transfer completes.
-  static HostToDeviceTransfer FromTensor(
+  [[nodiscard]] static HostToDeviceTransfer FromTensor(
       const void* absl_nonnull tensor_data_ptr,
       const void* absl_nonnull tensor_storage_ptr,
       mlir::ElementType element_type, absl::Span<const int64_t> dimensions);
 
   // Defines a host-to-device transfer from a bytes vector. The backing bytes
   // are kept alive until the transfer completes.
-  static HostToDeviceTransfer FromBytesVector(
+  [[nodiscard]] static HostToDeviceTransfer FromBytesVector(
       std::vector<uint8_t> backing_data, mlir::ElementType element_type,
       absl::Span<const int64_t> dimensions);
 
@@ -93,7 +93,7 @@ class HostToDeviceTransfer {
 
   // Helper function, common across multiple factories; unpacks FP4E2M1FN data
   // before construction.
-  static std::vector<uint8_t> MakeUnpackedFp4(
+  [[nodiscard]] static std::vector<uint8_t> MakeUnpackedFp4(
       const void* host_data, absl::Span<const int64_t> dimensions);
 
   struct HostToDeviceTransferImpl {
@@ -137,15 +137,15 @@ class DeviceToHostTransfer {
   // used to identify pinned memory and keep it alive until the transfer
   // completes. If the tensor is not in pinned memory, the caller is responsible
   // for keeping the storage alive until the transfer completes.
-  static DeviceToHostTransfer IntoTensor(
+  [[nodiscard]] static DeviceToHostTransfer IntoTensor(
       DeviceBufferRef buffer_ref, void* absl_nonnull tensor_data_ptr,
       const void* absl_nonnull storage_data_ptr);
 
   // Defines a device-to-host transfer into a byte buffer. The caller is
   // responsible for allocating a buffer of sufficient size to hold the data,
   // and for keeping it alive until the transfer completes.
-  static DeviceToHostTransfer IntoBytes(DeviceBufferRef buffer_ref,
-                                        void* absl_nonnull host_bytes_ptr);
+  [[nodiscard]] static DeviceToHostTransfer IntoBytes(
+      DeviceBufferRef buffer_ref, void* absl_nonnull host_bytes_ptr);
 
   // Starts the transfer, or schedules it to run immediately after the buffer
   // materialization completes. Returns a future that will be set when the
