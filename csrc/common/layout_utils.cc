@@ -42,30 +42,6 @@
 namespace torch_tpu {
 namespace {
 
-int64_t FindFp4PackedDim(const at::Tensor& tensor) {
-  const int64_t rank = tensor.dim();
-  if (rank == 0) {
-    return -1;
-  }
-  if (tensor.stride(rank - 1) != 1) {
-    for (int64_t d = 0; d < rank - 1; ++d) {
-      if (tensor.stride(d) == 1 && tensor.size(d) > 1) {
-        return d;
-      }
-    }
-    return -1;
-  }
-  if (tensor.size(rank - 1) == 1) {
-    return rank - 1;
-  }
-  for (int64_t d = 0; d < rank - 1; ++d) {
-    if (tensor.size(d) == 1 && tensor.stride(d) == 1) {
-      return d;
-    }
-  }
-  return rank - 1;
-}
-
 // Applies any overrides from `shape.layout()` onto `layout`.
 void ApplyCustomLayout(const Shape& shape, xla::Layout& layout) {
   if (!shape.layout().has_value()) {
@@ -94,6 +70,30 @@ void ApplyCustomLayout(const Shape& shape, xla::Layout& layout) {
 }
 
 }  // namespace
+
+int64_t FindFp4PackedDim(const at::Tensor& tensor) {
+  const int64_t rank = tensor.dim();
+  if (rank == 0) {
+    return -1;
+  }
+  if (tensor.stride(rank - 1) != 1) {
+    for (int64_t d = 0; d < rank - 1; ++d) {
+      if (tensor.stride(d) == 1 && tensor.size(d) > 1) {
+        return d;
+      }
+    }
+    return -1;
+  }
+  if (tensor.size(rank - 1) == 1) {
+    return rank - 1;
+  }
+  for (int64_t d = 0; d < rank - 1; ++d) {
+    if (tensor.size(d) == 1 && tensor.stride(d) == 1) {
+      return d;
+    }
+  }
+  return rank - 1;
+}
 
 absl::StatusOr<TpuLayout> ResolveTpuLayout(const at::Tensor& tensor) {
   const auto scalar_type = tensor.scalar_type();

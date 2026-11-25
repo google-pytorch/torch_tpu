@@ -33,6 +33,7 @@ torch_tpu_cc_library(
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:layout_utils",
         "//csrc/common:macro_utils",
         "//csrc/common:to_string",
         "//csrc/common:utils",

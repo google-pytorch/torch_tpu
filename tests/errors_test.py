@@ -14321,6 +14321,127 @@ Note: this function is intended to be used with the output produced by torch.lin
           None,
       )
 
+  def test_scaled_mm_v2_blockwise_k_not_divisible_by_32(self):
+    """Tests that _scaled_mm_v2 rejects BlockWise1x32 when K % 32 != 0."""
+    m, n, k = 32, 32, 16
+    dev = et.device()
+    mat1 = (
+        torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2 = (
+        torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    scale_a = [torch.ones((m, 1), dtype=torch.float8_e8m0fnu, device=dev)]
+    scale_b = [torch.ones((1, n), dtype=torch.float8_e8m0fnu, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected contracting dimension to be divisible by 32 for BlockWise1x32 scaling, got 16""",
+        gpu=re.compile(
+            r".*(BlockWise1x32|Only multiplication of row-major|swizzle|32|"
+            r"torch\._scaled_mm.*is only supported on CUDA devices).*",
+            re.DOTALL,
+        ),
+    ):
+      torch._scaled_mm_v2(
+          mat1,
+          mat2,
+          scale_a,
+          [3],  # BlockWise1x32
+          [0],  # NO_SWIZZLE
+          scale_b,
+          [3],  # BlockWise1x32
+          [0],  # NO_SWIZZLE
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_invalid_blockwise_scale_shape(self):
+    """Tests that _scaled_mm_v2 rejects mismatched NO_SWIZZLE BlockWise1x32 scale shapes."""
+    m, n, k = 128, 128, 128
+    dev = et.device()
+    mat1 = (
+        torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2 = (
+        torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    wrong_scale_a = [torch.ones((m, 2), dtype=torch.float8_e8m0fnu, device=dev)]
+    scale_b = [torch.ones((k // 32, n), dtype=torch.float8_e8m0fnu, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_a to have shape [128, 4] for BlockWise1x32 scaling, got [128, 2]""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major|swizzle|scale_a|"
+            r"BlockWise1x32|torch\._scaled_mm.*is only supported on CUDA"
+            r" devices).*",
+            re.DOTALL,
+        ),
+    ):
+      torch._scaled_mm_v2(
+          mat1,
+          mat2,
+          wrong_scale_a,
+          [3],  # BlockWise1x32
+          [0],  # NO_SWIZZLE
+          scale_b,
+          [3],  # BlockWise1x32
+          [0],  # NO_SWIZZLE
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_mxfp4_invalid_blockwise_scale_shapes(self):
+    """Tests that MXFP4 BlockWise1x32 validates scales against unpacked 2*K."""
+    dev = et.device()
+    m, k_packed, n = 128, 128, 128
+    a = torch.empty((m, k_packed), dtype=torch.float4_e2m1fn_x2, device=dev)
+    b = torch.empty((n, k_packed), dtype=torch.float4_e2m1fn_x2, device=dev).t()
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
+
+    # NO_SWIZZLE with packed K // 32 = 4 instead of unpacked 2*K // 32 = 8.
+    bad_no_swiz_a = [torch.ones((m, 4), dtype=torch.float8_e8m0fnu, device=dev)]
+    ok_no_swiz_b = [torch.ones((8, n), dtype=torch.float8_e8m0fnu, device=dev)]
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_a to have shape [128, 8] for BlockWise1x32 scaling, got [128, 4]""",
+        gpu="""For Blockwise scaling with SWIZZLE_32_4_4 scale_a should have 1024 elements, got: 512""",
+    ):
+      torch._scaled_mm_v2(
+          a,
+          b,
+          bad_no_swiz_a,
+          [3],  # BlockWise1x32
+          [0],  # NO_SWIZZLE
+          ok_no_swiz_b,
+          [3],  # BlockWise1x32
+          [0],  # NO_SWIZZLE
+          None,
+          torch.bfloat16,
+      )
+
+    # SWIZZLE_32_4_4 with 512 elements (for k_logical=4) instead of 1024 (for k_logical=8).
+    bad_swiz_a = [torch.ones((512,), dtype=torch.float8_e8m0fnu, device=dev)]
+    ok_swiz_b = [torch.ones((1024,), dtype=torch.float8_e8m0fnu, device=dev)]
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale buffer to have 1024 elements for outer=128 and k_logical=8, got 512 ([512])""",
+        gpu="""For Blockwise scaling with SWIZZLE_32_4_4 scale_a should have 1024 elements, got: 512""",
+    ):
+      torch._scaled_mm_v2(
+          a,
+          b,
+          bad_swiz_a,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          ok_swiz_b,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          None,
+          torch.bfloat16,
+      )
+
   def test_scaled_mm_v2_invalid_scale_b_size(self):
     (
         self_tpu,

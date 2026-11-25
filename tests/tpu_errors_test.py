@@ -522,6 +522,73 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       x[:, ::2].cpu()
 
+  @et.why_tpu_only(
+      "FP4 packed-dimension layout validation for _scaled_mm is TPU-specific."
+  )
+  def test_scaled_mm_fp4_non_row_major_self(self):
+    """Tests that _scaled_mm rejects column-major float4_e2m1fn_x2 self."""
+    dev = et.device()
+    a = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev).t()
+    b = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev).t()
+    scale = torch.ones((1,), dtype=torch.float32, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected float4_e2m1fn_x2 self to be contiguous along dim 1 (row-major), got strides [1, 32]""",
+    ):
+      torch._scaled_mm(a, b, scale, scale, out_dtype=torch.bfloat16)
+
+  @et.why_tpu_only(
+      "FP4 packed-dimension layout validation for _scaled_mm is TPU-specific."
+  )
+  def test_scaled_mm_fp4_non_col_major_mat2(self):
+    """Tests that _scaled_mm rejects row-major float4_e2m1fn_x2 mat2."""
+    dev = et.device()
+    a = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev)
+    b = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev)
+    scale = torch.ones((1,), dtype=torch.float32, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected float4_e2m1fn_x2 mat2 to be contiguous along dim 0 (column-major), got strides [32, 1]""",
+    ):
+      torch._scaled_mm(a, b, scale, scale, out_dtype=torch.bfloat16)
+
+  @et.why_tpu_only("float4_e2m1fn_x2 output packing requires even N on TPU.")
+  def test_scaled_mm_fp4_odd_output_cols(self):
+    """Tests that _scaled_mm rejects odd N when out_dtype is float4_e2m1fn_x2."""
+    dev = et.device()
+    a = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev)
+    b = torch.empty((15, 32), dtype=torch.float4_e2m1fn_x2, device=dev).t()
+    scale = torch.ones((1,), dtype=torch.float32, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected even column size for float4_e2m1fn_x2 output, got 15""",
+    ):
+      torch._scaled_mm(a, b, scale, scale, out_dtype=torch.float4_e2m1fn_x2)
+
+  @et.why_tpu_only("float4_e2m1fn_x2 output packing requires even N on TPU.")
+  def test_scaled_mm_v2_fp4_odd_output_cols(self):
+    """Tests that _scaled_mm_v2 rejects odd N when out_dtype defaults to FP4."""
+    dev = et.device()
+    a = torch.empty((32, 32), dtype=torch.float4_e2m1fn_x2, device=dev)
+    b = torch.empty((15, 32), dtype=torch.float4_e2m1fn_x2, device=dev).t()
+    scale = [torch.ones((1,), dtype=torch.float32, device=dev)]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm_v2(): expected even column size for float4_e2m1fn_x2 output, got 15""",
+    ):
+      torch._scaled_mm_v2(
+          a,
+          b,
+          scale,
+          [0],  # TensorWise
+          [0],  # NO_SWIZZLE
+          scale,
+          [0],  # TensorWise
+          [0],  # NO_SWIZZLE
+          None,
+          None,
+      )
+
   @parameterized.named_parameters(
       ("bool_bool", False, True, "bool", "bool"),
       ("int_bool", 0, True, "int64", "bool"),
@@ -4432,6 +4499,21 @@ module {
       torch._scaled_grouped_mm(
           a, b, scale_a, scale_b, scale_result=scale_result, offs=offs
       )
+
+  @et.why_tpu_only("FP4 sub-byte layout unpacking happens during TPU lowering.")
+  def test_scaled_grouped_mm_3d_3d_mismatched_unpacked_contracting_dim(self):
+    dev = et.device()
+    a = torch.empty((2, 16, 16), dtype=torch.float4_e2m1fn_x2, device=dev)
+    b = torch.empty((2, 16, 24), dtype=torch.float4_e2m1fn_x2, device=dev)
+    scale_a = torch.ones((2, 16), dtype=torch.float32, device=dev)
+    scale_b = torch.ones((2, 24), dtype=torch.float32, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_grouped_mm(): expected lhs contracting dimension to match rhs contracting dimension, got 32 and 16""",
+    ):
+      torch._scaled_grouped_mm(
+          a, b, scale_a, scale_b, offs=None, out_dtype=torch.bfloat16
+      ).cpu()
 
   @et.why_tpu_only(
       "GPU supports BlockWise1x32 (3) and BlockWise1x16 (2) scaling recipes."

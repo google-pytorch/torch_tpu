@@ -4653,6 +4653,198 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(explanation.graph_break_count, 0)
 
   @parameterized.product(
+      dtype_pair=[
+          (torch.float8_e4m3fn, torch.float8_e4m3fn),
+          (torch.float8_e5m2, torch.float8_e5m2),
+          (torch.float8_e4m3fn, torch.float8_e5m2),
+      ],
+      api=["v1", "v2_tensorwise", "v2_rowwise"],
+  )
+  def test_scaled_mm_keeps_native_fp8_operands_stablehlo(self, dtype_pair, api):
+    """Verifies _scaled_mm and _scaled_mm_v2 keep native FP8 dot_general operands."""
+    torch._dynamo.reset()
+    dtype_a, dtype_b = dtype_pair
+    m, k, n = 32, 32, 48
+    shlo_dtype_map = {
+        torch.float8_e4m3fn: "f8E4M3FN",
+        torch.float8_e5m2: "f8E5M2",
+    }
+
+    a_cpu = torch.randn(m, k, dtype=torch.float32).to(dtype_a)
+    b_raw_cpu = torch.randn(n, k, dtype=torch.float32).to(dtype_b)
+    a_f32 = a_cpu.float()
+    b_f32 = b_raw_cpu.float().t()
+
+    if api == "v2_rowwise":
+      scale_a_cpu = torch.rand(m, 1, dtype=torch.float32) + 0.5
+      scale_b_cpu = torch.rand(1, n, dtype=torch.float32) + 0.5
+    else:
+      scale_a_cpu = torch.tensor([1.5], dtype=torch.float32)
+      scale_b_cpu = torch.tensor([0.5], dtype=torch.float32)
+
+    a_tpu = a_cpu.to("tpu")
+    b_tpu = b_raw_cpu.to("tpu").t()
+    sa_tpu = scale_a_cpu.to("tpu")
+    sb_tpu = scale_b_cpu.to("tpu")
+
+    def fn(x, y, sa, sb):
+      if api == "v1":
+        return torch._scaled_mm(x, y, sa, sb, out_dtype=torch.bfloat16)
+      recipe = [1] if api == "v2_rowwise" else [0]
+      return torch._scaled_mm_v2(
+          x, y, [sa], recipe, [0], [sb], recipe, [0], None, torch.bfloat16
+      )
+
+    debugs = []
+    compiled = torch.compile(
+        fn,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      out = compiled(a_tpu, b_tpu, sa_tpu, sb_tpu)
+
+    self.assertNotEmpty(debugs)
+    shlo = debugs[0].stablehlo_forward_text[0]
+    self.assertIn("stablehlo.dot_general", shlo)
+    self.assertNotIn(
+        "stablehlo.convert", shlo.split("stablehlo.dot_general")[0]
+    )
+    self.assertIn("DEFAULT", shlo)
+    self.assertNotIn("HIGHEST", shlo)
+    lhs_shlo = shlo_dtype_map[dtype_a]
+    rhs_shlo = shlo_dtype_map[dtype_b]
+    self.assertRegex(
+        shlo,
+        rf"stablehlo\.dot_general.*tensor<[^>]*{lhs_shlo}>,\s*"
+        rf"tensor<[^>]*{rhs_shlo}>\)\s*->\s*tensor<[^>]*f32>",
+    )
+
+    expected = ((a_f32 @ b_f32) * scale_a_cpu * scale_b_cpu).to(torch.bfloat16)
+    utils.assert_close(
+        out.cpu().float(), expected.float(), rtol=1.6e-2, atol=5e-2
+    )
+
+  def test_scaled_mm_v2_blockwise_preserves_highest_precision_stablehlo(self):
+    """Verifies BlockWise1x32 dequantized F32 dot_general keeps HIGHEST precision."""
+    torch._dynamo.reset()
+    m, k, n = 32, 64, 48
+    a_tpu = (
+        torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn).to("tpu")
+    )
+    b_tpu = (
+        torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn).to("tpu")
+    )
+    scale_a_tpu = (torch.rand(m, k // 32, dtype=torch.float32) + 0.5).to("tpu")
+    scale_b_tpu = (torch.rand(k // 32, n, dtype=torch.float32) + 0.5).to("tpu")
+
+    def fn(x, y, sa, sb):
+      return torch._scaled_mm_v2(
+          x,
+          y,
+          [sa],
+          [3],
+          [0],
+          [sb],
+          [3],
+          [0],
+          None,
+          torch.float32,
+          use_fast_accum=False,
+      )
+
+    debugs = []
+    compiled = torch.compile(
+        fn,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      _ = compiled(a_tpu, b_tpu, scale_a_tpu, scale_b_tpu)
+
+    self.assertNotEmpty(debugs)
+    shlo = debugs[0].stablehlo_forward_text[0]
+    self.assertIn("stablehlo.dot_general", shlo)
+    self.assertIn("HIGHEST", shlo)
+    self.assertRegex(
+        shlo,
+        r"stablehlo\.dot_general.*tensor<[^>]*f32>,\s*"
+        r"tensor<[^>]*f32>\)\s*->\s*tensor<[^>]*f32>",
+    )
+
+  @parameterized.product(
+      scale_dtype=[torch.float32, torch.bfloat16],
+      dtype=[torch.float8_e4m3fn, torch.float8_e5m2],
+  )
+  def test_scaled_mm_scale_result_without_bias(self, scale_dtype, dtype):
+    """Tests folded scale_result without bias and non-float32 scales."""
+    m, k, n = 32, 64, 48
+    self_fp8 = torch.randn(m, k, dtype=torch.float32).to(dtype)
+    mat2_fp8 = torch.randn(n, k, dtype=torch.float32).to(dtype).t()
+    scale_a = (torch.rand(m, 1, dtype=torch.float32) + 0.5).to(scale_dtype)
+    scale_b = (torch.rand(1, n, dtype=torch.float32) + 0.5).to(scale_dtype)
+    scale_result = torch.tensor([0.5], dtype=scale_dtype)
+
+    def compute(device):
+      if device == "cpu":
+        out = (
+            (self_fp8.float() @ mat2_fp8.float())
+            * scale_a.float()
+            * scale_b.float()
+            * scale_result.float()
+        )
+        return out.to(torch.bfloat16)
+      return torch._scaled_mm(
+          self_fp8.to(device),
+          mat2_fp8.to(device),
+          scale_a.to(device),
+          scale_b.to(device),
+          scale_result=scale_result.to(device),
+          out_dtype=torch.bfloat16,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1.6e-2, atol=5e-2)
+
+  @parameterized.product(
+      recipe=[0, 1],
+      dtype=[torch.float8_e4m3fn, torch.float8_e5m2],
+  )
+  def test_scaled_mm_v2_bfloat16_scales(self, recipe, dtype):
+    """Tests _scaled_mm_v2 TensorWise and RowWise paths with bfloat16 scales."""
+    m, k, n = 32, 64, 48
+    self_fp8 = torch.randn(m, k, dtype=torch.float32).to(dtype)
+    mat2_fp8 = torch.randn(n, k, dtype=torch.float32).to(dtype).t()
+    if recipe == 1:
+      scale_a = (torch.rand(m, 1, dtype=torch.float32) + 0.5).to(torch.bfloat16)
+      scale_b = (torch.rand(1, n, dtype=torch.float32) + 0.5).to(torch.bfloat16)
+    else:
+      scale_a = torch.tensor([1.5], dtype=torch.bfloat16)
+      scale_b = torch.tensor([0.5], dtype=torch.bfloat16)
+
+    def compute(device):
+      if device == "cpu":
+        out = (
+            (self_fp8.float() @ mat2_fp8.float())
+            * scale_a.float()
+            * scale_b.float()
+        )
+        return out.to(torch.bfloat16)
+      return torch._scaled_mm_v2(
+          self_fp8.to(device),
+          mat2_fp8.to(device),
+          [scale_a.to(device)],
+          [recipe],
+          [0],
+          [scale_b.to(device)],
+          [recipe],
+          [0],
+          None,
+          torch.bfloat16,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1.6e-2, atol=5e-2)
+
+  @parameterized.product(
       compiled=[False, True],
       orig_dtype=[torch.bfloat16, torch.float32],
       dtype=[torch.float8_e4m3fn, torch.float8_e5m2],
@@ -19323,6 +19515,74 @@ module {{
     self.assertRegex(
         shlo,
         rf"chlo\.ragged_dot.*tensor<[^>]*{lhs_f8}>.*tensor<[^>]*{rhs_f8}>",
+    )
+
+  @parameterized.parameters(
+      (torch.float8_e4m3fn, torch.float8_e4m3fn),
+      (torch.float8_e5m2, torch.float8_e5m2),
+      (torch.float8_e4m3fn, torch.float8_e5m2),
+  )
+  def test_scaled_grouped_mm_3d_3d_native_operands_stablehlo(
+      self, dtype_a, dtype_b
+  ):
+    """Verifies 3D x 3D _scaled_grouped_mm keeps native FP8 dot_general operands."""
+    torch._dynamo.reset()
+    g, m, k, n = 2, 16, 16, 24
+    shlo_dtype_map = {
+        torch.float8_e4m3fn: "f8E4M3FN",
+        torch.float8_e5m2: "f8E5M2",
+    }
+
+    a_cpu = torch.randn(g, m, k, dtype=torch.float32).to(dtype_a)
+    b_raw_cpu = torch.randn(g, n, k, dtype=torch.float32).to(dtype_b)
+    a_f32 = a_cpu.float()
+    b_f32 = b_raw_cpu.float().transpose(-1, -2)
+
+    scale_a_cpu = torch.rand(g, m, dtype=torch.float32) + 0.5
+    scale_b_cpu = torch.rand(g, n, dtype=torch.float32) + 0.5
+
+    a_tpu = a_cpu.to("tpu")
+    b_tpu = b_raw_cpu.to("tpu").transpose(-1, -2)
+    sa_tpu = scale_a_cpu.to("tpu")
+    sb_tpu = scale_b_cpu.to("tpu")
+
+    def fn(x, y, sa, sb):
+      return torch._scaled_grouped_mm(
+          x, y, sa, sb, offs=None, out_dtype=torch.bfloat16
+      )
+
+    debugs = []
+    compiled = torch.compile(
+        fn,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      out = compiled(a_tpu, b_tpu, sa_tpu, sb_tpu)
+
+    self.assertNotEmpty(debugs)
+    shlo = debugs[0].stablehlo_forward_text[0]
+    self.assertIn("stablehlo.dot_general", shlo)
+    self.assertNotIn(
+        "stablehlo.convert", shlo.split("stablehlo.dot_general")[0]
+    )
+    self.assertIn("DEFAULT", shlo)
+    self.assertNotIn("HIGHEST", shlo)
+    lhs_shlo = shlo_dtype_map[dtype_a]
+    rhs_shlo = shlo_dtype_map[dtype_b]
+    self.assertRegex(
+        shlo,
+        rf"stablehlo\.dot_general.*tensor<[^>]*{lhs_shlo}>,\s*"
+        rf"tensor<[^>]*{rhs_shlo}>\)\s*->\s*tensor<[^>]*f32>",
+    )
+
+    expected = (
+        torch.bmm(a_f32, b_f32)
+        * scale_a_cpu.unsqueeze(-1)
+        * scale_b_cpu.unsqueeze(1)
+    ).to(torch.bfloat16)
+    utils.assert_close(
+        out.cpu().float(), expected.float(), rtol=1.6e-2, atol=5e-2
     )
 
   @parameterized.parameters(
