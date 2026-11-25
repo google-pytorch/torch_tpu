@@ -48,7 +48,8 @@ struct SliceDimension {
 };
 static_assert(sizeof(SliceDimension) == 24, "");
 
-bool operator==(const SliceDimension& lhs, const SliceDimension& rhs);
+[[nodiscard]] bool operator==(const SliceDimension& lhs,
+                              const SliceDimension& rhs);
 
 // Formats the slice dimension like "(start=1, limit=2, stride=3)".
 std::ostream& operator<<(std::ostream& os, const SliceDimension& dim);

@@ -34,10 +34,11 @@ namespace torch_tpu {
 //   hy = sigmoid(o) * tanh(cy)
 // Returns (hy, cy, workspace); workspace holds the four activated gates for
 // the fused backward.
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenThnnFusedLstmCell(
-    const at::Tensor& input_gates, const at::Tensor& hidden_gates,
-    const at::Tensor& cx, const std::optional<at::Tensor>& input_bias,
-    const std::optional<at::Tensor>& hidden_bias);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenThnnFusedLstmCell(const at::Tensor& input_gates,
+                      const at::Tensor& hidden_gates, const at::Tensor& cx,
+                      const std::optional<at::Tensor>& input_bias,
+                      const std::optional<at::Tensor>& hidden_bias);
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenThnnFusedLstmCellOut(
     const at::Tensor& input_gates, const at::Tensor& hidden_gates,
@@ -48,7 +49,7 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenThnnFusedLstmCellOut(
 // Backward of the fused LSTM cell (aten::_thnn_fused_lstm_cell_backward_impl).
 // Returns (grad_gates, grad_cx, grad_bias); the fused-cell backward wrapper
 // duplicates grad_gates/grad_bias to the input/hidden gate/bias grads.
-std::tuple<at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
 AtenThnnFusedLstmCellBackwardImpl(const std::optional<at::Tensor>& grad_hy,
                                   const std::optional<at::Tensor>& grad_cy,
                                   const at::Tensor& cx, const at::Tensor& cy,

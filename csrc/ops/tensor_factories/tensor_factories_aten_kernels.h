@@ -28,63 +28,65 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenZeros(at::IntArrayRef size,
-                     std::optional<at::ScalarType> dtype_opt,
-                     std::optional<at::Layout> layout_opt,
-                     std::optional<at::Device> device_opt,
-                     std::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenZeros(at::IntArrayRef size,
+                                   std::optional<at::ScalarType> dtype_opt,
+                                   std::optional<at::Layout> layout_opt,
+                                   std::optional<at::Device> device_opt,
+                                   std::optional<bool> pin_memory_opt);
 
-at::Tensor AtenOnes(at::IntArrayRef size,
-                    std::optional<at::ScalarType> dtype_opt,
-                    std::optional<at::Layout> layout_opt,
-                    std::optional<at::Device> device_opt,
-                    std::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenOnes(at::IntArrayRef size,
+                                  std::optional<at::ScalarType> dtype_opt,
+                                  std::optional<at::Layout> layout_opt,
+                                  std::optional<at::Device> device_opt,
+                                  std::optional<bool> pin_memory_opt);
 
-at::Tensor AtenFull(at::IntArrayRef size, const at::Scalar& fill_value,
-                    std::optional<at::ScalarType> dtype_opt,
-                    std::optional<at::Layout> layout_opt,
-                    std::optional<at::Device> device_opt,
-                    std::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenFull(at::IntArrayRef size,
+                                  const at::Scalar& fill_value,
+                                  std::optional<at::ScalarType> dtype_opt,
+                                  std::optional<at::Layout> layout_opt,
+                                  std::optional<at::Device> device_opt,
+                                  std::optional<bool> pin_memory_opt);
 
-at::Tensor AtenZerosLike(const at::Tensor& self,
-                         std::optional<at::ScalarType> dtype_opt,
-                         std::optional<at::Layout> layout_opt,
-                         std::optional<at::Device> device_opt,
-                         std::optional<bool> pin_memory_opt,
-                         std::optional<at::MemoryFormat> memory_format_opt);
+[[nodiscard]] at::Tensor AtenZerosLike(
+    const at::Tensor& self, std::optional<at::ScalarType> dtype_opt,
+    std::optional<at::Layout> layout_opt, std::optional<at::Device> device_opt,
+    std::optional<bool> pin_memory_opt,
+    std::optional<at::MemoryFormat> memory_format_opt);
 
-at::Tensor AtenOnesLike(const at::Tensor& self,
-                        std::optional<at::ScalarType> dtype_opt,
-                        std::optional<at::Layout> layout_opt,
-                        std::optional<at::Device> device_opt,
-                        std::optional<bool> pin_memory_opt,
-                        std::optional<at::MemoryFormat> memory_format_opt);
+[[nodiscard]] at::Tensor AtenOnesLike(
+    const at::Tensor& self, std::optional<at::ScalarType> dtype_opt,
+    std::optional<at::Layout> layout_opt, std::optional<at::Device> device_opt,
+    std::optional<bool> pin_memory_opt,
+    std::optional<at::MemoryFormat> memory_format_opt);
 
-at::Tensor AtenFullLike(const at::Tensor& self, const at::Scalar& fill_value,
-                        std::optional<at::ScalarType> dtype_opt,
-                        std::optional<at::Layout> layout_opt,
-                        std::optional<at::Device> device_opt,
-                        std::optional<bool> pin_memory_opt,
-                        std::optional<at::MemoryFormat> memory_format_opt);
+[[nodiscard]] at::Tensor AtenFullLike(
+    const at::Tensor& self, const at::Scalar& fill_value,
+    std::optional<at::ScalarType> dtype_opt,
+    std::optional<at::Layout> layout_opt, std::optional<at::Device> device_opt,
+    std::optional<bool> pin_memory_opt,
+    std::optional<at::MemoryFormat> memory_format_opt);
 
-at::Tensor AtenNewZeros(const at::Tensor& self, at::IntArrayRef size,
-                        std::optional<at::ScalarType> dtype_opt,
-                        std::optional<at::Layout> layout_opt,
-                        std::optional<at::Device> device_opt,
-                        std::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenNewZeros(const at::Tensor& self,
+                                      at::IntArrayRef size,
+                                      std::optional<at::ScalarType> dtype_opt,
+                                      std::optional<at::Layout> layout_opt,
+                                      std::optional<at::Device> device_opt,
+                                      std::optional<bool> pin_memory_opt);
 
-at::Tensor AtenNewOnes(const at::Tensor& self, at::IntArrayRef size,
-                       std::optional<at::ScalarType> dtype_opt,
-                       std::optional<at::Layout> layout_opt,
-                       std::optional<at::Device> device_opt,
-                       std::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenNewOnes(const at::Tensor& self,
+                                     at::IntArrayRef size,
+                                     std::optional<at::ScalarType> dtype_opt,
+                                     std::optional<at::Layout> layout_opt,
+                                     std::optional<at::Device> device_opt,
+                                     std::optional<bool> pin_memory_opt);
 
-at::Tensor AtenNewFull(const at::Tensor& self, at::IntArrayRef size,
-                       const at::Scalar& fill_value,
-                       std::optional<at::ScalarType> dtype_opt,
-                       std::optional<at::Layout> layout_opt,
-                       std::optional<at::Device> device_opt,
-                       std::optional<bool> pin_memory_opt);
+[[nodiscard]] at::Tensor AtenNewFull(const at::Tensor& self,
+                                     at::IntArrayRef size,
+                                     const at::Scalar& fill_value,
+                                     std::optional<at::ScalarType> dtype_opt,
+                                     std::optional<at::Layout> layout_opt,
+                                     std::optional<at::Device> device_opt,
+                                     std::optional<bool> pin_memory_opt);
 
 }  // namespace torch_tpu
 

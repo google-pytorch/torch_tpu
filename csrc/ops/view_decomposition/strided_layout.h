@@ -54,7 +54,8 @@ struct StridedDimension {
 };
 static_assert(sizeof(StridedDimension) == 16, "");
 
-bool operator==(const StridedDimension& lhs, const StridedDimension& rhs);
+[[nodiscard]] bool operator==(const StridedDimension& lhs,
+                              const StridedDimension& rhs);
 
 // A struct representing a strided layout of a tensor, with a size and stride
 // for 0 or more dimensions.
@@ -64,7 +65,7 @@ bool operator==(const StridedDimension& lhs, const StridedDimension& rhs);
 // provided that all 0 <= x[i] < size[i] for all i in [0, N)
 struct StridedLayout {
   // Constructs a StridedLayout from a PyTorch tensor.
-  static StridedLayout FromTensor(const at::Tensor& tensor);
+  [[nodiscard]] static StridedLayout FromTensor(const at::Tensor& tensor);
 
   // Checks if the given layout is non-overlapping and row-major.
   // This permits a storage offset greater than 0, and allows for size-1
@@ -74,7 +75,7 @@ struct StridedLayout {
   // storage offset or reduction in the maximum element index is achievable by
   // at most one possible slice; i.e. if a solution exists, it is unique, and
   // can be found greedily.
-  bool IsNonOverlappingRowMajor() const;
+  [[nodiscard]] bool IsNonOverlappingRowMajor() const;
 
   // The dimensions of the tensor in strided layout.
   absl::InlinedVector<StridedDimension, 3> strided_dims;
@@ -85,9 +86,11 @@ struct StridedLayout {
 // StridedLayout at 64 bytes (one cache line on most x86 CPUs).
 static_assert(sizeof(StridedLayout) == 64, "wrong size");
 
-bool operator==(const StridedLayout& lhs, const StridedLayout& rhs);
+[[nodiscard]] bool operator==(const StridedLayout& lhs,
+                              const StridedLayout& rhs);
 
-inline bool operator!=(const StridedLayout& lhs, const StridedLayout& rhs) {
+[[nodiscard]] inline bool operator!=(const StridedLayout& lhs,
+                                     const StridedLayout& rhs) {
   return !(lhs == rhs);
 }
 
@@ -96,13 +99,14 @@ std::ostream& operator<<(std::ostream& os, const StridedLayout& layout);
 // Given a shape, returns the unique contiguous base layout with that shape.
 // The contiguous base layout is row-major, non-overlapping, dense, with
 // storage offset 0.
-StridedLayout MakeContiguousBaseLayout(absl::Span<const int64_t> shape);
+[[nodiscard]] StridedLayout MakeContiguousBaseLayout(
+    absl::Span<const int64_t> shape);
 
 // Given a StridedLayout, returns a vector with all dimension sizes gathered.
-Dimensions GetSizes(const StridedLayout& layout);
+[[nodiscard]] Dimensions GetSizes(const StridedLayout& layout);
 
 // Given a StridedLayout, returns a vector with all dimension strides gathered.
-Strides GetStrides(const StridedLayout& layout);
+[[nodiscard]] Strides GetStrides(const StridedLayout& layout);
 
 }  // namespace torch_tpu
 

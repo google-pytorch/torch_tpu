@@ -87,7 +87,8 @@ struct RealToRealBitcast {
 
 // Formats the bitcast like "bitcast(from_type=f32, to_type=bf16)".
 std::ostream& operator<<(std::ostream& os, const RealToRealBitcast& bitcast);
-bool operator==(const RealToRealBitcast& lhs, const RealToRealBitcast& rhs);
+[[nodiscard]] bool operator==(const RealToRealBitcast& lhs,
+                              const RealToRealBitcast& rhs);
 
 // When converting from a cfloat or cdouble value to a real-valued
 // number, there are three distinct approaches:
@@ -151,8 +152,8 @@ struct ComplexToRealBitcast {
 //   * real(cfloat)
 //   * imag(cfloat)
 std::ostream& operator<<(std::ostream& os, const ComplexToRealBitcast& bitcast);
-bool operator==(const ComplexToRealBitcast& lhs,
-                const ComplexToRealBitcast& rhs);
+[[nodiscard]] bool operator==(const ComplexToRealBitcast& lhs,
+                              const ComplexToRealBitcast& rhs);
 
 // A reinterpret cast from a real-valued float tensor to a complex-valued
 // tensor. This mostly follows the semantics of torch.view_as_complex(), by
@@ -167,7 +168,8 @@ struct ViewAsComplex {
 
 // Formats the bitcast like "view_as_complex(cfloat)".
 std::ostream& operator<<(std::ostream& os, const ViewAsComplex& bitcast);
-bool operator==(const ViewAsComplex& lhs, const ViewAsComplex& rhs);
+[[nodiscard]] bool operator==(const ViewAsComplex& lhs,
+                              const ViewAsComplex& rhs);
 
 // Updates the layout to reflect the effect of applying the given bitcast
 // primitive.

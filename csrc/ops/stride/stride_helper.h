@@ -39,15 +39,16 @@ namespace torch_tpu {
 // Returns:
 //   A vector of integers containing the calculated stride for each dimension.
 //   Returns an empty vector if the input shape is empty.
-Strides CalculateStridesContiguous(absl::Span<const int64_t> shape);
+[[nodiscard]] Strides CalculateStridesContiguous(
+    absl::Span<const int64_t> shape);
 
 // Checks if the given set of sizes and strides is overlapping.
 // If allow_expanded is true, then dimensions with stride=0 are considered
 // non-overlapping; otherwise, they are considered overlapping.
 // Crashes if the sizes and strides do not have the same length.
-bool IsOverlapping(absl::Span<const int64_t> sizes,
-                   absl::Span<const int64_t> strides,
-                   bool allow_expanded = false);
+[[nodiscard]] bool IsOverlapping(absl::Span<const int64_t> sizes,
+                                 absl::Span<const int64_t> strides,
+                                 bool allow_expanded = false);
 
 // Checks that the provided sizes, strides, and storage offset fit within the
 // provided number of storage bytes.

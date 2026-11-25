@@ -24,11 +24,11 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUnique2(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUnique2(
     const at::Tensor& self, bool sorted, bool return_inverse,
     bool return_counts);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUniqueDim(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenUniqueDim(
     const at::Tensor& self, int64_t dim, bool sorted, bool return_inverse,
     bool return_counts);
 

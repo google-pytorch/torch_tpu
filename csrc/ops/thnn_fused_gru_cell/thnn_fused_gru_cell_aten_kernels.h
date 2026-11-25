@@ -31,7 +31,7 @@ namespace torch_tpu {
 //   n = tanh(i_n + r * h_n)                    # reset gates only the hidden n
 //   hy = (hx - n) * z + n
 // Returns (hy, workspace); workspace = concat(r, z, n, hx, h_n) for backward.
-std::tuple<at::Tensor, at::Tensor> AtenThnnFusedGruCell(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenThnnFusedGruCell(
     const at::Tensor& input_gates, const at::Tensor& hidden_gates,
     const at::Tensor& hx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias);
@@ -46,7 +46,8 @@ std::tuple<at::Tensor&, at::Tensor&> AtenThnnFusedGruCellOut(
 // Returns (grad_input_gates, grad_hidden_gates, grad_hx, grad_input_bias,
 // grad_hidden_bias). Unlike LSTM the input/hidden gate grads differ (the reset
 // gate multiplies the hidden new-gate), so both are returned explicitly.
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor,
+                         at::Tensor>
 AtenThnnFusedGruCellBackward(const at::Tensor& grad_hy,
                              const at::Tensor& workspace, bool has_bias);
 

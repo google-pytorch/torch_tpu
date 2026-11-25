@@ -33,13 +33,13 @@ at::Tensor& AtenSigmoidBackwardGradInput(const at::Tensor& grad_output,
                                          const at::Tensor& output,
                                          at::Tensor& grad_input);
 
-std::tuple<at::Tensor, at::Tensor> AtenLogSigmoidForward(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenLogSigmoidForward(
     const at::Tensor& self);
 std::tuple<at::Tensor&, at::Tensor&> AtenLogSigmoidForwardOut(
     const at::Tensor& self, at::Tensor& output, at::Tensor& buffer);
-at::Tensor AtenLogSigmoidBackward(const at::Tensor& grad_output,
-                                  const at::Tensor& self,
-                                  const at::Tensor& buffer);
+[[nodiscard]] at::Tensor AtenLogSigmoidBackward(const at::Tensor& grad_output,
+                                                const at::Tensor& self,
+                                                const at::Tensor& buffer);
 at::Tensor& AtenLogSigmoidBackwardGradInput(const at::Tensor& grad_output,
                                             const at::Tensor& self,
                                             const at::Tensor& buffer,

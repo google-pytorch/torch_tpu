@@ -38,9 +38,11 @@ namespace torch_tpu {
 //     DynamicUpdateSlice index tensor creation and enables fusion in XLA.
 //   - Fallback for interior slices (`step == 1`): Emits
 //     `stablehlo::DynamicUpdateSlice(self_op, src_op, start_indices)`.
-at::Tensor AtenSliceScatter(const at::Tensor& self, const at::Tensor& src,
-                            int64_t dim, std::optional<int64_t> start,
-                            std::optional<int64_t> end, int64_t step);
+[[nodiscard]] at::Tensor AtenSliceScatter(const at::Tensor& self,
+                                          const at::Tensor& src, int64_t dim,
+                                          std::optional<int64_t> start,
+                                          std::optional<int64_t> end,
+                                          int64_t step);
 
 // Implements aten::slice_scatter.out on TPU with direct StableHLO lowerings and
 // buffer donation via DispatchOpOut.

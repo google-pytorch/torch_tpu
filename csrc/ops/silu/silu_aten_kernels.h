@@ -23,10 +23,10 @@ namespace torch_tpu {
 
 at::Tensor& AtenSiluOut(const at::Tensor& self, at::Tensor& out);
 
-at::Tensor AtenSiluBackward(const at::Tensor& grad_output,
-                            const at::Tensor& self);
-at::Tensor AtenSiluBackwardAutograd(const at::Tensor& grad_output,
-                                    const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenSiluBackward(const at::Tensor& grad_output,
+                                          const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenSiluBackwardAutograd(const at::Tensor& grad_output,
+                                                  const at::Tensor& self);
 at::Tensor& AtenSiluBackwardGradInput(const at::Tensor& grad_output,
                                       const at::Tensor& self,
                                       at::Tensor& grad_input);

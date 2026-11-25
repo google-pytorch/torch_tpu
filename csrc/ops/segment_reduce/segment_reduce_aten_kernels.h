@@ -26,12 +26,12 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenSegmentReduce(const at::Tensor& data, std::string_view reduce,
-                             const std::optional<at::Tensor>& lengths,
-                             const std::optional<at::Tensor>& indices,
-                             const std::optional<at::Tensor>& offsets,
-                             int64_t axis, bool unsafe,
-                             const std::optional<at::Scalar>& initial);
+[[nodiscard]] at::Tensor AtenSegmentReduce(
+    const at::Tensor& data, std::string_view reduce,
+    const std::optional<at::Tensor>& lengths,
+    const std::optional<at::Tensor>& indices,
+    const std::optional<at::Tensor>& offsets, int64_t axis, bool unsafe,
+    const std::optional<at::Scalar>& initial);
 
 }  // namespace torch_tpu
 

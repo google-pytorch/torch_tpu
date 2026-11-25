@@ -29,8 +29,9 @@ namespace torch_tpu {
 //   - If `total_len == 1`, returns `reshaped_src` directly.
 //   - Otherwise emits `stablehlo::DynamicUpdateSlice(self_op, reshaped_src,
 //     start_indices)` where `start_indices[dim] = index`.
-at::Tensor AtenSelectScatter(const at::Tensor& self, const at::Tensor& src,
-                             int64_t dim, int64_t index);
+[[nodiscard]] at::Tensor AtenSelectScatter(const at::Tensor& self,
+                                           const at::Tensor& src, int64_t dim,
+                                           int64_t index);
 
 // Implements aten::select_scatter.out on TPU with direct StableHLO lowerings
 // and buffer donation via DispatchOpOut.

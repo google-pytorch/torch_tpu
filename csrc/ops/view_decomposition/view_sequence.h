@@ -53,8 +53,10 @@ using ViewPrimitive =
 static_assert(alignof(ViewPrimitive) == 8, "");
 static_assert(sizeof(ViewPrimitive) == 176, "");
 
-bool operator==(const ViewPrimitive& lhs, const ViewPrimitive& rhs);
-bool operator!=(const ViewPrimitive& lhs, const ViewPrimitive& rhs);
+[[nodiscard]] bool operator==(const ViewPrimitive& lhs,
+                              const ViewPrimitive& rhs);
+[[nodiscard]] bool operator!=(const ViewPrimitive& lhs,
+                              const ViewPrimitive& rhs);
 
 // Formats the view primitive as one of:
 //   * "reshape[1, 2, 3]"
