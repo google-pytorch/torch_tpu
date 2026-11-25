@@ -22,6 +22,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -31,6 +33,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/scan_builder.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -156,6 +159,16 @@ absl::StatusOr<CumminOutputs> BuildCumminShlo(const int64_t dim,
 void AtenCumminHelper(const at::Tensor& self, at::Tensor& values,
                       at::Tensor& indices, int64_t dim) {
   TT_KERNEL(OpName::kCumminHelper, param_keys, (self, values, indices, dim), {
+    TT_CHECK_THROW(IsPrivateUse1Device(self), error::kInvalidArgument)
+        << "expected the input tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << self.device();
+    TT_CHECK_THROW(IsPrivateUse1Device(values), error::kInvalidArgument)
+        << "expected the values tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << values.device();
+    TT_CHECK_THROW(IsPrivateUse1Device(indices), error::kInvalidArgument)
+        << "expected the indices tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << indices.device();
+
     if (self.dim() == 0) {
       values.copy_(self);
       indices.fill_(0);
@@ -175,10 +188,18 @@ void AtenCumminHelper(const at::Tensor& self, at::Tensor& values,
         << "expected dimension size to be less than or equal to "
         << std::numeric_limits<int32_t>::max() << ", got " << current_dim_size;
 
-    Dimensions output_dims = CopyIntVector(self.sizes());
-
-    TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
+    TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
+
+    // Fast-path: 0-element tensors (including empty non-scan dimensions)
+    // require no scan computation.
+    if (self.numel() == 0) {
+      TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(values, self.sizes()));
+      TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(indices, self.sizes()));
+      return;
+    }
+
+    Dimensions output_dims = CopyIntVector(self.sizes());
 
     auto op_builder =
         [normalized_dim](

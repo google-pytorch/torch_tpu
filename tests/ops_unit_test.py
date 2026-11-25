@@ -1930,9 +1930,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     torch.cumprod(x0_c, dim=0, out=out0_f)
     self.assertEqual(out0_f.item(), 3.0)
 
-    # Empty tensor test
+    # Empty tensor test (including resizing non-empty out to empty shape)
     xe = torch.empty(0, 4, dtype=torch.int32, device=device)
-    oute = torch.empty(0, 4, dtype=torch.float32, device=device)
+    oute = torch.empty(10, dtype=torch.float32, device=device)
     torch.cumprod(xe, dim=1, out=oute)
     self.assertEqual(oute.shape, (0, 4))
     self.assertEqual(oute.dtype, torch.float32)
@@ -1956,6 +1956,116 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       torch.cumprod(xi_cpu, dim=0, out=out_cpu)
       self.assertEqual(out_tpu.dtype, torch.int64)
       utils.assert_close(out_tpu.cpu(), out_cpu)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="cummax_empty_non_scan_dim",
+          op=torch.cummax,
+          shape=(0, 3),
+          dim=1,
+      ),
+      dict(
+          testcase_name="cummax_empty_scan_dim",
+          op=torch.cummax,
+          shape=(0, 3),
+          dim=0,
+      ),
+      dict(
+          testcase_name="cummax_empty_middle_dim_scan_last",
+          op=torch.cummax,
+          shape=(2, 0, 3),
+          dim=2,
+      ),
+      dict(
+          testcase_name="cummin_empty_non_scan_dim",
+          op=torch.cummin,
+          shape=(0, 3),
+          dim=1,
+      ),
+      dict(
+          testcase_name="cummin_empty_scan_dim",
+          op=torch.cummin,
+          shape=(0, 3),
+          dim=0,
+      ),
+      dict(
+          testcase_name="cummin_empty_middle_dim_scan_last",
+          op=torch.cummin,
+          shape=(2, 0, 3),
+          dim=2,
+      ),
+  )
+  def test_cummax_cummin_empty_tensors(
+      self, op, shape: tuple[int, ...], dim: int
+  ):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op(
+            torch.empty(shape, dtype=torch.float32, device=device), dim=dim
+        )
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="cummax_helper_empty_non_scan_dim",
+          helper=torch._cummax_helper,
+          shape=(0, 3),
+          out_shape=(0, 3),
+          dim=1,
+      ),
+      dict(
+          testcase_name="cummax_helper_empty_non_scan_dim_resize_out",
+          helper=torch._cummax_helper,
+          shape=(0, 3),
+          out_shape=(10,),
+          dim=1,
+      ),
+      dict(
+          testcase_name="cummax_helper_empty_scan_dim",
+          helper=torch._cummax_helper,
+          shape=(0, 3),
+          out_shape=(0, 3),
+          dim=0,
+      ),
+      dict(
+          testcase_name="cummin_helper_empty_non_scan_dim",
+          helper=torch._cummin_helper,
+          shape=(0, 3),
+          out_shape=(0, 3),
+          dim=1,
+      ),
+      dict(
+          testcase_name="cummin_helper_empty_non_scan_dim_resize_out",
+          helper=torch._cummin_helper,
+          shape=(0, 3),
+          out_shape=(10,),
+          dim=1,
+      ),
+      dict(
+          testcase_name="cummin_helper_empty_scan_dim",
+          helper=torch._cummin_helper,
+          shape=(0, 3),
+          out_shape=(0, 3),
+          dim=0,
+      ),
+  )
+  def test_cummax_cummin_helper_empty_tensors(
+      self,
+      helper,
+      shape: tuple[int, ...],
+      out_shape: tuple[int, ...],
+      dim: int,
+  ):
+    device = torch.device("tpu")
+    x = torch.empty(shape, dtype=torch.float32, device=device)
+    values = torch.empty(out_shape, dtype=torch.float32, device=device)
+    indices = torch.empty(out_shape, dtype=torch.int64, device=device)
+    helper(x, values, indices, dim)
+    self.assertEqual(values.shape, shape)
+    self.assertEqual(values.dtype, torch.float32)
+    self.assertEqual(indices.shape, shape)
+    self.assertEqual(indices.dtype, torch.int64)
+    self.assertEqual(values.cpu().shape, shape)
+    self.assertEqual(indices.cpu().shape, shape)
 
   def test_addcmul_mixed_dtypes(self):
     device = torch.device("tpu")

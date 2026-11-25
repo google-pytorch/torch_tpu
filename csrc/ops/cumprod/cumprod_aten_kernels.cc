@@ -24,6 +24,7 @@
 #include "absl/functional/bind_front.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -117,7 +118,12 @@ at::Tensor& AtenCumprodOut(const at::Tensor& self, int64_t dim,
                            std::optional<at::ScalarType> dtype,
                            at::Tensor& out) {
   TT_KERNEL(OpName::kCumprodOut, param_keys, (self, dim, dtype, out), {
-    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
+    TT_CHECK_THROW(IsPrivateUse1Device(self), error::kInvalidArgument)
+        << "expected the input tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << self.device();
+    TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+        << "expected the output tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
 
     // PyTorch ATen parity: when explicit dtype is provided, out tensor dtype
     // must strictly match dtype; safe-casting is only allowed when dtype is
@@ -129,10 +135,13 @@ at::Tensor& AtenCumprodOut(const at::Tensor& self, int64_t dim,
           << ", got " << ToString(out.scalar_type());
     }
 
-    // Dimension must be validated before early returns so that invalid dims
-    // (e.g. dim > 0 on a 0-D scalar or empty tensor) throw IndexError.
+    // Dimension must be validated before resizing or early returns so that
+    // invalid dims (e.g. dim > 0 on a 0-D scalar or empty tensor) throw
+    // IndexError without mutating out.
     TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
                        SafeWrapDim(dim, self.dim()));
+
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
 
     // Fast-path: empty tensors require no computation.
     if (out.numel() == 0) {
