@@ -14,6 +14,7 @@
 
 """TPU tests for in-graph PadRealToStatic on wide and mixed dynamic inputs."""
 
+from collections.abc import Callable
 import itertools
 
 from absl.testing import absltest
@@ -82,6 +83,80 @@ class PadRealToStaticTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out_3.cpu(), fn(cpu_3))
     utils.assert_close(out_7.cpu(), fn(cpu_7))
     utils.assert_close(out_5.cpu(), fn(cpu_5))
+
+  @parameterized.named_parameters(
+      ("alone", lambda x: x.to(torch.float32)),
+      ("with_float64_use", lambda x: x.to(torch.float32) + x),
+  )
+  def test_float64_dynamic_input_cast_to_float32(
+      self, fn: Callable[[torch.Tensor], torch.Tensor]
+  ):
+    def make_input(rows: int) -> tuple[torch.Tensor, torch.Tensor]:
+      cpu_x = torch.randn(rows, 8, dtype=torch.float64)
+      tpu_x = cpu_x.to(self.device)
+      torch._dynamo.mark_dynamic(tpu_x, 0, min=2, max=16)
+      return cpu_x, tpu_x
+
+    debugs = []
+    compiled = torch.compile(
+        fn,
+        backend="tpu",
+        fullgraph=True,
+        options={"debug_callback": debugs.append},
+    )
+    cpu_3, tpu_3 = make_input(3)
+    cpu_7, tpu_7 = make_input(7)
+    cpu_5, tpu_5 = make_input(5)
+
+    out_3 = compiled(tpu_3)
+    out_7 = compiled(tpu_7)
+    stats_before = torch.tpu._get_cache_stats()
+    out_5 = compiled(tpu_5)
+    stats_after = torch.tpu._get_cache_stats()
+
+    self.assertEqual(
+        stats_after.num_compilations - stats_before.num_compilations, 0
+    )
+    self.assertIn("@PadRealToStatic", debugs[0].stablehlo_forward_text[0])
+    utils.assert_close(out_3.cpu(), fn(cpu_3))
+    utils.assert_close(out_7.cpu(), fn(cpu_7))
+    utils.assert_close(out_5.cpu(), fn(cpu_5))
+
+  def test_float32_dynamic_input_cast_to_float64_backward(self):
+    def fn(x):
+      return x.to(torch.float64)
+
+    debugs = []
+    compiled = torch.compile(
+        fn,
+        backend="tpu",
+        fullgraph=True,
+        options={"debug_callback": debugs.append},
+    )
+
+    def run_step(rows: int) -> int:
+      cpu_x = torch.randn(rows, 8, requires_grad=True)
+      cpu_grad = torch.randn(rows, 8, dtype=torch.float64)
+      tpu_x = cpu_x.detach().to(self.device).requires_grad_(True)
+      tpu_grad = cpu_grad.to(self.device)
+      torch._dynamo.mark_dynamic(tpu_x, 0, min=2, max=16)
+
+      before = torch.tpu._get_cache_stats().num_compilations
+      compiled(tpu_x).backward(tpu_grad)
+      compilations_delta = (
+          torch.tpu._get_cache_stats().num_compilations - before
+      )
+
+      fn(cpu_x).backward(cpu_grad)
+      utils.assert_close(tpu_x.grad.cpu(), cpu_x.grad)
+      return compilations_delta
+
+    run_step(3)
+    run_step(7)
+    unseen_delta = run_step(5)
+
+    self.assertEqual(unseen_delta, 0)
+    self.assertIn("@PadRealToStatic", debugs[0].stablehlo_backward_text[0])
 
   def test_mixed_int64_and_bfloat16_attention_pad_real_to_static(self):
     vocab_size, hidden_dim, num_heads, head_dim = 128, 64, 4, 16
