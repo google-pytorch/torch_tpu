@@ -1297,8 +1297,11 @@ torch_tpu_cc_test(
 
 torch_tpu_cc_library(
     name = "device_utils",
+    srcs = ["device_utils.cc"],
     hdrs = ["device_utils.h"],
     deps = [
+        ":env_vars",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -1308,7 +1311,9 @@ torch_tpu_cc_test(
     srcs = ["device_utils_test.cc"],
     deps = [
         ":device_utils",
+        ":env_vars",
         "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/log:absl_check",
     ],
 )
 
@@ -1731,7 +1736,6 @@ torch_tpu_cc_test(
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
         "@xla//xla/service:computation_layout",
     ],
 )
@@ -1808,7 +1812,6 @@ torch_tpu_cc_test(
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
 
@@ -1867,7 +1870,6 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/strings",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
 
@@ -1895,7 +1897,6 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
 
