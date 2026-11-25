@@ -10315,6 +10315,254 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.lerp(t, t, t)
 
+  @parameterized.named_parameters(
+      ("int32_tensor_out", torch.int32, "Int", "tensor_out", torch.int32),
+      ("int32_inplace_tensor", torch.int32, "Int", "inplace_tensor", None),
+      ("int32_scalar", torch.int32, "Int", "scalar", None),
+      ("int32_scalar_out_i32", torch.int32, "Int", "scalar_out", torch.int32),
+      ("int32_scalar_out_f32", torch.int32, "Int", "scalar_out", torch.float32),
+      ("int32_inplace_scalar", torch.int32, "Int", "inplace_scalar", None),
+      ("bool_scalar", torch.bool, "Bool", "scalar", None),
+  )
+  def test_lerp_integral_overloads(self, in_dtype, torch_name, mode, out_dtype):
+    t = torch.tensor([1, 2], device=et.device(), dtype=in_dtype)
+    out = (
+        torch.empty(2, device=et.device(), dtype=out_dtype)
+        if out_dtype is not None
+        else None
+    )
+    in_short = _get_short_dtype_str(in_dtype)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""lerp(): expected the first argument's dtype to be non-integral, got {in_short}""",
+        gpu=f""""lerp_cuda" not implemented for '{torch_name}'""",
+    ):
+      if mode == "tensor_out":
+        torch.lerp(t, t, t, out=out)
+      elif mode == "inplace_tensor":
+        t.lerp_(t, t)
+      elif mode == "scalar":
+        torch.lerp(t, t, 0.5)
+      elif mode == "scalar_out":
+        torch.lerp(t, t, 0.5, out=out)
+      elif mode == "inplace_scalar":
+        t.lerp_(t, 0.5)
+
+  @parameterized.named_parameters(
+      ("f32_to_i32", torch.float32, torch.int32),
+      ("f32_to_bool", torch.float32, torch.bool),
+      ("f32_to_f64", torch.float32, torch.float64),
+      ("c64_to_i32", torch.complex64, torch.int32),
+      ("c64_to_f32", torch.complex64, torch.float32),
+  )
+  def test_lerp_tensor_out_dtype_mismatch(self, in_dtype, out_dtype):
+    a = torch.ones(2, device=et.device(), dtype=in_dtype)
+    b = torch.ones(2, device=et.device(), dtype=in_dtype)
+    w = torch.full((2,), 0.5, device=et.device(), dtype=in_dtype)
+    out = torch.empty(0, device=et.device(), dtype=out_dtype)
+    in_short = _get_short_dtype_str(in_dtype)
+    out_short = _get_short_dtype_str(out_dtype)
+    in_torch = _get_torch_dtype_str(in_dtype)
+    out_torch = _get_torch_dtype_str(out_dtype)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""lerp(): expected the output dtype to be {in_short}, got {out_short}""",
+        gpu=f"""Found dtype {out_torch} but expected {in_torch}""",
+    ):
+      torch.lerp(a, b, w, out=out)
+    self.assertEqual(out.shape, (0,))
+
+  @parameterized.named_parameters(
+      ("scalar_f32_to_i32", torch.float32, 0.5, torch.int32, torch.float32),
+      ("scalar_f32_to_bool", torch.float32, 0.5, torch.bool, torch.float32),
+      ("scalar_c64_to_i32", torch.complex64, 0.5, torch.int32, torch.complex64),
+      (
+          "scalar_c64_to_f32",
+          torch.complex64,
+          0.5,
+          torch.float32,
+          torch.complex64,
+      ),
+      (
+          "weight0d_f32_to_i32",
+          torch.float32,
+          torch.float32,
+          torch.int32,
+          torch.float32,
+      ),
+      (
+          "weight0d_f32_to_bool",
+          torch.float32,
+          torch.float32,
+          torch.bool,
+          torch.float32,
+      ),
+      (
+          "weight0d_c64_to_i32",
+          torch.complex64,
+          torch.float32,
+          torch.int32,
+          torch.complex64,
+      ),
+      (
+          "weight0d_c64_to_f32",
+          torch.complex64,
+          torch.float32,
+          torch.float32,
+          torch.complex64,
+      ),
+      (
+          "weight0d_f32_with_c64_weight_to_f32",
+          torch.float32,
+          torch.complex64,
+          torch.float32,
+          torch.complex64,
+      ),
+  )
+  def test_lerp_out_invalid_cast(
+      self, in_dtype, weight_spec, out_dtype, result_dtype
+  ):
+    a = torch.ones(2, device=et.device(), dtype=in_dtype)
+    b = torch.ones(2, device=et.device(), dtype=in_dtype)
+    if isinstance(weight_spec, torch.dtype):
+      w = torch.tensor(0.5, device=et.device(), dtype=weight_spec)
+    else:
+      w = weight_spec
+    out = torch.empty(0, device=et.device(), dtype=out_dtype)
+    res_short = _get_short_dtype_str(result_dtype)
+    out_short = _get_short_dtype_str(out_dtype)
+    res_torch = _get_torch_dtype_str(result_dtype)
+    out_torch = _get_torch_dtype_str(out_dtype)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""lerp(): result type {res_short} can't be cast to the desired output type {out_short}""",
+        gpu=f"""result type {res_torch} can't be cast to the desired output type {out_torch}""",
+    ):
+      torch.lerp(a, b, w, out=out)
+    self.assertEqual(out.shape, (0,))
+
+  @parameterized.named_parameters(
+      ("tensor_out_f64", torch.float64, "double", True),
+      ("tensor_out_i32", torch.int32, "int", True),
+      ("scalar_out_f64", torch.float64, "double", False),
+      ("scalar_out_i32", torch.int32, "int", False),
+  )
+  def test_lerp_out_end_dtype_mismatch(
+      self, end_dtype, end_cpp_name, tensor_weight
+  ):
+    a = torch.ones(2, device=et.device(), dtype=torch.float32)
+    b = torch.ones(2, device=et.device(), dtype=end_dtype)
+    w = (
+        torch.full((2,), 0.5, device=et.device(), dtype=torch.float32)
+        if tensor_weight
+        else 0.5
+    )
+    out = torch.empty(2, device=et.device(), dtype=torch.float32)
+    end_short = _get_short_dtype_str(end_dtype)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""lerp(): expected end tensor to have dtype float32, got {end_short}""",
+        gpu=f"""expected dtype float for `end` but got dtype {end_cpp_name}""",
+    ):
+      torch.lerp(a, b, w, out=out)
+
+  @parameterized.named_parameters(
+      ("f64", torch.float64, "double"),
+      ("i32", torch.int32, "int"),
+      ("c64", torch.complex64, "c10::complex<float>"),
+  )
+  def test_lerp_out_weight_dtype_mismatch(self, weight_dtype, weight_cpp_name):
+    a = torch.ones(2, device=et.device(), dtype=torch.float32)
+    b = torch.ones(2, device=et.device(), dtype=torch.float32)
+    w = torch.ones(2, device=et.device(), dtype=weight_dtype)
+    out = torch.empty(2, device=et.device(), dtype=torch.float32)
+    w_short = _get_short_dtype_str(weight_dtype)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""lerp(): expected weight tensor to have dtype float32, got {w_short}""",
+        gpu=f"""expected dtype float for `weight` but got dtype {weight_cpp_name}""",
+    ):
+      torch.lerp(a, b, w, out=out)
+
+  @parameterized.named_parameters(
+      ("complex_functional", 0.5 + 1.0j, None, False),
+      ("complex_out_f32", 0.5 + 1.0j, torch.float32, False),
+      ("complex_out_c64", 0.5 + 1.0j, torch.complex64, False),
+      ("complex_inplace", 0.5 + 1.0j, None, True),
+      ("overflow_functional", 1e40, None, False),
+      ("overflow_out", 1e40, torch.float32, False),
+  )
+  def test_lerp_scalar_weight_conversion_error(
+      self, weight, out_dtype, inplace
+  ):
+    a = torch.ones(2, device=et.device(), dtype=torch.float32)
+    b = torch.ones(2, device=et.device(), dtype=torch.float32)
+    out = (
+        torch.empty(2, device=et.device(), dtype=out_dtype)
+        if out_dtype is not None
+        else None
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lerp(): value cannot be converted to type float32 without overflow""",
+        gpu="""value cannot be converted to type float without overflow""",
+    ):
+      if inplace:
+        a.lerp_(b, weight)
+      elif out is not None:
+        torch.lerp(a, b, weight, out=out)
+      else:
+        torch.lerp(a, b, weight)
+
+  @parameterized.named_parameters(
+      ("tensor_out_same_shape", True, (2,)),
+      ("tensor_out_diff_shape", True, (0,)),
+      ("scalar_out_same_shape", False, (2,)),
+      ("scalar_out_diff_shape", False, (0,)),
+  )
+  def test_lerp_out_cpu_device(self, tensor_weight, out_shape):
+    a = torch.ones(2, device=et.device(), dtype=torch.float32)
+    b = torch.ones(2, device=et.device(), dtype=torch.float32)
+    w = (
+        torch.full((2,), 0.5, device=et.device(), dtype=torch.float32)
+        if tensor_weight
+        else 0.5
+    )
+    out = torch.empty(out_shape, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lerp(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.lerp(a, b, w, out=out)
+
+  @parameterized.named_parameters(
+      ("tensor_out", True),
+      ("scalar_out", False),
+  )
+  def test_lerp_out_inplace_broadcast_error(self, tensor_weight):
+    a = torch.ones(2, device=et.device(), dtype=torch.float32)
+    b = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    w = (
+        torch.full((2, 2), 0.5, device=et.device(), dtype=torch.float32)
+        if tensor_weight
+        else 0.5
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lerp(): output with shape [2] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 2]""",
+        gpu="""output with shape [2] doesn't match the broadcast shape [2, 2]""",
+    ):
+      torch.lerp(a, b, w, out=a)
+
   def test_mse_loss_invalid_dtypes(self):
     uint8 = torch.ones(2, 2, device=et.device(), dtype=torch.uint8)
     int8 = torch.ones(2, 2, device=et.device(), dtype=torch.int8)

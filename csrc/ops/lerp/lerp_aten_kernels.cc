@@ -20,12 +20,15 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/ops/result_type.h"
+#include "ATen/native/TypeProperties.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -34,7 +37,6 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -44,18 +46,39 @@ namespace torch_tpu {
 
 namespace {
 
-absl::Status ValidateLerpSelfInput(const at::Tensor& self) {
-  TT_RET_CHECK(!IsIntegral(self), error::kInvalidArgument)
-      << "expected the first argument's dtype to be non-integral, got "
-      << ToString(self.scalar_type());
+enum class OutDtypePolicy {
+  kExactMatch,
+  kSafeCast,
+};
 
+absl::Status ValidateLerpCommonInputs(const at::Tensor& self,
+                                      const at::Tensor& end,
+                                      const at::Tensor& out) {
+  TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
+      << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << out.device();
+  TT_RET_CHECK(self.scalar_type() == end.scalar_type(), error::kInvalidArgument)
+      << "expected end tensor to have dtype " << ToString(self.scalar_type())
+      << ", got " << ToString(end.scalar_type());
   return absl::OkStatus();
 }
 
-absl::StatusOr<MlirOpResults<1>> BuildLerpShlo(mlir::MlirOp self,
-                                               mlir::MlirOp end,
-                                               mlir::MlirOp weight,
-                                               mlir::ElementType common_type) {
+absl::Status ValidateLerpResultAndOutDtype(
+    const at::ScalarType result_dtype, const at::Tensor& out,
+    const OutDtypePolicy out_dtype_policy) {
+  TT_RET_CHECK(!IsIntegral(result_dtype), error::kInvalidArgument)
+      << "expected the first argument's dtype to be non-integral, got "
+      << ToString(result_dtype);
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(result_dtype));
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
+  return ValidateOutDtype(
+      out, result_dtype,
+      /*allow_out_dtype_cast=*/out_dtype_policy == OutDtypePolicy::kSafeCast);
+}
+
+absl::StatusOr<MlirOpResults<1>> BuildLerpShlo(
+    mlir::MlirOp self, mlir::MlirOp end, mlir::MlirOp weight,
+    const mlir::ElementType common_type, const mlir::ElementType output_dtype) {
   TT_ASSIGN_OR_RETURN(self, ComplexSafeConvertElementType(self, common_type));
   TT_ASSIGN_OR_RETURN(end, ComplexSafeConvertElementType(end, common_type));
   TT_ASSIGN_OR_RETURN(weight,
@@ -70,17 +93,48 @@ absl::StatusOr<MlirOpResults<1>> BuildLerpShlo(mlir::MlirOp self,
   weight = weight_bcast;
 
   // Compute result = self + weight * (end - self)
-  auto diff_op = mlir::stablehlo::Subtract(end, self);
-  auto mul_op = mlir::stablehlo::Mul(weight, diff_op);
-  return mlir::stablehlo::Add(self, mul_op);
+  mlir::MlirOp diff_op = mlir::stablehlo::Subtract(end, self);
+  mlir::MlirOp mul_op = mlir::stablehlo::Mul(weight, diff_op);
+  mlir::MlirOp result = mlir::stablehlo::Add(self, mul_op);
+  return ComplexSafeConvertElementType(result, output_dtype);
 }
 
-NAryMlirOpBuilder<3> GetLerpTensorOutFunctional(mlir::ElementType common_type) {
-  return [common_type](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+[[nodiscard]] NAryMlirOpBuilder<3> GetLerpTensorOutFunctional(
+    const mlir::ElementType common_type, const mlir::ElementType output_dtype) {
+  return [common_type, output_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
              -> absl::StatusOr<MlirOpResults<1>> {
     auto [self, end, weight] = inputs;
-    return BuildLerpShlo(self, end, weight, common_type);
+    return BuildLerpShlo(self, end, weight, common_type, output_dtype);
   };
+}
+
+absl::Status DispatchLerpOut(const at::Tensor& self, const at::Tensor& end,
+                             const at::Tensor& weight, at::Tensor& out,
+                             const at::ScalarType compute_dtype,
+                             OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(const Dimensions expected_size,
+                      InferSize(self.sizes(), end.sizes(), weight.sizes()));
+  if (out.is_alias_of(self) || out.is_alias_of(end) ||
+      out.is_alias_of(weight)) {
+    TT_RET_CHECK(absl::MakeConstSpan(out.sizes()) == expected_size,
+                 error::kInvalidArgument)
+        << "output with shape " << ToString(out.sizes())
+        << " doesn't match the broadcast shape of the tensor being operated on "
+           "in-place, which has shape "
+        << ToString(expected_size);
+  }
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(out.scalar_type()));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType common_type,
+                      ConvertTo<mlir::ElementType>(compute_dtype));
+
+  return DispatchOpOut<3>(GetLerpTensorOutFunctional(common_type, output_dtype),
+                          /*inputs=*/{self, end, weight}, out,
+                          /*options=*/
+                          {.out_dtype = output_dtype,
+                           .out_dims = expected_size,
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
@@ -88,33 +142,32 @@ NAryMlirOpBuilder<3> GetLerpTensorOutFunctional(mlir::ElementType common_type) {
 at::Tensor& AtenLerpTensorOut(const at::Tensor& self, const at::Tensor& end,
                               const at::Tensor& weight, at::Tensor& out) {
   TT_KERNEL(OpName::kLerpTensorOut, param_keys, (self, end, weight, out), {
-    TT_ASSIGN_OR_THROW(auto end_weight_size,
-                       InferSize(end.sizes(), weight.sizes()));
-    TT_ASSIGN_OR_THROW(auto expected_size,
-                       InferSize(self.sizes(), end_weight_size));
-    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, expected_size));
+    TT_THROW_IF_ERROR(ValidateLerpCommonInputs(self, end, out));
 
-    TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
-                       ConvertTo<mlir::ElementType>(out.scalar_type()));
-    auto promoted_dtype =
-        c10::promoteTypes(self.scalar_type(), end.scalar_type());
-    promoted_dtype = c10::promoteTypes(promoted_dtype, weight.scalar_type());
+    // Match PyTorch's `lerp_Tensor`: non-0D `weight` requires exact dtype
+    // matching on both `weight` and `out`, while 0D `weight` promotes inputs to
+    // a common dtype and allows safe casts to `out`.
+    const bool promote_weight = weight.dim() == 0;
+    if (!promote_weight) {
+      TT_CHECK_THROW(self.scalar_type() == weight.scalar_type(),
+                     error::kInvalidArgument)
+          << "expected weight tensor to have dtype "
+          << ToString(self.scalar_type()) << ", got "
+          << ToString(weight.scalar_type());
+    }
 
-    // Use at least F32 for the inputs following the torch impl.
-    promoted_dtype = c10::promoteTypes(promoted_dtype, at::ScalarType::Float);
+    const at::ScalarType result_dtype =
+        promote_weight
+            ? at::native::result_type(at::ITensorListRef({self, end, weight}))
+            : self.scalar_type();
+    TT_THROW_IF_ERROR(ValidateLerpResultAndOutDtype(
+        result_dtype, out,
+        promote_weight ? OutDtypePolicy::kSafeCast
+                       : OutDtypePolicy::kExactMatch));
 
-    TT_ASSIGN_OR_THROW(mlir::ElementType common_type,
-                       ConvertTo<mlir::ElementType>(promoted_dtype));
-
-    TT_THROW_IF_ERROR(ValidateLerpSelfInput(self));
-
-    TT_THROW_IF_ERROR(
-        DispatchOpOut<3>(GetLerpTensorOutFunctional(common_type),
-                         /*inputs=*/{self, end, weight}, out,
-                         /*options=*/
-                         {.out_dtype = output_dtype,
-                          .out_dims = out.sizes(),
-                          .op_param_cache_keys = std::move(param_keys)}));
+    const at::ScalarType compute_dtype = InferComputationDtype(result_dtype);
+    TT_THROW_IF_ERROR(DispatchLerpOut(self, end, weight, out, compute_dtype,
+                                      std::move(param_keys)));
     return out;
   });
 }
@@ -122,24 +175,38 @@ at::Tensor& AtenLerpTensorOut(const at::Tensor& self, const at::Tensor& end,
 at::Tensor& AtenLerpScalarOut(const at::Tensor& self, const at::Tensor& end,
                               const at::Scalar& weight, at::Tensor& out) {
   auto promoted_weight = PromoteScalar(weight);
-  TT_KERNEL(OpName::kLerpScalarOut, _, (self, end, promoted_weight, out), {
-    // Promote `weight` as a scalar rather than a default-float64 tensor, and
-    // widen to at least F32 to match `AtenLerpTensorOut`'s compute dtype
-    // without quantizing the scalar to F16/BF16.
-    at::ScalarType weight_dtype =
-        at::result_type(self, promoted_weight.scalar());
-    weight_dtype = c10::promoteTypes(weight_dtype, at::ScalarType::Float);
-    // If the promoted weight dtype is complex but the scalar argument is real,
-    // demote to the matching real dtype so that ComplexSafeConvertElementType
-    // in BuildLerpShlo can construct the complex operand without host
-    // downcasts.
-    if (IsComplex(weight_dtype) && !promoted_weight.scalar().isComplex()) {
-      weight_dtype = c10::toRealValueType(weight_dtype);
-    }
-    TT_ASSIGN_OR_THROW(auto weight_tensor,
-                       promoted_weight.GetTensor(weight_dtype));
-    return AtenLerpTensorOut(self, end, weight_tensor, out);
-  });
+  TT_KERNEL(
+      OpName::kLerpScalarOut, param_keys, (self, end, promoted_weight, out), {
+        TT_THROW_IF_ERROR(ValidateLerpCommonInputs(self, end, out));
+
+        const at::ScalarType result_dtype = self.scalar_type();
+        TT_THROW_IF_ERROR(ValidateLerpResultAndOutDtype(
+            result_dtype, out, OutDtypePolicy::kSafeCast));
+
+        const at::ScalarType compute_dtype =
+            InferComputationDtype(result_dtype);
+        TT_ASSIGN_OR_THROW(const bool can_cast_weight,
+                           CanCastScalarWithoutOverflow(
+                               promoted_weight.scalar(), compute_dtype));
+        TT_CHECK_THROW(can_cast_weight, error::kInvalidArgument)
+            << "value cannot be converted to type " << ToString(compute_dtype)
+            << " without overflow";
+
+        // Demote real scalars for complex inputs to the matching real dtype so
+        // `MakeBuffer` preserves float64 precision for complex128 instead of
+        // downcasting ComplexDouble -> ComplexFloat; BuildLerpShlo widens to
+        // `compute_dtype` via ComplexSafeConvertElementType.
+        const at::ScalarType weight_dtype =
+            (IsComplex(compute_dtype) && !promoted_weight.scalar().isComplex())
+                ? c10::toRealValueType(compute_dtype)
+                : compute_dtype;
+        TT_ASSIGN_OR_THROW(const at::Tensor weight_tensor,
+                           promoted_weight.GetTensor(weight_dtype));
+        TT_THROW_IF_ERROR(DispatchLerpOut(self, end, weight_tensor, out,
+                                          compute_dtype,
+                                          std::move(param_keys)));
+        return out;
+      });
 }
 
 }  // namespace torch_tpu

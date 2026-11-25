@@ -5509,6 +5509,67 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     #   return y
     # self.assert_close_tpu_vs_cpu(_test_out)
 
+  @parameterized.named_parameters(
+      ("scalar_f32_to_f64", torch.float32, 0.5, torch.float64),
+      ("scalar_f64_to_c128", torch.float64, 0.5, torch.complex128),
+      (
+          "weight0d_f32_to_f64",
+          torch.float32,
+          (0.5, torch.float32),
+          torch.float64,
+      ),
+      (
+          "weight0d_c64_to_c64",
+          torch.float32,
+          (0.5 + 1.0j, torch.complex64),
+          torch.complex64,
+      ),
+      (
+          "weight0d_i32_inputs_f32_weight",
+          torch.int32,
+          (0.5, torch.float32),
+          torch.float32,
+      ),
+      (
+          "weight0d_f32_inputs_i32_weight",
+          torch.float32,
+          (1, torch.int32),
+          torch.float32,
+      ),
+  )
+  def test_lerp_out_valid_cast(self, in_dtype, weight_spec, out_dtype):
+    def _run(device):
+      a = torch.tensor([1, 2], dtype=in_dtype, device=device)
+      b = torch.tensor([3, 6], dtype=in_dtype, device=device)
+      if isinstance(weight_spec, tuple):
+        val, w_dtype = weight_spec
+        w = torch.tensor(val, dtype=w_dtype, device=device)
+      else:
+        w = weight_spec
+      out = torch.empty(0, dtype=out_dtype, device=device)
+      torch.lerp(a, b, w, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(_run)
+
+  @parameterized.named_parameters(
+      ("f32_with_c64_0d", torch.float32, (0.5 + 1.0j, torch.complex64)),
+      ("i32_with_f32_0d", torch.int32, (0.5, torch.float32)),
+      ("f32_with_complex_zero_imag_scalar", torch.float32, 0.5 + 0.0j),
+  )
+  def test_lerp_weight_promotion(self, in_dtype, weight_spec):
+    def _run(device):
+      a = torch.tensor([1, 2], dtype=in_dtype, device=device)
+      b = torch.tensor([3, 6], dtype=in_dtype, device=device)
+      if isinstance(weight_spec, tuple):
+        val, w_dtype = weight_spec
+        w = torch.tensor(val, dtype=w_dtype, device=device)
+      else:
+        w = weight_spec
+      return torch.lerp(a, b, w)
+
+    self.assert_close_tpu_vs_cpu(_run)
+
   def test_reshape_with_zero_numel(self):
     self.assert_close_tpu_vs_cpu(
         lambda device: torch.reshape(
