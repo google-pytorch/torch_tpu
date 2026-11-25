@@ -24,9 +24,10 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenPreluKernel(const at::Tensor& self, const at::Tensor& weight);
+[[nodiscard]] at::Tensor AtenPreluKernel(const at::Tensor& self,
+                                         const at::Tensor& weight);
 
-std::tuple<at::Tensor, at::Tensor> AtenPreluKernelBackward(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenPreluKernelBackward(
     const at::Tensor& grad_output, const at::Tensor& self,
     const at::Tensor& weight);
 

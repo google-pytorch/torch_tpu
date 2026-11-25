@@ -28,7 +28,7 @@ namespace torch_tpu {
 
 enum class ReductionMode { kKeepDims, kDropDims };
 
-mlir::MlirOp BuildReductionShlo(
+[[nodiscard]] mlir::MlirOp BuildReductionShlo(
     mlir::MlirOp input_op, absl::Span<const int64_t> dims, mlir::Type mlir_type,
     mlir::MlirOp init_val,
     absl::AnyInvocable<void(mlir::RegionBuilder&) const> reduce_fn,
@@ -39,9 +39,9 @@ mlir::MlirOp BuildReductionShlo(
 // The reduction_input is the input to the reduction op with original shape, and
 // the reduction_output is the output of the reduction op with missing dims
 // that need to be unsqueezed with dims of size 1.
-mlir::MlirOp BuildKeepDimsShlo(mlir::MlirOp reduction_input,
-                               mlir::MlirOp reduction_output,
-                               absl::Span<const int64_t> dims);
+[[nodiscard]] mlir::MlirOp BuildKeepDimsShlo(mlir::MlirOp reduction_input,
+                                             mlir::MlirOp reduction_output,
+                                             absl::Span<const int64_t> dims);
 
 }  // namespace torch_tpu
 

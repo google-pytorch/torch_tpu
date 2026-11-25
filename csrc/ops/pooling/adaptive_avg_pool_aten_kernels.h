@@ -22,20 +22,20 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenAdaptiveAvgPool2d(const at::Tensor& self,
-                                 c10::SymIntArrayRef output_size);
+[[nodiscard]] at::Tensor AtenAdaptiveAvgPool2d(const at::Tensor& self,
+                                               c10::SymIntArrayRef output_size);
 at::Tensor& AtenAdaptiveAvgPool2dOut(const at::Tensor& self,
                                      c10::SymIntArrayRef output_size,
                                      at::Tensor& out);
-at::Tensor AtenAdaptiveAvgPool3d(const at::Tensor& self,
-                                 c10::SymIntArrayRef output_size);
+[[nodiscard]] at::Tensor AtenAdaptiveAvgPool3d(const at::Tensor& self,
+                                               c10::SymIntArrayRef output_size);
 at::Tensor& AtenAdaptiveAvgPool3dOut(const at::Tensor& self,
                                      c10::SymIntArrayRef output_size,
                                      at::Tensor& out);
-at::Tensor AtenAdaptiveAvgPool2dBackward(const at::Tensor& grad_output,
-                                         const at::Tensor& self);
-at::Tensor AtenAdaptiveAvgPool3dBackward(const at::Tensor& grad_output,
-                                         const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenAdaptiveAvgPool2dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenAdaptiveAvgPool3dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self);
 at::Tensor& AtenAdaptiveAvgPool3dBackwardGradInput(
     const at::Tensor& grad_output, const at::Tensor& self,
     at::Tensor& grad_input);

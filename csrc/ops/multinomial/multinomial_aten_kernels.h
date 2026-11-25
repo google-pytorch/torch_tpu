@@ -25,9 +25,9 @@
 
 namespace torch_tpu {
 
-at::Tensor AtenMultinomial(const at::Tensor& self, int64_t num_samples,
-                           bool replacement,
-                           c10::optional<at::Generator> generator);
+[[nodiscard]] at::Tensor AtenMultinomial(
+    const at::Tensor& self, int64_t num_samples, bool replacement,
+    c10::optional<at::Generator> generator);
 
 at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
                                bool replacement,

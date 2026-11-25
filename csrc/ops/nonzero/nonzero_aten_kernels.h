@@ -25,12 +25,13 @@ namespace torch_tpu {
 // This op is implemented by first calculating and materializing the output
 // shape then restarting tracing with a known data-dependent output shape
 //
-at::Tensor AtenNonzero(const at::Tensor& self);
+[[nodiscard]] at::Tensor AtenNonzero(const at::Tensor& self);
 
 at::Tensor& AtenNonzeroOut(const at::Tensor& self, at::Tensor& out);
 
-at::Tensor AtenNonzeroStatic(const at::Tensor& self, c10::SymInt size,
-                             int64_t fill_value);
+[[nodiscard]] at::Tensor AtenNonzeroStatic(const at::Tensor& self,
+                                           c10::SymInt size,
+                                           int64_t fill_value);
 
 at::Tensor& AtenNonzeroStaticOut(const at::Tensor& self, c10::SymInt size,
                                  int64_t fill_value, at::Tensor& out);

@@ -25,12 +25,13 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNorm(
-    const at::Tensor& input, const std::optional<at::Tensor>& weight,
-    const std::optional<at::Tensor>& bias,
-    const std::optional<at::Tensor>& running_mean,
-    const std::optional<at::Tensor>& running_variance, bool training,
-    double momentum, double eps);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenNativeBatchNorm(const at::Tensor& input,
+                    const std::optional<at::Tensor>& weight,
+                    const std::optional<at::Tensor>& bias,
+                    const std::optional<at::Tensor>& running_mean,
+                    const std::optional<at::Tensor>& running_variance,
+                    bool training, double momentum, double eps);
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenNativeBatchNormOut(
     const at::Tensor& input, const std::optional<at::Tensor>& weight,
@@ -40,15 +41,18 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenNativeBatchNormOut(
     double momentum, double eps, at::Tensor& out, at::Tensor& save_mean,
     at::Tensor& save_invstd);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNormLegit(
-    const at::Tensor& input, const std::optional<at::Tensor>& weight,
-    const std::optional<at::Tensor>& bias, at::Tensor& running_mean,
-    at::Tensor& running_variance, bool training, double momentum, double eps);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenNativeBatchNormLegit(const at::Tensor& input,
+                         const std::optional<at::Tensor>& weight,
+                         const std::optional<at::Tensor>& bias,
+                         at::Tensor& running_mean, at::Tensor& running_variance,
+                         bool training, double momentum, double eps);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNormLegitNoStats(
-    const at::Tensor& input, const std::optional<at::Tensor>& weight,
-    const std::optional<at::Tensor>& bias, bool training, double momentum,
-    double eps);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenNativeBatchNormLegitNoStats(const at::Tensor& input,
+                                const std::optional<at::Tensor>& weight,
+                                const std::optional<at::Tensor>& bias,
+                                bool training, double momentum, double eps);
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenNativeBatchNormLegitOut(
     const at::Tensor& input, const std::optional<at::Tensor>& weight,
@@ -64,14 +68,15 @@ AtenNativeBatchNormLegitNoStatsOut(const at::Tensor& input,
                                    at::Tensor& out, at::Tensor& save_mean,
                                    at::Tensor& save_invstd);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNormBackward(
-    const at::Tensor& grad_out, const at::Tensor& input,
-    const std::optional<at::Tensor>& weight,
-    const std::optional<at::Tensor>& running_mean,
-    const std::optional<at::Tensor>& running_variance,
-    const std::optional<at::Tensor>& save_mean,
-    const std::optional<at::Tensor>& save_invstd, bool training, double eps,
-    std::array<bool, 3> output_mask);
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor, at::Tensor>
+AtenNativeBatchNormBackward(const at::Tensor& grad_out, const at::Tensor& input,
+                            const std::optional<at::Tensor>& weight,
+                            const std::optional<at::Tensor>& running_mean,
+                            const std::optional<at::Tensor>& running_variance,
+                            const std::optional<at::Tensor>& save_mean,
+                            const std::optional<at::Tensor>& save_invstd,
+                            bool training, double eps,
+                            std::array<bool, 3> output_mask);
 
 }  // namespace torch_tpu
 

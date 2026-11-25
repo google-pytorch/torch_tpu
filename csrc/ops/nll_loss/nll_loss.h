@@ -29,7 +29,8 @@ namespace torch_tpu {
 // Gathers class weights from 1D `weight` ([C]) using `safe_target` of arbitrary
 // shape ([N, d1, ..., dk]). Flattens `safe_target` to 1D before calling
 // `BuildIndexSelectShlo` and reshapes the result back to `safe_target`'s shape.
-mlir::MlirOp GatherWeightsShlo(mlir::MlirOp weight, mlir::MlirOp safe_target);
+[[nodiscard]] mlir::MlirOp GatherWeightsShlo(mlir::MlirOp weight,
+                                             mlir::MlirOp safe_target);
 
 // How `BuildNllLossForwardOutShlo` reads `self` at each target class.
 enum class NllTargetSelection {

@@ -52,9 +52,9 @@ absl::StatusOr<Dimensions> ExpandAttribute(const Dimensions& values,
                                            int64_t dim);
 
 // Removes the batch dimension if it doesn't have it at the beginning.
-mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
-                                int64_t original_dim_size,
-                                int64_t spatial_dim_count);
+[[nodiscard]] mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
+                                              int64_t original_dim_size,
+                                              int64_t spatial_dim_count);
 
 // Defines the asymmetric padding (start and end) applied to a single spatial
 // dimension during a pooling operation, typically adjusting for ceil_mode.
@@ -80,7 +80,7 @@ struct PoolingWindowParams {
 // padding and ceil_mode. Dynamic spatial dimensions return symmetric {P, P}
 // padding here and apply runtime extra right padding via
 // PadDynamicCeilModeSpatialDims.
-std::vector<PaddingParams> CeilModePadding(
+[[nodiscard]] std::vector<PaddingParams> CeilModePadding(
     const mlir::RankedTensorType& input_shape,  // (N, C, H, W)
     mlir::ArrayRef<int64_t> kernel_size,        // [K_h, K_w]
     mlir::ArrayRef<int64_t> stride,             // [S_h, S_w]
@@ -88,14 +88,15 @@ std::vector<PaddingParams> CeilModePadding(
     mlir::ArrayRef<int64_t> dilation,           // [D_h, D_w]
     bool ceil_mode);
 
-std::vector<PaddingParams> CeilModePadding(
+[[nodiscard]] std::vector<PaddingParams> CeilModePadding(
     const mlir::RankedTensorType& input_shape,
     const PoolingWindowParams& params);
 
 // Returns true if `params.ceil_mode` is enabled and any dynamic spatial
 // dimension (starting at index 2 of `input_shape`) has `stride > 1`.
-bool HasDynamicCeilModePadding(const mlir::RankedTensorType& input_shape,
-                               const PoolingWindowParams& params);
+[[nodiscard]] bool HasDynamicCeilModePadding(
+    const mlir::RankedTensorType& input_shape,
+    const PoolingWindowParams& params);
 
 // Pads dynamic spatial dimensions of `operand` (starting at index 2) with
 // `pad_value` by the runtime extra right padding required by `ceil_mode` when
@@ -103,10 +104,9 @@ bool HasDynamicCeilModePadding(const mlir::RankedTensorType& input_shape,
 // must be dynamic on every dynamic spatial dimension of `batch_input` with
 // `stride > 1`. Returns `operand` unchanged when `HasDynamicCeilModePadding` is
 // false.
-mlir::MlirOp PadDynamicCeilModeSpatialDims(mlir::MlirOp operand,
-                                           mlir::MlirOp pad_value,
-                                           mlir::MlirOp batch_input,
-                                           const PoolingWindowParams& params);
+[[nodiscard]] mlir::MlirOp PadDynamicCeilModeSpatialDims(
+    mlir::MlirOp operand, mlir::MlirOp pad_value, mlir::MlirOp batch_input,
+    const PoolingWindowParams& params);
 
 // Calculates the output dimensions for N-dimensional pooling operations (max
 // pool, avg pool, etc.).
@@ -122,7 +122,7 @@ absl::StatusOr<Dimensions> GetPoolingOutputSize(
 
 // Creates the padding config to be used to pad the input tensor and iota tensor
 // consistently, which is also required by StableHLO's ReduceWindowOp.
-ReduceWindowAttributes GetReduceWindowAttributes(
+[[nodiscard]] ReduceWindowAttributes GetReduceWindowAttributes(
     mlir::MlirBuilder& builder, Dimensions kernel_size_attr,
     Dimensions stride_attr, Dimensions dilation_attr,
     std::vector<PaddingParams> padding_pairs, int64_t spatial_dim_count,

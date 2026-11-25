@@ -27,9 +27,10 @@ namespace torch_tpu {
 at::Tensor& AtenMseLossOut(const at::Tensor& self, const at::Tensor& target,
                            int64_t reduction, at::Tensor& out);
 
-at::Tensor AtenMseLossBackward(const at::Tensor& grad_output,
-                               const at::Tensor& self, const at::Tensor& target,
-                               int64_t reduction);
+[[nodiscard]] at::Tensor AtenMseLossBackward(const at::Tensor& grad_output,
+                                             const at::Tensor& self,
+                                             const at::Tensor& target,
+                                             int64_t reduction);
 
 at::Tensor& AtenMseLossBackwardGradInput(const at::Tensor& grad_output,
                                          const at::Tensor& self,

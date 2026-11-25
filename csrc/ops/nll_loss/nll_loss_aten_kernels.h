@@ -26,20 +26,20 @@
 
 namespace torch_tpu {
 
-bool IsFakeOrFunctorchLossInputs(const at::Tensor& self,
-                                 const at::Tensor& target,
-                                 const c10::optional<at::Tensor>& weight);
+[[nodiscard]] bool IsFakeOrFunctorchLossInputs(
+    const at::Tensor& self, const at::Tensor& target,
+    const c10::optional<at::Tensor>& weight);
 
-bool IsSupportedLossFloatType(at::ScalarType scalar_type);
+[[nodiscard]] bool IsSupportedLossFloatType(at::ScalarType scalar_type);
 
-bool IsLongOrByteTarget(const at::Tensor& tensor);
+[[nodiscard]] bool IsLongOrByteTarget(const at::Tensor& tensor);
 
 std::tuple<at::Tensor&, at::Tensor&> AtenNllLossForwardOut(
     const at::Tensor& self, const at::Tensor& target,
     const c10::optional<at::Tensor>& weight, int64_t reduction,
     int64_t ignore_index, at::Tensor& output, at::Tensor& total_weight);
 
-std::tuple<at::Tensor, at::Tensor> AtenNllLoss2dForward(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenNllLoss2dForward(
     const at::Tensor& self, const at::Tensor& target,
     const c10::optional<at::Tensor>& weight, int64_t reduction,
     int64_t ignore_index);
@@ -55,12 +55,10 @@ at::Tensor& AtenNllLossBackwardGradInput(
     int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
     at::Tensor& grad_input);
 
-at::Tensor AtenNllLoss2dBackward(const at::Tensor& grad_output,
-                                 const at::Tensor& self,
-                                 const at::Tensor& target,
-                                 const c10::optional<at::Tensor>& weight,
-                                 int64_t reduction, int64_t ignore_index,
-                                 const at::Tensor& total_weight);
+[[nodiscard]] at::Tensor AtenNllLoss2dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    const at::Tensor& target, const c10::optional<at::Tensor>& weight,
+    int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight);
 
 at::Tensor& AtenNllLoss2dBackwardGradInput(
     const at::Tensor& grad_output, const at::Tensor& self,
@@ -68,14 +66,15 @@ at::Tensor& AtenNllLoss2dBackwardGradInput(
     int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
     at::Tensor& grad_input);
 
-at::Tensor AtenNllLossNd(const at::Tensor& self, const at::Tensor& target,
-                         const c10::optional<at::Tensor>& weight,
-                         int64_t reduction, int64_t ignore_index);
+[[nodiscard]] at::Tensor AtenNllLossNd(const at::Tensor& self,
+                                       const at::Tensor& target,
+                                       const c10::optional<at::Tensor>& weight,
+                                       int64_t reduction, int64_t ignore_index);
 
-at::Tensor AtenNllLossNdAutograd(const at::Tensor& self,
-                                 const at::Tensor& target,
-                                 const c10::optional<at::Tensor>& weight,
-                                 int64_t reduction, int64_t ignore_index);
+[[nodiscard]] at::Tensor AtenNllLossNdAutograd(
+    const at::Tensor& self, const at::Tensor& target,
+    const c10::optional<at::Tensor>& weight, int64_t reduction,
+    int64_t ignore_index);
 
 }  // namespace torch_tpu
 

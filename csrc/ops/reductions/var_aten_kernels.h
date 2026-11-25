@@ -28,8 +28,10 @@
 namespace torch_tpu {
 
 // Implements aten::var.correction.
-at::Tensor AtenVar(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
-                   const std::optional<at::Scalar>& correction, bool keep_dim);
+[[nodiscard]] at::Tensor AtenVar(const at::Tensor& self,
+                                 c10::OptionalArrayRef<int64_t> dim,
+                                 const std::optional<at::Scalar>& correction,
+                                 bool keep_dim);
 
 // Implements aten::var.correction_out.
 at::Tensor& AtenVarOut(const at::Tensor& self,
@@ -38,7 +40,7 @@ at::Tensor& AtenVarOut(const at::Tensor& self,
                        bool keep_dim, at::Tensor& out);
 
 // Implements aten::var_mean.correction.
-std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
     const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
     const std::optional<at::Scalar>& correction, bool keep_dim);
 

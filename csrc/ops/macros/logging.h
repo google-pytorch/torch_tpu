@@ -173,7 +173,7 @@ inline void LogKernelArgs(std::ostream& ss,
     std::string_view func_sig);
 
 // Returns the number of parameters in a function signature string.
-constexpr size_t CountFunctionParams(std::string_view func_sig) {
+[[nodiscard]] constexpr size_t CountFunctionParams(std::string_view func_sig) {
   size_t start_idx = func_sig.find_last_of('(');
   size_t end_idx = func_sig.find_last_of(')');
   if (start_idx == std::string_view::npos ||

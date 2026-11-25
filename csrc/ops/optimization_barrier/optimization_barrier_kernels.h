@@ -44,11 +44,12 @@ namespace torch_tpu {
 //   A vector of tensors, which are the result of the optimization barrier
 //   operation. The output tensors are semantically equivalent to the input
 //   tensors.
-std::vector<at::Tensor> TorchTpuOptimizationBarrier(at::TensorList self);
+[[nodiscard]] std::vector<at::Tensor> TorchTpuOptimizationBarrier(
+    at::TensorList self);
 
 // Autograd kernel of torch.ops.tpu._optimization_barrier. Gradients and
 // forward-mode tangents each pass through a barrier of their own.
-std::vector<at::Tensor> TorchTpuOptimizationBarrierAutograd(
+[[nodiscard]] std::vector<at::Tensor> TorchTpuOptimizationBarrierAutograd(
     at::TensorList self);
 
 }  // namespace torch_tpu

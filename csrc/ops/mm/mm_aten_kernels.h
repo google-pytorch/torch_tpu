@@ -25,8 +25,9 @@ namespace torch_tpu {
 // PyTorch "mm" is the more restricted form of "matmul".
 // It exclusively supports 2D tensor inputs, without implicit dtype conversion
 // or broadcasting.
-at::Tensor AtenMmDtype(const at::Tensor& lhs, const at::Tensor& rhs,
-                       at::ScalarType out_dtype);
+[[nodiscard]] at::Tensor AtenMmDtype(const at::Tensor& lhs,
+                                     const at::Tensor& rhs,
+                                     at::ScalarType out_dtype);
 at::Tensor& AtenMmDtypeOut(const at::Tensor& lhs, const at::Tensor& rhs,
                            at::ScalarType out_dtype, at::Tensor& out);
 at::Tensor& AtenMmOut(const at::Tensor& lhs, const at::Tensor& rhs,

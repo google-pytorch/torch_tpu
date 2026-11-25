@@ -31,17 +31,18 @@ namespace torch_tpu {
 // Dispatched from PrivateUse1 for tpu::_max_pool1d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
 // indices.
-at::Tensor TpuMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                        at::IntArrayRef stride, at::IntArrayRef padding,
-                        at::IntArrayRef dilation, bool ceil_mode);
+[[nodiscard]] at::Tensor TpuMaxPool1d(const at::Tensor& self,
+                                      at::IntArrayRef kernel_size,
+                                      at::IntArrayRef stride,
+                                      at::IntArrayRef padding,
+                                      at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from PrivateUse1 for tpu::_max_pool1d_backward.
 // Directly lowers to StableHLO SelectAndScatterOp.
-at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
-                                const at::Tensor& self,
-                                at::IntArrayRef kernel_size,
-                                at::IntArrayRef stride, at::IntArrayRef padding,
-                                at::IntArrayRef dilation, bool ceil_mode);
+[[nodiscard]] at::Tensor TpuMaxPool1dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    at::IntArrayRef kernel_size, at::IntArrayRef stride,
+    at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode);
 
 // ============================================================================
 // MaxPool2D Kernels
@@ -58,17 +59,18 @@ std::tuple<at::Tensor&, at::Tensor&> AtenMaxPool2dWithIndicesOut(
 // Dispatched from PrivateUse1 for tpu::_max_pool2d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
 // indices.
-at::Tensor TpuMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                        at::IntArrayRef stride, at::IntArrayRef padding,
-                        at::IntArrayRef dilation, bool ceil_mode);
+[[nodiscard]] at::Tensor TpuMaxPool2d(const at::Tensor& self,
+                                      at::IntArrayRef kernel_size,
+                                      at::IntArrayRef stride,
+                                      at::IntArrayRef padding,
+                                      at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from PrivateUse1 for tpu::_max_pool2d_backward.
 // Directly lowers to StableHLO SelectAndScatterOp.
-at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
-                                const at::Tensor& self,
-                                at::IntArrayRef kernel_size,
-                                at::IntArrayRef stride, at::IntArrayRef padding,
-                                at::IntArrayRef dilation, bool ceil_mode);
+[[nodiscard]] at::Tensor TpuMaxPool2dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    at::IntArrayRef kernel_size, at::IntArrayRef stride,
+    at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from ATen PrivateUse1 for
 // aten::max_pool2d_with_indices_backward.grad_input.
@@ -85,20 +87,21 @@ at::Tensor& AtenMaxPool2dWithIndicesBackwardGradInput(
 // Dispatched from PrivateUse1 for tpu::_max_pool3d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
 // indices.
-at::Tensor TpuMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
-                        at::IntArrayRef stride, at::IntArrayRef padding,
-                        at::IntArrayRef dilation, bool ceil_mode);
+[[nodiscard]] at::Tensor TpuMaxPool3d(const at::Tensor& self,
+                                      at::IntArrayRef kernel_size,
+                                      at::IntArrayRef stride,
+                                      at::IntArrayRef padding,
+                                      at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from PrivateUse1 for tpu::_max_pool3d_backward.
 // Directly lowers to StableHLO SelectAndScatterOp.
-at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
-                                const at::Tensor& self,
-                                at::IntArrayRef kernel_size,
-                                at::IntArrayRef stride, at::IntArrayRef padding,
-                                at::IntArrayRef dilation, bool ceil_mode);
+[[nodiscard]] at::Tensor TpuMaxPool3dBackward(
+    const at::Tensor& grad_output, const at::Tensor& self,
+    at::IntArrayRef kernel_size, at::IntArrayRef stride,
+    at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode);
 
 // Dispatched from ATen PrivateUse1 for aten::max_pool3d_with_indices.
-std::tuple<at::Tensor, at::Tensor> AtenMaxPool3dWithIndices(
+[[nodiscard]] std::tuple<at::Tensor, at::Tensor> AtenMaxPool3dWithIndices(
     const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode);
 
@@ -109,7 +112,7 @@ std::tuple<at::Tensor&, at::Tensor&> AtenMaxPool3dWithIndicesOut(
     at::Tensor& out, at::Tensor& indices);
 
 // Dispatched from ATen PrivateUse1 for aten::max_pool3d_with_indices_backward.
-at::Tensor AtenMaxPool3dWithIndicesBackward(
+[[nodiscard]] at::Tensor AtenMaxPool3dWithIndicesBackward(
     const at::Tensor& grad_output, const at::Tensor& self,
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode,
