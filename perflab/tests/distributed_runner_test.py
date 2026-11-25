@@ -854,6 +854,10 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         ],
         [("broken", common.RunMode.EAGER_DEFAULT, False, "batch_size_1")],
     )
+    self.assertEqual(
+        self.exporter.exported[0].failure_reason,
+        "RuntimeError: factory failed for broken",
+    )
     summary = "\n".join(logs.output)
     self.assertRegex(summary, r"broken_eager_default\s+FAILED")
     self.assertRegex(summary, r"healthy_eager_default\s+PASSED")
@@ -1816,8 +1820,14 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(exit_code, 1)
     self.assertEqual(fake_dist_run.ran, ["hung", "healthy"])
     self.assertEqual(
-        [(d.spec_name, d.succeeded) for d in self.exporter.exported],
-        [("hung", False), ("healthy", True)],
+        [
+            (d.spec_name, d.succeeded, d.failure_reason)
+            for d in self.exporter.exported
+        ],
+        [
+            ("hung", False, "Did not finish within 120 s."),
+            ("healthy", True, None),
+        ],
     )
     self.assertRegex(
         logs, r"hung_compiled\s+TIMED_OUT\s+Did not finish within 120 s\."
@@ -1841,8 +1851,11 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
 
     self.assertEqual(exit_code, 1)
     self.assertEqual(
-        [(d.spec_name, d.succeeded, d.metrics) for d in self.exporter.exported],
-        [("hung", True, _FakeDistRun.METRICS)],
+        [
+            (d.spec_name, d.succeeded, d.metrics, d.failure_reason)
+            for d in self.exporter.exported
+        ],
+        [("hung", True, _FakeDistRun.METRICS, None)],
     )
     self.assertRegex(logs, r"hung_compiled\s+TIMED_OUT")
 

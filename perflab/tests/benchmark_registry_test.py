@@ -146,6 +146,9 @@ class _DeviceOps:
   def await_result(self, out):
     del out
 
+  def launch_result(self, out):
+    del out
+
   def check_result(self, out):
     del out
 
@@ -158,7 +161,13 @@ class _DeviceOps:
   def agree_on_step_count(self, steps):
     return steps
 
+  def host_barrier(self) -> None:
+    pass
+
   def peak_memory_mb(self):
+    return 1.0
+
+  def allocated_memory_mb(self):
     return 1.0
 
   def supports_event_device_time(self) -> bool:
