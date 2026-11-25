@@ -40,6 +40,7 @@ from absl.testing import parameterized
 from scipy import stats
 import torch
 from torch._dynamo import testing as dynamo_testing
+from torch._functorch import config as functorch_config
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -2220,6 +2221,379 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         out,
         torch.sigmoid(x).to(torch.float64),
     )
+
+  @parameterized.named_parameters(
+      ("int8", torch.int8, [-5, -2, -1, 0, 1, 2, 5]),
+      ("uint8", torch.uint8, [0, 1, 2, 5, 20]),
+      ("int16", torch.int16, [-5, -2, -1, 0, 1, 2, 5]),
+      ("int32", torch.int32, [-5, -2, -1, 0, 1, 2, 5]),
+      ("int64", torch.int64, [-5, -2, -1, 0, 1, 2, 5]),
+      ("bool", torch.bool, [False, True, False, True]),
+  )
+  def test_sigmoid_out_integral_to_float64(self, in_dtype, values):
+    has_native_f64 = (
+        not torch.tensor([1e100], dtype=torch.float64, device="tpu")
+        .isinf()
+        .any()
+    )
+    tol = 1e-12 if has_native_f64 else 1e-9
+    x_cpu = torch.tensor(values, dtype=in_dtype)
+    expected = torch.sigmoid(x_cpu.to(torch.float64))
+    x_tpu = x_cpu.to("tpu")
+
+    for init_shape in (x_cpu.shape, (0,)):
+      with self.subTest(init_shape=init_shape):
+        out_tpu = torch.empty(init_shape, dtype=torch.float64, device="tpu")
+        ret = torch.sigmoid(x_tpu, out=out_tpu)
+        self.assertIs(ret, out_tpu)
+        self.assertEqual(out_tpu.dtype, torch.float64)
+        self.assertEqual(out_tpu.shape, x_cpu.shape)
+        self.assert_close(
+            golden_result=expected,
+            torch_tpu_result=out_tpu,
+            rtol=tol,
+            atol=tol,
+        )
+
+    scalar_cpu = x_cpu[0]
+    scalar_out = torch.empty((), dtype=torch.float64, device="tpu")
+    torch.sigmoid(scalar_cpu.to("tpu"), out=scalar_out)
+    self.assert_close(
+        golden_result=torch.sigmoid(scalar_cpu.to(torch.float64)),
+        torch_tpu_result=scalar_out,
+        rtol=tol,
+        atol=tol,
+    )
+
+    empty_cpu = torch.empty((2, 0, 3), dtype=in_dtype)
+    empty_out = torch.empty((0,), dtype=torch.float64, device="tpu")
+    torch.sigmoid(empty_cpu.to("tpu"), out=empty_out)
+    self.assertEqual(empty_out.dtype, torch.float64)
+    self.assertEqual(empty_out.shape, (2, 0, 3))
+
+  @parameterized.named_parameters(
+      ("int8", torch.int8, [-2, -1, 0, 1, 2]),
+      ("uint8", torch.uint8, [0, 1, 2, 3]),
+      ("int16", torch.int16, [-2, -1, 0, 1, 2]),
+      ("int32", torch.int32, [-2, -1, 0, 1, 2]),
+      ("int64", torch.int64, [-2, -1, 0, 1, 2]),
+      ("bool", torch.bool, [False, True]),
+  )
+  def test_sigmoid_default_dtype_float64_integral(self, in_dtype, values):
+    has_native_f64 = (
+        not torch.tensor([1e100], dtype=torch.float64, device="tpu")
+        .isinf()
+        .any()
+    )
+    tol = 1e-12 if has_native_f64 else 1e-9
+    x_cpu = torch.tensor(values, dtype=in_dtype)
+    x_tpu = x_cpu.to("tpu")
+
+    res_f32 = torch.sigmoid(x_tpu)
+    self.assertEqual(res_f32.dtype, torch.float32)
+
+    with set_default_dtype(torch.float64):
+      expected_f64 = torch.sigmoid(x_cpu)
+      res_f64 = torch.sigmoid(x_tpu)
+      self.assertEqual(res_f64.dtype, torch.float64)
+      self.assert_close(
+          golden_result=expected_f64,
+          torch_tpu_result=res_f64,
+          rtol=tol,
+          atol=tol,
+      )
+
+      (foreach_f64,) = torch._foreach_sigmoid([x_tpu])
+      self.assertEqual(foreach_f64.dtype, torch.float64)
+      self.assert_close(
+          golden_result=expected_f64,
+          torch_tpu_result=foreach_f64,
+          rtol=tol,
+          atol=tol,
+      )
+
+    res_f32_after = torch.sigmoid(x_tpu)
+    self.assertEqual(res_f32_after.dtype, torch.float32)
+    self.assert_close(
+        golden_result=torch.sigmoid(x_cpu),
+        torch_tpu_result=res_f32_after,
+    )
+
+  @parameterized.product(
+      in_case=[
+          (torch.int8, [[-10, -2, -1], [0, 1, 2]]),
+          (torch.uint8, [[0, 1, 2], [3, 10, 50]]),
+          (torch.int16, [[-10, -2, -1], [0, 1, 2]]),
+          (torch.int32, [[-10, -2, -1], [0, 1, 2]]),
+          (torch.int64, [[-10, -2, -1], [0, 1, 2]]),
+          (torch.bool, [[False, True], [True, False]]),
+      ],
+      out_dtype=[
+          torch.float16,
+          torch.bfloat16,
+          torch.float32,
+      ],
+  )
+  def test_sigmoid_out_integral_to_float(self, in_case, out_dtype):
+    in_dtype, values = in_case
+    x_cpu = torch.tensor(values, dtype=in_dtype)
+    out_cpu = torch.empty(x_cpu.shape, dtype=out_dtype)
+    torch.sigmoid(x_cpu, out=out_cpu)
+
+    x_tpu = x_cpu.to("tpu")
+    out_tpu = torch.empty(x_cpu.shape, dtype=out_dtype, device="tpu")
+    ret = torch.sigmoid(x_tpu, out=out_tpu)
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.dtype, out_dtype)
+    self.assert_close(golden_result=out_cpu, torch_tpu_result=out_tpu)
+
+  @parameterized.product(
+      in_case=[
+          (torch.float16, 1e-3, 1e-5),
+          (torch.bfloat16, 1.6e-2, 1e-5),
+          (torch.float32, 1.3e-6, 1e-5),
+          (torch.float64, 1e-7, 1e-7),
+      ],
+      out_case=[
+          (torch.float16, 1e-3, 1e-5),
+          (torch.bfloat16, 1.6e-2, 1e-5),
+          (torch.float32, 1.3e-6, 1e-5),
+          (torch.float64, 1e-7, 1e-7),
+      ],
+  )
+  def test_sigmoid_out_float_intermediate_rounding(self, in_case, out_case):
+    in_dtype, in_rtol, in_atol = in_case
+    out_dtype, out_rtol, out_atol = out_case
+    x_cpu = torch.tensor(
+        [
+            [-float("inf"), -20.0, -1.5, -0.0],
+            [0.0, 1.5, 20.0, float("nan")],
+        ],
+        dtype=in_dtype,
+    )
+    out_cpu = torch.empty(x_cpu.shape, dtype=out_dtype)
+    torch.sigmoid(x_cpu, out=out_cpu)
+
+    x_tpu = x_cpu.to("tpu")
+    out_tpu = torch.empty(x_cpu.shape, dtype=out_dtype, device="tpu")
+    ret = torch.sigmoid(x_tpu, out=out_tpu)
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.dtype, out_dtype)
+    utils.assert_close(
+        out_tpu.cpu(),
+        torch.sigmoid(x_tpu).to(out_dtype).cpu(),
+        rtol=0.0,
+        atol=0.0,
+    )
+    self.assert_close(
+        golden_result=out_cpu,
+        torch_tpu_result=out_tpu,
+        rtol=max(in_rtol, out_rtol),
+        atol=max(in_atol, out_atol),
+    )
+
+  @parameterized.named_parameters(
+      (
+          "int64_to_complex64",
+          torch.int64,
+          [-5, -1, 0, 1, 5],
+          torch.float32,
+          torch.complex64,
+          1.3e-6,
+          1e-5,
+      ),
+      (
+          "bool_to_complex64",
+          torch.bool,
+          [False, True],
+          torch.float32,
+          torch.complex64,
+          1.3e-6,
+          1e-5,
+      ),
+      (
+          "bfloat16_to_complex64",
+          torch.bfloat16,
+          [-2.0, -0.5, 0.0, 1.5],
+          torch.bfloat16,
+          torch.complex64,
+          1.6e-2,
+          1e-5,
+      ),
+      (
+          "float32_to_complex64",
+          torch.float32,
+          [-2.0, -0.5, 0.0, 1.5],
+          torch.float32,
+          torch.complex64,
+          1.3e-6,
+          1e-5,
+      ),
+  )
+  def test_sigmoid_out_complex64(
+      self, in_dtype, values, ref_in_dtype, out_dtype, rtol, atol
+  ):
+    x_cpu = torch.tensor(values, dtype=in_dtype)
+    expected = torch.sigmoid(x_cpu.to(ref_in_dtype)).to(out_dtype)
+
+    x_tpu = x_cpu.to("tpu")
+    out_tpu = torch.empty(x_cpu.shape, dtype=out_dtype, device="tpu")
+    ret = torch.sigmoid(x_tpu, out=out_tpu)
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.dtype, out_dtype)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_tpu,
+        rtol=rtol,
+        atol=atol,
+    )
+
+  @parameterized.named_parameters(
+      (
+          "int64_to_complex128",
+          torch.int64,
+          [-5, -1, 0, 1, 5],
+          torch.float64,
+          torch.complex128,
+          1e-12,
+          1e-12,
+      ),
+      (
+          "bool_to_complex128",
+          torch.bool,
+          [False, True],
+          torch.float64,
+          torch.complex128,
+          1e-12,
+          1e-12,
+      ),
+      (
+          "float32_to_complex128",
+          torch.float32,
+          [-2.0, -0.5, 0.0, 1.5],
+          torch.float32,
+          torch.complex128,
+          1.3e-6,
+          1e-5,
+      ),
+      (
+          "complex64_to_complex128",
+          torch.complex64,
+          [-1.0 + 0.5j, 0.0 + 0.0j, 1.0 - 0.5j],
+          torch.complex64,
+          torch.complex128,
+          1.3e-6,
+          1e-5,
+      ),
+  )
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 54),
+      "Requires libtpu >= 0.0.54 for 4-plane complex128 CopyEmitter fix"
+      " (openxla/xla#53427).",
+  )
+  def test_sigmoid_out_complex128(
+      self, in_dtype, values, ref_in_dtype, out_dtype, rtol, atol
+  ):
+    has_native_f64 = (
+        not torch.tensor([1e100], dtype=torch.float64, device="tpu")
+        .isinf()
+        .any()
+    )
+    if rtol == 1e-12 and not has_native_f64:
+      rtol = 1e-9
+      atol = 1e-9
+    x_cpu = torch.tensor(values, dtype=in_dtype)
+    expected = torch.sigmoid(x_cpu.to(ref_in_dtype)).to(out_dtype)
+
+    x_tpu = x_cpu.to("tpu")
+    out_tpu = torch.empty(x_cpu.shape, dtype=out_dtype, device="tpu")
+    ret = torch.sigmoid(x_tpu, out=out_tpu)
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.dtype, out_dtype)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_tpu,
+        rtol=rtol,
+        atol=atol,
+    )
+
+  @parameterized.named_parameters(
+      ("float16", torch.float16),
+      ("bfloat16", torch.bfloat16),
+      ("float32", torch.float32),
+      ("float64", torch.float64),
+  )
+  def test_sigmoid_out_buffer_donation(self, dtype):
+    x_cpu = torch.tensor([-2.0, -0.5, 0.0, 0.5, 2.0], dtype=dtype)
+    expected = torch.sigmoid(x_cpu)
+
+    # Full buffer donation via out=x in both default and DEFER_NEVER modes.
+    for mode in (
+        execution_mode.EagerMode.DEFER_AND_FUSE,
+        execution_mode.EagerMode.DEFER_NEVER,
+    ):
+      with self.subTest(mode=mode), execution_mode.set_eager_mode(mode):
+        x_tpu = x_cpu.to("tpu")
+        old_view = x_tpu.view_as(x_tpu)
+        torch.accelerator.synchronize()
+        ptr_before = x_tpu.data_ptr()
+        ret = torch.sigmoid(x_tpu, out=x_tpu)
+        torch.accelerator.synchronize()
+        self.assertIs(ret, x_tpu)
+        self.assertEqual(x_tpu.data_ptr(), ptr_before)
+        self.assert_close(golden_result=expected, torch_tpu_result=x_tpu)
+        self.assert_close(golden_result=expected, torch_tpu_result=old_view)
+
+    x_inplace = x_cpu.to("tpu")
+    torch.accelerator.synchronize()
+    inplace_ptr = x_inplace.data_ptr()
+    x_inplace.sigmoid_()
+    torch.accelerator.synchronize()
+    self.assertEqual(x_inplace.data_ptr(), inplace_ptr)
+    self.assert_close(golden_result=expected, torch_tpu_result=x_inplace)
+
+    # Partial slice view write-back donation preserves base buffer.
+    base = torch.zeros(8, dtype=dtype, device="tpu")
+    inp = x_cpu.to("tpu")
+    torch.accelerator.synchronize()
+    base_ptr = base.data_ptr()
+    torch.sigmoid(inp, out=base[1:6])
+    torch.accelerator.synchronize()
+    self.assertEqual(base.data_ptr(), base_ptr)
+    expected_base = torch.zeros(8, dtype=dtype)
+    expected_base[1:6] = expected
+    self.assert_close(golden_result=expected_base, torch_tpu_result=base)
+
+  def test_sigmoid_integral_to_float64_compiled(self):
+    has_native_f64 = (
+        not torch.tensor([1e100], dtype=torch.float64, device="tpu")
+        .isinf()
+        .any()
+    )
+    tol = 1e-12 if has_native_f64 else 1e-9
+    x_cpu = torch.tensor([-2, -1, 0, 1, 2], dtype=torch.int64)
+    x_tpu = x_cpu.to("tpu")
+
+    # Define a Python function so Dynamo caches on its own code object rather
+    # than sharing `wrap_inline`'s `inner` frame across built-in callables.
+    def sigmoid_fn(x):
+      return torch.sigmoid(x)
+
+    with (
+        functorch_config.patch(enable_autograd_cache=False),
+        set_default_dtype(torch.float64),
+    ):
+      compiled_sigmoid = torch.compile(
+          sigmoid_fn, backend="tpu", fullgraph=True, dynamic=False
+      )
+      actual_f64 = compiled_sigmoid(x_tpu)
+      self.assertEqual(actual_f64.dtype, torch.float64)
+      self.assert_close(
+          golden_result=torch.sigmoid(x_cpu.to(torch.float64)),
+          torch_tpu_result=actual_f64,
+          rtol=tol,
+          atol=tol,
+      )
 
   @parameterized.product(
       op_and_domain=[

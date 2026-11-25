@@ -40,6 +40,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -204,13 +205,15 @@ absl::Status LogSigmoidBackward(const at::Tensor& grad_output,
 
 }  // namespace
 
-absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(mlir::MlirOp input_op) {
-  // TODO: We should not be converting unsupported dtypes to support certain
-  // dtypes. This leads to unexpected precision loss.
-  // Convert integral dtypes to float since StableHLO doesn't support
-  // floating-point ops for integer dtypes.
-  TT_ASSIGN_OR_RETURN(input_op,
-                      ConvertIfInteger(input_op, mlir::ElementType::F32));
+absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(
+    mlir::MlirOp input_op, const mlir::ElementType out_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_compute_dtype,
+                      InferComputationDtype(out_dtype));
+  // Convert integral and boolean dtypes to the real component of the output's
+  // computation dtype before evaluating sigmoid so float64 outputs retain full
+  // double precision.
+  TT_ASSIGN_OR_RETURN(
+      input_op, ConvertIfInteger(input_op, RealComponentOf(out_compute_dtype)));
   const mlir::ElementType orig_dtype = GetElementTypeOrDie(input_op);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(orig_dtype));
@@ -221,21 +224,26 @@ absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(mlir::MlirOp input_op) {
   mlir::MlirOp exp_neg_x = mlir::stablehlo::Exp(neg_x);
   mlir::MlirOp denom = mlir::stablehlo::Add(one, exp_neg_x);
   mlir::MlirOp result = mlir::stablehlo::Div(one, denom);
-  return CastIfNeeded(result, orig_dtype);
+  TT_ASSIGN_OR_RETURN(result, CastIfNeeded(result, orig_dtype));
+  return ComplexSafeConvertElementType(result, out_dtype);
 }
 
 at::Tensor& AtenSigmoidOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kSigmoidOut, _, (self, out), {
-    const auto comp_type = ToAccumulateType(self.scalar_type());
-    TT_ASSIGN_OR_THROW(const auto computation_dtype,
-                       ConvertTo<mlir::ElementType>(comp_type));
-    TT_ASSIGN_OR_THROW(const auto out_dtype,
+    TT_ASSIGN_OR_THROW(const mlir::ElementType expected_result_dtype,
                        ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
+    const c10::ScalarType out_scalar_type = out.scalar_type();
+    MlirUnaryOpBuilder op_builder =
+        [out_scalar_type](
+            mlir::MlirOp input_op) -> absl::StatusOr<mlir::MlirOp> {
+      TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                          ConvertTo<mlir::ElementType>(out_scalar_type));
+      return BuildSigmoidShlo(input_op, out_dtype);
+    };
     TT_THROW_IF_ERROR(
-        UnaryOpOut(self, out, BuildSigmoidShlo,
+        UnaryOpOut(self, out, std::move(op_builder),
                    {.op_param_cache_keys = OpParamCacheKeys::Empty(),
-                    .out_dtype = out_dtype,
-                    .computation_dtype = computation_dtype}));
+                    .out_dtype = expected_result_dtype}));
     return out;
   });
 }

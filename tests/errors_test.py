@@ -12959,6 +12959,26 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.sigmoid(t, out=out)
 
+  def test_sigmoid_integral_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.int64)
+    out = torch.empty(5, device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sigmoid(): result type float32 can't be cast to the desired output type int64""",
+        gpu="""result type Float can't be cast to the desired output type Long""",
+    ):
+      torch.sigmoid(t, out=out)
+
+  def test_sigmoid_cpu_out_tensor(self):
+    t = torch.ones(5, device=et.device())
+    out = torch.empty(5, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sigmoid(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.sigmoid(t, out=out)
+
   def test_logit_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device(), dtype=torch.float32)
     out = torch.empty(5, device=et.device(), dtype=torch.int32)
