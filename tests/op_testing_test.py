@@ -1060,6 +1060,225 @@ class OpTestingTest(op_testing.OpInfoTestBase):
     self.assertFalse(op_testing._is_golden_compiler_failure(RuntimeError("x")))
     self.assertFalse(op_testing._is_golden_compiler_failure(42))
 
+  def test_compiled_supports_op_rejects_empty_tensor_in_kwargs(self):
+    op = op_testing._get_op("add")
+    sample_with_empty_kw = op_testing.OpInput(
+        FakeSample("empty_kw", torch.ones(2), (), {"bias": torch.ones(0)})
+    )
+    self.assertFalse(
+        op_testing._compiled_supports_op(
+            op, sample_with_empty_kw, op_testing.OpVariant.BASE
+        )
+    )
+    # Non-OUT variants must not exempt an `out` kwarg carrying an empty tensor.
+    sample_base_empty_out = op_testing.OpInput(
+        FakeSample("base_out", torch.ones(2), (), {"out": torch.empty((0,))})
+    )
+    self.assertFalse(
+        op_testing._compiled_supports_op(
+            op, sample_base_empty_out, op_testing.OpVariant.BASE
+        )
+    )
+
+  def test_compiled_supports_op_allows_zero_element_out_buffer(self):
+    op = op_testing._get_op("add")
+    sample_single_out = op_testing.OpInput(
+        FakeSample("single_out", torch.ones(2), (), {"out": torch.empty((0,))})
+    )
+    self.assertTrue(
+        op_testing._compiled_supports_op(
+            op, sample_single_out, op_testing.OpVariant.OUT
+        )
+    )
+    sample_tuple_out = op_testing.OpInput(
+        FakeSample(
+            "tuple_out",
+            torch.ones(2),
+            (),
+            {"out": (torch.empty((0,)), torch.empty((0,)))},
+        )
+    )
+    self.assertTrue(
+        op_testing._compiled_supports_op(
+            op, sample_tuple_out, op_testing.OpVariant.OUT
+        )
+    )
+    # Other empty kwargs alongside `out=` must still be rejected.
+    sample_other_empty_kw = op_testing.OpInput(
+        FakeSample(
+            "other_empty_kw",
+            torch.ones(2),
+            (),
+            {"out": torch.empty((0,)), "bias": torch.ones(0)},
+        )
+    )
+    self.assertFalse(
+        op_testing._compiled_supports_op(
+            op, sample_other_empty_kw, op_testing.OpVariant.OUT
+        )
+    )
+    # Sparse `out=` placeholders must still be rejected by `has_sparse`.
+    sparse_out = torch.sparse_coo_tensor(
+        indices=torch.empty((1, 0), dtype=torch.int64),
+        values=torch.empty((0,), dtype=torch.float32),
+        size=(0,),
+    )
+    sample_sparse_out = op_testing.OpInput(
+        FakeSample("sparse_out", torch.ones(2), (), {"out": sparse_out})
+    )
+    self.assertFalse(
+        op_testing._compiled_supports_op(
+            op, sample_sparse_out, op_testing.OpVariant.OUT
+        )
+    )
+
+  def test_read_golden_pairs_filters_before_compiler_failures_and_cap(self):
+    class InductorError(Exception):
+      pass
+
+    op = op_testing._get_op("add")
+    variant = op_testing.OpVariant.BASE
+
+    def make_pair(name: str, out_val: Any):
+      inp = op_testing.OpInput(FakeSample(name, torch.ones(1), (), {}))
+      return (inp, op_testing.OpOutput(out_val))
+
+    # Case 1: skip_if-matched sample + InductorError must retain the
+    # InductorError so replay records a skipped subTest instead of 0 subtests.
+    golden_data = op_testing.GoldenGpuData()
+    for inp, out in (
+        make_pair("skip_me", torch.ones(1)),
+        make_pair("comp_err", InductorError("triton fail")),
+    ):
+      golden_data.add(self._testMethodName, variant, torch.float32, inp, out)
+    with mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_data):
+      selected = self._read_golden_pairs(
+          op,
+          torch.float32,
+          variant,
+          max_samples=5,
+          out_dtype_override=None,
+          use_compiled=True,
+          skip_if=lambda _v, s: s.name == "skip_me",
+      )
+    self.assertEqual([inp.name for inp, _ in selected], ["comp_err"])
+
+    # Case 2: check_op_failures=False with runtime exception + InductorError
+    # keeps the InductorError so a skipped subTest is recorded.
+    golden_err = op_testing.GoldenGpuData()
+    for inp, out in (
+        make_pair("runtime_err", RuntimeError("expected")),
+        make_pair("comp_err", InductorError("triton fail")),
+    ):
+      golden_err.add(self._testMethodName, variant, torch.float32, inp, out)
+    with mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_err):
+      selected = self._read_golden_pairs(
+          op,
+          torch.float32,
+          variant,
+          max_samples=5,
+          out_dtype_override=None,
+          use_compiled=True,
+          check_op_failures=False,
+      )
+    self.assertEqual([inp.name for inp, _ in selected], ["comp_err"])
+
+    # Case 3: skip_if prefix exceeds max_samples budget, followed by compiler
+    # error and usable sample; usable takes priority under cap=1 while both
+    # stay visible inside cap=5 (no silent dropping).
+    golden_cap = op_testing.GoldenGpuData()
+    for i in range(5):
+      inp, out = make_pair(f"skip_{i}", torch.ones(1))
+      golden_cap.add(self._testMethodName, variant, torch.float32, inp, out)
+    for inp, out in (
+        make_pair("comp_err", InductorError("triton fail")),
+        make_pair("valid_late", torch.ones(1)),
+    ):
+      golden_cap.add(self._testMethodName, variant, torch.float32, inp, out)
+    with mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_cap):
+      capped_one = self._read_golden_pairs(
+          op,
+          torch.float32,
+          variant,
+          max_samples=1,
+          out_dtype_override=None,
+          use_compiled=True,
+          skip_if=lambda _v, s: s.name.startswith("skip_"),
+      )
+      capped_five = self._read_golden_pairs(
+          op,
+          torch.float32,
+          variant,
+          max_samples=5,
+          out_dtype_override=None,
+          use_compiled=True,
+          skip_if=lambda _v, s: s.name.startswith("skip_"),
+      )
+    self.assertEqual([inp.name for inp, _ in capped_one], ["valid_late"])
+    self.assertEqual(
+        [inp.name for inp, _ in capped_five], ["valid_late", "comp_err"]
+    )
+
+    # Case 4: every sample filtered by skip_if falls back to samples[:1] so
+    # the skip reason is still printed once.
+    with mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_cap):
+      all_skipped = self._read_golden_pairs(
+          op,
+          torch.float32,
+          variant,
+          max_samples=5,
+          out_dtype_override=None,
+          use_compiled=True,
+          skip_if=lambda _v, _s: True,
+      )
+    self.assertEqual([inp.name for inp, _ in all_skipped], ["skip_0"])
+
+  def test_subtest_name_includes_out_dtype_override(self):
+    class InductorError(Exception):
+      pass
+
+    op = op_testing._get_op("abs")
+    inp = op_testing.OpInput(FakeSample("", torch.ones(1), (), {}))
+    golden_data = op_testing.GoldenGpuData()
+    golden_data.add(
+        self._testMethodName,
+        op_testing.OpVariant.OUT,
+        torch.complex64,
+        inp,
+        op_testing.OpOutput(InductorError("compile err")),
+        out_dtype_override=torch.float64,
+    )
+    recorded_names: list[str] = []
+    orig_subtest = self.subTest
+
+    def capture_subtest(**kwargs):
+      recorded_names.append(kwargs["subtest_name"])
+      return orig_subtest(**kwargs)
+
+    with (
+        flagsaver.flagsaver(test_mode=op_testing.TestMode.TORCH_TPU_VS_GPU),
+        mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_data),
+        mock.patch.object(self, "subTest", side_effect=capture_subtest),
+    ):
+      self._subtests_run = 0
+      self._test_torch_tpu_vs_golden(
+          op=op,
+          dtype=torch.complex64,
+          variant=op_testing.OpVariant.OUT,
+          check_op_failures=True,
+          check_value=None,
+          check_dtype=True,
+          check_device=True,
+          skip_output_indices=(),
+          skip_if=None,
+          compute_grad=False,
+          use_compiled=True,
+          max_samples_per_op_dtype=1,
+          out_dtype_override=torch.float64,
+      )
+    self.assertEqual(recorded_names, ["abs.out_complex64_subtest0_out_float64"])
+    self.assertEqual(self._subtests_run, 1)
+
   def test_get_op_variant_matching(self):
     # Omitting variant_test_name preserves first-match behavior (e.g.
     # test_normal_ -> "in_place" and torch._scaled_mm -> "rowwise").

@@ -6567,6 +6567,8 @@ def _compiled_supports_op(
     """Returns true if `t` is (or contains) a size zero tensor."""
     if isinstance(t, (list, tuple)):
       return any(has_empty(i) for i in t)
+    if isinstance(t, dict):
+      return any(has_empty(v) for v in t.values())
     return isinstance(t, torch.Tensor) and t.numel() == 0
 
   def has_sparse(t: torch.Tensor | Sequence[Any] | Mapping[Any, Any]) -> bool:
@@ -6577,10 +6579,19 @@ def _compiled_supports_op(
       return any(has_sparse(v) for v in t.values())
     return isinstance(t, torch.Tensor) and t.layout != torch.strided
 
+  # For OpVariant.OUT, `_run_op()` attaches a synthetic zero-element `out=`
+  # tensor via `_prepare_zero_element_out_tensors()` to test shape resizing.
+  # Exclude it from `has_empty()` so valid compiled `.out` subtests are not
+  # skipped while sparse `out=` tensors and empty non-`out` kwargs still skip.
+  kwargs_for_empty = (
+      {k: v for k, v in device_op_input.kwargs.items() if k != "out"}
+      if variant == OpVariant.OUT
+      else device_op_input.kwargs
+  )
   if (
       has_empty(device_op_input.input_value)
       or has_empty(device_op_input.args)
-      or has_empty(device_op_input.kwargs)
+      or has_empty(kwargs_for_empty)
       or has_sparse(device_op_input.input_value)
       or has_sparse(device_op_input.args)
       or has_sparse(device_op_input.kwargs)
@@ -7411,14 +7422,35 @@ class OpInfoTestBase(TorchTpuTestBase):
           f" {_op_name_for_logging(op, variant)}() with dtype {dtype}. Please"
           " re-generate the GPU golden files to cover the new (op, dtype)."
       )
-    if use_compiled and samples and not _CHECK_DYNAMISM.value:
-      usable = [
-          pair
-          for pair in samples
-          if not _is_golden_compiler_failure(pair[1].output_value)
-      ]
-      if usable:
-        samples = usable
+    if max_samples == 0:
+      return []
+    if not (_CHECK_DYNAMISM.value and not _CHECK_SYMBOLIC_SHAPES.value):
+      unskipped = self._filter_unskipped_golden_pairs(
+          samples,
+          variant=variant,
+          use_compiled=use_compiled,
+          check_op_failures=check_op_failures,
+          skip_if=skip_if,
+      )
+      if not unskipped:
+        return samples[:1]
+      if use_compiled:
+        usable = [
+            pair
+            for pair in unskipped
+            if not _is_golden_compiler_failure(pair[1].output_value)
+        ]
+        compiler_failures = [
+            pair
+            for pair in unskipped
+            if _is_golden_compiler_failure(pair[1].output_value)
+        ]
+        # Place usable samples first so small max_samples budgets (e.g. OSS's
+        # cap of 5) prioritize valid cases while keeping compiler failures as
+        # explicit skipped subTests inside any remaining budget.
+        samples = [*usable, *compiler_failures]
+      else:
+        samples = unskipped
     if max_samples >= 0 and len(samples) > max_samples:
       print(
           f">>> Taking {max_samples} samples from "
@@ -7440,6 +7472,27 @@ class OpInfoTestBase(TorchTpuTestBase):
       else:
         samples = samples[:max_samples]
     return samples
+
+  def _filter_unskipped_golden_pairs(
+      self,
+      samples: Sequence[tuple[OpInput, OpOutput]],
+      *,
+      variant: OpVariant,
+      use_compiled: bool,
+      check_op_failures: bool,
+      skip_if: Callable[[OpVariant, OpInput], bool] | None,
+  ) -> list[tuple[OpInput, OpOutput]]:
+    """Returns pairs not skipped by `skip_if` or `check_op_failures`."""
+    return [
+        (inp, out)
+        for inp, out in samples
+        if (skip_if is None or not skip_if(variant, inp))
+        and (
+            check_op_failures
+            or not isinstance(out.output_value, Exception)
+            or (use_compiled and _is_golden_compiler_failure(out.output_value))
+        )
+    ]
 
   def _select_dynamism_samples(
       self,
@@ -7466,16 +7519,13 @@ class OpInfoTestBase(TorchTpuTestBase):
       return samples[:max_samples]
 
     # Keep only samples that _test_torch_tpu_vs_golden will not skip upfront.
-    unskipped = [
-        (inp, out)
-        for inp, out in samples
-        if (skip_if is None or not skip_if(variant, inp))
-        and (
-            check_op_failures
-            or not isinstance(out.output_value, Exception)
-            or (use_compiled and _is_golden_compiler_failure(out.output_value))
-        )
-    ]
+    unskipped = self._filter_unskipped_golden_pairs(
+        samples,
+        variant=variant,
+        use_compiled=use_compiled,
+        check_op_failures=check_op_failures,
+        skip_if=skip_if,
+    )
     if not unskipped:
       return samples[:1]
 
@@ -8410,6 +8460,8 @@ class OpInfoTestBase(TorchTpuTestBase):
       # Construct a meaningful and unique subtest name.
       subtest_name = f"{op_name}_{_dtype_str(dtype)}_"
       subtest_name += golden_input.name if golden_input.name else f"subtest{i}"
+      if out_dtype_override is not None:
+        subtest_name += f"_out_{_dtype_str(out_dtype_override)}"
 
       if use_compiled and _is_golden_compiler_failure(golden_result):
         skip_reason = (

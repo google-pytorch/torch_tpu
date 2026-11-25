@@ -1791,14 +1791,7 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_angle(self):
-    self.do_test_op(
-        "angle",
-        # TODO(b/540345849): CUDA kernel is not implemented for float16, and
-        # inductor fails on bfloat16.
-        exclude_dtypes=_if_tpu_vs_gpu_compiled(
-            (torch.bfloat16, torch.float16), (torch.float16,)
-        ),
-    )
+    self.do_test_op("angle")
 
   def test_arange(self):
     """Tests arange, arange.start, arange.out, arange.start_step, arange.start_out."""
@@ -2487,15 +2480,11 @@ class TestOps(op_testing.OpInfoTestBase):
         # dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES
         + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
-        # and calls where 'value' is a list of scalars (PyTorch OpInfo passes
+        # Skip calls where 'value' is a list of scalars (PyTorch OpInfo passes
         # 'value' kwarg which the C++ binding rejects for list of scalars).
         skip_if=lambda _variant, op_input: (
-            "scalars" in op_input.kwargs
-            or (
-                "value" in op_input.kwargs
-                and isinstance(op_input.kwargs["value"], (list, tuple))
-            )
+            "value" in op_input.kwargs
+            and isinstance(op_input.kwargs["value"], (list, tuple))
         ),
     )
 
@@ -2510,15 +2499,11 @@ class TestOps(op_testing.OpInfoTestBase):
         # dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES
         + _if_tpu_vs_gpu_compiled((torch.bool,), ()),
-        # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
-        # and calls where 'value' is a list of scalars (PyTorch OpInfo passes
+        # Skip calls where 'value' is a list of scalars (PyTorch OpInfo passes
         # 'value' kwarg which the C++ binding rejects for list of scalars).
         skip_if=lambda _variant, op_input: (
-            "scalars" in op_input.kwargs
-            or (
-                "value" in op_input.kwargs
-                and isinstance(op_input.kwargs["value"], (list, tuple))
-            )
+            "value" in op_input.kwargs
+            and isinstance(op_input.kwargs["value"], (list, tuple))
         ),
     )
 
@@ -2783,6 +2768,8 @@ class TestOps(op_testing.OpInfoTestBase):
             and op_input.input_value[0].dtype == torch.bool
             and bool(op_input.args)
             and isinstance(op_input.args[0], (list, tuple))
+            and bool(op_input.args[0])
+            and isinstance(op_input.args[0][0], torch.Tensor)
         ),
     )
 
@@ -3360,20 +3347,18 @@ class TestOps(op_testing.OpInfoTestBase):
                     )
                     or (
                         variant == OpVariant.BASE
-                        and op_input.kwargs.get("dtype")
-                        in (
-                            torch.int8,
-                            torch.int16,
-                            torch.int32,
-                            torch.int64,
-                        )
+                        and op_input.kwargs.get("dtype") in _INTEGER_DTYPES
                         and isinstance(op_input.input_value, float)
                         and not op_input.input_value.is_integer()
+                        and len(op_input.args) >= 2
+                        and op_input.args[1] > 1
                     )
                     or (
                         variant == OpVariant.BASE
                         and op_input.kwargs.get("dtype") == torch.bool
                         and isinstance(op_input.input_value, float)
+                        and len(op_input.args) >= 2
+                        and op_input.args[1] > 1
                     )
                 )
             )
