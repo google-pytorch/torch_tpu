@@ -16162,6 +16162,128 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
               actual=out_tpu.cpu(), expected=out_cpu, rtol=1e-12, atol=1e-12
           )
 
+  @parameterized.named_parameters(
+      ("acos_out", torch.acos, (0,)),
+      ("acosh_out", torch.acosh, (2,)),
+      ("asin_out", torch.asin, (1,)),
+      ("asinh_out", torch.asinh, (1,)),
+      ("atan_out", torch.atan, (1,)),
+      ("atanh_out", torch.atanh, (0,)),
+      ("cos_out", torch.cos, (1,)),
+      ("cosh_out", torch.cosh, (1,)),
+      ("exp_out", torch.exp, (1,)),
+      ("exp2_out", torch.exp2, (16,)),
+      ("expm1_out", torch.expm1, (1,)),
+      ("lgamma_out", torch.lgamma, (4,)),
+      ("log_out", torch.log, (7,)),
+      ("log10_out", torch.log10, (7,)),
+      ("log1p_out", torch.log1p, (6,)),
+      ("log2_out", torch.log2, (7,)),
+      ("reciprocal_out", torch.reciprocal, (3,)),
+      ("rsqrt_out", torch.rsqrt, (3,)),
+      ("sin_out", torch.sin, (1,)),
+      ("sinh_out", torch.sinh, (1,)),
+      ("sqrt_out", torch.sqrt, (3,)),
+      ("tan_out", torch.tan, (1,)),
+      ("tanh_out", torch.tanh, (1,)),
+  )
+  def test_unary_float_out_default_dtype_cache_invalidation(
+      self,
+      op_fn: Callable[..., torch.Tensor],
+      values: Sequence[int],
+  ):
+    x_cpu = torch.tensor(list(values) * 4, dtype=torch.int32)
+    x_tpu = x_cpu.to("tpu")
+    tolerances = {
+        torch.float16: (5e-3, 5e-3),
+        torch.bfloat16: (2e-2, 2e-2),
+        torch.float32: (2e-4, 2e-4),
+    }
+    compilations = []
+    with utils.count_tpu_compilations() as counter:
+      for default_dtype in (
+          torch.float16,
+          torch.bfloat16,
+          torch.float32,
+          torch.float16,
+      ):
+        rtol, atol = tolerances[default_dtype]
+        with set_default_dtype(default_dtype):
+          out_cpu = torch.empty_like(x_cpu, dtype=torch.float32)
+          out_tpu = torch.empty_like(x_tpu, dtype=torch.float32)
+          op_fn(x_cpu, out=out_cpu)
+          before = counter.count
+          op_fn(x_tpu, out=out_tpu)
+          actual = out_tpu.cpu()
+          compilations.append(counter.count - before)
+          utils.assert_close(
+              actual=actual, expected=out_cpu, rtol=rtol, atol=atol
+          )
+    self.assertEqual(compilations, [1, 1, 1, 0])
+
+    if (
+        not torch.tensor([1e100], dtype=torch.float64, device="tpu")
+        .isinf()
+        .any()
+    ):
+      x64_cpu = torch.tensor(list(values) * 13, dtype=torch.int64)
+      x64_tpu = x64_cpu.to("tpu")
+      for default_dtype in (torch.float32, torch.float64, torch.float32):
+        tol = 1e-12 if default_dtype == torch.float64 else 2e-4
+        with set_default_dtype(default_dtype):
+          out_cpu = torch.empty_like(x64_cpu, dtype=torch.float64)
+          out_tpu = torch.empty_like(x64_tpu, dtype=torch.float64)
+          op_fn(x64_cpu, out=out_cpu)
+          op_fn(x64_tpu, out=out_tpu)
+          utils.assert_close(
+              actual=out_tpu.cpu(), expected=out_cpu, rtol=tol, atol=tol
+          )
+
+  @parameterized.named_parameters(
+      ("cos_out", torch.cos),
+      ("lgamma_out", torch.lgamma),
+  )
+  def test_unary_float_out_bool_default_dtype(self, op_fn):
+    bool_cpu = torch.tensor([False, True], dtype=torch.bool)
+    bool_tpu = bool_cpu.to("tpu")
+    for default_dtype, tol in (
+        (torch.bfloat16, 2e-2),
+        (torch.float32, 1e-5),
+        (torch.bfloat16, 2e-2),
+    ):
+      with set_default_dtype(default_dtype):
+        out_cpu = torch.empty(2, dtype=torch.float32)
+        out_tpu = torch.empty(2, dtype=torch.float32, device="tpu")
+        op_fn(bool_cpu, out=out_cpu)
+        op_fn(bool_tpu, out=out_tpu)
+        utils.assert_close(
+            actual=out_tpu.cpu(), expected=out_cpu, rtol=tol, atol=tol
+        )
+    with set_default_dtype(torch.float32):
+      utils.assert_close(
+          actual=op_fn(bool_tpu).cpu(),
+          expected=op_fn(bool_cpu),
+          rtol=1e-5,
+          atol=1e-5,
+      )
+
+  def test_unary_float_out_float_and_complex_no_recompile(self):
+    x_f32 = torch.ones(19, dtype=torch.float32, device="tpu")
+    out_f32 = torch.empty(19, dtype=torch.float32, device="tpu")
+    x_c64 = torch.ones(19, dtype=torch.complex64, device="tpu")
+    out_c64 = torch.empty(19, dtype=torch.complex64, device="tpu")
+    with set_default_dtype(torch.float32):
+      torch.cos(x_f32, out=out_f32).cpu()
+      torch.lgamma(x_f32, out=out_f32).cpu()
+      torch.cos(x_c64, out=out_c64).cpu()
+    with utils.count_tpu_compilations(clear_cache=False) as compilations:
+      for default_dtype in (torch.bfloat16, torch.float16):
+        with set_default_dtype(default_dtype):
+          torch.cos(x_f32, out=out_f32).cpu()
+          torch.lgamma(x_f32, out=out_f32).cpu()
+          torch.cos(x_c64, out=out_c64).cpu()
+    self.assertEqual(compilations.count, 0)
+
   def test_flip_scalar_and_empty_dims(self):
     """Tests flip on 0D scalars, empty dims, zero-sized dims, and copy semantics."""
     for dims in ([], [0], [-1]):
