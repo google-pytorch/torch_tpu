@@ -11645,7 +11645,7 @@ Note: this function is intended to be used with the output produced by torch.lin
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""reflection_pad2d_backward(): expected the input shape to match the output (input grad) shape [1, 1, 5, 5] computed by removing the padding from the grad_output, got [1, 1, 4, 4]""",
+        tpu="""reflection_pad2d_backward(): expected grad_output to have shape [1, 1, 6, 6], got [1, 1, 7, 7]""",
         gpu="""grad_output width unexpected. Expected: 6, Got: 7""",
     ):
       torch.ops.aten.reflection_pad2d_backward(grad_output, inp, padding)
@@ -11657,7 +11657,7 @@ Note: this function is intended to be used with the output produced by torch.lin
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad2d_backward(): expected the input shape to match the output (input grad) shape [1, 1, 5, 5] computed by removing the padding from grad_output, got [1, 1, 4, 4]""",
+        tpu="""replication_pad2d_backward(): expected grad_output to have shape [1, 1, 6, 6], got [1, 1, 7, 7]""",
         gpu="""grad_output width unexpected. Expected: 6, Got: 7""",
     ):
       torch.ops.aten.replication_pad2d_backward(grad_output, inp, padding)
@@ -11669,7 +11669,7 @@ Note: this function is intended to be used with the output produced by torch.lin
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad3d_backward(): expected the input shape to match the output (input grad) shape [1, 1, 5, 5, 5] computed by removing the padding from the grad_output, got [1, 1, 4, 4, 4]""",
+        tpu="""replication_pad3d_backward(): expected grad_output to have shape [1, 1, 6, 6, 6], got [1, 1, 7, 7, 7]""",
         gpu="""grad_output width unexpected. Expected: 6, Got: 7""",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)
@@ -11681,7 +11681,7 @@ Note: this function is intended to be used with the output produced by torch.lin
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad3d_backward(): expected padding at indices 0 and 1 to sum to a value smaller than the grad_output width (at dimension 4) of 6, got 8 (4 + 4)""",
+        tpu="""replication_pad3d_backward(): expected grad_output to have shape [1, 1, 6, 6, 12], got [1, 1, 6, 6, 6]""",
         gpu="""grad_output width unexpected. Expected: 12, Got: 6""",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)
@@ -11693,7 +11693,7 @@ Note: this function is intended to be used with the output produced by torch.lin
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad3d_backward(): expected padding at indices 2 and 3 to sum to a value smaller than the grad_output height (at dimension 3) of 6, got 8 (4 + 4)""",
+        tpu="""replication_pad3d_backward(): expected grad_output to have shape [1, 1, 6, 12, 6], got [1, 1, 6, 6, 6]""",
         gpu="""grad_output height unexpected. Expected: 12, Got: 6""",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)
@@ -11705,10 +11705,454 @@ Note: this function is intended to be used with the output produced by torch.lin
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""replication_pad3d_backward(): expected padding at indices 4 and 5 to sum to a value smaller than the grad_output depth (at dimension 2) of 6, got 8 (4 + 4)""",
+        tpu="""replication_pad3d_backward(): expected grad_output to have shape [1, 1, 12, 6, 6], got [1, 1, 6, 6, 6]""",
         gpu="""grad_output depth unexpected. Expected: 12, Got: 6""",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad2d_2d_input",
+          op=lambda x, out: torch.ops.aten.reflection_pad2d(x, (1, 1, 1, 1)),
+          shape=(2, 2),
+          tpu_msg=(
+              "reflection_pad2d(): expected a 3D or 4D (batch mode) tensor with"
+              " possibly 0 batch size and other non-zero dimensions for input,"
+              " got shape [2, 2]"
+          ),
+          gpu_msg=(
+              "Expected 3D or 4D (batch mode) tensor with possibly 0 batch size"
+              " and other non-zero dimensions for input, but got: [2, 2]"
+          ),
+      ),
+      dict(
+          testcase_name="reflection_pad2d_zero_spatial",
+          op=lambda x, out: torch.ops.aten.reflection_pad2d(x, (1, 1, 1, 1)),
+          shape=(1, 1, 0, 4),
+          tpu_msg=(
+              "reflection_pad2d(): expected a 3D or 4D (batch mode) tensor with"
+              " possibly 0 batch size and other non-zero dimensions for input,"
+              " got shape [1, 1, 0, 4]"
+          ),
+          gpu_msg=(
+              "Expected 3D or 4D (batch mode) tensor with possibly 0 batch size"
+              " and other non-zero dimensions for input, but got: [1, 1, 0, 4]"
+          ),
+      ),
+      dict(
+          testcase_name="reflection_pad1d_out_1d_input",
+          op=lambda x, out: torch.ops.aten.reflection_pad1d.out(
+              x, (1, 1), out=out
+          ),
+          shape=(4,),
+          tpu_msg=(
+              "reflection_pad1d(): expected a 2D or 3D (batch mode) tensor with"
+              " possibly 0 batch size and other non-zero dimensions for input,"
+              " got shape [4]"
+          ),
+          gpu_msg=(
+              "Expected 2D or 3D (batch mode) tensor with possibly 0 batch size"
+              " and other non-zero dimensions for input, but got: [4]"
+          ),
+      ),
+      dict(
+          testcase_name="replication_pad1d_out_1d_input",
+          op=lambda x, out: torch.ops.aten.replication_pad1d.out(
+              x, (1, 1), out=out
+          ),
+          shape=(4,),
+          tpu_msg=(
+              "replication_pad1d(): expected a 2D or 3D (batch mode) tensor"
+              " with possibly 0 batch size and other non-zero dimensions for"
+              " input, got shape [4]"
+          ),
+          gpu_msg=(
+              "Expected 2D or 3D (batch mode) tensor with possibly 0 batch size"
+              " and other non-zero dimensions for input, but got: [4]"
+          ),
+      ),
+      dict(
+          testcase_name="replication_pad2d_out_zero_spatial",
+          op=lambda x, out: torch.ops.aten.replication_pad2d.out(
+              x, (1, 1, 1, 1), out=out
+          ),
+          shape=(1, 1, 0, 4),
+          tpu_msg=(
+              "replication_pad2d(): expected a 3D or 4D (batch mode) tensor"
+              " with possibly 0 batch size and other non-zero dimensions for"
+              " input, got shape [1, 1, 0, 4]"
+          ),
+          gpu_msg=(
+              "Expected 3D or 4D (batch mode) tensor with possibly 0 batch size"
+              " and other non-zero dimensions for input, but got: [1, 1, 0, 4]"
+          ),
+      ),
+  )
+  def test_pad_invalid_input_shape(self, op, shape, tpu_msg, gpu_msg):
+    x = torch.empty(shape, device=et.device())
+    out = torch.empty(0, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(x, out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad2d_f_pad",
+          op=lambda x, out: torch.nn.functional.pad(
+              x, (2, 2, 2, 2), mode="reflect"
+          ),
+          shape=(1, 1, 2, 2),
+          tpu_msg=(
+              "reflection_pad2d(): expected padding size to be less than the"
+              " corresponding input dimension size 2 at dimension 3, got (2, 2)"
+          ),
+          gpu_msg=(
+              "Argument #4: Padding size should be less than the corresponding"
+              " input dimension, but got: padding (2, 2) at dimension 3 of"
+              " input [1, 1, 2, 2]"
+          ),
+      ),
+      dict(
+          testcase_name="reflection_pad1d_out",
+          op=lambda x, out: torch.ops.aten.reflection_pad1d.out(
+              x, (2, 0), out=out
+          ),
+          shape=(1, 1, 2),
+          tpu_msg=(
+              "reflection_pad1d(): expected padding size to be less than the"
+              " corresponding input dimension size 2 at dimension 2, got (2, 0)"
+          ),
+          gpu_msg=(
+              "Argument #4: Padding size should be less than the corresponding"
+              " input dimension, but got: padding (2, 0) at dimension 2 of"
+              " input [1, 1, 2]"
+          ),
+      ),
+      dict(
+          testcase_name="reflection_pad3d_out",
+          op=lambda x, out: torch.ops.aten.reflection_pad3d.out(
+              x, (0, 2, 0, 0, 0, 0), out=out
+          ),
+          shape=(1, 1, 2, 2, 2),
+          tpu_msg=(
+              "reflection_pad3d(): expected padding size to be less than the"
+              " corresponding input dimension size 2 at dimension 4, got (0, 2)"
+          ),
+          gpu_msg=(
+              "Argument #4: Padding size should be less than the corresponding"
+              " input dimension, but got: padding (0, 2) at dimension 4 of"
+              " input [1, 1, 2, 2, 2]"
+          ),
+      ),
+  )
+  def test_reflection_pad_padding_ge_input_size(
+      self, op, shape, tpu_msg, gpu_msg
+  ):
+    x = torch.randn(shape, device=et.device())
+    out = torch.empty(0, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(x, out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad2d_zero_out",
+          op=lambda x, out: torch.ops.aten.reflection_pad2d(x, (-1, -1, 0, 0)),
+          shape=(1, 1, 2, 2),
+          tpu_msg=(
+              "reflection_pad2d(): expected calculated output size at dimension"
+              " 3 to be >= 1, got 0"
+          ),
+          gpu_msg=(
+              "Calculated output H: 2 W: 0 must be >= 1 in every dimension"
+              " (input H: 2, W: 2)"
+          ),
+      ),
+      dict(
+          testcase_name="reflection_pad1d_out_neg_out",
+          op=lambda x, out: torch.ops.aten.reflection_pad1d.out(
+              x, (-1, -2), out=out
+          ),
+          shape=(1, 1, 2),
+          tpu_msg=(
+              "reflection_pad1d(): expected calculated output size at dimension"
+              " 2 to be >= 1, got -1"
+          ),
+          gpu_msg="input (W: 2) is too small. Calculated output W: -1",
+      ),
+      dict(
+          testcase_name="replication_pad1d_out_zero_out",
+          op=lambda x, out: torch.ops.aten.replication_pad1d.out(
+              x, (-1, -1), out=out
+          ),
+          shape=(1, 1, 2),
+          tpu_msg=(
+              "replication_pad1d(): expected calculated output size at"
+              " dimension 2 to be >= 1, got 0"
+          ),
+          gpu_msg="input (W: 2) is too small. Calculated output W: 0",
+      ),
+      dict(
+          testcase_name="replication_pad3d_out_neg_out",
+          op=lambda x, out: torch.ops.aten.replication_pad3d.out(
+              x, (0, 0, 0, 0, -1, -2), out=out
+          ),
+          shape=(1, 1, 2, 2, 2),
+          tpu_msg=(
+              "replication_pad3d(): expected calculated output size at"
+              " dimension 2 to be >= 1, got -1"
+          ),
+          gpu_msg=(
+              "Calculated output D: -1 H: 2 W: 2 must be >= 1 in every"
+              " dimension (input D: 2, H: 2, W: 2)"
+          ),
+      ),
+  )
+  def test_pad_non_positive_output_size(self, op, shape, tpu_msg, gpu_msg):
+    x = torch.randn(shape, device=et.device())
+    out = torch.empty(0, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(x, out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad1d_out",
+          op=torch.ops.aten.reflection_pad1d.out,
+          shape=(1, 1, 4),
+          padding=(1, 1),
+          tpu_msg=(
+              "reflection_pad1d(): expected the output dtype to be float32, got"
+              " float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+      dict(
+          testcase_name="reflection_pad2d_out",
+          op=torch.ops.aten.reflection_pad2d.out,
+          shape=(1, 1, 4, 4),
+          padding=(1, 1, 1, 1),
+          tpu_msg=(
+              "reflection_pad2d(): expected the output dtype to be float32, got"
+              " float64"
+          ),
+          gpu_msg="expected scalar type Float but found Double",
+      ),
+      dict(
+          testcase_name="reflection_pad3d_out",
+          op=torch.ops.aten.reflection_pad3d.out,
+          shape=(1, 1, 4, 4, 4),
+          padding=(1, 1, 1, 1, 1, 1),
+          tpu_msg=(
+              "reflection_pad3d(): expected the output dtype to be float32, got"
+              " float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+      dict(
+          testcase_name="replication_pad1d_out",
+          op=torch.ops.aten.replication_pad1d.out,
+          shape=(1, 1, 4),
+          padding=(1, 1),
+          tpu_msg=(
+              "replication_pad1d(): expected the output dtype to be float32,"
+              " got float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+      dict(
+          testcase_name="replication_pad2d_out",
+          op=torch.ops.aten.replication_pad2d.out,
+          shape=(1, 1, 4, 4),
+          padding=(1, 1, 1, 1),
+          tpu_msg=(
+              "replication_pad2d(): expected the output dtype to be float32,"
+              " got float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+      dict(
+          testcase_name="replication_pad3d_out",
+          op=torch.ops.aten.replication_pad3d.out,
+          shape=(1, 1, 4, 4, 4),
+          padding=(1, 1, 1, 1, 1, 1),
+          tpu_msg=(
+              "replication_pad3d(): expected the output dtype to be float32,"
+              " got float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+  )
+  def test_pad_out_dtype_mismatch(self, op, shape, padding, tpu_msg, gpu_msg):
+    x = torch.randn(shape, dtype=torch.float32, device=et.device())
+    out = torch.empty(0, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(x, padding, out=out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad1d_bwd_grad_input",
+          op=torch.ops.aten.reflection_pad1d_backward.grad_input,
+          shape=(1, 1, 4),
+          go_shape=(1, 1, 6),
+          padding=(1, 1),
+          tpu_msg=(
+              "reflection_pad1d_backward(): expected the output dtype to be"
+              " float32, got float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+      dict(
+          testcase_name="reflection_pad2d_bwd_grad_input",
+          op=torch.ops.aten.reflection_pad2d_backward.grad_input,
+          shape=(1, 1, 4, 4),
+          go_shape=(1, 1, 6, 6),
+          padding=(1, 1, 1, 1),
+          tpu_msg=(
+              "reflection_pad2d_backward(): expected the output dtype to be"
+              " float32, got float64"
+          ),
+          gpu_msg="expected scalar type Float but found Double",
+      ),
+      dict(
+          testcase_name="reflection_pad3d_bwd_grad_input",
+          op=torch.ops.aten.reflection_pad3d_backward.grad_input,
+          shape=(1, 1, 4, 4, 4),
+          go_shape=(1, 1, 6, 6, 6),
+          padding=(1, 1, 1, 1, 1, 1),
+          tpu_msg=(
+              "reflection_pad3d_backward(): expected the output dtype to be"
+              " float32, got float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+      dict(
+          testcase_name="replication_pad1d_bwd_grad_input",
+          op=torch.ops.aten.replication_pad1d_backward.grad_input,
+          shape=(1, 1, 4),
+          go_shape=(1, 1, 6),
+          padding=(1, 1),
+          tpu_msg=(
+              "replication_pad1d_backward(): expected the output dtype to be"
+              " float32, got float64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float, but got double instead"
+          ),
+      ),
+      dict(
+          testcase_name="replication_pad2d_bwd_grad_input",
+          op=torch.ops.aten.replication_pad2d_backward.grad_input,
+          shape=(1, 1, 4, 4),
+          go_shape=(1, 1, 6, 6),
+          padding=(1, 1, 1, 1),
+          tpu_msg=(
+              "replication_pad2d_backward(): expected the output dtype to be"
+              " float32, got float64"
+          ),
+          gpu_msg="expected scalar type Float but found Double",
+      ),
+      dict(
+          testcase_name="replication_pad3d_bwd_grad_input",
+          op=torch.ops.aten.replication_pad3d_backward.grad_input,
+          shape=(1, 1, 4, 4, 4),
+          go_shape=(1, 1, 6, 6, 6),
+          padding=(1, 1, 1, 1, 1, 1),
+          tpu_msg=(
+              "replication_pad3d_backward(): expected the output dtype to be"
+              " float32, got float64"
+          ),
+          gpu_msg="expected scalar type Float but found Double",
+      ),
+  )
+  def test_pad_backward_grad_input_dtype_mismatch(
+      self, op, shape, go_shape, padding, tpu_msg, gpu_msg
+  ):
+    inp = torch.randn(shape, dtype=torch.float32, device=et.device())
+    grad_output = torch.randn(go_shape, dtype=torch.float32, device=et.device())
+    grad_input = torch.empty(0, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(grad_output, inp, padding, grad_input=grad_input)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad2d_bwd",
+          op=torch.ops.aten.reflection_pad2d_backward,
+          shape=(1, 1, 4, 4),
+          go_shape=(1, 1, 6, 6),
+          padding=(1, 1, 1, 1),
+          tpu_msg=(
+              "reflection_pad2d_backward(): expected grad_output to have dtype"
+              " float32, got float64"
+          ),
+          gpu_msg="expected scalar type Float but found Double",
+      ),
+      dict(
+          testcase_name="replication_pad2d_bwd",
+          op=torch.ops.aten.replication_pad2d_backward,
+          shape=(1, 1, 4, 4),
+          go_shape=(1, 1, 6, 6),
+          padding=(1, 1, 1, 1),
+          tpu_msg=(
+              "replication_pad2d_backward(): expected grad_output to have dtype"
+              " float32, got float64"
+          ),
+          gpu_msg="expected scalar type Float but found Double",
+      ),
+  )
+  def test_pad_backward_grad_output_dtype_mismatch(
+      self, op, shape, go_shape, padding, tpu_msg, gpu_msg
+  ):
+    inp = torch.randn(shape, dtype=torch.float32, device=et.device())
+    grad_output = torch.randn(go_shape, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(grad_output, inp, padding)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad1d_bwd_grad_input",
+          op=torch.ops.aten.reflection_pad1d_backward.grad_input,
+          shape=(1, 1, 4),
+          go_shape=(1, 1, 7),
+          padding=(1, 1),
+          tpu_msg=(
+              "reflection_pad1d_backward(): expected grad_output to have shape"
+              " [1, 1, 6], got [1, 1, 7]"
+          ),
+          gpu_msg="grad_output width unexpected. Expected: 6, Got: 7",
+      ),
+      dict(
+          testcase_name="replication_pad1d_bwd_grad_input",
+          op=torch.ops.aten.replication_pad1d_backward.grad_input,
+          shape=(1, 1, 4),
+          go_shape=(1, 1, 7),
+          padding=(1, 1),
+          tpu_msg=(
+              "replication_pad1d_backward(): expected grad_output to have shape"
+              " [1, 1, 6], got [1, 1, 7]"
+          ),
+          gpu_msg="grad_output width unexpected. Expected: 6, Got: 7",
+      ),
+  )
+  def test_pad_backward_grad_input_shape_mismatch(
+      self, op, shape, go_shape, padding, tpu_msg, gpu_msg
+  ):
+    inp = torch.randn(shape, dtype=torch.float32, device=et.device())
+    grad_output = torch.randn(go_shape, dtype=torch.float32, device=et.device())
+    grad_input = torch.empty(0, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(grad_output, inp, padding, grad_input=grad_input)
 
   def test_scaled_dot_product_attention_no_backends(self):
     query = torch.randn(1, 1, 512, 128, device=et.device())

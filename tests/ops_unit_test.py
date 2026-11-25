@@ -16286,6 +16286,292 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         self.assertEqual(actual.shape, expected.shape)
         utils.assert_close(actual.cpu(), expected)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad1d_out",
+          op=torch.ops.aten.reflection_pad1d.out,
+          shape=(1, 2, 4),
+          padding=(1, 2),
+      ),
+      dict(
+          testcase_name="reflection_pad2d_out",
+          op=torch.ops.aten.reflection_pad2d.out,
+          shape=(1, 2, 4, 5),
+          padding=(1, 2, 1, 1),
+      ),
+      dict(
+          testcase_name="reflection_pad3d_out",
+          op=torch.ops.aten.reflection_pad3d.out,
+          shape=(1, 2, 3, 4, 5),
+          padding=(1, 2, 1, 1, 1, 1),
+      ),
+      dict(
+          testcase_name="replication_pad1d_out",
+          op=torch.ops.aten.replication_pad1d.out,
+          shape=(1, 2, 4),
+          padding=(1, 2),
+      ),
+      dict(
+          testcase_name="replication_pad2d_out",
+          op=torch.ops.aten.replication_pad2d.out,
+          shape=(1, 2, 4, 5),
+          padding=(1, 2, 1, 1),
+      ),
+      dict(
+          testcase_name="replication_pad3d_out",
+          op=torch.ops.aten.replication_pad3d.out,
+          shape=(1, 2, 3, 4, 5),
+          padding=(1, 2, 1, 1, 1, 1),
+      ),
+  )
+  def test_pad_out_resizes_empty_and_mismatched(
+      self,
+      op: Callable[..., torch.Tensor],
+      shape: tuple[int, ...],
+      padding: tuple[int, ...],
+  ):
+    x_cpu = torch.arange(math.prod(shape), dtype=torch.float32).reshape(shape)
+    expected = torch.empty(0, dtype=torch.float32)
+    op(x_cpu, padding, out=expected)
+
+    x_tpu = x_cpu.to("tpu")
+    out_empty = torch.empty(0, dtype=torch.float32, device="tpu")
+    res_empty = op(x_tpu, padding, out=out_empty)
+    self.assertIs(res_empty, out_empty)
+    self.assertEqual(out_empty.shape, expected.shape)
+    utils.assert_close(out_empty.cpu(), expected)
+
+    out_mismatched = torch.empty((2, 2), dtype=torch.float32, device="tpu")
+    res_mismatched = op(x_tpu, padding, out=out_mismatched)
+    self.assertIs(res_mismatched, out_mismatched)
+    self.assertEqual(out_mismatched.shape, expected.shape)
+    utils.assert_close(out_mismatched.cpu(), expected)
+
+    empty_batch_shape = (0, *shape[1:])
+    x_zero_cpu = torch.empty(empty_batch_shape, dtype=torch.float32)
+    expected_zero = torch.empty(0, dtype=torch.float32)
+    op(x_zero_cpu, padding, out=expected_zero)
+
+    out_zero = torch.empty(0, dtype=torch.float32, device="tpu")
+    res_zero = op(x_zero_cpu.to("tpu"), padding, out=out_zero)
+    self.assertIs(res_zero, out_zero)
+    self.assertEqual(out_zero.shape, expected_zero.shape)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad1d_bwd",
+          fwd_op=torch.ops.aten.reflection_pad1d,
+          bwd_op=torch.ops.aten.reflection_pad1d_backward.grad_input,
+          shape=(1, 2, 4),
+          padding=(1, 2),
+      ),
+      dict(
+          testcase_name="reflection_pad2d_bwd",
+          fwd_op=torch.ops.aten.reflection_pad2d,
+          bwd_op=torch.ops.aten.reflection_pad2d_backward.grad_input,
+          shape=(1, 2, 4, 5),
+          padding=(1, 2, 1, 1),
+      ),
+      dict(
+          testcase_name="reflection_pad3d_bwd",
+          fwd_op=torch.ops.aten.reflection_pad3d,
+          bwd_op=torch.ops.aten.reflection_pad3d_backward.grad_input,
+          shape=(1, 2, 3, 4, 5),
+          padding=(1, 2, 1, 1, 1, 1),
+      ),
+      dict(
+          testcase_name="replication_pad1d_bwd",
+          fwd_op=torch.ops.aten.replication_pad1d,
+          bwd_op=torch.ops.aten.replication_pad1d_backward.grad_input,
+          shape=(1, 2, 4),
+          padding=(1, 2),
+      ),
+      dict(
+          testcase_name="replication_pad2d_bwd",
+          fwd_op=torch.ops.aten.replication_pad2d,
+          bwd_op=torch.ops.aten.replication_pad2d_backward.grad_input,
+          shape=(1, 2, 4, 5),
+          padding=(1, 2, 1, 1),
+      ),
+      dict(
+          testcase_name="replication_pad3d_bwd",
+          fwd_op=torch.ops.aten.replication_pad3d,
+          bwd_op=torch.ops.aten.replication_pad3d_backward.grad_input,
+          shape=(1, 2, 3, 4, 5),
+          padding=(1, 2, 1, 1, 1, 1),
+      ),
+  )
+  def test_pad_backward_grad_input_resizes(
+      self,
+      fwd_op: Callable[..., torch.Tensor],
+      bwd_op: Callable[..., torch.Tensor],
+      shape: tuple[int, ...],
+      padding: tuple[int, ...],
+  ):
+    x_cpu = torch.arange(math.prod(shape), dtype=torch.float32).reshape(shape)
+    out_shape = fwd_op(x_cpu, padding).shape
+    go_cpu = torch.arange(
+        1, math.prod(out_shape) + 1, dtype=torch.float32
+    ).reshape(out_shape)
+    expected = torch.empty(0, dtype=torch.float32)
+    bwd_op(go_cpu, x_cpu, padding, grad_input=expected)
+
+    x_tpu = x_cpu.to("tpu")
+    go_tpu = go_cpu.to("tpu")
+    gi_empty = torch.empty(0, dtype=torch.float32, device="tpu")
+    res_empty = bwd_op(go_tpu, x_tpu, padding, grad_input=gi_empty)
+    self.assertIs(res_empty, gi_empty)
+    self.assertEqual(gi_empty.shape, expected.shape)
+    utils.assert_close(gi_empty.cpu(), expected)
+
+    gi_mismatched = torch.empty((2, 2), dtype=torch.float32, device="tpu")
+    res_mismatched = bwd_op(go_tpu, x_tpu, padding, grad_input=gi_mismatched)
+    self.assertIs(res_mismatched, gi_mismatched)
+    self.assertEqual(gi_mismatched.shape, expected.shape)
+    utils.assert_close(gi_mismatched.cpu(), expected)
+
+    empty_batch_shape = (0, *shape[1:])
+    x_zero_cpu = torch.empty(empty_batch_shape, dtype=torch.float32)
+    go_zero_cpu = torch.empty((0, *out_shape[1:]), dtype=torch.float32)
+    gi_zero = torch.empty(0, dtype=torch.float32, device="tpu")
+    res_zero = bwd_op(
+        go_zero_cpu.to("tpu"),
+        x_zero_cpu.to("tpu"),
+        padding,
+        grad_input=gi_zero,
+    )
+    self.assertIs(res_zero, gi_zero)
+    self.assertEqual(gi_zero.shape, empty_batch_shape)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_1d_neg_right",
+          op=torch.ops.aten.reflection_pad1d,
+          shape=(1, 2, 5),
+          padding=(0, -1),
+      ),
+      dict(
+          testcase_name="reflection_1d_neg_left",
+          op=torch.ops.aten.reflection_pad1d,
+          shape=(1, 2, 5),
+          padding=(-1, 0),
+      ),
+      dict(
+          testcase_name="reflection_1d_neg_both",
+          op=torch.ops.aten.reflection_pad1d,
+          shape=(1, 2, 5),
+          padding=(-1, -2),
+      ),
+      dict(
+          testcase_name="reflection_1d_pos_left_neg_right_short",
+          op=torch.ops.aten.reflection_pad1d,
+          shape=(1, 2, 4),
+          padding=(2, -3),
+      ),
+      dict(
+          testcase_name="reflection_1d_pos_left_neg_right_extreme",
+          op=torch.ops.aten.reflection_pad1d,
+          shape=(1, 2, 4),
+          padding=(2, -5),
+      ),
+      dict(
+          testcase_name="reflection_1d_neg_left_pos_right_short",
+          op=torch.ops.aten.reflection_pad1d,
+          shape=(1, 2, 4),
+          padding=(-3, 2),
+      ),
+      dict(
+          testcase_name="reflection_2d_neg_right_bottom",
+          op=torch.ops.aten.reflection_pad2d,
+          shape=(1, 2, 5, 5),
+          padding=(0, -1, 0, -2),
+      ),
+      dict(
+          testcase_name="reflection_2d_mixed",
+          op=torch.ops.aten.reflection_pad2d,
+          shape=(1, 2, 4, 4),
+          padding=(2, -3, -1, 1),
+      ),
+      dict(
+          testcase_name="reflection_3d_neg_all_right",
+          op=torch.ops.aten.reflection_pad3d,
+          shape=(1, 2, 4, 4, 4),
+          padding=(0, -1, 0, -1, 0, -1),
+      ),
+      dict(
+          testcase_name="replication_1d_neg_right",
+          op=torch.ops.aten.replication_pad1d,
+          shape=(1, 2, 5),
+          padding=(0, -1),
+      ),
+      dict(
+          testcase_name="replication_1d_pos_left_neg_right_extreme",
+          op=torch.ops.aten.replication_pad1d,
+          shape=(1, 2, 4),
+          padding=(2, -5),
+      ),
+      dict(
+          testcase_name="replication_1d_size_one_pos_both",
+          op=torch.ops.aten.replication_pad1d,
+          shape=(1, 2, 1),
+          padding=(2, 3),
+      ),
+      dict(
+          testcase_name="replication_2d_neg_mixed",
+          op=torch.ops.aten.replication_pad2d,
+          shape=(1, 2, 5, 5),
+          padding=(0, -1, -1, 0),
+      ),
+      dict(
+          testcase_name="replication_3d_neg_all_axes",
+          op=torch.ops.aten.replication_pad3d,
+          shape=(1, 2, 4, 4, 4),
+          padding=(0, -1, -1, 0, -1, -1),
+      ),
+  )
+  def test_pad_negative_and_edge_padding_backward(
+      self,
+      op: Callable[..., torch.Tensor],
+      shape: tuple[int, ...],
+      padding: tuple[int, ...],
+  ):
+    x_data = torch.arange(1, math.prod(shape) + 1, dtype=torch.float32).reshape(
+        shape
+    )
+    x_cpu = x_data.clone().requires_grad_(True)
+    y_cpu = op(x_cpu, padding)
+    grad_out = torch.arange(1, y_cpu.numel() + 1, dtype=torch.float32).reshape(
+        y_cpu.shape
+    )
+    y_cpu.backward(grad_out)
+
+    x_tpu = x_data.to("tpu").requires_grad_(True)
+    y_tpu = op(x_tpu, padding)
+    y_tpu.backward(grad_out.to("tpu"))
+
+    utils.assert_close(y_tpu.detach().cpu(), y_cpu.detach())
+    self.assertIsNotNone(x_tpu.grad)
+    utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="reflection_pad1d_out",
+          op=torch.ops.aten.reflection_pad1d.out,
+      ),
+      dict(
+          testcase_name="replication_pad1d_out",
+          op=torch.ops.aten.replication_pad1d.out,
+      ),
+  )
+  def test_pad_out_preserves_slice_view(self, op: Callable[..., torch.Tensor]):
+    x_cpu = torch.tensor([[[1.0, 2.0, 3.0, 4.0]]], dtype=torch.float32)
+    base_cpu = torch.zeros((1, 1, 8), dtype=torch.float32)
+    op(x_cpu, (1, 1), out=base_cpu[:, :, 1:7])
+
+    base_tpu = torch.zeros((1, 1, 8), dtype=torch.float32, device="tpu")
+    op(x_cpu.to("tpu"), (1, 1), out=base_tpu[:, :, 1:7])
+    utils.assert_close(base_tpu.cpu(), base_cpu)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
