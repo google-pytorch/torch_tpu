@@ -39,26 +39,26 @@ class Scalar final : public WithElementwiseOps<Scalar>,
   // CHECK-fails unless `handle` is a scalar value with the IR type of `dtype`.
   Scalar(internal::ValueHandle handle, DType dtype);
 
-  internal::ValueHandle handle() const { return handle_; }
-  DType dtype() const { return dtype_; }
+  [[nodiscard]] internal::ValueHandle handle() const { return handle_; }
+  [[nodiscard]] DType dtype() const { return dtype_; }
 
  private:
   friend class WithOperandOps<Scalar, Literal>;
 
-  Scalar Coerce(Literal value) const;
+  [[nodiscard]] Scalar Coerce(Literal value) const;
 
   internal::ValueHandle handle_;
   DType dtype_;
 };
 
-Scalar I32(Literal value);
-Scalar U32(Literal value);
-Scalar F32(Literal value);
-Scalar Bool(bool value);
+[[nodiscard]] Scalar I32(Literal value);
+[[nodiscard]] Scalar U32(Literal value);
+[[nodiscard]] Scalar F32(Literal value);
+[[nodiscard]] Scalar Bool(bool value);
 
 // Assumes that `value` is a multiple of `multiple` without emitting a runtime
 // check (Pallas `pl.multiple_of` / `tpu.assume_multiple`).
-Scalar MultipleOf(Scalar value, int32_t multiple);
+[[nodiscard]] Scalar MultipleOf(Scalar value, int32_t multiple);
 
 }  // namespace torch_tpu::kiln
 

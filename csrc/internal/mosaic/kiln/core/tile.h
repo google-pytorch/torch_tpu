@@ -47,56 +47,59 @@ class Tile final : public WithElementwiseOps<Tile>,
   // type of `dtype`.
   Tile(internal::ValueHandle handle, DType dtype);
 
-  internal::ValueHandle handle() const { return handle_; }
-  DType dtype() const { return dtype_; }
+  [[nodiscard]] internal::ValueHandle handle() const { return handle_; }
+  [[nodiscard]] DType dtype() const { return dtype_; }
 
   llvm::ArrayRef<int64_t> dims() const;
-  Shape shape() const { return Shape(dims(), dtype()); }
-  int64_t rank() const;
-  int64_t num_elements() const;
+  [[nodiscard]] Shape shape() const { return Shape(dims(), dtype()); }
+  [[nodiscard]] int64_t rank() const;
+  [[nodiscard]] int64_t num_elements() const;
 
   // Same number of elements, different shape.
-  Tile Reshape(llvm::ArrayRef<int64_t> shape) const;
+  [[nodiscard]] Tile Reshape(llvm::ArrayRef<int64_t> shape) const;
   // Drops leading unit dimensions, but never below rank 2.
-  Tile Squeeze() const;
+  [[nodiscard]] Tile Squeeze() const;
   // Reshapes the tile to the given shape, broadcasting if necessary.
-  Tile ToShape(llvm::ArrayRef<int64_t> shape) const;
-  Tile BroadcastTo(llvm::ArrayRef<int64_t> shape) const;
+  [[nodiscard]] Tile ToShape(llvm::ArrayRef<int64_t> shape) const;
+  [[nodiscard]] Tile BroadcastTo(llvm::ArrayRef<int64_t> shape) const;
   // Resizes the lane (last) dimension to `n` by slicing or repeating. This is
   // the idiom for lane-replicated row statistics stored as (rows, 128).
-  Tile Lanes(int64_t n) const;
+  [[nodiscard]] Tile Lanes(int64_t n) const;
   // Static window of this tile.
-  Tile Slice(llvm::ArrayRef<int64_t> offsets,
-             llvm::ArrayRef<int64_t> sizes) const;
+  [[nodiscard]] Tile Slice(llvm::ArrayRef<int64_t> offsets,
+                           llvm::ArrayRef<int64_t> sizes) const;
   // Cyclically rotates elements along `axis` by `amount` (`tpu.dynamic_rotate`
   // / Pallas `pltpu.roll`).
-  Tile Rotate(IndexArg amount, int32_t axis) const;
+  [[nodiscard]] Tile Rotate(IndexArg amount, int32_t axis) const;
   // Gathers elements along `dimensions` using integer `indices`
   // (`tpu.dynamic_gather`).
-  Tile Gather(Tile indices, llvm::ArrayRef<int32_t> dimensions) const;
-  Tile Gather(Tile indices, int32_t axis) const {
+  [[nodiscard]] Tile Gather(Tile indices,
+                            llvm::ArrayRef<int32_t> dimensions) const;
+  [[nodiscard]] Tile Gather(Tile indices, int32_t axis) const {
     return Gather(indices, llvm::ArrayRef<int32_t>{axis});
   }
   // Extracts a scalar element at static `indices` (`vector.extract`).
-  Scalar Extract(llvm::ArrayRef<int64_t> indices) const;
+  [[nodiscard]] Scalar Extract(llvm::ArrayRef<int64_t> indices) const;
   // A splat constant with the same shape and dtype as this tile.
-  Tile Full(Literal value) const;
+  [[nodiscard]] Tile Full(Literal value) const;
   // Broadcasts `scalar` to the dimensions of this tile, preserving
   // `scalar.dtype()`.
-  Tile Splat(Scalar scalar) const;
+  [[nodiscard]] Tile Splat(Scalar scalar) const;
 
   // Elementwise selection using a boolean `mask` tile when neither branch is a
   // `Tile`. These cannot live on `WithOperandOps` because `mask` provides the
   // shape while the `Scalar` branch(es) provide the result element type (for
   // the same reason, `Select(Tile, Literal, Literal)` is omitted because the
   // result dtype would be ambiguous).
-  friend Tile Select(Tile mask, Scalar if_true, Scalar if_false) {
+  [[nodiscard]] friend Tile Select(Tile mask, Scalar if_true, Scalar if_false) {
     return Select(mask, mask.Splat(if_true), mask.Splat(if_false));
   }
-  friend Tile Select(Tile mask, Scalar if_true, Literal if_false) {
+  [[nodiscard]] friend Tile Select(Tile mask, Scalar if_true,
+                                   Literal if_false) {
     return Select(mask, mask.Splat(if_true), if_false);
   }
-  friend Tile Select(Tile mask, Literal if_true, Scalar if_false) {
+  [[nodiscard]] friend Tile Select(Tile mask, Literal if_true,
+                                   Scalar if_false) {
     return Select(mask, if_true, mask.Splat(if_false));
   }
 
@@ -104,32 +107,32 @@ class Tile final : public WithElementwiseOps<Tile>,
   friend class WithOperandOps<Tile, Literal>;
   friend class WithOperandOps<Tile, Scalar>;
 
-  Tile Coerce(Literal value) const { return Full(value); }
-  Tile Coerce(Scalar scalar) const { return Splat(scalar); }
+  [[nodiscard]] Tile Coerce(Literal value) const { return Full(value); }
+  [[nodiscard]] Tile Coerce(Scalar scalar) const { return Splat(scalar); }
 
   internal::ValueHandle handle_;
   DType dtype_;
 };
 
 // Tile constructors.
-Tile Zeros(const Shape& shape);
-Tile Ones(const Shape& shape);
-Tile Full(const Shape& shape, Literal value);
-Tile NInf(const Shape& shape);
-Tile Iota(const Shape& shape, int axis);
-Tile Splat(Scalar scalar, llvm::ArrayRef<int64_t> shape);
+[[nodiscard]] Tile Zeros(const Shape& shape);
+[[nodiscard]] Tile Ones(const Shape& shape);
+[[nodiscard]] Tile Full(const Shape& shape, Literal value);
+[[nodiscard]] Tile NInf(const Shape& shape);
+[[nodiscard]] Tile Iota(const Shape& shape, int axis);
+[[nodiscard]] Tile Splat(Scalar scalar, llvm::ArrayRef<int64_t> shape);
 
-inline Tile Rotate(Tile t, IndexArg amount, int32_t axis) {
+[[nodiscard]] inline Tile Rotate(Tile t, IndexArg amount, int32_t axis) {
   return t.Rotate(amount, axis);
 }
-inline Tile Gather(Tile source, Tile indices,
-                   llvm::ArrayRef<int32_t> dimensions) {
+[[nodiscard]] inline Tile Gather(Tile source, Tile indices,
+                                 llvm::ArrayRef<int32_t> dimensions) {
   return source.Gather(indices, dimensions);
 }
-inline Tile Gather(Tile source, Tile indices, int32_t axis) {
+[[nodiscard]] inline Tile Gather(Tile source, Tile indices, int32_t axis) {
   return source.Gather(indices, axis);
 }
-inline Scalar Extract(Tile t, llvm::ArrayRef<int64_t> indices) {
+[[nodiscard]] inline Scalar Extract(Tile t, llvm::ArrayRef<int64_t> indices) {
   return t.Extract(indices);
 }
 
@@ -139,18 +142,19 @@ enum class ReciprocalMode {
 };
 
 // Exact or approximate reciprocal (`tpu.reciprocal`).
-Tile Reciprocal(Tile t, ReciprocalMode mode = ReciprocalMode::kExact);
+[[nodiscard]] Tile Reciprocal(Tile t,
+                              ReciprocalMode mode = ReciprocalMode::kExact);
 
 // Reductions along `axis`, keeping the reduced dimension as size 1.
-Tile MaxReduce(Tile t, int axis);
-Tile SumReduce(Tile t, int axis);
+[[nodiscard]] Tile MaxReduce(Tile t, int axis);
+[[nodiscard]] Tile SumReduce(Tile t, int axis);
 
 // Concatenates `tiles` along `axis` (`tpu.concatenate` / `jnp.concatenate`).
 // All tiles must share the same rank, dtype, and non-`axis` dimensions.
-Tile Concat(llvm::ArrayRef<Tile> tiles, int32_t axis);
+[[nodiscard]] Tile Concat(llvm::ArrayRef<Tile> tiles, int32_t axis);
 
 // 2-D transpose.
-Tile Transpose(Tile t);
+[[nodiscard]] Tile Transpose(Tile t);
 
 enum class ContractPrecision {
   kBF16,
@@ -165,7 +169,7 @@ struct DotOptions {
 };
 
 // 2-D matmul on the MXU with f32 accumulation.
-Tile Dot(Tile lhs, Tile rhs, const DotOptions& options = {});
+[[nodiscard]] Tile Dot(Tile lhs, Tile rhs, const DotOptions& options = {});
 
 }  // namespace torch_tpu::kiln
 

@@ -54,7 +54,7 @@ struct SliceDim {
 // dimensions, any dynamic `offset` or `size` must be provably divisible by the
 // tile size of that dimension (e.g., via `MultipleOf` or a stepped `For`
 // induction variable).
-inline SliceDim Slice(IndexArg offset, IndexArg size) {
+[[nodiscard]] inline SliceDim Slice(IndexArg offset, IndexArg size) {
   return SliceDim{offset, size};
 }
 
@@ -75,18 +75,19 @@ struct DimDesc {
   IndexArg size = 0;
   Kind kind = Kind::kAll;
 
-  static DimDesc From(All) {
+  [[nodiscard]] static DimDesc From(All) {
     return DimDesc{.offset = 0, .size = 0, .kind = Kind::kAll};
   }
-  static DimDesc From(const SliceDim& s) {
+  [[nodiscard]] static DimDesc From(const SliceDim& s) {
     return DimDesc{.offset = s.offset, .size = s.size, .kind = Kind::kSlice};
   }
-  static DimDesc From(IndexArg s) {
+  [[nodiscard]] static DimDesc From(IndexArg s) {
     return DimDesc{.offset = s, .size = 1, .kind = Kind::kCollapsed};
   }
 };
 
-ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims);
+[[nodiscard]] ValueHandle SliceMemRefImpl(ValueHandle base,
+                                          llvm::ArrayRef<DimDesc> dims);
 
 // Common implementation of `Ref` and `TypedRef<kSpace>`: a handle to a memref
 // value with shape queries and slicing helpers. Copy assignment is protected so
@@ -94,19 +95,19 @@ ValueHandle SliceMemRefImpl(ValueHandle base, llvm::ArrayRef<DimDesc> dims);
 // another memory space.
 class RefBase {
  public:
-  ValueHandle handle() const { return handle_; }
-  DType dtype() const { return dtype_; }
+  [[nodiscard]] ValueHandle handle() const { return handle_; }
+  [[nodiscard]] DType dtype() const { return dtype_; }
   llvm::ArrayRef<int64_t> dims() const;
-  Shape shape() const { return Shape(dims(), dtype()); }
-  MemorySpace memory_space() const;
-  int64_t rank() const;
-  bool HasStaticShape() const;
-  bool IsDynamicDim(int64_t axis) const;
+  [[nodiscard]] Shape shape() const { return Shape(dims(), dtype()); }
+  [[nodiscard]] MemorySpace memory_space() const;
+  [[nodiscard]] int64_t rank() const;
+  [[nodiscard]] bool HasStaticShape() const;
+  [[nodiscard]] bool IsDynamicDim(int64_t axis) const;
 
   // Queries the size of dimension `axis` as an i32 Scalar (`memref.dim` for
   // dynamic dimensions, or a constant `I32(dims()[axis])` for static
   // dimensions).
-  Scalar Dim(int64_t axis) const;
+  [[nodiscard]] Scalar Dim(int64_t axis) const;
 
  protected:
   // CHECK-fails unless `handle` is a memref value whose element type is the IR
@@ -120,7 +121,7 @@ class RefBase {
 
   // Returns the memref value of `ref(dims...)` (see `TypedRef::operator()`).
   template <typename... Dims>
-  ValueHandle SliceImpl(Dims&&... dims) const {
+  [[nodiscard]] ValueHandle SliceImpl(Dims&&... dims) const {
     const std::array<DimDesc, sizeof...(Dims)> descs = {
         DimDesc::From(std::forward<Dims>(dims))...};
     return SliceMemRefImpl(handle(), descs);
@@ -128,10 +129,10 @@ class RefBase {
 
   // Returns the memref value of `ref.At(indexers)`.
   // TODO: b/581411915 - Migrate to use absl::Span.
-  ValueHandle AtImpl(llvm::ArrayRef<Indexer> indexers) const;
+  [[nodiscard]] ValueHandle AtImpl(llvm::ArrayRef<Indexer> indexers) const;
 
   // Returns the memref value of `ref.Bitcast(dtype)`.
-  ValueHandle BitcastImpl(DType dtype) const;
+  [[nodiscard]] ValueHandle BitcastImpl(DType dtype) const;
 
  private:
   ValueHandle handle_;
@@ -165,13 +166,13 @@ class TypedRef final : public internal::RefBase {
   // dimensions, non-identity slices must use `Slice(offset, size)` with
   // tile-aligned `Scalar` bounds rather than `all`.
   template <typename... Dims>
-  TypedRef operator()(Dims&&... dims) const {
+  [[nodiscard]] TypedRef operator()(Dims&&... dims) const {
     return TypedRef(SliceImpl(std::forward<Dims>(dims)...), dtype());
   }
 
   // Same as `operator()`, with the dimensions given as a list, e.g. when their
   // number is only known when the kernel is built (Pallas `ref.at[...]`).
-  TypedRef At(llvm::ArrayRef<Indexer> indexers) const {
+  [[nodiscard]] TypedRef At(llvm::ArrayRef<Indexer> indexers) const {
     return TypedRef(AtImpl(indexers), dtype());
   }
 
@@ -180,7 +181,7 @@ class TypedRef final : public internal::RefBase {
   // bitwidths the second-minor dimension, which must be static, scales: row g
   // of the i32 view of a u8 ref holds the bytes of rows 4g to 4g+3. Does not
   // support bool (i1) or 64-bit element types.
-  TypedRef Bitcast(DType dtype) const {
+  [[nodiscard]] TypedRef Bitcast(DType dtype) const {
     return TypedRef(BitcastImpl(dtype), dtype);
   }
 };
@@ -210,7 +211,7 @@ class Ref final : public internal::RefBase {
   // Returns this ref as `TypedRefT` (`VmemRef`, `SmemRef`, or `HbmRef`), e.g.
   // `ref.As<VmemRef>()`. CHECK-fails if this ref is in another memory space.
   template <typename TypedRefT>
-  TypedRefT As() const {
+  [[nodiscard]] TypedRefT As() const {
     static_assert(
         std::is_same_v<TypedRefT, TypedRef<TypedRefT::kMemorySpace>>,
         "Ref::As<T>() requires T to be a TypedRef (VmemRef, SmemRef, HbmRef)");
@@ -220,30 +221,32 @@ class Ref final : public internal::RefBase {
   // Same as `TypedRef::operator()`, `TypedRef::At`, and `TypedRef::Bitcast`,
   // returning a `Ref`.
   template <typename... Dims>
-  Ref operator()(Dims&&... dims) const {
+  [[nodiscard]] Ref operator()(Dims&&... dims) const {
     return Ref(SliceImpl(std::forward<Dims>(dims)...), dtype());
   }
-  Ref At(llvm::ArrayRef<Indexer> indexers) const {
+  [[nodiscard]] Ref At(llvm::ArrayRef<Indexer> indexers) const {
     return Ref(AtImpl(indexers), dtype());
   }
-  Ref Bitcast(DType dtype) const { return Ref(BitcastImpl(dtype), dtype); }
+  [[nodiscard]] Ref Bitcast(DType dtype) const {
+    return Ref(BitcastImpl(dtype), dtype);
+  }
 };
 
 // Loads the whole of `src`, a VMEM ref with a static shape, as a tile. Slice
 // first to load a window: `Load(ref(0, Slice(c, kChunk)))`.
-Tile Load(VmemRef src);
+[[nodiscard]] Tile Load(VmemRef src);
 
 // Loads a static `sizes` window at `offsets` from `src`, a VMEM ref with a
 // static shape (`vector.load`). Unlike `Load(src(Slice(...)))`, `sizes` need
 // not be multiples of the memref tile dimensions; out-of-bounds lanes/sublanes
 // of the trailing VREGs are masked off in hardware. Along trailing tiled
 // dimensions, `offsets` must be aligned to the memref tile dimensions.
-Tile Load(VmemRef src, llvm::ArrayRef<IndexArg> offsets,
-          llvm::ArrayRef<int64_t> sizes);
+[[nodiscard]] Tile Load(VmemRef src, llvm::ArrayRef<IndexArg> offsets,
+                        llvm::ArrayRef<int64_t> sizes);
 
 // Loads `src`, a 0-D SMEM ref, as a scalar (`memref.load`). Index first to load
 // an element: `Load(ref(i, j))`.
-Scalar Load(SmemRef src);
+[[nodiscard]] Scalar Load(SmemRef src);
 
 // HBM refs cannot be loaded from directly (use `AsyncCopy` / `SyncCopy`), and a
 // `Ref` must first be typed with `As<VmemRef>()` / `As<SmemRef>()`.

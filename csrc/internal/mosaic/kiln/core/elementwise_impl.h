@@ -41,7 +41,8 @@ namespace torch_tpu::kiln::internal {
 
 // Broadcasts `value` (a scalar or vector) to a vector of `shape`. Returns
 // `value` unchanged if it already has that shape.
-mlir::Value EmitBroadcast(mlir::Value value, llvm::ArrayRef<int64_t> shape);
+[[nodiscard]] mlir::Value EmitBroadcast(mlir::Value value,
+                                        llvm::ArrayRef<int64_t> shape);
 
 // Brings the operands of a multi-operand elementwise op to a common shape.
 // Vector operands are broadcast numpy-style; if all operands are scalars there
@@ -63,7 +64,7 @@ void CheckNotBool(T v, std::string_view what) {
 // Aligns the operand shapes and emits the binary `Op`. Callers validate the
 // dtypes beforehand.
 template <typename Op, typename T>
-T EmitBinary(T lhs, T rhs) {
+[[nodiscard]] T EmitBinary(T lhs, T rhs) {
   mlir::Value values[] = {unwrap(lhs), unwrap(rhs)};
   AlignShapes(values);
   return wrap<T>(Op::create(CurrentBuilder(), values[0], values[1]),
@@ -74,7 +75,7 @@ T EmitBinary(T lhs, T rhs) {
 // type to `FloatOp` or `IntOp`.
 template <typename FloatOp, typename SIntOp, typename UIntOp = SIntOp,
           typename T>
-T Arith(T lhs, T rhs, std::string_view what) {
+[[nodiscard]] T Arith(T lhs, T rhs, std::string_view what) {
   CheckSameDType(lhs, rhs, what);
   // i1 type not supported by Mosaic arith lowerings.
   CheckNotBool(lhs, what);
@@ -89,7 +90,7 @@ T Arith(T lhs, T rhs, std::string_view what) {
 
 // Binary op on integer or bool (mask) operands.
 template <typename Op, typename T>
-T Bitwise(T lhs, T rhs, std::string_view what) {
+[[nodiscard]] T Bitwise(T lhs, T rhs, std::string_view what) {
   CheckSameDType(lhs, rhs, what);
   ABSL_CHECK(lhs.dtype().IsInt() || lhs.dtype().IsBool())  // CRASH_OK
       << what << " requires integer or bool operands";
@@ -98,7 +99,7 @@ T Bitwise(T lhs, T rhs, std::string_view what) {
 
 // Binary op on integer or bool (mask) operands.
 template <typename Op, typename T>
-T Shift(T lhs, T rhs, std::string_view what) {
+[[nodiscard]] T Shift(T lhs, T rhs, std::string_view what) {
   CheckSameDType(lhs, rhs, what);
   CheckNotBool(lhs, what);
   ABSL_CHECK(lhs.dtype().IsInt())  // CRASH_OK
@@ -107,8 +108,8 @@ T Shift(T lhs, T rhs, std::string_view what) {
 }
 
 template <typename T>
-T Compare(T lhs, T rhs, mlir::arith::CmpFPredicate fpred,
-          mlir::arith::CmpIPredicate ipred) {
+[[nodiscard]] T Compare(T lhs, T rhs, mlir::arith::CmpFPredicate fpred,
+                        mlir::arith::CmpIPredicate ipred) {
   CheckSameDType(lhs, rhs, "Comparison");
   mlir::Value values[] = {unwrap(lhs), unwrap(rhs)};
   AlignShapes(values);
@@ -122,9 +123,9 @@ T Compare(T lhs, T rhs, mlir::arith::CmpFPredicate fpred,
 }
 
 template <typename T>
-T Compare(T lhs, T rhs, mlir::arith::CmpFPredicate fpred,
-          mlir::arith::CmpIPredicate signed_ipred,
-          mlir::arith::CmpIPredicate unsigned_ipred) {
+[[nodiscard]] T Compare(T lhs, T rhs, mlir::arith::CmpFPredicate fpred,
+                        mlir::arith::CmpIPredicate signed_ipred,
+                        mlir::arith::CmpIPredicate unsigned_ipred) {
   return Compare(lhs, rhs, fpred,
                  lhs.dtype().IsUnsigned() || lhs.dtype().IsBool()
                      ? unsigned_ipred
@@ -132,7 +133,7 @@ T Compare(T lhs, T rhs, mlir::arith::CmpFPredicate fpred,
 }
 
 template <typename Op, typename T>
-T UnaryFloat(T v, std::string_view what) {
+[[nodiscard]] T UnaryFloat(T v, std::string_view what) {
   ABSL_CHECK(v.dtype().IsFloat())  // CRASH_OK
       << what << " requires floating-point operands";
   return wrap<T>(Op::create(CurrentBuilder(), unwrap(v)), v.dtype());

@@ -57,38 +57,42 @@ class DType {
   constexpr DType(DType&&) noexcept = default;
   constexpr DType& operator=(DType&&) noexcept = default;
 
-  constexpr Kind kind() const { return kind_; }
+  [[nodiscard]] constexpr Kind kind() const { return kind_; }
 
-  Shape operator()(llvm::ArrayRef<int64_t> dims) const;
+  [[nodiscard]] Shape operator()(llvm::ArrayRef<int64_t> dims) const;
 
   template <std::convertible_to<int64_t>... Dims>
-  Shape operator()(Dims... dims) const;
+  [[nodiscard]] Shape operator()(Dims... dims) const;
 
-  constexpr bool IsBool() const { return kind_ == Kind::kBool; }
+  [[nodiscard]] constexpr bool IsBool() const { return kind_ == Kind::kBool; }
 
-  constexpr bool IsFloat() const {
+  [[nodiscard]] constexpr bool IsFloat() const {
     return kind_ == Kind::kF16 || kind_ == Kind::kBF16 || kind_ == Kind::kF32;
   }
-  constexpr bool IsSigned() const {
+  [[nodiscard]] constexpr bool IsSigned() const {
     return kind_ == Kind::kI8 || kind_ == Kind::kI16 || kind_ == Kind::kI32 ||
            kind_ == Kind::kI64;
   }
-  constexpr bool IsUnsigned() const {
+  [[nodiscard]] constexpr bool IsUnsigned() const {
     return kind_ == Kind::kU8 || kind_ == Kind::kU16 || kind_ == Kind::kU32 ||
            kind_ == Kind::kU64;
   }
-  constexpr bool IsInt() const { return IsSigned() || IsUnsigned(); }
-  constexpr bool IsIntOrFloat() const { return IsInt() || IsFloat(); }
-  constexpr bool IsInteger(unsigned width) const {
+  [[nodiscard]] constexpr bool IsInt() const {
+    return IsSigned() || IsUnsigned();
+  }
+  [[nodiscard]] constexpr bool IsIntOrFloat() const {
+    return IsInt() || IsFloat();
+  }
+  [[nodiscard]] constexpr bool IsInteger(unsigned width) const {
     return IsInt() && GetIntOrFloatBitWidth() == width;
   }
-  constexpr bool IsSignedInteger(unsigned width) const {
+  [[nodiscard]] constexpr bool IsSignedInteger(unsigned width) const {
     return IsSigned() && GetIntOrFloatBitWidth() == width;
   }
-  constexpr bool IsUnsignedInteger(unsigned width) const {
+  [[nodiscard]] constexpr bool IsUnsignedInteger(unsigned width) const {
     return IsUnsigned() && GetIntOrFloatBitWidth() == width;
   }
-  constexpr unsigned GetIntOrFloatBitWidth() const {
+  [[nodiscard]] constexpr unsigned GetIntOrFloatBitWidth() const {
     switch (kind_) {
       case Kind::kBool:
         return 1;
@@ -110,7 +114,7 @@ class DType {
     }
   }
 
-  constexpr std::string_view ToString() const {
+  [[nodiscard]] constexpr std::string_view ToString() const {
     switch (kind_) {
       case Kind::kBool:
         return "bool";
@@ -139,8 +143,12 @@ class DType {
     }
   }
 
-  constexpr bool operator==(DType other) const { return kind_ == other.kind_; }
-  constexpr bool operator!=(DType other) const { return kind_ != other.kind_; }
+  [[nodiscard]] constexpr bool operator==(DType other) const {
+    return kind_ == other.kind_;
+  }
+  [[nodiscard]] constexpr bool operator!=(DType other) const {
+    return kind_ != other.kind_;
+  }
 
   template <typename Sink>
   friend void AbslStringify(Sink& sink, const DType& dtype) {

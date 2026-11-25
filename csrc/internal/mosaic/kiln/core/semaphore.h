@@ -51,13 +51,13 @@ class Semaphore final {
  public:
   explicit Semaphore(internal::ValueHandle handle);
 
-  internal::ValueHandle handle() const { return handle_; }
+  [[nodiscard]] internal::ValueHandle handle() const { return handle_; }
 
-  bool is_dma() const;
+  [[nodiscard]] bool is_dma() const;
 
   // Reads the current value of this semaphore as an i32 Scalar
   // (`tpu.sem_read`).
-  Scalar Read() const;
+  [[nodiscard]] Scalar Read() const;
 
   // Signals (increments) this regular semaphore by `amount` (`tpu.sem_signal`).
   void Signal(IndexArg amount = 1, SemaphoreSignalOptions options = {}) const;
@@ -79,16 +79,16 @@ class SemaphoreArray final {
  public:
   explicit SemaphoreArray(internal::ValueHandle handle);
 
-  internal::ValueHandle handle() const { return handle_; }
+  [[nodiscard]] internal::ValueHandle handle() const { return handle_; }
 
   llvm::ArrayRef<int64_t> shape() const;
-  int64_t rank() const;
-  bool is_dma() const;
+  [[nodiscard]] int64_t rank() const;
+  [[nodiscard]] bool is_dma() const;
 
   // Extracts a single 0-D `Semaphore` at the given element indices (one
   // `IndexArg` per dimension), e.g. `sems(slot)`.
   template <typename... Indices>
-  Semaphore operator()(Indices&&... indices) const {
+  [[nodiscard]] Semaphore operator()(Indices&&... indices) const {
     static_assert(sizeof...(Indices) >= 1,
                   "SemaphoreArray indexing requires at least one index");
     std::array<IndexArg, sizeof...(Indices)> idx = {
@@ -97,7 +97,7 @@ class SemaphoreArray final {
   }
 
  private:
-  Semaphore AtImpl(llvm::ArrayRef<IndexArg> indices) const;
+  [[nodiscard]] Semaphore AtImpl(llvm::ArrayRef<IndexArg> indices) const;
 
   internal::ValueHandle handle_;
 };

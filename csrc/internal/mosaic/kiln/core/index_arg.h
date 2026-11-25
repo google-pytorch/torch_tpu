@@ -39,9 +39,11 @@ class IndexArg {
         << "IndexArg requires an integer scalar";
   }
 
-  bool IsInt() const { return std::holds_alternative<int64_t>(val_); }
-  int64_t AsInt() const { return std::get<int64_t>(val_); }
-  Scalar ToScalar() const {
+  [[nodiscard]] bool IsInt() const {
+    return std::holds_alternative<int64_t>(val_);
+  }
+  [[nodiscard]] int64_t AsInt() const { return std::get<int64_t>(val_); }
+  [[nodiscard]] Scalar ToScalar() const {
     if (std::holds_alternative<Scalar>(val_)) {
       return std::get<Scalar>(val_);
     }

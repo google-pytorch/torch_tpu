@@ -38,13 +38,17 @@ class Literal {
   /* implicit */ Literal(T v)  // NOLINT(google-explicit-constructor)
       : value_(static_cast<double>(v)) {}
 
-  bool IsInt() const { return std::holds_alternative<int64_t>(value_); }
-  bool IsDouble() const { return std::holds_alternative<double>(value_); }
+  [[nodiscard]] bool IsInt() const {
+    return std::holds_alternative<int64_t>(value_);
+  }
+  [[nodiscard]] bool IsDouble() const {
+    return std::holds_alternative<double>(value_);
+  }
 
-  int64_t AsInt() const {
+  [[nodiscard]] int64_t AsInt() const {
     return std::visit([](auto v) { return static_cast<int64_t>(v); }, value_);
   }
-  double AsDouble() const {
+  [[nodiscard]] double AsDouble() const {
     return std::visit([](auto v) { return static_cast<double>(v); }, value_);
   }
 
@@ -59,30 +63,34 @@ template <typename Derived, typename Other>
 class WithOperandOps {
  public:
   // Arithmetic
-  friend Derived operator+(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator+(Derived lhs, Other rhs) {
     return lhs + lhs.Coerce(rhs);
   }
-  friend Derived operator+(Other lhs, Derived rhs) { return rhs + lhs; }
-  friend Derived operator-(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator+(Other lhs, Derived rhs) {
+    return rhs + lhs;
+  }
+  [[nodiscard]] friend Derived operator-(Derived lhs, Other rhs) {
     return lhs - lhs.Coerce(rhs);
   }
-  friend Derived operator-(Other lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator-(Other lhs, Derived rhs) {
     return rhs.Coerce(lhs) - rhs;
   }
-  friend Derived operator*(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator*(Derived lhs, Other rhs) {
     return lhs * lhs.Coerce(rhs);
   }
-  friend Derived operator*(Other lhs, Derived rhs) { return rhs * lhs; }
-  friend Derived operator/(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator*(Other lhs, Derived rhs) {
+    return rhs * lhs;
+  }
+  [[nodiscard]] friend Derived operator/(Derived lhs, Other rhs) {
     return lhs / lhs.Coerce(rhs);
   }
-  friend Derived operator/(Other lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator/(Other lhs, Derived rhs) {
     return rhs.Coerce(lhs) / rhs;
   }
-  friend Derived operator%(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator%(Derived lhs, Other rhs) {
     return lhs % lhs.Coerce(rhs);
   }
-  friend Derived operator%(Other lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator%(Other lhs, Derived rhs) {
     return rhs.Coerce(lhs) % rhs;
   }
 
@@ -103,28 +111,34 @@ class WithOperandOps {
   }
 
   // Bitwise / logical ops
-  friend Derived operator&(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator&(Derived lhs, Other rhs) {
     return lhs & lhs.Coerce(rhs);
   }
-  friend Derived operator&(Other lhs, Derived rhs) { return rhs & lhs; }
-  friend Derived operator|(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator&(Other lhs, Derived rhs) {
+    return rhs & lhs;
+  }
+  [[nodiscard]] friend Derived operator|(Derived lhs, Other rhs) {
     return lhs | lhs.Coerce(rhs);
   }
-  friend Derived operator|(Other lhs, Derived rhs) { return rhs | lhs; }
-  friend Derived operator^(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator|(Other lhs, Derived rhs) {
+    return rhs | lhs;
+  }
+  [[nodiscard]] friend Derived operator^(Derived lhs, Other rhs) {
     return lhs ^ lhs.Coerce(rhs);
   }
-  friend Derived operator^(Other lhs, Derived rhs) { return rhs ^ lhs; }
-  friend Derived operator<<(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator^(Other lhs, Derived rhs) {
+    return rhs ^ lhs;
+  }
+  [[nodiscard]] friend Derived operator<<(Derived lhs, Other rhs) {
     return lhs << lhs.Coerce(rhs);
   }
-  friend Derived operator<<(Other lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator<<(Other lhs, Derived rhs) {
     return rhs.Coerce(lhs) << rhs;
   }
-  friend Derived operator>>(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator>>(Derived lhs, Other rhs) {
     return lhs >> lhs.Coerce(rhs);
   }
-  friend Derived operator>>(Other lhs, Derived rhs) {
+  [[nodiscard]] friend Derived operator>>(Other lhs, Derived rhs) {
     return rhs.Coerce(lhs) >> rhs;
   }
 
@@ -145,50 +159,64 @@ class WithOperandOps {
   }
 
   // Elementwise min / max / select
-  friend Derived Min(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived Min(Derived lhs, Other rhs) {
     return Min(lhs, lhs.Coerce(rhs));
   }
-  friend Derived Min(Other lhs, Derived rhs) {
+  [[nodiscard]] friend Derived Min(Other lhs, Derived rhs) {
     return Min(rhs.Coerce(lhs), rhs);
   }
-  friend Derived Max(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived Max(Derived lhs, Other rhs) {
     return Max(lhs, lhs.Coerce(rhs));
   }
-  friend Derived Max(Other lhs, Derived rhs) {
+  [[nodiscard]] friend Derived Max(Other lhs, Derived rhs) {
     return Max(rhs.Coerce(lhs), rhs);
   }
-  friend Derived Select(Derived cond, Derived if_true, Other if_false) {
+  [[nodiscard]] friend Derived Select(Derived cond, Derived if_true,
+                                      Other if_false) {
     return Select(cond, if_true, if_true.Coerce(if_false));
   }
-  friend Derived Select(Derived cond, Other if_true, Derived if_false) {
+  [[nodiscard]] friend Derived Select(Derived cond, Other if_true,
+                                      Derived if_false) {
     return Select(cond, if_false.Coerce(if_true), if_false);
   }
 
   // Comparisons
-  friend Derived operator==(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator==(Derived lhs, Other rhs) {
     return lhs == lhs.Coerce(rhs);
   }
-  friend Derived operator==(Other lhs, Derived rhs) { return rhs == lhs; }
-  friend Derived operator!=(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator==(Other lhs, Derived rhs) {
+    return rhs == lhs;
+  }
+  [[nodiscard]] friend Derived operator!=(Derived lhs, Other rhs) {
     return lhs != lhs.Coerce(rhs);
   }
-  friend Derived operator!=(Other lhs, Derived rhs) { return rhs != lhs; }
-  friend Derived operator<(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator!=(Other lhs, Derived rhs) {
+    return rhs != lhs;
+  }
+  [[nodiscard]] friend Derived operator<(Derived lhs, Other rhs) {
     return lhs < lhs.Coerce(rhs);
   }
-  friend Derived operator<(Other lhs, Derived rhs) { return rhs > lhs; }
-  friend Derived operator<=(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator<(Other lhs, Derived rhs) {
+    return rhs > lhs;
+  }
+  [[nodiscard]] friend Derived operator<=(Derived lhs, Other rhs) {
     return lhs <= lhs.Coerce(rhs);
   }
-  friend Derived operator<=(Other lhs, Derived rhs) { return rhs >= lhs; }
-  friend Derived operator>(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator<=(Other lhs, Derived rhs) {
+    return rhs >= lhs;
+  }
+  [[nodiscard]] friend Derived operator>(Derived lhs, Other rhs) {
     return lhs > lhs.Coerce(rhs);
   }
-  friend Derived operator>(Other lhs, Derived rhs) { return rhs < lhs; }
-  friend Derived operator>=(Derived lhs, Other rhs) {
+  [[nodiscard]] friend Derived operator>(Other lhs, Derived rhs) {
+    return rhs < lhs;
+  }
+  [[nodiscard]] friend Derived operator>=(Derived lhs, Other rhs) {
     return lhs >= lhs.Coerce(rhs);
   }
-  friend Derived operator>=(Other lhs, Derived rhs) { return rhs <= lhs; }
+  [[nodiscard]] friend Derived operator>=(Other lhs, Derived rhs) {
+    return rhs <= lhs;
+  }
 };
 
 }  // namespace torch_tpu::kiln
