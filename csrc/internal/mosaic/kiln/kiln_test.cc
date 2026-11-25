@@ -2956,5 +2956,22 @@ TEST(KilnTest, WindowedLoadDynamicOffset) {
   )"));
 }
 
+TEST(KilnTest, SmemSliceFoldedInsideLoopDominance) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "smem_slice_loop", .grid = {1}},
+      ScalarPrefetchSpec{i32(32)}, OutSpec{i32(8, 128)},
+      [](SmemRef tbl, VmemRef out) {
+        const Scalar base = Load(tbl(0));
+        const SmemRef win = tbl(Slice(base, 16));
+        Scalar sum = I32(0);
+        For(0, 8, 1, {&sum}, [&](Scalar i) { sum = sum + Load(win(i)); });
+        Store(out, Splat(sum, {8, 128}));
+      });
+  ASSERT_THAT(kernel, IsOk());
+  ASSERT_THAT(kernel->Verify(), IsOk());
+  // `Serialize()` runs `FoldMemRefSlicePass` and re-verifies dominance.
+  EXPECT_THAT(std::move(*kernel).Serialize(), IsOk());
+}
+
 }  // namespace
 }  // namespace torch_tpu::kiln

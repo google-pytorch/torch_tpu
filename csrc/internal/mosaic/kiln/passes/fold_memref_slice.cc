@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
@@ -42,41 +43,67 @@
 namespace torch_tpu::kiln {
 namespace {
 
+// Inserts zero indices into `indices` for the dimensions squeezed by
+// `squeeze_op`. Returns the unsqueezed input memref on success, or failure if
+// the squeezed dimensions cannot be computed.
+mlir::FailureOr<mlir::Value> FoldMemRefSqueeze(
+    mlir::tpu::MemRefSqueezeOp squeeze_op, mlir::ImplicitLocOpBuilder& builder,
+    llvm::SmallVector<mlir::Value>& indices) {
+  FAILUREOR_ASSIGN_OR_RETURN(
+      llvm::SmallVector<int64_t> squeezed_dims,
+      mlir::tpu::computeSqueezedDimsChecked(
+          squeeze_op, squeeze_op.getInput().getType().getShape(),
+          squeeze_op.getType().getShape()));
+  builder.setInsertionPoint(squeeze_op);
+  mlir::Value zero = mlir::arith::ConstantIndexOp::create(builder, 0);
+  for (int64_t dim : squeezed_dims) {
+    indices.insert(indices.begin() + dim, zero);
+  }
+  return squeeze_op.getInput();
+}
+
+// Folds `slice_op`'s dynamic offsets into `indices`, keeping each offset
+// addition hoisted to `slice_op` when `index` dominates it and otherwise
+// inserting after `index`. Returns the unsliced input memref of `slice_op`.
+[[nodiscard]] mlir::Value FoldMemRefSlice(
+    mlir::tpu::MemRefSliceOp slice_op, const mlir::DominanceInfo& dom,
+    mlir::ImplicitLocOpBuilder& builder,
+    llvm::SmallVector<mlir::Value>& indices) {
+  for (auto [base, index] : llvm::zip_equal(slice_op.getBaseIdx(), indices)) {
+    builder.setInsertionPointAfterValue(base);
+    mlir::Value base_idx = builder.createOrFold<mlir::arith::IndexCastOp>(
+        builder.getIndexType(), base);
+    // Keep the offset addition hoisted to `slice_op` when `index` already
+    // dominates it; otherwise insert after `index` so both operands dominate
+    // the `arith.addi`.
+    if (dom.properlyDominates(index, slice_op)) {
+      builder.setInsertionPoint(slice_op);
+    } else {
+      builder.setInsertionPointAfterValue(index);
+    }
+    index = builder.createOrFold<mlir::arith::AddIOp>(base_idx, index);
+  }
+  return slice_op.getMemRef();
+}
+
 // Walks up chains of `tpu.memref_squeeze` and `tpu.memref_slice` to fold their
 // offsets into the indices of `op` (`memref.load` or `memref.store`). Dead
-// slice/squeeze chains are left to `-dce`.
+// slice/squeeze chains are left to `-dce`. Returns failure if a squeeze
+// operation has invalid squeezed dimensions.
 template <typename OpT>
-mlir::LogicalResult FoldMemRefSliceAndSqueeze(OpT op) {
+mlir::LogicalResult FoldMemRefSliceAndSqueeze(OpT op,
+                                              const mlir::DominanceInfo& dom) {
   mlir::ImplicitLocOpBuilder builder(op.getLoc(), op);
   mlir::Value memref = op.getMemRef();
   llvm::SmallVector<mlir::Value> indices(op.getIndices());
 
-  // We use setInsertionPoint to ensure that the generated ops are in the same
-  // block as the original squeeze / slice ops.
   while (true) {
     if (auto squeeze_op = memref.getDefiningOp<mlir::tpu::MemRefSqueezeOp>()) {
       FAILUREOR_ASSIGN_OR_RETURN(
-          auto squeezed_dims,
-          mlir::tpu::computeSqueezedDimsChecked(
-              squeeze_op, squeeze_op.getInput().getType().getShape(),
-              squeeze_op.getType().getShape()));
-      builder.setInsertionPoint(squeeze_op);
-      mlir::Value zero = mlir::arith::ConstantIndexOp::create(builder, 0);
-      for (int64_t dim : squeezed_dims) {
-        indices.insert(indices.begin() + dim, zero);
-      }
-      memref = squeeze_op.getInput();
+          memref, FoldMemRefSqueeze(squeeze_op, builder, indices));
     } else if (auto slice_op =
                    memref.getDefiningOp<mlir::tpu::MemRefSliceOp>()) {
-      for (auto [base, index] :
-           llvm::zip_equal(slice_op.getBaseIdx(), indices)) {
-        builder.setInsertionPointAfterValue(base);
-        mlir::Value base_idx = builder.createOrFold<mlir::arith::IndexCastOp>(
-            builder.getIndexType(), base);
-        builder.setInsertionPoint(slice_op);
-        index = builder.createOrFold<mlir::arith::AddIOp>(base_idx, index);
-      }
-      memref = slice_op.getMemRef();
+      memref = FoldMemRefSlice(slice_op, dom, builder, indices);
     } else {
       break;
     }
@@ -105,13 +132,14 @@ class FoldMemRefSlicePass
   }
 
   void runOnOperation() override {
+    const mlir::DominanceInfo dom(getOperation());
     mlir::WalkResult result =
-        getOperation().walk([](mlir::Operation* op) -> mlir::WalkResult {
+        getOperation().walk([&dom](mlir::Operation* op) -> mlir::WalkResult {
           if (auto load_op = llvm::dyn_cast<mlir::memref::LoadOp>(op)) {
-            return FoldMemRefSliceAndSqueeze(load_op);
+            return FoldMemRefSliceAndSqueeze(load_op, dom);
           }
           if (auto store_op = llvm::dyn_cast<mlir::memref::StoreOp>(op)) {
-            return FoldMemRefSliceAndSqueeze(store_op);
+            return FoldMemRefSliceAndSqueeze(store_op, dom);
           }
           return mlir::WalkResult::advance();
         });
