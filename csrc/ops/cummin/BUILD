@@ -28,6 +28,8 @@ torch_tpu_cc_library(
     srcs = ["cummin_aten_kernels.cc"],
     hdrs = ["cummin_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
+        "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -38,6 +40,7 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops:scan_builder",
         "//csrc/ops/macros:kernel",
+        "//csrc/ops/resize:resize_aten_kernels",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
