@@ -346,6 +346,20 @@ def get_max_total_device_time(
     return -1.0
 
 
+def _jax_memory_stats() -> Mapping[str, Any] | None:
+  """Returns `memory_stats()` for the first local JAX device, or None."""
+  try:
+    import jax  # pylint: disable=g-import-not-at-top
+
+    devices = jax.local_devices()
+    if not devices or not hasattr(devices[0], 'memory_stats'):
+      return None
+    stats = devices[0].memory_stats()
+    return stats if isinstance(stats, Mapping) else None
+  except Exception:  # pylint: disable=broad-except
+    return None
+
+
 def get_jax_peak_memory_mb() -> float | None:
   """Returns peak HBM usage in MB from JAX device stats, or None if unavailable.
 
@@ -355,35 +369,48 @@ def get_jax_peak_memory_mb() -> float | None:
   matching `torch.accelerator.max_memory_allocated()` (`peak_allocated_bytes`)
   and XProf's `MemoryProfileSummary.peak_bytes_in_use`.
   """
-  try:
-    import jax  # pylint: disable=g-import-not-at-top
+  stats = _jax_memory_stats()
+  if not stats:
+    return None
+  peak_allocated = stats.get('peak_allocated_bytes')
+  if peak_allocated is not None and peak_allocated >= 0:
+    return float(peak_allocated) / _BYTES_IN_MB
+  peak_in_use = stats.get('peak_bytes_in_use')
+  in_use_bytes = (
+      peak_in_use
+      if (peak_in_use is not None and peak_in_use >= 0)
+      else stats.get('bytes_in_use')
+  )
+  if in_use_bytes is not None and in_use_bytes >= 0:
+    peak_reserved = stats.get('peak_bytes_reserved')
+    reserved_bytes = (
+        peak_reserved
+        if (peak_reserved is not None and peak_reserved >= 0)
+        else stats.get('bytes_reserved')
+    )
+    if reserved_bytes is None or reserved_bytes < 0:
+      reserved_bytes = 0
+    return float(in_use_bytes + reserved_bytes) / _BYTES_IN_MB
+  return None
 
-    devices = jax.local_devices()
-    if not devices or not hasattr(devices[0], 'memory_stats'):
-      return None
-    stats = devices[0].memory_stats()
-    if stats:
-      peak_allocated = stats.get('peak_allocated_bytes')
-      if peak_allocated is not None and peak_allocated >= 0:
-        return float(peak_allocated) / _BYTES_IN_MB
-      peak_in_use = stats.get('peak_bytes_in_use')
-      in_use_bytes = (
-          peak_in_use
-          if (peak_in_use is not None and peak_in_use >= 0)
-          else stats.get('bytes_in_use')
-      )
-      if in_use_bytes is not None and in_use_bytes >= 0:
-        peak_reserved = stats.get('peak_bytes_reserved')
-        reserved_bytes = (
-            peak_reserved
-            if (peak_reserved is not None and peak_reserved >= 0)
-            else stats.get('bytes_reserved')
-        )
-        if reserved_bytes is None or reserved_bytes < 0:
-          reserved_bytes = 0
-        return float(in_use_bytes + reserved_bytes) / _BYTES_IN_MB
-  except Exception:  # pylint: disable=broad-except
-    pass
+
+def get_jax_allocated_memory_mb() -> float | None:
+  """Returns current HBM allocation in MB from JAX device stats.
+
+  Returns:
+    Current allocated HBM in MB (including compiled executable stack
+    reservations), or None if JAX devices or memory stats are unavailable or
+    report negative sentinel values.
+  """
+  stats = _jax_memory_stats()
+  if not stats:
+    return None
+  in_use_bytes = stats.get('bytes_in_use')
+  if in_use_bytes is not None and in_use_bytes >= 0:
+    reserved_bytes = stats.get('bytes_reserved')
+    if reserved_bytes is None or reserved_bytes < 0:
+      reserved_bytes = 0
+    return float(in_use_bytes + reserved_bytes) / _BYTES_IN_MB
   return None
 
 

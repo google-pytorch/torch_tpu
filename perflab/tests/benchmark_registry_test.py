@@ -161,6 +161,9 @@ class _DeviceOps:
   def peak_memory_mb(self):
     return 1.0
 
+  def allocated_memory_mb(self):
+    return 1.0
+
   def supports_event_device_time(self) -> bool:
     return True
 

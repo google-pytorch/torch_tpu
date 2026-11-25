@@ -98,6 +98,21 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
     ops.await_result(None)
     self.assertEqual(ops.peak_memory_mb(), peak_after_alloc)
 
+  def test_allocated_memory_tracks_live_allocations(self):
+    ops = _tpu_ops()
+    ops.await_result(None)
+    alloc_before = ops.allocated_memory_mb()
+    self.assertGreaterEqual(alloc_before, 0.0)
+
+    t = torch.randn(32 * _MB // 4, device=ops.device)  # 32 MB of float32.
+    ops.await_result(t)
+    alloc_with_tensor = ops.allocated_memory_mb()
+    self.assertGreaterEqual(alloc_with_tensor - alloc_before, 31.0)
+
+    del t
+    ops.await_result(None)
+    self.assertLess(ops.allocated_memory_mb(), alloc_with_tensor)
+
   @mock.patch.object(device_utils, "synchronize", autospec=True)
   def test_check_result_raises_if_output_execution_failed(
       self, mock_synchronize
@@ -211,6 +226,23 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
     ops.reset_peak_memory()
     self.assertLess(ops.peak_memory_mb(), peak_after_alloc)
 
+  @mock.patch.object(torch, "accelerator", autospec=True)
+  def test_allocated_memory_synchronizes_before_reading(self, mock_accelerator):
+    mock_accelerator.device_count.return_value = 1
+    call_order = []
+    mock_accelerator.synchronize.side_effect = lambda: call_order.append("sync")
+    mock_accelerator.memory_allocated.side_effect = lambda *_: (
+        call_order.append("alloc") or 64 * _MB
+    )
+    target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
+    ops = torch_device_ops.TorchDeviceOps(target)
+
+    self.assertEqual(ops.allocated_memory_mb(), 64.0)
+
+    mock_accelerator.synchronize.assert_called_once()
+    mock_accelerator.memory_allocated.assert_called_once_with(ops.device)
+    self.assertEqual(call_order, ["sync", "alloc"])
+
   def test_cpu_memory_ops_are_noops(self):
     ops = torch_device_ops.TorchDeviceOps(
         target_lib.make_target(platform=target_lib.Platform.CPU)
@@ -220,6 +252,7 @@ class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
     ops.await_result(None)
 
     self.assertEqual(ops.peak_memory_mb(), 0.0)
+    self.assertIsNone(ops.allocated_memory_mb())
 
   def test_compile_count_dynamo_real_compile(self):
     target = target_lib.make_target(platform=target_lib.Platform.CPU)

@@ -212,6 +212,13 @@ class TorchDeviceOps:
       return 0.0
     return torch.accelerator.max_memory_allocated(self.device) / _MB
 
+  def allocated_memory_mb(self) -> float | None:
+    """Current allocated device memory in MB, or None on CPU."""
+    if self.target.device_kind == target_lib.DeviceKind.CPU:
+      return None
+    torch.accelerator.synchronize()
+    return torch.accelerator.memory_allocated(self.device) / _MB
+
   def get_device_time(self, session_id: str | None = None) -> float:
     """Total active device time in seconds across profiling steps from XSpace."""
     if not session_id:
