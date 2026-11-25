@@ -37,6 +37,9 @@ from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_
 from torch_tpu._internal.compile.dynamic.output_sym_shape import create_output_sym_shapes
 from torch_tpu._internal.compile.dynamic.sym_bounds_manager import SymBoundsManager
 from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
+from torch_tpu._internal.utils import utils
+
+_MIN_WIDE_PAD_LIBTPU_RELEASE = (0, 0, 54)
 
 
 def _create_bounded_model_inputs(
@@ -98,10 +101,21 @@ def _create_bounded_model_inputs(
   return bounded_model_inputs, model_input_bounds
 
 
+# TODO: Remove this gate and the legacy _use_pad_subgraph fallback once OSS
+# requires libtpu >= 0.0.54.
+def supports_wide_pad_real_to_static() -> bool:
+  """Returns whether XLA/PJRT supports 64-bit and 128-bit PadRealToStatic."""
+  return (
+      ver := utils.libtpu_version()
+  ) is None or ver >= _MIN_WIDE_PAD_LIBTPU_RELEASE
+
+
 def _can_use_pad_real_to_static(
     example_inputs: Sequence[Any],
 ) -> bool:
   """Returns True if dynamic input tensors can be lowered to pad_real_to_static."""
+  if supports_wide_pad_real_to_static():
+    return True
   for arg in example_inputs:
     # dtype.itemsize is the element size in bytes (8 bytes = 64-bit,
     # 16 bytes = 128-bit).

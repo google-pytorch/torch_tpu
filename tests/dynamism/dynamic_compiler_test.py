@@ -17,7 +17,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import sys
+import types
 from typing import Any
+from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -271,6 +274,90 @@ class DynamicCompilerTest(seed_test_utils.RepeatableTest):
         r"Zero-element dynamic input tensor at position 2 \(shape \[0, 8\]\)",
     ):
       exe_in_graph(None, 4, torch.empty((0, 8), device="meta"), 0.5, stat_y)
+
+  @parameterized.named_parameters(
+      ("in_tree_google3", None, True),
+      ("oss_0_0_50", "0.0.50", False),
+      ("oss_0_0_53_1", "0.0.53.1", False),
+      ("oss_0_0_54", "0.0.54", True),
+      ("oss_0_0_55", "0.0.55", True),
+  )
+  def test_supports_wide_pad_real_to_static_by_libtpu_version(
+      self,
+      version: str | None,
+      expected: bool,
+  ):
+    fake_libtpu = (
+        None if version is None else types.SimpleNamespace(__version__=version)
+    )
+    with mock.patch.dict(sys.modules, {"libtpu": fake_libtpu}):
+      self.assertEqual(
+          dynamic_compiler.supports_wide_pad_real_to_static(), expected
+      )
+
+  def test_can_use_pad_real_to_static_across_dtypes_and_versions(self):
+    # pylint: disable=protected-access
+    seen: dict[str, bool] = {}
+    wide_dtypes = (
+        torch.int64,
+        torch.float64,
+        torch.complex64,
+        torch.complex128,
+    )
+    narrow_dtypes = (torch.bfloat16, torch.float32, torch.int32, torch.bool)
+
+    def fw_compiler(graph_module, example_inputs):
+      traced = list(example_inputs)
+      sym = next(x for x in traced if isinstance(x, torch.SymInt))
+      fake_mode = torch._guards.detect_fake_mode(traced)
+      with fake_mode:
+        dyn_by_dtype = {
+            dtype: torch.empty((sym, 4), dtype=dtype)
+            for dtype in (*wide_dtypes, *narrow_dtypes)
+        }
+        static_i64 = torch.empty((2, 4), dtype=torch.int64)
+
+      for version, wide_supported in (
+          (None, True),
+          ("0.0.53.1", False),
+          ("0.0.54", True),
+      ):
+        fake_libtpu = (
+            None
+            if version is None
+            else types.SimpleNamespace(__version__=version)
+        )
+        with mock.patch.dict(sys.modules, {"libtpu": fake_libtpu}):
+          for dtype in wide_dtypes:
+            self.assertEqual(
+                dynamic_compiler._can_use_pad_real_to_static(
+                    [dyn_by_dtype[dtype]]
+                ),
+                wide_supported,
+            )
+          for dtype in narrow_dtypes:
+            self.assertTrue(
+                dynamic_compiler._can_use_pad_real_to_static(
+                    [dyn_by_dtype[dtype]]
+                )
+            )
+          self.assertTrue(
+              dynamic_compiler._can_use_pad_real_to_static(
+                  [static_i64, sym, 1.0]
+              )
+          )
+      seen["ran"] = True
+      return graph_module
+
+    @torch.compile(
+        backend=dynamo_common.aot_autograd(fw_compiler=fw_compiler),
+        dynamic=True,
+    )
+    def fn(x):
+      return x + 1
+
+    fn(torch.ones((4, 8)))
+    self.assertTrue(seen["ran"])
 
 
 if __name__ == "__main__":
