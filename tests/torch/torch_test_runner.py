@@ -33,6 +33,7 @@ The test runner exits with 0 on success, and non-zero on failure.
 """
 
 from collections.abc import Callable, Mapping, Sequence
+import importlib
 import os
 import pathlib
 import runpy
@@ -167,11 +168,69 @@ def _setup_test_args(test_dir: pathlib.Path, test_module: pathlib.Path) -> None:
   sys.argv[0] = str(test_module)
 
 
+def _get_pytest_xfailed_type() -> type[BaseException] | None:
+  """Returns `_pytest.outcomes.XFailed` if pytest is installed, else None."""
+  try:
+    outcomes = importlib.import_module("_pytest.outcomes")
+  except ImportError:
+    return None
+  xfailed = getattr(outcomes, "XFailed", None)
+  if isinstance(xfailed, type) and issubclass(xfailed, BaseException):
+    return xfailed
+  return None
+
+
+def _skip_on_xfail(
+    call_test_hook: Callable[..., Any],
+    xfailed_type: type[BaseException],
+) -> Callable[..., Any]:
+  """Wraps a unittest hook to translate `pytest.xfail()` into `SkipTest`."""
+
+  def wrapper(*args: Any, **kwargs: Any) -> Any:
+    try:
+      return call_test_hook(*args, **kwargs)
+    except xfailed_type as exc:
+      raise unittest.SkipTest(f"pytest.xfail: {exc}") from exc
+
+  return wrapper
+
+
+def _install_skip_on_xfail() -> None:
+  """Translates `pytest.xfail()` into `unittest.SkipTest` under absltest.
+
+  Upstream PyTorch decorators such as `@xfailIfNoAcceleratorTriton` call
+  `pytest.xfail()`, raising `_pytest.outcomes.XFailed`. `absltest` / `unittest`
+  does not catch `XFailed` and would otherwise report it as an unhandled test
+  error.
+
+  We patch `unittest`'s `TestCase` (rather than `absltest`'s) because upstream
+  PyTorch test classes inherit from `unittest` via `common_utils.TestCase`, and
+  `absltest.main()` executes them through `_callTestMethod` / `_callSetUp`.
+  """
+  xfailed_type = _get_pytest_xfailed_type()
+  if xfailed_type is None:
+    return
+  test_case_class = unittest.TestCase  # UNITTEST_OK=torch testing
+  orig_call_test_method = getattr(test_case_class, "_callTestMethod")
+  if getattr(orig_call_test_method, "_handles_pytest_xfail", False):
+    return
+  orig_call_setup = getattr(test_case_class, "_callSetUp")
+  wrapped_call_test_method = _skip_on_xfail(orig_call_test_method, xfailed_type)
+  setattr(wrapped_call_test_method, "_handles_pytest_xfail", True)
+  setattr(test_case_class, "_callTestMethod", wrapped_call_test_method)
+  setattr(
+      test_case_class,
+      "_callSetUp",
+      _skip_on_xfail(orig_call_setup, xfailed_type),
+  )
+
+
 def _use_absltest_main() -> None:
   """Routes test execution to absltest with better Bazel testing protocol support."""
 
   def absltest_main(*args: Any, **kwargs: Any) -> None:
     """Drop-in replacement for unittest.main that delegates to absltest."""
+    _install_skip_on_xfail()
     # Always run verbose to print progress output.
     kwargs.setdefault("verbosity", 2)
     absltest.main(*args, **kwargs)
