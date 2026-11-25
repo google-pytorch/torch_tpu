@@ -20096,6 +20096,427 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   def test_embedding_dense_backward_scale_grad_false_padding_idx_3(self):
     self._embedding_dense_backward(scale_grad_by_freq=False, padding_idx=3)
 
+  def _make_low_precision_embedding_inputs(
+      self, dtype: torch.dtype
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Returns 1-D repeated indices and 2-D low-precision grad_output."""
+    # Token 0 appears twice; token 1 appears 65 times so low-precision
+    # accumulation without float32 upcasting stagnates:
+    # - bfloat16: 100.0 + 64 * 0.25 -> 100.0 instead of 116.0
+    # - float16: 2048.0 + 64 * 0.5 -> 2048.0 instead of 2080.0
+    indices_cpu = torch.tensor([0, 0] + [1] * 65, dtype=torch.long)
+    grad_cpu = torch.empty((67, 4), dtype=dtype)
+    grad_cpu[0] = torch.tensor([1.5, 2.5, 3.0, 4.0], dtype=dtype)
+    grad_cpu[1] = torch.tensor([2.5, 1.5, 5.0, 4.0], dtype=dtype)
+    grad_cpu[2, :2] = 100.0
+    grad_cpu[2, 2:] = 2048.0
+    grad_cpu[3:, :2] = 0.25
+    grad_cpu[3:, 2:] = 0.5
+    return indices_cpu, grad_cpu
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_unscaled_no_pad",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="bf16_unscaled_pad_0",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="bf16_unscaled_pad_1",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=1,
+      ),
+      dict(
+          testcase_name="bf16_scaled_no_pad",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=True,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="bf16_scaled_pad_0",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=True,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_no_pad",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_pad_0",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_pad_1",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=1,
+      ),
+      dict(
+          testcase_name="fp16_scaled_no_pad",
+          dtype=torch.float16,
+          scale_grad_by_freq=True,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="fp16_scaled_pad_0",
+          dtype=torch.float16,
+          scale_grad_by_freq=True,
+          padding_idx=0,
+      ),
+  )
+  def test_embedding_dense_backward_low_precision_accumulation(
+      self,
+      dtype: torch.dtype,
+      scale_grad_by_freq: bool,
+      padding_idx: int,
+  ):
+    num_weights = 4
+    indices_cpu, grad_cpu = self._make_low_precision_embedding_inputs(dtype)
+
+    expected = torch.ops.aten.embedding_dense_backward(
+        grad_cpu.float(),
+        indices_cpu,
+        num_weights,
+        padding_idx,
+        scale_grad_by_freq,
+    ).to(dtype)
+    actual_tpu = torch.ops.aten.embedding_dense_backward(
+        grad_cpu.to("tpu"),
+        indices_cpu.to("tpu"),
+        num_weights,
+        padding_idx,
+        scale_grad_by_freq,
+    )
+    self.assertEqual(actual_tpu.dtype, dtype)
+    tol = 1e-2 if scale_grad_by_freq else 0.0
+    utils.assert_close(actual_tpu.cpu(), expected, rtol=tol, atol=tol)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_unscaled_no_pad",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="bf16_unscaled_pad_2",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=2,
+      ),
+      dict(
+          testcase_name="bf16_scaled_pad_0",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=True,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_no_pad",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_pad_2",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=2,
+      ),
+      dict(
+          testcase_name="fp16_scaled_pad_0",
+          dtype=torch.float16,
+          scale_grad_by_freq=True,
+          padding_idx=0,
+      ),
+  )
+  def test_embedding_dense_backward_scalar_indices_low_precision(
+      self,
+      dtype: torch.dtype,
+      scale_grad_by_freq: bool,
+      padding_idx: int,
+  ):
+    num_weights = 4
+    indices_cpu = torch.tensor(2, dtype=torch.long)
+    grad_cpu = torch.tensor([1.5, -2.25, 3.0, 0.5], dtype=dtype)
+
+    expected = torch.ops.aten.embedding_dense_backward(
+        grad_cpu.float(),
+        indices_cpu,
+        num_weights,
+        padding_idx,
+        scale_grad_by_freq,
+    ).to(dtype)
+    actual_tpu = torch.ops.aten.embedding_dense_backward(
+        grad_cpu.to("tpu"),
+        indices_cpu.to("tpu"),
+        num_weights,
+        padding_idx,
+        scale_grad_by_freq,
+    )
+    self.assertEqual(actual_tpu.dtype, dtype)
+    self.assertEqual(actual_tpu.shape, (num_weights, 4))
+    utils.assert_close(actual_tpu.cpu(), expected, rtol=0.0, atol=0.0)
+
+    tpu_emb = torch.nn.Embedding(
+        num_weights,
+        4,
+        padding_idx=None if padding_idx < 0 else padding_idx,
+        scale_grad_by_freq=scale_grad_by_freq,
+        device="tpu",
+        dtype=dtype,
+    )
+    tpu_emb(indices_cpu.to("tpu")).backward(grad_cpu.to("tpu"))
+    tpu_grad = tpu_emb.weight.grad
+    if tpu_grad is None:
+      self.fail("Expected tpu_emb.weight.grad to be populated.")
+    self.assertEqual(tpu_grad.dtype, dtype)
+    utils.assert_close(tpu_grad.cpu(), expected, rtol=0.0, atol=0.0)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_unscaled_no_pad",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="bf16_scaled_pad_0",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=True,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_no_pad",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="fp16_scaled_pad_0",
+          dtype=torch.float16,
+          scale_grad_by_freq=True,
+          padding_idx=0,
+      ),
+  )
+  def test_embedding_dense_backward_non_contiguous_low_precision(
+      self,
+      dtype: torch.dtype,
+      scale_grad_by_freq: bool,
+      padding_idx: int,
+  ):
+    num_weights = 4
+    indices_cpu, grad_cpu = self._make_low_precision_embedding_inputs(dtype)
+
+    padded_indices_tpu = torch.stack(
+        [indices_cpu, torch.zeros_like(indices_cpu)], dim=1
+    ).to("tpu")
+    indices_tpu = padded_indices_tpu[:, 0]
+    grad_tpu = grad_cpu.t().contiguous().to("tpu").t()
+    self.assertFalse(indices_tpu.is_contiguous())
+    self.assertFalse(grad_tpu.is_contiguous())
+
+    expected = torch.ops.aten.embedding_dense_backward(
+        grad_cpu.float(),
+        indices_cpu,
+        num_weights,
+        padding_idx,
+        scale_grad_by_freq,
+    ).to(dtype)
+    actual_tpu = torch.ops.aten.embedding_dense_backward(
+        grad_tpu,
+        indices_tpu,
+        num_weights,
+        padding_idx,
+        scale_grad_by_freq,
+    )
+    self.assertEqual(actual_tpu.dtype, dtype)
+    tol = 1e-2 if scale_grad_by_freq else 0.0
+    utils.assert_close(actual_tpu.cpu(), expected, rtol=tol, atol=tol)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_unscaled_no_pad",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=None,
+      ),
+      dict(
+          testcase_name="bf16_unscaled_pad_0",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=False,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="bf16_scaled_no_pad",
+          dtype=torch.bfloat16,
+          scale_grad_by_freq=True,
+          padding_idx=None,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_no_pad",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=None,
+      ),
+      dict(
+          testcase_name="fp16_unscaled_pad_0",
+          dtype=torch.float16,
+          scale_grad_by_freq=False,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="fp16_scaled_no_pad",
+          dtype=torch.float16,
+          scale_grad_by_freq=True,
+          padding_idx=None,
+      ),
+  )
+  def test_nn_embedding_backward_low_precision_accumulation(
+      self,
+      dtype: torch.dtype,
+      scale_grad_by_freq: bool,
+      padding_idx: int | None,
+  ):
+    num_weights = 4
+    indices_1d, grad_2d = self._make_low_precision_embedding_inputs(dtype)
+    indices_cpu = indices_1d.unsqueeze(0)
+    grad_cpu = grad_2d.unsqueeze(0)
+
+    ref_emb = torch.nn.Embedding(
+        num_weights,
+        4,
+        padding_idx=padding_idx,
+        scale_grad_by_freq=scale_grad_by_freq,
+        dtype=torch.float32,
+    )
+    ref_emb(indices_cpu).backward(grad_cpu.float())
+    ref_grad = ref_emb.weight.grad
+    if ref_grad is None:
+      self.fail("Expected ref_emb.weight.grad to be populated.")
+    expected_grad = ref_grad.to(dtype)
+
+    tpu_emb = torch.nn.Embedding(
+        num_weights,
+        4,
+        padding_idx=padding_idx,
+        scale_grad_by_freq=scale_grad_by_freq,
+        device="tpu",
+        dtype=dtype,
+    )
+    tpu_emb(indices_cpu.to("tpu")).backward(grad_cpu.to("tpu"))
+    tpu_grad = tpu_emb.weight.grad
+    if tpu_grad is None:
+      self.fail("Expected tpu_emb.weight.grad to be populated.")
+    self.assertEqual(tpu_grad.dtype, dtype)
+    tol = 1e-2 if scale_grad_by_freq else 0.0
+    utils.assert_close(tpu_grad.cpu(), expected_grad, rtol=tol, atol=tol)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_1d_unscaled",
+          dtype=torch.bfloat16,
+          indices_shape=(0,),
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="bf16_2d_unscaled_pad",
+          dtype=torch.bfloat16,
+          indices_shape=(2, 0),
+          scale_grad_by_freq=False,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="bf16_1d_scaled",
+          dtype=torch.bfloat16,
+          indices_shape=(0,),
+          scale_grad_by_freq=True,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="fp16_1d_unscaled",
+          dtype=torch.float16,
+          indices_shape=(0,),
+          scale_grad_by_freq=False,
+          padding_idx=-1,
+      ),
+      dict(
+          testcase_name="fp16_2d_unscaled_pad",
+          dtype=torch.float16,
+          indices_shape=(2, 0),
+          scale_grad_by_freq=False,
+          padding_idx=0,
+      ),
+      dict(
+          testcase_name="fp16_1d_scaled",
+          dtype=torch.float16,
+          indices_shape=(0,),
+          scale_grad_by_freq=True,
+          padding_idx=-1,
+      ),
+  )
+  def test_embedding_dense_backward_empty_indices_low_precision(
+      self,
+      dtype: torch.dtype,
+      indices_shape: Sequence[int],
+      scale_grad_by_freq: bool,
+      padding_idx: int,
+  ):
+    num_weights = 5
+    emb_dim = 4
+    indices_tpu = torch.empty(indices_shape, dtype=torch.long, device="tpu")
+    grad_out_tpu = torch.empty(
+        (*indices_shape, emb_dim), dtype=dtype, device="tpu"
+    )
+    actual_tpu = torch.ops.aten.embedding_dense_backward(
+        grad_out_tpu,
+        indices_tpu,
+        num_weights,
+        padding_idx,
+        scale_grad_by_freq,
+    )
+    self.assertEqual(actual_tpu.dtype, dtype)
+    self.assertEqual(actual_tpu.shape, (num_weights, emb_dim))
+    utils.assert_close(
+        actual_tpu.cpu(),
+        torch.zeros((num_weights, emb_dim), dtype=dtype),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+    tpu_emb = torch.nn.Embedding(
+        num_weights,
+        emb_dim,
+        padding_idx=None if padding_idx < 0 else padding_idx,
+        scale_grad_by_freq=scale_grad_by_freq,
+        device="tpu",
+        dtype=dtype,
+    )
+    out = tpu_emb(indices_tpu)
+    out.backward(torch.zeros_like(out))
+    tpu_grad = tpu_emb.weight.grad
+    if tpu_grad is None:
+      self.fail("Expected tpu_emb.weight.grad to be populated.")
+    self.assertEqual(tpu_grad.dtype, dtype)
+    utils.assert_close(
+        tpu_grad.cpu(),
+        torch.zeros((num_weights, emb_dim), dtype=dtype),
+        rtol=0.0,
+        atol=0.0,
+    )
+
   def test_addmm_zero_beta_ignores_nan_input(self):
     """torch.addmm() with zero beta should ignore NaN input."""
     nan_input_ = torch.ones(2, 2, dtype=torch.float32) * torch.nan

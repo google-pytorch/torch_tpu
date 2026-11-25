@@ -840,8 +840,7 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingDenseBackwardShlo(
   const auto grad_tensor_type = GetTensorTypeOrDie(grad_output);
   const auto grad_element_type = grad_tensor_type.getElementType();
   const bool should_promote_to_float32 =
-      scale_grad_by_freq &&
-      (grad_element_type.isF16() || grad_element_type.isBF16());
+      grad_element_type.isF16() || grad_element_type.isBF16();
   mlir::Type accumulation_element_type =
       should_promote_to_float32 ? builder.getOpBuilder().getF32Type()
                                 : grad_element_type;
