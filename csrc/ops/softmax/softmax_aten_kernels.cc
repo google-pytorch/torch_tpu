@@ -118,10 +118,8 @@ absl::Status SoftmaxBackwardDataInternalOut(
 
   const auto precision = GetAndAddPrecisionTo(param_keys);
 
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=input checked during forward
-                 // pass. It is guaranteed to be floating point in the
-                 // backward pass.
-      c10::isFloatingType(input_dtype), error::kPythonNotImplementedError)
+  TT_RET_CHECK(c10::isFloatingType(input_dtype),
+               error::kPythonNotImplementedError)
       << "not implemented for input type " << ToString(input_dtype);
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=all dtypes are supported.
       const auto input_mlir_type, ConvertTo<mlir::ElementType>(input_dtype));

@@ -410,26 +410,24 @@ at::Tensor AtenReflectionPad2dBackward(const at::Tensor& grad_output,
                  padding, "Delegates to AtenReflectionPad2dBackwardGradInput")),
             {
               Dimensions gidims = CopyIntVector(grad_output.sizes());
-              TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Current usages are
-                               // guaranteed to be within range.
-                  gidims.size() > 2, error::kInvalidArgument)
-                  << "expected grad_output to have at least 2 dimensions"
+              TT_CHECK_THROW(gidims.size() > 2, error::kInvalidArgument)
+                  << "expected grad_output to have at least 3 dimensions"
                   << ", got " << gidims.size();
 
-              TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Current usages are
-                               // guaranteed to be within range.
-                  padding.size() == 4, error::kInvalidArgument)
+              TT_CHECK_THROW(padding.size() == 4, error::kInvalidArgument)
                   << "expected padding to have " << 4 << " elements"
                   << ", got " << padding.size();
 
-              TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Current usages are
-                               // guaranteed to be within range.
-                  gidims[gidims.size() - 2] - (padding[2] + padding[3]) > 0 &&
-                      gidims[gidims.size() - 1] - (padding[0] + padding[1]) > 0,
-                  error::kInvalidArgument)
-                  << "padding values must add up to a valid input dimension";
-              gidims[gidims.size() - 2] -= (padding[2] + padding[3]);
-              gidims[gidims.size() - 1] -= (padding[0] + padding[1]);
+              const int64_t out_h =
+                  gidims[gidims.size() - 2] - (padding[2] + padding[3]);
+              const int64_t out_w =
+                  gidims[gidims.size() - 1] - (padding[0] + padding[1]);
+              TT_CHECK_THROW(out_h > 0 && out_w > 0, error::kInvalidArgument)
+                  << "expected grad_output height and width after removing "
+                     "padding to be > 0, got ("
+                  << out_h << ", " << out_w << ")";
+              gidims[gidims.size() - 2] = out_h;
+              gidims[gidims.size() - 1] = out_w;
 
               TT_CHECK_THROW(gidims == self.sizes(), error::kInvalidArgument)
                   << "expected the input shape to match the output (input "

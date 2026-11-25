@@ -2133,9 +2133,7 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgSvdU(
   TT_KERNEL(
       OpName::kLinalgSvdU, param_keys,
       (self, full_matrices, compute_uv, driver, u, s, vh), {
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PyTorch catches this error
-                         // first; this check is here as a safeguard.
-            self.dim() >= 2, error::kInvalidArgument)
+        TT_CHECK_THROW(self.dim() >= 2, error::kInvalidArgument)
             << "expected input to have at least 2 dimensions, got "
             << self.dim();
 

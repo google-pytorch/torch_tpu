@@ -1441,6 +1441,23 @@ class CollectiveErrorsTest(
     run_all_to_all_collective_errors()
 
 
+def run_initial_pg_size_mismatch() -> None:
+  """Tests that the first initialized TPU process group must match world size."""
+  rank = int(os.environ["RANK"])
+  if rank == 0:
+    _init_tpu()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""create_process_group(): expected the first initialized TPU process group to have size 8 (world size), got 1""",
+    ):
+      dist.init_process_group(
+          backend="tpu_dist",
+          store=dist.HashStore(),
+          rank=0,
+          world_size=1,
+      )
+
+
 class ProcessGroupTpuErrorsTest(et.TpuOnlyDistributedErrorTestBase):
 
   def setUp(self):
@@ -1457,6 +1474,12 @@ class ProcessGroupTpuErrorsTest(et.TpuOnlyDistributedErrorTestBase):
     distributed_utils.dist_run(
         nproc_per_node=_PG_WORLD_SIZE,
         fn=run_missing_rank_and_local_rank_out_of_range,
+    )
+
+  def test_initial_pg_size_mismatch(self):
+    distributed_utils.dist_run(
+        nproc_per_node=_PG_WORLD_SIZE,
+        fn=run_initial_pg_size_mismatch,
     )
 
 

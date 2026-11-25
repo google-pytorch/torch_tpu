@@ -1910,14 +1910,10 @@ absl::Status GatherSubgroupsViaNodeLocalStore(
 
 absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
     int64_t world_size) {
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=singleton topology initialization
-                 // invariant
-      size_ == world_size, error::kInvalidArgument)
-      << absl::StrFormat(
-             "the first initialized ProcessGroupTpu "
-             "must be of size WORLD_SIZE "
-             "(expected size %d, got %d)",
-             world_size, size_);
+  TT_RET_CHECK(size_ == world_size, error::kInvalidArgument) << absl::StrFormat(
+      "expected the first initialized TPU process group to have size %d "
+      "(world size), got %d",
+      world_size, size_);
 
   TT_ASSIGN_OR_RETURN(PjRtDeviceAttributes local_attrs,
                       PjrtBackend::GetInstance().GetDeviceAttributes());

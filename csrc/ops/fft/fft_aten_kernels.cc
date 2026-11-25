@@ -569,9 +569,7 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2c_out
-                         // does not exist
-            self.is_complex(), error::kInvalidArgument)
+        TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
             << "expected complex input type, got "
             << ToString(self.scalar_type());
 
@@ -665,9 +663,7 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2r_out
-                         // does not exist
-            self.is_complex(), error::kInvalidArgument)
+        TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
             << "expected complex input type, got "
             << ToString(self.scalar_type());
 
