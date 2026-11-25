@@ -1026,6 +1026,43 @@ def get_scaled_mm_v2_default_inputs():
   )
 
 
+def get_scaled_grouped_mm_v2_rowwise_rowwise_inputs() -> dict[str, Any]:
+  """Returns valid _scaled_grouped_mm_v2 arguments for GPU rowwise_rowwise.
+
+  Replicates the GPU `rowwise_rowwise` recipe for 2D x 3D grouped matmul:
+  `float8_e4m3fn` operands, `float32` per-row / per-group-column scales
+  (`scale_a` [M], `scale_b` [G, N]), and `NO_SWIZZLE` (repr: 0).
+
+  Input tensors 'a' and 'b' use float8_e4m3fn, since GPU _scaled_grouped_mm_v2
+  kernels do not support float32 operands. Entries are ordered to match the
+  positional signature of `torch.ops.aten._scaled_grouped_mm_v2` so callers
+  can unpack `*inputs.values()`.
+  """
+  dtype = torch.float8_e4m3fn
+
+  rowwise_recipe = 1
+  no_swizzle = 0
+
+  a = torch.randn(16, 16, device=device()).to(dtype)
+  b = torch.randn(2, 16, 16, device=device()).to(dtype)
+
+  return dict(
+      a=a,
+      b=b.transpose(-2, -1),
+      scale_a=[torch.ones(16, device=device())],
+      recipe_a=[rowwise_recipe],
+      swizzle_a=[no_swizzle],
+      scale_b=[torch.ones(2, 16, device=device())],
+      recipe_b=[rowwise_recipe],
+      swizzle_b=[no_swizzle],
+      offs=torch.tensor([8, 16], dtype=torch.int32, device=device()),
+      bias=None,
+      out_dtype=None,
+      contraction_dim=[],
+      use_fast_accum=False,
+  )
+
+
 def skip_if(predicate: Callable[[], bool], reason: str):
   """Decorator to skip a test if a condition is true.
 

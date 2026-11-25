@@ -564,6 +564,82 @@ def _get_gru_inputs():
   return x, h0, params
 
 
+def _get_scaled_grouped_mm_v2_invalid_scaling_gpu_msg(
+    *,
+    recipe_a: str = "RowWise",
+    recipe_b: str = "RowWise",
+    has_scale_a: bool = True,
+    has_scale_b: bool = True,
+) -> str:
+  """Returns the GPU ValueError for invalid _scaled_grouped_mm_v2 scaling."""
+  lines = [
+      "Invalid scaling configuration for grouped GEMM. Expected:",
+      (
+          "- TensorWise/TensorWise or RowWise/RowWise: float8 inputs, one"
+          " float32 scale per input; swizzle metadata is ignored."
+      ),
+      (
+          "- Hopper block scaling: two float8_e4m3fn inputs, float32 scales"
+          " packed per group, NO_SWIZZLE; 1x128 is outer-major; 128x128 is"
+          " K-major with K-block count padded to 4. 3D inputs use (groups,"
+          " scale_size); 2D inputs concatenate group scales in a 1D tensor."
+          " Recipe pairs: 1x128/1x128, 1x128/128x128, or 128x128/1x128."
+      ),
+      (
+          "- Packed MNxK4: matching BlockWise1x32 or BlockWise1x128 recipes,"
+          " float8_e4m3fn/e5m2 inputs with at least one e4m3fn input, one"
+          " float8_e8m0fnu scale per input, SWIZZLE_MN_K4."
+      ),
+      (
+          "- MXFP8: matching BlockWise1x32 recipes, float8_e4m3fn inputs, one"
+          " float8_e8m0fnu scale per input."
+      ),
+      (
+          "- MXFP4: matching BlockWise1x32 recipes, packed float4 inputs, one"
+          " float8_e8m0fnu scale per input."
+      ),
+      (
+          "- NVFP4: packed float4 inputs, one BlockWise1x16 float8_e4m3fn scale"
+          " per input, followed by one TensorWise float32 global scale on both"
+          " inputs."
+      ),
+      (
+          "MSLK MXFP4/NVFP4 ignore swizzle metadata except SWIZZLE_MN_K4, which"
+          " is rejected."
+      ),
+      "Each scale list must match its recipe list.",
+      (
+          "Got mat_a: dtype=Float8_e4m3fn, shape=[16, 16], stride=[16, 1],"
+          " device=cuda:0"
+      ),
+      (
+          "mat_b: dtype=Float8_e4m3fn, shape=[2, 16, 16], stride=[256, 1, 16],"
+          " device=cuda:0"
+      ),
+      (
+          f"scale_a recipes=[{recipe_a}], swizzles=[NO_SWIZZLE],"
+          f" scale_count={int(has_scale_a)}"
+      ),
+  ]
+  if has_scale_a:
+    lines.append(
+        "scale_a[0]: dtype=Float, shape=[16], stride=[1], device=cuda:0"
+    )
+  lines.append(
+      f"scale_b recipes=[{recipe_b}], swizzles=[NO_SWIZZLE],"
+      f" scale_count={int(has_scale_b)}"
+  )
+  if has_scale_b:
+    lines.append(
+        "scale_b[0]: dtype=Float, shape=[2, 16], stride=[16, 1], device=cuda:0"
+    )
+  lines.append(
+      "out_dtype=BFloat16, use_fast_accum=0, offs: dtype=Int, shape=[2],"
+      " stride=[1], device=cuda:0"
+  )
+  return "\n".join(lines)
+
+
 class TpuVsGpuErrorTest(et.ErrorTestBase):
   """Tests error messages on TPU vs on GPU."""
 
@@ -8674,6 +8750,32 @@ Supported combinations for non-constant padding:
         gpu="""_mm_dtype: mat2 must be a matrix, got 3-D tensor""",
     ):
       torch.ops.aten.mm.dtype(matrix_tensor, not_a_matrix_tensor, torch.float32)
+
+  def test_mm_dtype_not_a_matrix_first_arg_0d(self):
+    # GPU indexes lhs.size(0) / rhs.size(1) before checking 2D rank, raising
+    # IndexError for 0D/1D inputs.
+    matrix_tensor = torch.ones(4, 4, device=et.device())
+    scalar_tensor = torch.tensor(1.0, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""mm(): expected the first argument to be a 2D tensor (matrix), got 0D of shape []""",
+        gpu="""Dimension specified as 0 but tensor has no dimensions""",
+    ):
+      torch.ops.aten.mm.dtype(scalar_tensor, matrix_tensor, torch.float32)
+
+  def test_mm_dtype_not_a_matrix_second_arg_1d(self):
+    # GPU indexes lhs.size(0) / rhs.size(1) before checking 2D rank, raising
+    # IndexError for 0D/1D inputs.
+    matrix_tensor = torch.ones(4, 4, device=et.device())
+    vector_tensor = torch.ones(4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""mm(): expected the second argument to be a 2D tensor (matrix), got 1D of shape [4]""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+    ):
+      torch.ops.aten.mm.dtype(matrix_tensor, vector_tensor, torch.float32)
 
   def test_mm_invalid_out_dtype(self):
     lhs = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
@@ -19617,6 +19719,17 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
     ):
       torch.ops.ao.reload(x, torch.device("cpu"))
 
+  def test_offload_cpu_tensor(self):
+    _ensure_ao_ops_registered()
+    x = torch.tensor([1.0, 2.0], device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""cpu doesn't match the current accelerator tpu.""",
+        gpu="""cpu doesn't match the current accelerator cuda.""",
+    ):
+      torch.ops.ao.offload(x)
+
   def test_pinned_host_oom(self):
     if et.is_on_gpu():
       # GPU test raises this error:
@@ -20163,6 +20276,531 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
           grad_out, result, -0.1, True, grad_input=grad_in
       )
 
+  def test_einsum_mixed_device_error(self):
+    a = torch.ones(2, 3, dtype=torch.float32, device=et.device())
+    b = torch.ones(3, 4, dtype=torch.float32, device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""einsum(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got mat2 is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_bmm)""",
+    ):
+      torch.einsum("ij,jk->ik", a, b)
+
+  def test_einsum_bool_input_error(self):
+    a = torch.ones(2, 3, dtype=torch.bool, device=et.device())
+    b = torch.ones(3, 4, dtype=torch.bool, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""einsum(): expected non-bool dtype, got bool""",
+        gpu=""""baddbmm_cuda" not implemented for 'Bool'""",
+    ):
+      torch.einsum("ij,jk->ik", a, b)
+
+  def test_scatter_reduce_out_unsupported_reduction_op(self):
+    """Tests that scatter.reduce rejects an unsupported reduction operation."""
+    self_t = torch.zeros(3, 5, device=et.device())
+    index = torch.zeros(3, 2, dtype=torch.int64, device=et.device())
+    src = torch.ones(3, 2, device=et.device())
+    out = torch.zeros(3, 5, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter(): expected the reduction_op to be 'add' or 'multiply', got 'invalid'""",
+        gpu="""reduce argument must be either add or multiply.""",
+    ):
+      # Invoke the aten op directly to bypass PyTorch Python frontend argument
+      # validation and exercise the TPU C++ ATen kernel directly.
+      torch.ops.aten.scatter.reduce_out(
+          self_t, 1, index, src, reduce="invalid", out=out
+      )
+
+  def test_scatter_reduce_unsupported_reduction_op(self):
+    """Tests that scatter_reduce rejects an unsupported reduction operation."""
+    self_t = torch.zeros(3, 5, device=et.device())
+    index = torch.zeros(3, 2, dtype=torch.int64, device=et.device())
+    src = torch.ones(3, 2, device=et.device())
+    out = torch.zeros(3, 5, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter_reduce(): expected the reduction_op to be 'sum', 'prod', 'mean', 'amax', or 'amin', got 'invalid'""",
+        gpu="""reduce argument must be either sum, prod, mean, amax or amin, got invalid""",
+    ):
+      torch.scatter_reduce(self_t, 1, index, src, reduce="invalid", out=out)
+
+  def test_index_put_0d_mask_with_non_broadcastable_values(self):
+    """Tests index_put_() with a lone 0-d mask and non-broadcastable values."""
+    x = torch.zeros(2, 3, device=et.device())
+    index = torch.tensor(True, device=et.device())
+    values = torch.ones(2, 2, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_put_(): indices must be specified""",
+        gpu="""shape mismatch: value tensor of shape [2, 2, 3] cannot be broadcast to indexing result of shape [2, 3]""",
+    ):
+      x.index_put_([index], values)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+      ),
+      dict(
+          testcase_name="float4_e2m1fn_x2",
+          dtype=torch.float4_e2m1fn_x2,
+      ),
+  )
+  def test_neg_low_precision_float_not_implemented(self, dtype: torch.dtype):
+    t = torch.empty((2, 2), dtype=dtype, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""neg(): not implemented for {_get_short_dtype_str(dtype)}""",
+        gpu=f""""neg_cuda" not implemented for '{_get_torch_dtype_str(dtype)}'""",
+    ):
+      torch.neg(t)
+
+  def test_abs_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""abs(): not implemented for float8_e4m3fn""",
+        gpu=""""abs_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.abs(t)
+
+  def test_sin_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""sin(): not implemented for float8_e4m3fn""",
+        gpu=""""sin_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.sin(t)
+
+  def test_exp_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""exp(): not implemented for float8_e4m3fn""",
+        gpu=""""exp_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.exp(t)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+      ),
+      dict(
+          testcase_name="float8_e5m2",
+          dtype=torch.float8_e5m2,
+      ),
+  )
+  def test_add_low_precision_float_not_implemented(self, dtype: torch.dtype):
+    t = torch.empty((2, 2), dtype=dtype, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""add(): not implemented for {_get_short_dtype_str(dtype)}""",
+        gpu=f""""ufunc_add_CUDA" not implemented for '{_get_torch_dtype_str(dtype)}'""",
+    ):
+      torch.add(t, t)
+
+  def test_mul_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""mul(): not implemented for float8_e4m3fn""",
+        gpu=""""mul_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.mul(t, t)
+
+  def test_clamp_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp(): not implemented for float8_e4m3fn""",
+        gpu=""""clamp_scalar_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.clamp(t, -1.0, 1.0)
+
+  def test_sum_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""sum(): not implemented for float8_e4m3fn""",
+        gpu=""""sum_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.sum(t)
+
+  def test_mean_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""mean(): not implemented for float8_e4m3fn""",
+        gpu=""""mean_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.mean(t)
+
+  def test_amax_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""amax(): not implemented for float8_e4m3fn""",
+        gpu=""""max_values_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.amax(t)
+
+  def test_max_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""max(): not implemented for float8_e4m3fn""",
+        gpu=""""max_all_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.max(t)
+
+  def test_mm_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""mm(): not implemented for float8_e4m3fn""",
+        gpu=""""addmm_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.mm(t, t)
+
+  def test_bmm_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bmm(): not implemented for float8_e4m3fn""",
+        gpu=""""baddbmm_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.bmm(t.unsqueeze(0), t.unsqueeze(0))
+
+  def test_addmm_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""addmm(): not implemented for float8_e4m3fn""",
+        gpu=""""addmm_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.addmm(t, t, t)
+
+  def test_baddbmm_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    t_3d = t.unsqueeze(0)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""baddbmm(): not implemented for float8_e4m3fn""",
+        gpu=""""baddbmm_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.baddbmm(t_3d, t_3d, t_3d)
+
+  def test_dot_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    t_1d = t.flatten()
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""dot(): not implemented for float8_e4m3fn""",
+        gpu=""""dot" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.dot(t_1d, t_1d)
+
+  def test_multinomial_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""multinomial(): not implemented for float8_e4m3fn""",
+        gpu=""""aminmax_all_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.multinomial(t, 1)
+
+  def test_prod_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""prod(): not implemented for float8_e4m3fn""",
+        gpu=""""prod_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.prod(t)
+
+  def test_argmax_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""argmax(): not implemented for float8_e4m3fn""",
+        gpu=""""argmax_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.argmax(t)
+
+  def test_relu_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""relu(): not implemented for float8_e4m3fn""",
+        gpu=""""clamp_scalar_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.relu(t)
+
+  def test_relu__float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""relu_(): not implemented for float8_e4m3fn""",
+        gpu=""""clamp_scalar_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.relu_(t)
+
+  def test_lt_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""lt(): not implemented for float8_e4m3fn""",
+        gpu=""""compare_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.lt(t, t)
+
+  def test_gelu_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""gelu(): not implemented for float8_e4m3fn""",
+        gpu=""""GeluCUDAKernelImpl" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.nn.functional.gelu(t)
+
+  def test_gelu_backward_mixed_input_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    self_tensor = torch.ones_like(t, dtype=torch.float32)
+    grad_input = torch.ones_like(t, dtype=torch.float32)
+
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu="""gelu_backward(): not implemented for float8_e4m3fn""",
+        gpu="""Promotion for Float8 Types is not supported, attempted to promote Float8_e4m3fn and Float""",
+    ):
+      torch.ops.aten.gelu_backward.grad_input(
+          t, self_tensor, grad_input=grad_input
+      )
+
+  def test_gelu_backward_grad_input_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    grad_output = torch.ones_like(t, dtype=torch.float32)
+    self_tensor = torch.ones_like(t, dtype=torch.float32)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""gelu_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""GeluBackwardCUDAKernelImpl" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten.gelu_backward.grad_input(
+          grad_output, self_tensor, grad_input=t
+      )
+
+  def test_silu_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""silu(): not implemented for float8_e4m3fn""",
+        gpu=""""silu_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.nn.functional.silu(t)
+
+  def test_signbit_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""signbit(): not implemented for float8_e4m3fn""",
+        gpu=""""signbit_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.signbit(t)
+
+  def test_logical_not_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""logical_not(): not implemented for float8_e4m3fn""",
+        gpu=""""logical_not_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.logical_not(t)
+
+  def test_sin_out_fp32_float8_e4m3fn_not_implemented(self):
+    t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    out = torch.empty_like(t, dtype=torch.float32)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""sin(): not implemented for float8_e4m3fn""",
+        gpu=""""sin_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.sin(t, out=out)
+
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_contraction_dim_size(self):
+    # contraction_dim=[1] has 1 element instead of 2 ([-1, -2]).
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs["contraction_dim"] = [1]
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else ValueError,
+        tpu="""scaled_grouped_mm_v2(): expected contraction_dim list to contain exactly 2 elements, got 1""",
+        gpu="""contraction_dim must have exactly 2 elements""",
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_contraction_dim_value(self):
+    # contraction_dim=[0, 1] instead of [-1, -2].
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs["contraction_dim"] = [0, 1]
+
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else ValueError,
+        tpu="""scaled_grouped_mm_v2(): expected contraction_dim to be [-1, -2], got [0, 1]""",
+        gpu="""Currently contraction dims must be (-1, -2) only""",
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  @parameterized.named_parameters(
+      dict(testcase_name="a", scale_arg="scale_a"),
+      dict(testcase_name="b", scale_arg="scale_b"),
+  )
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_scale_size(
+      self, scale_arg: str
+  ):
+    # Empty scale list instead of 1 tensor (shape [16] for scale_a, [2, 16] for
+    # scale_b).
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs[scale_arg] = []
+    expected_gpu = _get_scaled_grouped_mm_v2_invalid_scaling_gpu_msg(
+        has_scale_a=scale_arg != "scale_a",
+        has_scale_b=scale_arg != "scale_b",
+    )
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else ValueError,
+        tpu=f"""scaled_grouped_mm_v2(): expected {scale_arg} list to contain exactly 1 tensor, got 0""",
+        gpu=expected_gpu,
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  @parameterized.named_parameters(
+      dict(testcase_name="a", recipe_arg="recipe_a"),
+      dict(testcase_name="b", recipe_arg="recipe_b"),
+  )
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_recipe_size(
+      self, recipe_arg: str
+  ):
+    # Two elements instead of 1 (RowWise, repr: 1).
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs[recipe_arg] = [1, 1]
+    expected_gpu = _get_scaled_grouped_mm_v2_invalid_scaling_gpu_msg(
+        recipe_a="RowWise, RowWise" if recipe_arg == "recipe_a" else "RowWise",
+        recipe_b="RowWise, RowWise" if recipe_arg == "recipe_b" else "RowWise",
+    )
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else ValueError,
+        tpu=f"""scaled_grouped_mm_v2(): expected {recipe_arg} list to contain exactly 1 recipe, got 2""",
+        gpu=expected_gpu,
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  @parameterized.named_parameters(
+      dict(testcase_name="a", recipe_arg="recipe_a", scale_arg="scale_a"),
+      dict(testcase_name="b", recipe_arg="recipe_b", scale_arg="scale_b"),
+  )
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_unsupported_recipe(
+      self, recipe_arg: str, scale_arg: str
+  ):
+    # BlockWise1x128 (4) and BlockWise128x128 (5) are unsupported on both GPU
+    # and TPU.
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs[recipe_arg] = [4]
+    expected_gpu = _get_scaled_grouped_mm_v2_invalid_scaling_gpu_msg(
+        recipe_a="BlockWise1x128" if recipe_arg == "recipe_a" else "RowWise",
+        recipe_b="BlockWise1x128" if recipe_arg == "recipe_b" else "RowWise",
+    )
+
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else ValueError,
+        tpu=f"""scaled_grouped_mm_v2(): expected scaling recipe for {scale_arg} to be TensorWise or RowWise, got 4""",
+        gpu=expected_gpu,
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  def test_scaled_grouped_mm_v2_rowwise_tensorwise_mismatched_recipes(self):
+    # recipe_a=[1] (RowWise) and recipe_b=[0] (TensorWise) mismatch.
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs["recipe_a"] = [1]
+    inputs["recipe_b"] = [0]
+    expected_gpu = _get_scaled_grouped_mm_v2_invalid_scaling_gpu_msg(
+        recipe_b="TensorWise",
+    )
+
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else ValueError,
+        tpu="""scaled_grouped_mm_v2(): expected recipe_a and recipe_b to match, got 1 and 0""",
+        gpu=expected_gpu,
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_invalid_scale_for_recipe(self):
+    # scale_a has 2D shape [16, 1] instead of 1D [16] for RowWise (repr: 1).
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs["scale_a"] = [
+        torch.ones(16, 1, dtype=torch.float32, device=et.device())
+    ]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_grouped_mm_v2(): expected scale_a and scale_b shapes to match scaling recipe 1, got scale_a [16, 1] and scale_b [2, 16]""",
+        gpu="""scale must be a 1D tensor, but got 2D, arg 0""",
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_out_wrong_dtype(self):
+    # out has dtype int32 instead of bfloat16 (GPU) / float8_e4m3fn (TPU).
+    if utils.parse_version(torch.__version__) < (2, 14, 0):
+      self.skipTest("_scaled_grouped_mm_v2.out requires PyTorch >= 2.14.")
+
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    out = torch.empty(0, dtype=torch.int32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_grouped_mm_v2(): expected the output dtype to be float8_e4m3fn, got int32""",
+        gpu="""Expected out tensor to have dtype c10::BFloat16, but got int instead""",
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2.out(*inputs.values(), out=out)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 
@@ -20312,6 +20950,7 @@ class ComputeStatsErrorTest(et.ErrorTestBase):
         tpu="""Invalid offsets range [0, 10) for indices size 3""",
     ):
       torch.ops.tpu.compute_sparse_dense_matmul_stats(indices, offsets, 1, 4)
+
 
 class MaskedSoftmaxErrorTest(et.ErrorTestBase):
 

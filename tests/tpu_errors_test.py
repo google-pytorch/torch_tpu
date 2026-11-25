@@ -73,7 +73,6 @@ from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import hardware
-from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests.distributed import distributed_utils
@@ -173,42 +172,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
         tpu="""masked_scatter_(): expected the input to contain at most 2147483647 elements because masked_scatter_ uses int32 source offsets, got 2147483648""",
     ):
       torch.masked_scatter(t, mask, source)
-
-  @et.why_tpu_only(
-      "TPU validates reduction_op in ParseScatterOp with TPU-specific error"
-      " messages; PyTorch CPU/GPU uses different validation and error messages."
-  )
-  def test_scatter_reduce_unsupported_reduction_op(self):
-    """Tests that scatter_reduce rejects an unsupported reduction operation."""
-    self_t = torch.zeros(3, 5, device=et.device())
-    index = torch.zeros(3, 2, dtype=torch.int64, device=et.device())
-    src = torch.ones(3, 2, device=et.device())
-    out = torch.zeros(3, 5, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scatter_reduce(): expected the reduction_op to be 'sum', 'prod', 'mean', 'amax', or 'amin', got 'invalid'""",
-    ):
-      torch.scatter_reduce(self_t, 1, index, src, reduce="invalid", out=out)
-
-  @et.why_tpu_only(
-      "TPU validates reduction_op in ParseScatterOp with TPU-specific error"
-      " messages; PyTorch CPU/GPU uses different validation and error messages."
-  )
-  def test_scatter_reduce_out_unsupported_reduction_op(self):
-    """Tests that scatter.reduce rejects an unsupported reduction operation."""
-    self_t = torch.zeros(3, 5, device=et.device())
-    index = torch.zeros(3, 2, dtype=torch.int64, device=et.device())
-    src = torch.ones(3, 2, device=et.device())
-    out = torch.zeros(3, 5, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scatter(): expected the reduction_op to be 'add' or 'multiply', got 'invalid'""",
-    ):
-      # Invoke the aten op directly to bypass PyTorch Python frontend argument
-      # validation and exercise the TPU C++ ATen kernel directly.
-      torch.ops.aten.scatter.reduce_out(
-          self_t, 1, index, src, reduce="invalid", out=out
-      )
 
   @et.why_tpu_only("For testing TPU op dispatching.")
   def test_prod_with_op_dispatch_failure(self):
@@ -397,20 +360,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
           False,
       )
 
-  @et.why_tpu_only(
-      "PyTorch hits an internal assert in its index_put_ kernel for 0-d bool"
-      " masks with non-scalar values."
-  )
-  def test_index_put_0d_mask_with_non_broadcastable_values(self):
-    """Tests index_put_() with a lone 0-d mask and non-broadcastable values."""
-    x = torch.zeros(2, 3, device="tpu")
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""index_put_(): indices must be specified""",
-    ):
-      x.index_put_([torch.tensor(True)], torch.ones(2, 2, 3, device="tpu"))
-      x.to("cpu")
-
   @et.why_tpu_only("The behavior is undefined on CPU.")
   def test_index_put_with_assign_buffer_to_at_tensor_failure(self):
     """Tests that index_put() bubbles up the error from AssignBufferToAtTensor.
@@ -456,26 +405,6 @@ Because multiple logical tensor indices point to the same buffer elements, write
 Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.index_copy(self_tensor, 0, index, source, out=t)
-
-  @et.why_tpu_only(
-      "PyTorch CUDA _mm_dtype_cuda indexes self.size(0) and mat2.size(1)"
-      " before check_mm_shapes, raising IndexError instead of RuntimeError."
-  )
-  def test_mm_dtype_not_a_matrix_rank_below_2(self):
-    matrix_tensor = torch.ones(4, 4, device=et.device())
-    scalar_tensor = torch.tensor(1.0, device=et.device())
-    vector_tensor = torch.ones(4, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""mm(): expected the first argument to be a 2D tensor (matrix), got 0D of shape []""",
-    ):
-      torch.ops.aten.mm.dtype(scalar_tensor, matrix_tensor, torch.float32)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""mm(): expected the second argument to be a 2D tensor (matrix), got 1D of shape [4]""",
-    ):
-      torch.ops.aten.mm.dtype(matrix_tensor, vector_tensor, torch.float32)
 
   @et.why_tpu_only("TODO: support complex32 on TPU.")
   def test_dtype_complex32_unsupported(self):
@@ -1659,29 +1588,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       torch.ops.aten.einsum.default.redispatch(
           torch._C.DispatchKeySet(dk), "ij->ij", []
       )
-
-  @et.why_tpu_only(
-      "PyTorch CPU/GPU raises RuntimeError in bmm, whereas TorchTPU raises"
-      " NotImplementedError in einsum."
-  )
-  def test_einsum_bool_input_error(self):
-    a = torch.ones(2, 3, dtype=torch.bool, device=et.device())
-    b = torch.ones(3, 4, dtype=torch.bool, device=et.device())
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""einsum(): expected non-bool dtype, got bool""",
-    ):
-      torch.einsum("ij,jk->ik", a, b)
-
-  @et.why_tpu_only("Tests TPU-specific mixed-device operand validation.")
-  def test_einsum_mixed_device_error(self):
-    a = torch.ones(2, 3, dtype=torch.float32, device=et.device())
-    b = torch.ones(3, 4, dtype=torch.float32, device="cpu")
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""einsum(): expected tensor to be on tpu, got cpu""",
-    ):
-      torch.einsum("ij,jk->ik", a, b)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_grid_sampler_2d_invalid_interpolation_mode(self):
@@ -4513,129 +4419,81 @@ module {
           a, b, scale_a, scale_b, scale_result=scale_result, offs=offs
       )
 
+  @et.why_tpu_only(
+      "GPU supports BlockWise1x32 (3) and BlockWise1x16 (2) scaling recipes."
+      " TPU only supports TensorWise (0) and RowWise (1)."
+  )
+  def test_scaled_grouped_mm_v2_blockwise_recipe(self):
+    # GPU mxfp8_mxfp8 recipe.
+    # BlockWise1x32 (repr: 3) and SWIZZLE_32_4_4 (repr: 1).
+    dtype = torch.float8_e4m3fn
+    scale_dtype = torch.float8_e8m0fnu
+
+    a = torch.randn(16, 32, device=et.device()).to(dtype)
+    b = torch.randn(2, 128, 32, device=et.device()).to(dtype).transpose(-2, -1)
+    scale_a = [torch.ones(128, 4, dtype=scale_dtype, device=et.device())]
+    recipe_a = [3]
+    swizzle_a = [1]
+    scale_b = [torch.ones(2, 512, dtype=scale_dtype, device=et.device())]
+    recipe_b = [3]
+    swizzle_b = [1]
+    offs = torch.tensor([8, 16], dtype=torch.int32, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""scaled_grouped_mm_v2(): expected scaling recipe for scale_a to be TensorWise or RowWise, got 3""",
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(
+          a,
+          b,
+          scale_a,
+          recipe_a,
+          swizzle_a,
+          scale_b,
+          recipe_b,
+          swizzle_b,
+          offs=offs,
+      )
+
   @parameterized.named_parameters(
-      (
-          "contraction_dim_size",
-          {"contraction_dim": [1]},
-          "expected contraction_dim list to contain exactly 2 elements, got 1",
-      ),
-      (
-          "contraction_dim_value",
-          {"contraction_dim": [0, 1]},
-          "expected contraction_dim to be [-1, -2], got [0, 1]",
-      ),
-      (
-          "scale_a_size",
-          {"scale_a": []},
-          "expected scale_a list to contain exactly 1 tensor, got 0",
-      ),
-      (
-          "scale_b_size",
-          {"scale_b": []},
-          "expected scale_b list to contain exactly 1 tensor, got 0",
-      ),
-      (
-          "recipe_a_size",
-          {"recipe_a": [0, 0]},
-          "expected recipe_a list to contain exactly 1 recipe, got 2",
-      ),
-      (
-          "recipe_b_size",
-          {"recipe_b": [0, 0]},
-          "expected recipe_b list to contain exactly 1 recipe, got 2",
-      ),
-      (
-          "swizzle_a_size",
-          {"swizzle_a": [0, 0]},
-          "expected swizzle_a list to contain at most 1 swizzle mode, got 2",
-      ),
-      (
-          "swizzle_b_size",
-          {"swizzle_b": [0, 0]},
-          "expected swizzle_b list to contain at most 1 swizzle mode, got 2",
-      ),
-      (
-          "blockwise_recipe",
-          {"recipe_a": [2]},  # at::blas::ScalingType::BlockWise1x16.
-          (
-              "expected scaling recipe for scale_a to be TensorWise or RowWise,"
-              " got 2"
-          ),
-      ),
-      (
-          "unsupported_recipe",
-          {"recipe_b": [3]},  # at::blas::ScalingType::BlockWise1x32.
-          (
-              "expected scaling recipe for scale_b to be TensorWise or RowWise,"
-              " got 3"
-          ),
-      ),
-      (
-          "mismatched_recipes",
-          {"recipe_b": [1]},  # RowWise vs TensorWise.
-          "expected recipe_a and recipe_b to match, got 0 and 1",
-      ),
-      (
-          "scale_recipe_mismatch",
-          {"recipe_a": [1], "recipe_b": [1]},  # RowWise with scalar scales.
-          (
-              "expected scale_a and scale_b shapes to match scaling recipe 1,"
-              " got scale_a [] and scale_b []"
-          ),
-      ),
-      (
-          "swizzle_a",
-          {"swizzle_a": [1]},  # at::blas::SwizzleType::SWIZZLE_32_4_4.
-          "expected swizzle_a to be NO_SWIZZLE, got 1",
-      ),
-      (
-          "swizzle_b",
-          {"swizzle_b": [1]},
-          "expected swizzle_b to be NO_SWIZZLE, got 1",
-      ),
+      dict(testcase_name="a", swizzle_arg="swizzle_a"),
+      dict(testcase_name="b", swizzle_arg="swizzle_b"),
   )
   @et.why_tpu_only(
-      "GPU _scaled_grouped_mm_v2 supports these recipes, swizzles and options."
+      "GPU ignores swizzle list length under row-wise scaling. TPU requires"
+      " swizzle list size <= 1."
   )
-  def test_scaled_grouped_mm_v2_unsupported_args(
-      self, overrides: Mapping[str, Any], message: str
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_swizzle_size(
+      self, swizzle_arg: str
   ):
-    a = torch.randn(16, 8, device=et.device())
-    b = torch.randn(2, 8, 8, device=et.device())
-    scale = torch.tensor(1.0, device=et.device())
-    offs = torch.tensor([8, 16], dtype=torch.int32, device=et.device())
-    # Valid TensorWise (0), NO_SWIZZLE (0) args; `overrides` breaks one.
-    kwargs = {
-        "scale_a": [scale],
-        "recipe_a": [0],
-        "swizzle_a": [0],
-        "scale_b": [scale],
-        "recipe_b": [0],
-        "swizzle_b": [0],
-        "offs": offs,
-    }
-    kwargs.update(overrides)
-    with et.assert_raises_message(
-        RuntimeError, tpu=f"scaled_grouped_mm_v2(): {message}"
-    ):
-      torch.ops.aten._scaled_grouped_mm_v2(a, b, **kwargs)
+    # [0, 0] has 2 elements instead of <= 1; ignored by GPU RowWise.
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs[swizzle_arg] = [0, 0]
 
-  @et.why_tpu_only("Checks the TPU _scaled_grouped_mm_v2.out dtype validation.")
-  def test_scaled_grouped_mm_v2_out_wrong_dtype(self):
-    if utils.parse_version(torch.__version__) < (2, 14, 0):
-      self.skipTest("_scaled_grouped_mm_v2.out requires PyTorch >= 2.14.")
-    a = torch.randn(16, 8, device=et.device())
-    b = torch.randn(2, 8, 8, device=et.device())
-    scale = torch.tensor(1.0, device=et.device())
-    offs = torch.tensor([8, 16], dtype=torch.int32, device=et.device())
-    out = torch.empty(0, dtype=torch.bfloat16, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scaled_grouped_mm_v2(): expected the output dtype to be float32, got bfloat16""",
+        tpu=f"""scaled_grouped_mm_v2(): expected {swizzle_arg} list to contain at most 1 swizzle mode, got 2""",
     ):
-      torch.ops.aten._scaled_grouped_mm_v2.out(
-          a, b, [scale], [0], [0], [scale], [0], [0], offs=offs, out=out
-      )
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
+
+  @parameterized.named_parameters(
+      dict(testcase_name="a", swizzle_arg="swizzle_a"),
+      dict(testcase_name="b", swizzle_arg="swizzle_b"),
+  )
+  @et.why_tpu_only(
+      "GPU supports SWIZZLE_32_4_4 (1) and other swizzle modes. TPU only"
+      " supports NO_SWIZZLE (0)."
+  )
+  def test_scaled_grouped_mm_v2_rowwise_rowwise_swizzle(self, swizzle_arg: str):
+    # [1] (SWIZZLE_32_4_4) instead of [0] (NO_SWIZZLE); ignored by GPU RowWise.
+    inputs = et.get_scaled_grouped_mm_v2_rowwise_rowwise_inputs()
+    inputs[swizzle_arg] = [1]
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""scaled_grouped_mm_v2(): expected {swizzle_arg} to be NO_SWIZZLE, got 1""",
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(*inputs.values())
 
   @et.why_tpu_only("GPU linear allows broadcastable 2-D bias.")
   def test_native_multi_head_attention_invalid_proj_bias_dim(self):
@@ -4813,7 +4671,9 @@ module {
     ):
       torch.tpu.distributed.window_stripe_chunk_mb = -1
 
-  @et.why_tpu_only("Only default driver ('gesvd') is supported on TPU")
+  @et.why_tpu_only(
+      "GPU supports all drivers. TPU only supports the default driver (gesvd)."
+  )
   def test_linalg_svd_unsupported_driver(self):
     t = torch.randn(5, 3, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
@@ -4948,13 +4808,6 @@ module {
     x = torch.tensor([1.0, 2.0], device="cpu", dtype=torch.float32)
     with self.assertRaises(RuntimeError):
       torch.ops.ao.reload(x, torch.device("tpu"))
-
-  @et.why_tpu_only("ao.offload is implemented for device=tpu.")
-  def test_offload_cpu_tensor(self):
-    _ensure_ao_ops_registered()
-    x = torch.tensor([1.0, 2.0], device="cpu", dtype=torch.float32)
-    with self.assertRaises((RuntimeError, ValueError)):
-      torch.ops.ao.offload(x)
 
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_mismatched_device_index(self):
@@ -5147,217 +5000,6 @@ module {
           16,
           16,
       )
-
-  @parameterized.named_parameters(
-      dict(
-          testcase_name="float8_e4m3fn_neg",
-          op_fn=lambda t: torch.neg(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="neg(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_abs",
-          op_fn=lambda t: torch.abs(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="abs(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_sin",
-          op_fn=lambda t: torch.sin(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="sin(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_exp",
-          op_fn=lambda t: torch.exp(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="exp(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_add",
-          op_fn=lambda t: torch.add(t, t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="add(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_mul",
-          op_fn=lambda t: torch.mul(t, t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="mul(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_clamp",
-          op_fn=lambda t: torch.clamp(t, -1.0, 1.0),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="clamp(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_sum",
-          op_fn=lambda t: torch.sum(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="sum(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_mean",
-          op_fn=lambda t: torch.mean(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="mean(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_amax",
-          op_fn=lambda t: torch.amax(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="amax(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_max",
-          op_fn=lambda t: torch.max(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="max(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_mm",
-          op_fn=lambda t: torch.mm(t, t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="mm(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_bmm",
-          op_fn=lambda t: torch.bmm(t.unsqueeze(0), t.unsqueeze(0)),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="bmm(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_addmm",
-          op_fn=lambda t: torch.addmm(t, t, t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="addmm(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_baddbmm",
-          op_fn=lambda t: torch.baddbmm(
-              t.unsqueeze(0), t.unsqueeze(0), t.unsqueeze(0)
-          ),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="baddbmm(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_dot",
-          op_fn=lambda t: torch.dot(t.flatten(), t.flatten()),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="dot(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_multinomial",
-          op_fn=lambda t: torch.multinomial(t, 1),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="multinomial(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_prod",
-          op_fn=lambda t: torch.prod(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="prod(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_argmax",
-          op_fn=lambda t: torch.argmax(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="argmax(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_relu",
-          op_fn=lambda t: torch.relu(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="relu(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_relu_",
-          op_fn=lambda t: torch.relu_(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="relu_(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_lt",
-          op_fn=lambda t: torch.lt(t, t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="lt(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_gelu",
-          op_fn=lambda t: torch.nn.functional.gelu(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="gelu(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_gelu_backward_mixed_input",
-          op_fn=lambda t: torch.ops.aten.gelu_backward.grad_input(
-              t,
-              torch.ones_like(t, dtype=torch.float32),
-              grad_input=torch.empty_like(t, dtype=torch.float32),
-          ),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="gelu_backward(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_gelu_backward_grad_input",
-          op_fn=lambda t: torch.ops.aten.gelu_backward.grad_input(
-              torch.ones_like(t, dtype=torch.float32),
-              torch.ones_like(t, dtype=torch.float32),
-              grad_input=t,
-          ),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="gelu_backward(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_silu",
-          op_fn=lambda t: torch.nn.functional.silu(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="silu(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_signbit",
-          op_fn=lambda t: torch.signbit(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="signbit(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_logical_not",
-          op_fn=lambda t: torch.logical_not(t),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="logical_not(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e4m3fn_sin_out_fp32",
-          op_fn=lambda t: torch.sin(
-              t, out=torch.empty_like(t, dtype=torch.float32)
-          ),
-          dtype=torch.float8_e4m3fn,
-          expected_msg="sin(): not implemented for float8_e4m3fn",
-      ),
-      dict(
-          testcase_name="float8_e5m2_add",
-          op_fn=lambda t: torch.add(t, t),
-          dtype=torch.float8_e5m2,
-          expected_msg="add(): not implemented for float8_e5m2",
-      ),
-      dict(
-          testcase_name="float4_e2m1fn_x2_neg",
-          op_fn=lambda t: torch.neg(t),
-          dtype=torch.float4_e2m1fn_x2,
-          expected_msg="neg(): not implemented for float4_e2m1fn_x2",
-      ),
-  )
-  @et.why_tpu_only("Low-precision float guard rejects unsupported ops on TPU.")
-  def test_low_precision_float_rejected_by_op_guards(
-      self, op_fn, dtype, expected_msg
-  ):
-    t = torch.empty((2, 2), dtype=dtype, device=et.device())
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu=expected_msg,
-    ):
-      op_fn(t)
 
   @et.why_tpu_only(
       "CUDA nonzero.out omits assert_no_overlap(out, self) and silently"
