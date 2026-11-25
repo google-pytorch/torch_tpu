@@ -939,7 +939,9 @@ absl::StatusOr<int64_t> SafeAdd(const int64_t x, const int64_t y) {
         << "sum of " << x << " and " << y << " overflows as int64";
   } else {  // y < 0
     const int64_t lower_bound = std::numeric_limits<int64_t>::min() - y;
-    TT_RET_CHECK(x >= lower_bound, error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=All callers pass non-negative
+                   // addends.
+        x >= lower_bound, error::kInvalidArgument)
         << "sum of " << x << " and " << y << " underflows as int64";
   }
 
@@ -958,7 +960,9 @@ absl::StatusOr<uint64_t> SafeMultiply(const uint64_t x, const uint64_t y) {
   const auto product_u128 =
       absl::uint128(x) * y;  // Guaranteed to not overflow.
   const auto product_u64 = static_cast<uint64_t>(product_u128);
-  TT_RET_CHECK(product_u64 == product_u128, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only called for RNG Philox offset where
+                 // num_elements >= 2^57 crashes XLA LLO uint32_t bounds.
+      product_u64 == product_u128, error::kInvalidArgument)
       << "product of " << x << " and " << y << " overflows as uint64";
   return product_u64;
 }
@@ -966,7 +970,9 @@ absl::StatusOr<uint64_t> SafeMultiply(const uint64_t x, const uint64_t y) {
 absl::StatusOr<int64_t> NumElements(absl::Span<const int64_t> dims) {
   int64_t n = 1;
   for (auto d : dims) {
-    TT_RET_CHECK(d >= 0, error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pass tensor/MLIR shapes or
+                   // validate non-negative dims first.
+        d >= 0, error::kInvalidArgument)
         << "dimension size must be >= 0, got " << d;
     TT_ASSIGN_OR_RETURN(n, SafeMultiply(n, d),
                         _.SetOverride() << "product of dimension sizes ["
@@ -1008,7 +1014,9 @@ absl::StatusOr<int64_t> SafeWrapDim(int64_t dim, int64_t dim_bound) {
     return at::maybe_wrap_dim(  // MAYBE_WRAP_DIM_OK=implementing SafeWrapDim.
         dim, dim_bound);
   } catch (const c10::Error& e) {
-    return TT_ERROR(error::kIndexError)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Preconditions at lines 988-1005
+                      // prevent maybe_wrap_dim from throwing.
+               error::kIndexError)
            << AdaptExternalErrorMessage(e.what_without_backtrace());
   }
 }

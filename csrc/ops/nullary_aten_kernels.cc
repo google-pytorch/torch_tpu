@@ -35,6 +35,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/status_builder.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -172,14 +173,24 @@ at::Tensor AtenEmptyStrided(c10::SymIntArrayRef size_sym,
         }
         int64_t element_count = 0;
         if (!is_zero_sized) {
+          auto format_storage_overflow = [&final_sizes_vec, &final_strides_vec](
+                                             StatusBuilderWithMessage builder) {
+            return builder.SetPrepend()
+                   << "storage size calculation overflowed for sizes ["
+                   << absl::StrJoin(final_sizes_vec, ", ") << "] and strides ["
+                   << absl::StrJoin(final_strides_vec, ", ") << "]: ";
+          };
           int64_t max_index = 0;
           for (int64_t i = 0; i < final_sizes_vec.size(); ++i) {
             TT_ASSIGN_OR_THROW(
                 const int64_t dim_span,
-                SafeMultiply(final_sizes_vec[i] - 1, final_strides_vec[i]));
-            TT_ASSIGN_OR_THROW(max_index, SafeAdd(max_index, dim_span));
+                SafeMultiply(final_sizes_vec[i] - 1, final_strides_vec[i]),
+                format_storage_overflow(std::move(_)));
+            TT_ASSIGN_OR_THROW(max_index, SafeAdd(max_index, dim_span),
+                               format_storage_overflow(std::move(_)));
           }
-          TT_ASSIGN_OR_THROW(element_count, SafeAdd(max_index, 1));
+          TT_ASSIGN_OR_THROW(element_count, SafeAdd(max_index, 1),
+                             format_storage_overflow(std::move(_)));
         }
 
         // Create a 1D contiguous empty (really, deterministically filled)

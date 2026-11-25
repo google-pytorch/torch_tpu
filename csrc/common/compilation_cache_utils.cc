@@ -147,11 +147,14 @@ absl::Status AtomicWriteToCacheFile(const std::string& cache_entry_path,
   // AtomicWriteToCacheFile() is called in rapid succession with the same
   // host/pid/thread/timestamp combination.
   static std::atomic<int> counter = 0;
-  TT_RET_CHECK(env->CreateUniqueFileName(
-                   &temp_file_path,                                 // prefix
-                   absl::StrCat(".", counter.fetch_add(1), ".tmp")  // suffix
-                   ),
-               error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable on a non-deterministic
+                 // microsecond+tid+pid+counter temp filename collision.
+      env->CreateUniqueFileName(
+          &temp_file_path,  // prefix
+          absl::StrCat(".", counter.fetch_add(1, std::memory_order_relaxed),
+                       ".tmp")  // suffix
+          ),
+      error::kInternal)
       << "failed to create unique temp file for " << cache_entry_path;
 
   {

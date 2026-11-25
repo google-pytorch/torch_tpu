@@ -4120,10 +4120,21 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Storage size calculation overflowed with sizes=[5, 2] and strides=[4611686018427387904, 1]""",
-        tpu="""empty_strided(): product of 4 and 4611686018427387904 overflows as int64""",
+        tpu="""empty_strided(): storage size calculation overflowed for sizes [5, 2] and strides [4611686018427387904, 1]: product of 4 and 4611686018427387904 overflows as int64""",
     ):
       torch.empty_strided(
           (5, 2), (1 << 62, 1), device=et.device(), dtype=torch.float32
+      )
+
+  def test_empty_strided_storage_size_add_overflow(self):
+    """Tests that empty_strided fails when summing dimension spans overflows int64."""
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Storage size calculation overflowed with sizes=[2, 2] and strides=[4611686018427387904, 4611686018427387904]""",
+        tpu="""empty_strided(): storage size calculation overflowed for sizes [2, 2] and strides [4611686018427387904, 4611686018427387904]: sum of 4611686018427387904 and 4611686018427387904 overflows as int64""",
+    ):
+      torch.empty_strided(
+          (2, 2), (1 << 62, 1 << 62), device=et.device(), dtype=torch.float32
       )
 
   def test_index_put_too_many_indices_after_expanding_boolean_tensors(self):
@@ -11454,6 +11465,17 @@ Note: this function is intended to be used with the output produced by torch.lin
         gpu="""value cannot be converted to type uint8_t without overflow""",
     ):
       inp.masked_fill_(mask, 2**31)
+
+  def test_masked_fill_float4_scalar_unsupported(self):
+    inp = torch.empty((2, 4), dtype=torch.float4_e2m1fn_x2, device=et.device())
+    mask = torch.ones((2, 4), dtype=torch.bool, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else NotImplementedError,
+        tpu="""masked_fill(): unsupported cast of float64 scalar (1) to type float4_e2m1fn_x2""",
+        gpu=""""masked_fill_" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.masked_fill(inp, mask, 1.0)
 
   def test_masked_fill_inplace_invalid_broadcast(self):
     inp = torch.ones(2, dtype=torch.float32, device=et.device())

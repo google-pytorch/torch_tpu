@@ -1228,7 +1228,9 @@ template <const char* env_name>
   static const absl::NoDestructor<absl::StatusOr<std::string>> env_var(
       []() -> absl::StatusOr<std::string> {
         const auto& env_val = GetEnvOnce<env_name>();
-        TT_RET_CHECK(env_val.has_value(), error::kFailedPrecondition)
+        TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pre-validate via
+                       // ValidateRequiredDistributedEnvVars().
+            env_val.has_value(), error::kFailedPrecondition)
             << "the " << env_name << " environment variable is not set";
         return *env_val;
       }());
@@ -1246,7 +1248,10 @@ GetRequiredIntegerEnvOnce() {
   static const absl::NoDestructor<absl::StatusOr<EnvVarIntType<env_name>>>
       env_var([]() -> absl::StatusOr<EnvVarIntType<env_name>> {
         const auto int_val = GetIntegerEnvOnce<env_name>();
-        TT_RET_CHECK(int_val.has_value(), error::kFailedPrecondition)
+        TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pre-validate via
+                       // ValidateRequiredDistributedEnvVars() or swallow the
+                       // error.
+            int_val.has_value(), error::kFailedPrecondition)
             << "the " << env_name
             << " environment variable is not set or is not a valid integer";
         return *int_val;

@@ -6140,6 +6140,30 @@ class CompilationCacheErrorsTest(et.TpuOnlyErrorTestBase):
       for loc in re.findall(r"cpp_error_trace='([/\w\.]+:\d+)", stderr.read()):
         print(f"\nCovered {loc}")
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="unknown_effort_level",
+          options={"xla_optimization_level": "bogus"},
+          expected_msg="unknown XLA compiler effort level: bogus",
+      ),
+      dict(
+          testcase_name="empty_option_name",
+          options={"": "bogus"},
+          expected_msg="XLA compiler option name must not be empty",
+      ),
+  )
+  @et.why_tpu_only(
+      "torch.tpu.compiler.custom_compiler_options is a TPU-specific API."
+  )
+  def test_custom_compiler_options_invalid(
+      self, options: dict[str, str], expected_msg: str
+  ):
+    with et.assert_raises_message(
+        RuntimeError, tpu=f"push_compiler_options(): {expected_msg}"
+    ):
+      with torch.tpu.compiler.custom_compiler_options(options):
+        pass
+
 
 class ForkErrorsTest(et.TpuOnlyErrorTestBase):
 
@@ -6613,7 +6637,7 @@ class DimensionalCollectivesErrorTest(et.TpuOnlyErrorTestBase):
       torch.ops.tpu._reduce_scatter_dim(x, "sum", 0, 2, "0")
 
 
-class MaxPoolErrorsTest(et.ErrorTestBase):
+class MaxPoolErrorsTest(et.TpuOnlyErrorTestBase):
 
   @et.why_tpu_only("torch.tpu.ops.max_pool2d_backward is a TPU-specific API.")
   def test_max_pool2d_backward_non_trivial_dilation(self):

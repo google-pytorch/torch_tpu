@@ -143,12 +143,17 @@ class MappedCacheEntry {
     // entry will be empty. We don't want to slow down this hot path, so we
     // don't construct a detailed error message here - the error will be
     // swallowed by the caller anyway.
-    TT_RET_CHECK(fd.valid(), error::kNotFound)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=GetFromTier2Cache errors are
+                   // swallowed by CompilationCache as cache misses; covered in
+                   // C++ tier2_compilation_cache_test.
+        fd.valid(), error::kNotFound)
         << "not found";  // Deliberately trivial message.
 
     // Get the cache file size.
     struct stat sb;
-    TT_RET_CHECK(fstat(fd.get(), &sb) != -1, error::kInternal)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=GetFromTier2Cache errors are
+                   // swallowed by CompilationCache as cache misses.
+        fstat(fd.get(), &sb) != -1, error::kInternal)
         << "failed to get the size of cache file " << path;
 
     // Map the cache file into memory.
@@ -158,7 +163,9 @@ class MappedCacheEntry {
              PROT_READ,  // Read-only.
              // MAP_POPULATE: Prefault pages since they are in RAM (tmpfs).
              MAP_SHARED | MAP_POPULATE, fd.get(), 0));
-    TT_RET_CHECK(data != MAP_FAILED, error::kInternal)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=GetFromTier2Cache errors are
+                   // swallowed by CompilationCache as cache misses.
+        data != MAP_FAILED, error::kInternal)
         << "failed to map cache file " << path << " into memory";
 
     // st_atime is when the file was last read.
