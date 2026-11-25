@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <utility>
 
+#include "ATen/MemoryOverlap.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -136,6 +137,13 @@ absl::Status ValidateInputs(const at::Tensor& self, const at::Tensor& index,
          "self dtype "
       << ToString(self.scalar_type()) << " and source dtype "
       << ToString(source.scalar_type());
+  TT_RET_CHECK(
+      self.device() == source.device() && self.device() == index.device(),
+      error::kInvalidArgument)
+      << "expected self, index, and source to be on the same device, got "
+         "self device "
+      << self.device() << ", index device " << index.device()
+      << ", and source device " << source.device();
 
   TT_ASSIGN_OR_RETURN(const int64_t self_numel, NumElements(self));
   TT_ASSIGN_OR_RETURN(const int64_t index_numel, NumElements(index));
@@ -158,13 +166,16 @@ at::Tensor& AtenPut_(at::Tensor& self, const at::Tensor& index,
                      const at::Tensor& source, bool accumulate) {
   TT_KERNEL(OpName::kPut_, param_keys, (self, index, source, accumulate), {
     TT_THROW_IF_ERROR(ValidateInputs(self, index, source));
+    at::assert_no_internal_overlap(self);
+    at::assert_no_overlap(self, index);
+    at::assert_no_overlap(self, source);
+
+    if (index.numel() == 0) {
+      return self;
+    }
 
     TT_ASSIGN_OR_THROW(auto out_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
-
-    if (self.numel() == 0) {
-      return self;
-    }
 
     auto self_shape = CopyIntVector(self.sizes());
     auto op_builder = [self_shape,
