@@ -101,6 +101,13 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
     self._debug = debug
     self._use_stablehlo_bounds = use_stablehlo_bounds
 
+  def __getstate__(self) -> dict[str, Any]:
+    """Drops per-compile `TpuCompileDebug` state when pickling."""
+    state = self.__dict__.copy()
+    if isinstance(state.get("_debug"), TpuCompileDebug):
+      state["_debug"] = None
+    return state
+
   def execute_pre_grad_passes(
       self,
       graph_module: torch.fx.GraphModule,

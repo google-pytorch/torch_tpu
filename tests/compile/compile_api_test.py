@@ -14,12 +14,14 @@
 
 """Directly test the PyBind11 API for compiled mode, without using Dynamo."""
 
+from collections.abc import Callable
 import functools
 import itertools
+import pickle
 import re
 import textwrap
 import threading
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -32,9 +34,11 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.compile.debug import TpuCompileDebug
+from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -2814,6 +2818,90 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     results = tpu_torch_compile.execute(compile_result.executable, [x, x])
     self.assertLen(results, 1)
     utils.assert_close(results[0].cpu(), (x + x).cpu())
+
+
+def _make_static(
+    dbg: bool | TpuCompileDebug | None,
+) -> StaticCompiler:
+  return StaticCompiler(async_compile=True, debug=dbg)
+
+
+def _make_dynamic(
+    dbg: bool | TpuCompileDebug | None,
+) -> dynamic_compiler.DynamicCompiler:
+  return dynamic_compiler.DynamicCompiler(debug=dbg, num_buckets=2)
+
+
+class _DummyExecutable:
+  """Minimal `__reduce__` wrapper modeling a cyclic executable reference."""
+
+  def __init__(self, recompile_fn: Callable[[], Any]):
+    self.recompile_fn = recompile_fn
+
+  def __reduce__(self):
+    return (_DummyExecutable, (self.recompile_fn,))
+
+
+class CompilerPickleTest(seed_test_utils.RepeatableTest):
+
+  @parameterized.named_parameters(
+      ('static', _make_static),
+      ('dynamic', _make_dynamic),
+  )
+  def test_pickle_drops_compile_debug_without_mutating_live_instances(
+      self,
+      make_base_compiler: Callable[
+          [bool | TpuCompileDebug | None], compiler.Compiler
+      ],
+  ):
+    dbg = TpuCompileDebug()
+    base = make_base_compiler(dbg)
+    split_comp = split_compiler.SplitCompiler(base)
+    exe = _DummyExecutable(functools.partial(split_comp._compile_graph))
+    dbg.compiled_executables.append(exe)
+
+    restored_exe = pickle.loads(pickle.dumps(exe))
+    restored_split = restored_exe.recompile_fn.func.__self__
+    self.assertIsNone(restored_split._debug)
+    self.assertIsNone(restored_split.base_compiler._debug)
+    self.assertIs(split_comp._debug, dbg)
+    self.assertIs(base._debug, dbg)
+    if isinstance(base, dynamic_compiler.DynamicCompiler):
+      self.assertIsInstance(
+          restored_split.base_compiler, dynamic_compiler.DynamicCompiler
+      )
+      self.assertIsNone(restored_split.base_compiler.static_compiler._debug)
+      self.assertIs(base.static_compiler._debug, dbg)
+
+    restored_base = pickle.loads(pickle.dumps(base))
+    self.assertIsNone(restored_base._debug)
+    self.assertIs(base._debug, dbg)
+    if isinstance(base, dynamic_compiler.DynamicCompiler):
+      self.assertIsInstance(restored_base, dynamic_compiler.DynamicCompiler)
+      self.assertIsNone(restored_base.static_compiler._debug)
+      self.assertIs(base.static_compiler._debug, dbg)
+
+  @parameterized.named_parameters(
+      ('static_none', _make_static, None),
+      ('static_false', _make_static, False),
+      ('static_true', _make_static, True),
+      ('dynamic_none', _make_dynamic, None),
+      ('dynamic_false', _make_dynamic, False),
+      ('dynamic_true', _make_dynamic, True),
+  )
+  def test_pickle_preserves_non_container_debug_values(
+      self,
+      make_base_compiler: Callable[
+          [bool | TpuCompileDebug | None], compiler.Compiler
+      ],
+      debug_val: bool | None,
+  ):
+    split_comp = split_compiler.SplitCompiler(make_base_compiler(debug_val))
+    restored = pickle.loads(pickle.dumps(split_comp))
+    self.assertIs(restored._debug, debug_val)
+    self.assertIs(restored.base_compiler._debug, debug_val)
+    if isinstance(restored.base_compiler, dynamic_compiler.DynamicCompiler):
+      self.assertIs(restored.base_compiler.static_compiler._debug, debug_val)
 
 
 if __name__ == '__main__':
