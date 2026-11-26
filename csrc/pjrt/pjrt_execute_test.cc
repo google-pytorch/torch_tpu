@@ -59,6 +59,8 @@ using absl_testing::StatusIs;
 using testing::Each;
 using testing::ElementsAre;
 using testing::HasSubstr;
+using testing::IsEmpty;
+using testing::Optional;
 
 class PjrtExecuteTest : public testing::Test {
  protected:
@@ -78,16 +80,21 @@ class PjrtExecuteTest : public testing::Test {
   xla::PjRtMemorySpace* memory_space_ = nullptr;
 };
 
-TEST_F(PjrtExecuteTest,
-       Execute_WithDynamicExecutionMetadata_RoutesInputsOutputsAndMetadata) {
-  // Build a 4-parameter XLA computation with 1 logical input (N = 1) and
-  // 1 logical output (M = 1):
-  //   param 0: f32[2, 3] (logical input 0)
-  //   param 1: f32[2, 3] (pre-allocated donated output 0)
-  //   param 2: s32[2]    (disjoint metadata for param 0)
-  //   param 3: s32[2]    (disjoint metadata for param 1)
-  // Computation returns:
-  //   param 0 + dim0(param 2) + dim1(param 3)
+// An XLA computation and its unbounded dynamic execution metadata.
+struct DynamicMetadataProgram {
+  xla::XlaComputation computation;
+  UnboundedDynamicExecutionMetadata metadata;
+};
+
+// Returns a 4-parameter XLA computation with 1 logical input (N = 1) and
+// 1 logical output (M = 1):
+//   param 0: f32[2, 3] (logical input 0)
+//   param 1: f32[2, 3] (pre-allocated donated output 0)
+//   param 2: s32[2]    (disjoint metadata for param 0)
+//   param 3: s32[2]    (disjoint metadata for param 1)
+// Computation returns:
+//   param 0 + dim0(param 2) + dim1(param 3)
+absl::StatusOr<DynamicMetadataProgram> MakeDynamicMetadataProgram() {
   xla::XlaBuilder builder("dynamic_metadata_test");
   xla::Shape data_shape =
       xla::ShapeUtil::MakeShape(xla::F32, /*dimensions=*/{2, 3});
@@ -112,14 +119,10 @@ TEST_F(PjrtExecuteTest,
   xla::XlaOp result = xla::DynamicUpdateSlice(
       p1, xla::Add(p0, xla::Broadcast(sum_dims, {2, 3})), {c0, c0});
 
-  TT_ASSERT_OK_AND_ASSIGN(xla::XlaComputation computation,
-                          builder.Build(result));
+  DynamicMetadataProgram program;
+  TT_ASSIGN_OR_RETURN(program.computation, builder.Build(result));
 
-  TT_ASSERT_OK_AND_ASSIGN(
-      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
-      client_->CompileAndLoad(computation, xla::CompileOptions()));
-
-  UnboundedDynamicExecutionMetadata dynamic_meta;
+  UnboundedDynamicExecutionMetadata& dynamic_meta = program.metadata;
   dynamic_meta.logical_input_to_pjrt_param = {0};
   dynamic_meta.donated_output_params.push_back(
       UnboundedDynamicExecutionMetadata::DonatedOutputParam{
@@ -141,12 +144,22 @@ TEST_F(PjrtExecuteTest,
       meta_shape,
       meta_shape,
   };
+  return program;
+}
+
+TEST_F(PjrtExecuteTest,
+       Execute_WithDynamicExecutionMetadata_RoutesInputsOutputsAndMetadata) {
+  TT_ASSERT_OK_AND_ASSIGN(DynamicMetadataProgram program,
+                          MakeDynamicMetadataProgram());
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
+      client_->CompileAndLoad(program.computation, xla::CompileOptions()));
 
   TT_ASSERT_OK_AND_ASSIGN(
       SharedLoadedExecutableWithMetadata executable,
       LoadedExecutableWithMetadata::MakeShared(std::move(loaded_exec),
                                                /*argument_indices=*/{},
-                                               std::move(dynamic_meta)));
+                                               std::move(program.metadata)));
 
   // Create logical input buffer on device with all 10.0f values.
   const std::vector<float> host_input(6, 10.0f);
@@ -652,6 +665,93 @@ TEST_F(PjrtExecuteTest,
       StatusIs(error::kInvalidArgument,
                HasSubstr("expected argument 1 to have on-device layout")));
   EXPECT_EQ(on_device_shape_calls->load(std::memory_order_relaxed), 1);
+}
+
+TEST_F(PjrtExecuteTest,
+       Execute_PortableWithDynamicExecutionMetadata_RunsOnProcessDevice) {
+  TT_ASSERT_OK_AND_ASSIGN(DynamicMetadataProgram program,
+                          MakeDynamicMetadataProgram());
+  xla::CompileOptions compile_options;
+  compile_options.compile_portable_executable = true;
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
+      client_->CompileAndLoad(program.computation, compile_options));
+  auto counting_exec =
+      std::make_unique<CountingPjRtLoadedExecutable>(std::move(loaded_exec));
+  const CountingPjRtLoadedExecutable* const counting_exec_ptr =
+      counting_exec.get();
+  ASSERT_THAT(counting_exec->addressable_devices(), IsEmpty());
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata executable,
+      LoadedExecutableWithMetadata::MakeShared(std::move(counting_exec),
+                                               /*argument_indices=*/{},
+                                               std::move(program.metadata)));
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtDevice* const process_device,
+                          PjrtBackend::GetInstance().GetDevice());
+
+  const std::vector<float> host_input(6, 10.0f);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> input_buf,
+      client_->BufferFromHostBuffer(
+          host_input.data(), xla::F32, /*dims=*/{2, 3},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          /*device_layout=*/nullptr));
+
+  const Shape logical_shape({2, 3}, mlir::ElementType::F32);
+  TT_ASSERT_OK_AND_ASSIGN(PjRtBufferPointers outputs,
+                          Execute(executable, {input_buf.get()},
+                                  /*logical_output_shapes=*/{logical_shape}));
+
+  // `Execute` succeeds only if `ExecutePortable` filled the future that keeps
+  // the ephemeral buffers alive until the execution completes.
+  EXPECT_THAT(counting_exec_ptr->last_portable_fill_future(), Optional(true));
+  ASSERT_EQ(outputs.size(), 1);
+  EXPECT_EQ(outputs[0]->device(), process_device);
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::Literal> out_literal,
+                          outputs[0]->ToLiteral().Await());
+  EXPECT_THAT(out_literal->data<float>(),
+              ElementsAre(15.0f, 15.0f, 15.0f, 15.0f, 15.0f, 15.0f));
+}
+
+TEST_F(PjrtExecuteTest,
+       Execute_PortableWithoutEphemeralBuffers_RunsOnProcessDevice) {
+  xla::CompileOptions compile_options;
+  compile_options.compile_portable_executable = true;
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
+      CompileAndLoadMlirModule(*client_,
+                               MakeSumOfArgumentsModule(/*num_arguments=*/2),
+                               compile_options));
+  auto counting_exec =
+      std::make_unique<CountingPjRtLoadedExecutable>(std::move(loaded_exec));
+  const CountingPjRtLoadedExecutable* const counting_exec_ptr =
+      counting_exec.get();
+  ASSERT_THAT(counting_exec->addressable_devices(), IsEmpty());
+  TT_ASSERT_OK_AND_ASSIGN(
+      const SharedLoadedExecutableWithMetadata executable,
+      LoadedExecutableWithMetadata::MakeShared(std::move(counting_exec)));
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtDevice* const process_device,
+                          PjrtBackend::GetInstance().GetDevice());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> input0,
+      MakeFilledBuffer(*client_, memory_space_, /*value=*/1.0f));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> input1,
+      MakeFilledBuffer(*client_, memory_space_, /*value=*/2.0f));
+
+  TT_ASSERT_OK_AND_ASSIGN(PjRtBufferPointers outputs,
+                          Execute(executable, {input0.get(), input1.get()},
+                                  /*logical_output_shapes=*/{}));
+
+  EXPECT_THAT(counting_exec_ptr->last_portable_fill_future(), Optional(false));
+  ASSERT_EQ(outputs.size(), 1);
+  EXPECT_EQ(outputs[0]->device(), process_device);
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::Literal> out_literal,
+                          outputs[0]->ToLiteral().Await());
+  EXPECT_THAT(out_literal->data<float>(), Each(3.0f));
 }
 
 }  // namespace
