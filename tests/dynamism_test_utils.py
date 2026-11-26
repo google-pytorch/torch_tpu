@@ -616,15 +616,11 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Queries static dim size (slice size -9223372036854775808). Aborts the
         # test process.
         "nn.functional.adaptive_max_pool2d": {EAGER, COMPILE},
-        # Fails to inline MLIR functions (compile) / aborts (compile_grad).
-        "nn.functional.avg_pool1d": {COMPILE, COMPILE_GRAD},
-        # SliceBackwardResult queries static input shape. Aborts the test
-        # process.
-        "nn.functional.avg_pool2d": {COMPILE_GRAD},
+        # Fails to inline MLIR functions.
+        "nn.functional.avg_pool1d": {COMPILE},
         # PropagateBoundedDynamism fails MarkDynamic when pooling reduces a
-        # bounded spatial dimension to size 1 (eager), dynamic pad shape
-        # exceeds TPU size limit (compile), and avg_pool3d_backward queries
-        # static input shape, aborting the test process (compile_grad).
+        # bounded spatial dimension to size 1 (eager), and dynamic pad shape
+        # exceeds TPU size limit (compile and compile_grad).
         "nn.functional.avg_pool3d": ALL_MODES,
         # Fails to inline MLIR functions on bounded inputs.
         "nn.functional.channel_shuffle": ALL_MODES,
