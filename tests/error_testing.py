@@ -206,13 +206,7 @@ def _append_error_test_failure_protocol(assert_fn):
 
   NOTE: This test might fail depending on which PyTorch version is being used.
 
-  If this is a failure from an `*errors_test` target, you might be seeing this
-  because one of the scenarios below:
-      1. You are updating the version of PyTorch used by TorchTPU.
-      2. You are building against a different PyTorch version than the one used
-         by the main TorchTPU project.
-  In either case, just ignore the failure (the test is not currently enforced
-  for new changes) - the TorchTPU team will fix it later.
+  ...
 
   ----------------------------------------------------------------------
   Ran X test in X.XXXs
@@ -235,18 +229,17 @@ def _append_error_test_failure_protocol(assert_fn):
       with assert_fn(*args, **kwargs):
         yield
     except Exception as e:
-      raise type(e)(
-          f"""{e}
+      raise type(e)(f"""{e}
 
 ----------------------------------------------------------------------
 
 NOTE: This test might fail depending on which PyTorch version is being used.
 
-If this is a failure from an `*errors_test` target, you might be seeing this because one of the scenarios below:
-    1. You are updating the version of PyTorch used by TorchTPU.
-    2. You are building against a different PyTorch version than the one used by the main TorchTPU project.
-In either case, just ignore the failure (the test is not currently enforced for new changes) - the TorchTPU team will fix it later."""
-      )
+If you are updating PyTorch to a new version in Google's internal build and
+your change triggers this failure, you don't have to fix it. The TorchTPU team
+can fix it later.
+
+Otherwise, please fix the failure.""")
 
   return wrapper
 
