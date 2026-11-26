@@ -29,11 +29,11 @@ on:
       pytorch-git-ref:
         description: 'Git ref to checkout pytorch/pytorch'
         type: string
-        default: '68f0e54fd5ad3d7ceba57b36a5c2ebbacd3d6756'
+        default: 'b4d5f47e3d0b1ff9d458aa03816e669f0a22c793'
       torch-pip-spec:
         description: 'The pip requirement of the torch wheel'
         type: string
-        default: 'torch==2.16.0.dev20261102+cpu'
+        default: 'torch==2.16.0.dev20261123+cpu'
       torch-pip-index:
         description: 'The pip index URL to download the torch wheel from'
         type: string
@@ -97,7 +97,7 @@ jobs:
         with:
           repository: pytorch/pytorch
           path: pytorch
-          ref: ${{ inputs.pytorch-git-ref || '68f0e54fd5ad3d7ceba57b36a5c2ebbacd3d6756' }}
+          ref: ${{ inputs.pytorch-git-ref || 'b4d5f47e3d0b1ff9d458aa03816e669f0a22c793' }}
 
       - name: Extract Default Python Version
         run: |
@@ -107,7 +107,7 @@ jobs:
 
       - name: Download PyTorch Wheel
         env:
-          TORCH_PIP_SPEC: ${{ inputs.torch-pip-spec || 'torch==2.16.0.dev20261116+cpu' }}
+          TORCH_PIP_SPEC: ${{ inputs.torch-pip-spec || 'torch==2.16.0.dev20261123+cpu' }}
           TORCH_PIP_INDEX: ${{ inputs.torch-pip-index || 'https://download.pytorch.org/whl/nightly/cpu' }}
         run: |
           mkdir -p dist/local

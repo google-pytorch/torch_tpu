@@ -38,7 +38,6 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "distributed/fsdp/test_fsdp_uneven",
     "distributed/fsdp/test_hsdp_dtensor_state_dict",
     "distributed/tensor/test_dtensor_ops",
-    "distributed/tensor/test_math_ops",
     "distributed/test_backends",
     "distributed/test_functional_api",
     "distributed/test_functional_differentials",
@@ -169,12 +168,14 @@ _ACCELERATOR_SPECIFIC_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "functorch/test_aotdispatch",
     "higher_order_ops/test_inline_asm_elementwise",
     "inductor/test_aoti_torchbind_constants",
+    "inductor/test_avoid_modular_indexing",
     "inductor/test_best_config",
     "inductor/test_ck_backend",
     "inductor/test_cpu_flash_attention_decomposition",
     "inductor/test_cpu_select_algorithm",
     "inductor/test_cudacodecache",
     "inductor/test_cudagraph_trees",
+    "inductor/test_custom_partitioner_fn",
     "inductor/test_flex_flash",
     "inductor/test_flex_gemm",
     "inductor/test_flydsl_flex_attention",
@@ -182,12 +183,16 @@ _ACCELERATOR_SPECIFIC_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "inductor/test_flydsl_template",
     "inductor/test_gpu_select_algorithm",
     "inductor/test_mem_estimation",
+    "inductor/test_minifier_isolate",
     "inductor/test_mix_order_reduction",
     "inductor/test_mkldnn_pattern_matcher",
+    "inductor/test_nan_check_codegen",
     "inductor/test_native_matmul",
+    "inductor/test_needs_exact_strides",
     "inductor/test_nested_reduction_lanes",
     "inductor/test_op_dtype_prop",
     "inductor/test_optimize_loop_body",
+    "inductor/test_padding",
     "inductor/test_persistent_reduction_lanes",
     "inductor/test_reorder_for_locality_in_training",
     "inductor/test_selective_lowering",
@@ -254,6 +259,8 @@ _UNRUNNABLE_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "profiler/test_cpp_thread",
     # Only runnable via test_quantization.py.
     "quantization/fx/test_quantize_fx",
+    # Spawns an external benchmark subprocess with --gpu flags.
+    "test_functional_autograd_benchmark",
     # go/keep-sorted end
 })
 
