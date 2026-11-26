@@ -77,7 +77,6 @@ absl::StatusOr<mlir::MlirOp> BuildGeluNoneShlo(
 }
 
 // When approximation_type == "tanh", we compute the approximate gelu formula.
-// NOTE: 'output_op' is treated here as the input 'x' to the forward Gelu.
 //
 // Forward approximate Formula:
 //   k = sqrt(2/pi) * (x + 0.044715 * x^3)
@@ -86,8 +85,7 @@ absl::StatusOr<mlir::MlirOp> BuildGeluNoneShlo(
 // Backward Derivative (dy/dx):
 //   dy/dx = s + 2 * x * s * (1 - s) * (dk/dx)
 //   dk/dx = sqrt(2/pi) * (1 + 3 * 0.044715 * x^2)
-absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
-    mlir::MlirOp grad_output_op, mlir::MlirOp input_op) {
+mlir::MlirOp BuildGeluBackwardDerivativeApproximateShlo(mlir::MlirOp input_op) {
   auto k_1_0 = MakeConstantLike(input_op, 1.0);
   auto k_2_0 = MakeConstantLike(input_op, 2.0);
   auto k_neg_2_0 = MakeConstantLike(input_op, -2.0);
@@ -130,14 +128,10 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
   mlir::MlirOp right_derivative =
       stablehlo::Mul(two_x_s_one_minus_s, inner_derivative);
 
-  // 4. Final Gradient: grad_output * (Term 1 + Term 2)
-  mlir::MlirOp left_derivative_plus_right_derivative =
-      stablehlo::Add(left_derivative, right_derivative);
-  return stablehlo::Mul(grad_output_op, left_derivative_plus_right_derivative);
+  return stablehlo::Add(left_derivative, right_derivative);
 }
 
 // When approximation_type == "none", we compute the exact gelu formula.
-// NOTE: 'output_op' is treated here as the input 'x' to the forward Gelu.
 //
 // Forward Exact Formula:
 //   y = x * CDF(x)
@@ -146,9 +140,8 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
 // Backward Derivative (dy/dx):
 //   dy/dx = CDF(x) + x * PDF(x)
 //   PDF(x) = (1 / sqrt(2*pi)) * exp(-x^2 / 2)
-absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputNoneShlo(
-    mlir::MlirOp grad_output_op, mlir::MlirOp input_op,
-    const mlir::ElementType output_dtype) {
+absl::StatusOr<mlir::MlirOp> BuildGeluBackwardDerivativeNoneShlo(
+    mlir::MlirOp input_op, const mlir::ElementType output_dtype) {
   mlir::MlirOp k_neg_alpha = MakeConstantLike(
       input_op, -0.5 * std::numbers::sqrt2);  // -1/sqrt(2) == -sqrt(2)/2
   // kBeta = 1 / sqrt(2 * pi)
@@ -172,10 +165,7 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputNoneShlo(
 
   // 3. Calculate dy/dx = CDF(x) + x * PDF(x)
   mlir::MlirOp self_pdf = stablehlo::Mul(input_op, pdf);
-  mlir::MlirOp self_pdf_plus_cdf = stablehlo::Add(self_pdf, cdf);
-
-  // 4. Final Gradient: grad_output * dy/dx
-  return stablehlo::Mul(grad_output_op, self_pdf_plus_cdf);
+  return stablehlo::Add(self_pdf, cdf);
 }
 
 }  // namespace
@@ -219,17 +209,20 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputShlo(
   computation_input_op = mlir::stablehlo::ConvertElementType(
       computation_input_op, computation_dtype);
 
-  mlir::MlirOp result_op_val;
+  mlir::MlirOp derivative;
   if (approximation_type == "none") {
-    TT_ASSIGN_OR_RETURN(result_op_val, BuildGeluBackwardGradInputNoneShlo(
-                                           computation_grad_output_op,
-                                           computation_input_op, output_dtype));
+    TT_ASSIGN_OR_RETURN(derivative, BuildGeluBackwardDerivativeNoneShlo(
+                                        computation_input_op, output_dtype));
   } else {  // approximation_type == "tanh"
-    TT_ASSIGN_OR_RETURN(result_op_val,
-                        BuildGeluBackwardGradInputApproximateShlo(
-                            computation_grad_output_op, computation_input_op));
+    derivative =
+        BuildGeluBackwardDerivativeApproximateShlo(computation_input_op);
   }
 
+  TT_ASSIGN_OR_RETURN(
+      (auto [bcast_grad_output, bcast_derivative]),
+      ApplyBroadcastIfNeeded(computation_grad_output_op, derivative));
+  mlir::MlirOp result_op_val =
+      stablehlo::Mul(bcast_grad_output, bcast_derivative);
   return mlir::stablehlo::ConvertElementType(result_op_val, output_dtype);
 }
 

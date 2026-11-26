@@ -1753,6 +1753,98 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           out_tpu.cpu(), expected_f32.to(out_dtype), rtol=tol, atol=tol
       )
 
+  @parameterized.parameters("none", "tanh")
+  def test_gelu_backward_broadcasting(self, approximate):
+    def cpu_ref(g: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+      # Broadcast and make contiguous on CPU to avoid upstream PyTorch oneDNN
+      # (MKLDNN) bugs in gelu_backward_out_cpu when approximate="none", which
+      # checks only `use_mkldnn(self)` without verifying that `grad` and `self`
+      # have matching shapes (ATen/native/Activation.cpp).
+      g_bcast, s_bcast = torch.broadcast_tensors(g, s)
+      return torch.ops.aten.gelu_backward(
+          g_bcast.contiguous(), s_bcast.contiguous(), approximate=approximate
+      )
+
+    cases = [
+        ("grad_larger", (2, 4), (1, 4)),
+        ("self_larger", (1, 4), (2, 4)),
+        ("mutual_2d", (2, 1), (1, 4)),
+        ("grad_scalar", (), (2, 4)),
+        ("self_scalar", (2, 4), ()),
+        ("rank_mismatch", (2, 3, 4), (4,)),
+        ("zero_elem", (0, 4), (1, 4)),
+    ]
+    for name, grad_shape, self_shape in cases:
+      with self.subTest(case=name):
+        g_cpu = torch.linspace(-1.0, 1.0, max(1, math.prod(grad_shape)))[
+            : math.prod(grad_shape)
+        ].reshape(grad_shape)
+        s_cpu = torch.linspace(-2.0, 2.0, max(1, math.prod(self_shape)))[
+            : math.prod(self_shape)
+        ].reshape(self_shape)
+        expected = cpu_ref(g_cpu, s_cpu)
+
+        g_tpu = g_cpu.to("tpu")
+        s_tpu = s_cpu.to("tpu")
+
+        # Default variant.
+        out_default = torch.ops.aten.gelu_backward(
+            g_tpu, s_tpu, approximate=approximate
+        )
+        self.assertEqual(out_default.shape, expected.shape)
+        self.assertEqual(out_default.dtype, expected.dtype)
+        utils.assert_close(out_default.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+        # Out variant with matching shape, empty resize, and non-empty resize.
+        for init_shape in (expected.shape, (0,), (1, 1)):
+          out_tpu = torch.empty(init_shape, dtype=torch.float32, device="tpu")
+          ret = torch.ops.aten.gelu_backward.grad_input(
+              g_tpu, s_tpu, approximate=approximate, grad_input=out_tpu
+          )
+          self.assertIs(ret, out_tpu)
+          self.assertEqual(out_tpu.shape, expected.shape)
+          utils.assert_close(out_tpu.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+    # Mixed-dtype broadcasting + out-dtype casting with resize.
+    g_bf16_cpu = torch.tensor([[1.0], [-2.0]], dtype=torch.bfloat16)
+    s_f32_cpu = torch.tensor([[0.5, -0.5, 1.0, -1.0]], dtype=torch.float32)
+    expected_mixed = cpu_ref(g_bf16_cpu.to(torch.float32), s_f32_cpu)
+    res_mixed = torch.ops.aten.gelu_backward(
+        g_bf16_cpu.to("tpu"), s_f32_cpu.to("tpu"), approximate=approximate
+    )
+    self.assertEqual(res_mixed.shape, (2, 4))
+    self.assertEqual(res_mixed.dtype, torch.float32)
+    utils.assert_close(res_mixed.cpu(), expected_mixed, rtol=1e-4, atol=1e-4)
+
+    out_bf16 = torch.empty(0, dtype=torch.bfloat16, device="tpu")
+    torch.ops.aten.gelu_backward.grad_input(
+        g_bf16_cpu.to("tpu"),
+        s_f32_cpu.to("tpu"),
+        approximate=approximate,
+        grad_input=out_bf16,
+    )
+    self.assertEqual(out_bf16.shape, (2, 4))
+    self.assertEqual(out_bf16.dtype, torch.bfloat16)
+    utils.assert_close(
+        out_bf16.cpu(), expected_mixed.to(torch.bfloat16), rtol=1e-2, atol=1e-2
+    )
+
+    # Valid in-place aliasing when grad_input already matches broadcast shape.
+    g_inplace_cpu = torch.ones(2, 4, dtype=torch.float32)
+    s_small_cpu = torch.tensor([[0.5, -0.5, 1.0, -1.0]], dtype=torch.float32)
+    expected_inplace = cpu_ref(g_inplace_cpu, s_small_cpu)
+    g_inplace_tpu = g_inplace_cpu.to("tpu")
+    torch.ops.aten.gelu_backward.grad_input(
+        g_inplace_tpu,
+        s_small_cpu.to("tpu"),
+        approximate=approximate,
+        grad_input=g_inplace_tpu,
+    )
+    self.assertEqual(g_inplace_tpu.shape, (2, 4))
+    utils.assert_close(
+        g_inplace_tpu.cpu(), expected_inplace, rtol=1e-4, atol=1e-4
+    )
+
   def test_logcumsumexp_out_dtype(self):
     device = torch.device("tpu")
     x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
