@@ -232,19 +232,23 @@ common:tsan_py --repo_env=HERMETIC_PYTHON_URL=https://storage.googleapis.com/ml-
 common:tsan_py --repo_env=HERMETIC_PYTHON_SHA256=91db187fb5d98e6361b6416e81a6037dbe5ba745dc3e191ba1ffa06a3108e1b6
 common:tsan_py --repo_env=HERMETIC_PYTHON_PREFIX=cpython-3.12.x-tsan-shared-linux-x86_64-llvm-20-bazel-20260511/
 
-# Config to aid debugging.
-# "standalone" means "local" -- run things locally so its easier to
-# inspect state and break out of bazel sandboxes.
-common:local --test_strategy=standalone
-common:local --spawn_strategy=standalone
-common:local --strategy=standalone
+# Run tests locally unsandboxed so they can access host TPU devices and
+# state is easier to inspect, while keeping build actions in their default
+# execution strategy (use --config=no_rbe to also force local builds).
+common:local --strategy=TestRunner=standalone,local
 common:local --config=tpu_envvars
 
-# Config for no_remote builds
-common:no_rbe --config=local
+# Config for no_remote builds: strip RBE, remote caching, and ResultStore flags
+# so actions execute locally in Bazel's default sandbox without GCP credentials.
 common:no_rbe --remote_cache=
 common:no_rbe --remote_executor=
+common:no_rbe --remote_instance_name=
+common:no_rbe --remote_upload_local_results=true
+common:no_rbe --extra_execution_platforms=
+common:no_rbe --bes_backend=
 common:no_rbe --google_default_credentials=false
+common:no_rbe --jobs=auto
+build:no_rbe --//:_rbe_test_execution=False
 
 # Useful when running a single test target and/or test
 # case within the test.
@@ -343,8 +347,7 @@ common:ci --config=remote_execution_readwrite
 
 # Setting specific to benchmarking runs.
 common:bench --config=ci
-common:bench --config=tpu_envvars
-common:bench --strategy=TestRunner=standalone,local
+common:bench --config=local
 
 # TODO: b/523216544 - Refactor all of this logic to avoid separate configs for
 # every accelerator/job combination
@@ -484,9 +487,6 @@ common:remote_execution_readonly --remote_upload_local_results=false
 common:remote_execution_readonly --jobs=200
 common:remote_execution_readonly --remote_timeout=3600
 common:remote_execution_readonly --test_timeout=3600
-# This define is probably vestigial, but it's not entirely clear.
-# Revisit removing this with Bazel 9.
-common:remote_execution_readonly --define=EXECUTOR=remote
 common:remote_execution_readonly --remote_executor=grpcs://remotebuildexecution.googleapis.com
 # Use a custom platform to define the default `cache-silo-key` rather than
 # --remote_default_exec_properties to prevent ImmutableMap duplicate-key crashes
