@@ -2034,6 +2034,9 @@ class TestOps(op_testing.OpInfoTestBase):
         # CPU implementation.
     )
 
+  def test_cdist_zero_norm(self):
+    self.do_test_op("cdist", variant_test_name="zero_norm")
+
   def test_ceil(self):
     self.do_test_op(
         "ceil",
@@ -4016,6 +4019,9 @@ class TestOps(op_testing.OpInfoTestBase):
 
   def test_pdist_forward(self):
     self.do_test_op("nn.functional.pdist")
+
+  def test_pdist_zero_norm(self):
+    self.do_test_op("nn.functional.pdist", variant_test_name="zero_norm")
 
   def test_polar(self):
     self.do_test_op(

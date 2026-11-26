@@ -649,6 +649,10 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # reflection_pad*d and replication_pad*d query static input shape.
         # Aborts the test process.
         "nn.functional.pad": ALL_MODES,
+        # BuildPdistForwardHlo and BuildPdistBackwardShlo query static dim sizes
+        # (-9223372036854775808), and BuildIndexSelectShlo passes static slice
+        # sizes to Gather. Aborts the test process when n >= 2.
+        "nn.functional.pdist": ALL_MODES,
         # Calls getNumElements() on a dynamic shaped type, failing an MLIR
         # assertion that aborts the test process in builds with MLIR
         # assertions enabled.

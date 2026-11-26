@@ -645,7 +645,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_normalization_mixed_dtype": "*",
             "test_pad": "*",
             "test_pdist_empty_row": "*",
-            "test_pdist_inf_nan_propagation": "*",
             "test_rnn_fused": {"dtypes": [torch.float32]},
             "test_rrelu_bounds_validation": "*",
             "test_smooth_l1_loss_bfloat16": "*",

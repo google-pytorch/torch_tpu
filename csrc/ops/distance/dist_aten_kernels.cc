@@ -62,31 +62,37 @@ namespace torch_tpu {
 
 namespace {
 
-// When p=0, compute the 0-norm (Hamming distance equivalent)
-// which is defined as the count of non-zero elements in the vector:
+// When p=0, compute the 0-norm (Hamming distance equivalent), which counts
+// non-zero elements in the vector while propagating NaN elements:
 //
-// 1. Compare input elements with 0.0 to get a boolean tensor.
-// 2. Cast the boolean tensor to the input floating-point type (0.0 or 1.0).
+// 1. Compare input elements with 0.0 to get a boolean non-zero mask, and cast
+//    it to the input floating-point type (0.0 or 1.0).
+// 2. Preserve NaN inputs (where input != input) instead of mapping them to 1.0.
 // 3. Sum the values along the reduction dimension.
 absl::StatusOr<mlir::MlirOp> BuildZeroNorm(mlir::MlirOp input,
-                                           int64_t reduce_dim,
-                                           mlir::Type element_type) {
+                                           const int64_t reduce_dim,
+                                           const mlir::Type element_type) {
   mlir::MlirBuilder& builder = input.getBuilder();
 
   // Create a scalar zero for the reduce initial value.
-  auto zero = MakeScalarConstant(builder, 0.0, element_type);
-  auto input_type = GetTensorTypeOrDie(input);
-  auto zero_bcast = MakeConstantLike(input, 0.0);
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, element_type);
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  mlir::MlirOp zero_bcast = MakeConstantLike(input, 0.0);
 
-  auto is_non_zero = mlir::stablehlo::Compare(
+  mlir::MlirOp is_non_zero = mlir::stablehlo::Compare(
       input, zero_bcast, mlir::stablehlo::ComparisonDirection::NE);
+  mlir::MlirOp is_nan = mlir::stablehlo::Compare(
+      input, input, mlir::stablehlo::ComparisonDirection::NE);
 
-  // Convert bool to float (0.0 or 1.0)
-  auto is_non_zero_casted = mlir::stablehlo::Convert(input_type, is_non_zero);
+  // Convert bool to float (0.0 or 1.0) while preserving NaN elements.
+  mlir::MlirOp is_non_zero_casted =
+      mlir::stablehlo::Convert(input_type, is_non_zero);
+  mlir::MlirOp terms =
+      mlir::stablehlo::Select(is_nan, input, is_non_zero_casted);
 
-  auto reduce_op = mlir::stablehlo::Reduce(
+  mlir::SmallVector<mlir::MlirOp> reduce_op = mlir::stablehlo::Reduce(
       builder,
-      /*inputs=*/{is_non_zero_casted},
+      /*inputs=*/{terms},
       /*init_values=*/{zero},
       /*body_builder=*/
       [&](mlir::RegionBuilder& rb) {  // REF_CAPTURE_OK=called synchronously
