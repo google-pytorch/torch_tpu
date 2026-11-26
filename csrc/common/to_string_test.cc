@@ -41,6 +41,7 @@
 #include "csrc/common/macro_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -186,6 +187,14 @@ TEST(ToStringScalarTypeTest, ScalarTypes) {
 #if TT_HAS_FLOAT8_E5M3FNU
   EXPECT_EQ(ToString(at::ScalarType::Float8_e5m3fnu), "float8_e5m3fnu");
 #endif
+}
+
+TEST(ToStringMlirShapeTest, FormatsStaticAndDynamicDimensions) {
+  EXPECT_EQ(MlirShapeToString({}), "[]");
+  EXPECT_EQ(MlirShapeToString({2, 3, 4}), "[2, 3, 4]");
+  EXPECT_EQ(MlirShapeToString(
+                {mlir::ShapedType::kDynamic, 3, mlir::ShapedType::kDynamic, 5}),
+            "[dyn, 3, dyn, 5]");
 }
 
 }  // namespace

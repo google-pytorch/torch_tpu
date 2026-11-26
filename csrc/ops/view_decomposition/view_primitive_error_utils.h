@@ -20,14 +20,11 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
-#include "absl/algorithm/container.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/ops/view_decomposition/strided_layout.h"
-#include "mlir/IR/BuiltinTypeInterfaces.h"
 
 // Utilities for reporting errors for view decomposition.
 //
@@ -118,17 +115,9 @@ template <typename ViewPrimitiveT>
 std::string GetViewPrimitiveShloErrorSuffix(
     const ViewPrimitiveT& view_primitive, const absl::Span<const int64_t> shape,
     const ViewPrimitiveBugSuffix bug_suffix = ViewPrimitiveBugSuffix::kAppend) {
-  // Extra step for handling dynamic shapes.
-  std::vector<std::string> dynamic_shape_to_str(shape.size());
-
-  // Replace every dynamic size by the "dyn" word.
-  absl::c_transform(shape, dynamic_shape_to_str.begin(), [](int64_t size) {
-    return mlir::ShapedType::isDynamic(size) ? "dyn" : ToString(size);
-  });
-
   return absl::StrCat(
       "; calling ViewPrimitiveShlo() with input shape=",
-      ToString(dynamic_shape_to_str), " and ",
+      MlirShapeToString(shape), " and ",
       GetViewPrimitiveErrorSuffix(view_primitive, {.leading_semicolon = false,
                                                    .bug_suffix = bug_suffix}));
 }
