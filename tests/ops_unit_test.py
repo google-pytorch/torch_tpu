@@ -30112,6 +30112,99 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_put_empty_index_fast_path(self):
+    device = torch.device("tpu")
+    for shape in ((4,), (2, 3), (0,)):
+      expected = torch.arange(math.prod(shape), dtype=torch.float32).reshape(
+          shape
+      )
+      x = expected.to(device)
+      empty_idx = torch.empty(0, dtype=torch.int64, device=device)
+      empty_src = torch.empty(0, dtype=torch.float32, device=device)
+      torch.accelerator.synchronize()
+
+      for accumulate in (False, True):
+        with self.subTest(shape=shape, accumulate=accumulate):
+          before_reqs = torch.tpu._get_cache_stats().num_cache_reqs  # pylint: disable=protected-access
+          ret = x.put_(empty_idx, empty_src, accumulate=accumulate)
+          torch.accelerator.synchronize()
+          after_reqs = torch.tpu._get_cache_stats().num_cache_reqs  # pylint: disable=protected-access
+          self.assertIs(ret, x)
+          self.assertEqual(after_reqs, before_reqs)
+          self.assertTrue(torch.equal(x.cpu(), expected))
+
+    # An empty slice view of `self` does not alias any element of `self` and
+    # should succeed via the empty-index fast path.
+    expected = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    x = expected.to(device)
+    empty_idx = torch.empty(0, dtype=torch.int64, device=device)
+    empty_src_view = x[:0]
+    torch.accelerator.synchronize()
+    before_reqs = torch.tpu._get_cache_stats().num_cache_reqs  # pylint: disable=protected-access
+    ret = x.put_(empty_idx, empty_src_view)
+    torch.accelerator.synchronize()
+    after_reqs = torch.tpu._get_cache_stats().num_cache_reqs  # pylint: disable=protected-access
+    self.assertIs(ret, x)
+    self.assertEqual(after_reqs, before_reqs)
+    self.assertTrue(torch.equal(x.cpu(), expected))
+
+  def test_put_out_of_place_and_non_overlapping_views(self):
+    # Out-of-place `torch.put` clones `self` before mutating, so passing `self`
+    # as `source` or `index` is valid.
+    x_cpu = torch.tensor([10.0, 20.0, 30.0], dtype=torch.float32)
+    idx_cpu = torch.tensor([2, 0, 1], dtype=torch.int64)
+    for accumulate in (False, True):
+      with self.subTest(case="out_of_place_self_source", accumulate=accumulate):
+
+        def run_out_of_place(device, accumulate=accumulate):
+          x = x_cpu.to(device)
+          return torch.put(x, idx_cpu.to(device), x, accumulate=accumulate)
+
+        self.assert_close_tpu_vs_cpu(run_out_of_place)
+
+      with self.subTest(case="out_of_place_empty_index", accumulate=accumulate):
+
+        def run_out_of_place_empty(device, accumulate=accumulate):
+          x = x_cpu.to(device)
+          return torch.put(
+              x,
+              torch.empty(0, dtype=torch.int64, device=device),
+              torch.empty(0, dtype=torch.float32, device=device),
+              accumulate=accumulate,
+          )
+
+        self.assert_close_tpu_vs_cpu(run_out_of_place_empty)
+
+    # Non-overlapping slices of the same backing storage are valid for `put_`.
+    base_cpu = torch.tensor(
+        [1.0, 2.0, 3.0, 10.0, 20.0, 30.0], dtype=torch.float32
+    )
+    for accumulate in (False, True):
+      with self.subTest(
+          case="non_overlapping_source_slice", accumulate=accumulate
+      ):
+
+        def run_source_slice(device, accumulate=accumulate):
+          base = base_cpu.clone().to(device)
+          base[:3].put_(idx_cpu.to(device), base[3:], accumulate=accumulate)
+          return base
+
+        self.assert_close_tpu_vs_cpu(run_source_slice)
+
+    int_base_cpu = torch.tensor([10, 20, 30, 2, 0], dtype=torch.int64)
+    int_src_cpu = torch.tensor([100, 200], dtype=torch.int64)
+    for accumulate in (False, True):
+      with self.subTest(
+          case="non_overlapping_index_slice", accumulate=accumulate
+      ):
+
+        def run_index_slice(device, accumulate=accumulate):
+          base = int_base_cpu.clone().to(device)
+          base[:3].put_(base[3:], int_src_cpu.to(device), accumulate=accumulate)
+          return base
+
+        self.assert_close_tpu_vs_cpu(run_index_slice)
+
 
 if __name__ == "__main__":
   absltest.main()

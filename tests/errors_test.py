@@ -14797,6 +14797,115 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       self_t.put_(index, source)
 
+  def test_put_device_mismatch(self):
+    for length in (1, 0):
+      self_t = torch.ones(5, device=et.device())
+      index_cpu = torch.zeros(length, dtype=torch.int64, device="cpu")
+      source_dev = torch.ones(length, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""put_(): expected self, index, and source to be on the same device, got self device tpu:0, index device cpu, and source device tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got index is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__put_)""",
+      ):
+        self_t.put_(index_cpu, source_dev)
+
+      index_dev = torch.zeros(length, dtype=torch.int64, device=et.device())
+      source_cpu = torch.ones(length, device="cpu")
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""put_(): expected self, index, and source to be on the same device, got self device tpu:0, index device tpu:0, and source device cpu""",
+          gpu="""Expected all tensors to be on the same device, but got source is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__put_)""",
+      ):
+        self_t.put_(index_dev, source_cpu)
+
+      self_cpu = torch.ones(5, device="cpu")
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""put_(): expected self, index, and source to be on the same device, got self device cpu, index device tpu:0, and source device cpu""",
+          gpu="""Expected all tensors to be on the same device, but got index is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__put_)""",
+      ):
+        self_cpu.put_(index_dev, source_cpu)
+
+  def test_put_self_internal_memory_overlap(self):
+    base = torch.zeros((1, 3), device=et.device())
+    expanded = base.expand(2, 3)
+    for length in (1, 0):
+      index = torch.zeros(length, dtype=torch.int64, device=et.device())
+      source = torch.ones(length, device=et.device())
+      for accumulate in (False, True):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+            gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        ):
+          expanded.put_(index, source, accumulate=accumulate)
+
+  def test_put_self_source_memory_overlap(self):
+    x = torch.tensor([10.0, 20.0, 30.0], device=et.device())
+    idx = torch.tensor([2, 0, 1], dtype=torch.int64, device=et.device())
+    for accumulate in (False, True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+          gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+      ):
+        x.put_(idx, x, accumulate=accumulate)
+
+    base = torch.arange(6, dtype=torch.float32, device=et.device())
+    self_slice = base[:4]
+    source_slice = base[2:5]
+    for accumulate in (False, True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+          gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+      ):
+        self_slice.put_(idx, source_slice, accumulate=accumulate)
+
+    empty_x = torch.empty(0, device=et.device())
+    empty_idx = torch.empty(0, dtype=torch.int64, device=et.device())
+    for accumulate in (False, True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+          gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+      ):
+        empty_x.put_(empty_idx, empty_x, accumulate=accumulate)
+
+  def test_put_self_index_memory_overlap(self):
+    ind = torch.tensor([2, 0, 1], dtype=torch.int64, device=et.device())
+    src = torch.tensor([10, 20, 30], dtype=torch.int64, device=et.device())
+    for accumulate in (False, True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+          gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+      ):
+        ind.put_(ind, src, accumulate=accumulate)
+
+    base = torch.tensor([0, 1, 2, 0], dtype=torch.int64, device=et.device())
+    self_slice = base[:3]
+    index_slice = base[1:3]
+    slice_src = torch.tensor([10, 20], dtype=torch.int64, device=et.device())
+    for accumulate in (False, True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+          gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+      ):
+        self_slice.put_(index_slice, slice_src, accumulate=accumulate)
+
+    self_view = base.view(torch.float32)[:2]
+    view_index = base[:2]
+    view_src = torch.ones(2, dtype=torch.float32, device=et.device())
+    for accumulate in (False, True):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+          gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+      ):
+        self_view.put_(view_index, view_src, accumulate=accumulate)
+
   def test_ldexp_invalid_output_type(self):
     out = torch.empty((2,), dtype=torch.int32, device=et.device())
     with et.assert_raises_message(
