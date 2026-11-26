@@ -34,6 +34,16 @@ from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
+# Importing `offload_ops` registers `torch.ops.ao.offload` and
+# `torch.ops.ao.reload`.
+try:
+  # pylint: disable=g-import-not-at-top
+  from torch._functorch._activation_offloading import offload_ops
+
+  _HAS_AO_OPS = offload_ops is not None
+except (ImportError, AttributeError):
+  _HAS_AO_OPS = False
+
 
 class SplitCompileTest(seed_test_utils.RepeatableTest):
 
@@ -447,37 +457,20 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     self.assertEqual(moved.device.type, "cpu")
     self.assertNotIsInstance(moved, torch._subclasses.fake_tensor.FakeTensor)
 
-  @parameterized.named_parameters(
-      ("generator", "generator", "generator"),
-      ("pinned_host", "pinned_host", "pinned-host or custom-layout"),
-      ("custom_layout", "custom_layout", "pinned-host or custom-layout"),
-  )
-  def test_pickle_graph_rejects_unsupported_inputs(
-      self, kind: str, expected_regex: str
-  ):
-    gm = torch.fx.symbolic_trace(lambda x, extra: x * 2.0)
+  def test_pickle_graph_rejects_generator_input(self):
+    gm = torch.fx.symbolic_trace(lambda x, gen: x * 2.0)
 
-    x = torch.ones((2, 2), device="tpu")
     fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
-    fake_x = fake_mode.from_tensor(x)
-    if kind == "generator":
-      extra = tpu_torch_compile.make_export_mode_device_generator(
-          torch.Generator(device="tpu")
-      )
-    elif kind == "pinned_host":
-      extra = fake_mode.from_tensor(torch.ones((2, 2), device="tpu"))
-      extra._is_pinned_host = True
-    else:
-      extra = fake_mode.from_tensor(torch.ones((2, 2), device="tpu"))
-      extra._tpu_device_layout = tpu_torch_compile.get_default_layout(
-          x.dtype, x.shape
-      )
+    fake_x = fake_mode.from_tensor(torch.ones((2, 2), device="tpu"))
+    gen = tpu_torch_compile.make_export_mode_device_generator(
+        torch.Generator(device="tpu")
+    )
 
     state = split_compiler._SnapshotState(
-        gm, (fake_x, extra), is_fwd=True, module_name=None
+        gm, (fake_x, gen), is_fwd=True, module_name=None
     )
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Compiler unit test.
-        pickle.PicklingError, expected_regex
+        pickle.PicklingError, "generator"
     ):
       split_compiler._pickle_graph(state)
 
@@ -511,6 +504,69 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     utils.assert_close(
         recompiled(x).cpu(), torch.tensor([2.0, 3.0, 4.0]) * c + c
     )
+
+  @absltest.skipIf(
+      not _HAS_AO_OPS,
+      "`torch._functorch._activation_offloading.offload_ops` is not available "
+      "in this PyTorch version",
+  )
+  def test_recompile_fn_pickle_preserves_pinned_host_input(self):
+    def fn(pinned, device_x):
+      return torch.ops.ao.reload(pinned, torch.device("tpu")) + device_x
+
+    base_cpu = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    pinned_x = torch.ops.ao.offload(base_cpu.to("tpu"))
+    device_x = torch.full((2, 3), 100.0, device="tpu")
+
+    with torch.no_grad():
+      gm = proxy_tensor.make_fx(
+          fn, tracing_mode="fake", _allow_non_fake_inputs=True
+      )(pinned_x, device_x)
+
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
+    fake_pinned = fake_mode.from_tensor(torch.empty((2, 3), device="tpu"))
+    fake_pinned._is_pinned_host = True
+    fake_device_x = fake_mode.from_tensor(device_x)
+
+    recompile_fn = split_compiler._RecompileFn(
+        split_compiler.SplitCompiler(compiler.StaticCompiler()),
+        split_compiler._SnapshotState(
+            gm, (fake_pinned, fake_device_x), is_fwd=True, module_name=None
+        ),
+    )
+
+    recompiled = pickle.loads(pickle.dumps(recompile_fn))()
+    self.assertEqual(recompiled.fingerprint(), recompile_fn().fingerprint())
+    utils.assert_close(recompiled(pinned_x, device_x).cpu(), base_cpu + 100.0)
+
+  def test_recompile_fn_pickle_preserves_custom_layout_input(self):
+    def fn(x):
+      return x * 2.0 + 1.0
+
+    layout = torch.tpu.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
+    cpu_x = torch.arange(128 * 128, dtype=torch.float32).reshape(128, 128)
+    with torch.tpu.LayoutContext(layout):
+      x = cpu_x.to("tpu")
+
+    with torch.no_grad():
+      gm = proxy_tensor.make_fx(
+          fn, tracing_mode="fake", _allow_non_fake_inputs=True
+      )(x)
+
+    fake_x = torch._subclasses.fake_tensor.FakeTensorMode().from_tensor(x)
+    fake_x._tpu_device_layout = compiler.get_non_default_device_layout(x)
+    self.assertIsNotNone(fake_x._tpu_device_layout)
+
+    recompile_fn = split_compiler._RecompileFn(
+        split_compiler.SplitCompiler(compiler.StaticCompiler()),
+        split_compiler._SnapshotState(
+            gm, (fake_x,), is_fwd=True, module_name=None
+        ),
+    )
+
+    recompiled = pickle.loads(pickle.dumps(recompile_fn))()
+    self.assertEqual(recompiled.fingerprint(), recompile_fn().fingerprint())
+    utils.assert_close(recompiled(x).cpu(), cpu_x * 2.0 + 1.0)
 
 
 class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
