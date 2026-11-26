@@ -19,15 +19,13 @@ operations and device boundaries, compiling its TPU submodules, and running its
 CPU submodules eagerly.
 """
 
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, MutableMapping, Sequence, Set
+from collections.abc import Callable, Collection, Iterator, Sequence
 import contextlib
 import copy
-import dataclasses
-import enum
 import functools
 import operator
 import threading
-from typing import Any, ClassVar
+from typing import Any
 
 from absl import logging
 import torch
@@ -74,7 +72,7 @@ _RANK_COLLECTIVE_COUNTS_LOCK = threading.Lock()
 
 def _submit_handshake(
     executable_fingerprint: str,
-    pg_to_num_collectives: Mapping[ProcessGroupId, int],
+    pg_to_num_collectives: dict[ProcessGroupId, int],
     graph_module_str: str | None = None,
 ) -> bool:
   """Submits a handshake message across participating ranks.
@@ -228,9 +226,7 @@ def _is_getitem_of_collective(node: torch.fx.Node) -> bool:
   return False
 
 
-def _collect_namedtuple_types(
-    arg: Any, seen: MutableMapping[type[tuple[Any, ...]], None]
-) -> None:
+def _collect_namedtuple_types(arg: Any, seen: dict[type[Any], None]) -> None:
   """Recursively collects namedtuple types from an FX node argument."""
   if isinstance(arg, tuple) and hasattr(arg, "_fields"):
     seen.setdefault(type(arg), None)
@@ -268,110 +264,8 @@ def _register_output_namedtuple_globals(gm: torch.fx.GraphModule) -> None:
   )
 
 
-class _Device(enum.StrEnum):
-  """Execution device for a partitioned FX node."""
-
-  CPU = "cpu"
-  TPU = "tpu"
-
-
-@functools.total_ordering
-@dataclasses.dataclass(frozen=True)
-class _Stage:
-  """Execution domain of a partitioned submodule.
-
-  Attributes:
-    ORDER: The order in which stages repeat.
-    device: Device on which the submodule runs (`_Device.CPU` or `_Device.TPU`).
-  """
-
-  ORDER: ClassVar[tuple[_Device, ...]] = (_Device.CPU, _Device.TPU)
-
-  device: _Device = _Device.CPU
-
-  def __lt__(self, other: object) -> bool:
-    if not isinstance(other, _Stage):
-      return NotImplemented
-    return self.ORDER.index(self.device) < self.ORDER.index(other.device)
-
-  @property
-  def is_cpu(self) -> bool:
-    """Returns whether this stage runs eagerly on CPU."""
-    return self.device == _Device.CPU
-
-  @property
-  def is_tpu(self) -> bool:
-    """Returns whether this stage is compiled for TPU."""
-    return self.device == _Device.TPU
-
-
-@dataclasses.dataclass(frozen=True, order=True)
-class _ScheduledStage:
-  """A slot in the repeating sequence `CPU, TPU, CPU, TPU, ...`.
-
-  This is a helper class for deciding on the partitioning of nodes based on
-  their device placement.
-
-  Each node goes in the earliest slot of its kind that doesn't come before any
-  of its inputs slots.
-  For example, in:
-  `x.neg() -> y.item() -> z.abs()`
-  - `neg` goes in slot `(0, TPU)`
-  - `item` in `(1, CPU)`
-  - `abs` in `(1, TPU)`
-
-  Attributes:
-    generation: Monotonic pass counter through `_Stage.ORDER`.
-    stage: The `_Stage` executed in this pass.
-  """
-
-  generation: int = 0
-  stage: _Stage = dataclasses.field(default_factory=_Stage)
-
-  @classmethod
-  def after(
-      cls, input_stages: Iterable["_ScheduledStage"]
-  ) -> "_ScheduledStage":
-    """Returns the latest scheduled stage among `input_stages`.
-
-    Args:
-      input_stages: Scheduled stages of a node's DAG inputs.
-
-    Returns:
-      The maximum `_ScheduledStage` in `input_stages`, or the initial
-      `(generation=0, CPU)` stage when `input_stages` is empty.
-    """
-    return max(input_stages, default=cls())
-
-  def advance_to(self, target: _Stage) -> "_ScheduledStage":
-    """Advances to the earliest `_ScheduledStage` >= `self` matching `target`.
-
-    For example, starting from `_ScheduledStage(0, _Stage(_Device.CPU))`:
-      - `advance_to(_Stage(_Device.TPU))` -> `(generation=0, TPU)`
-      - `advance_to(_Stage(_Device.CPU))` -> `(generation=1, CPU)`
-
-    Args:
-      target: Desired execution `_Stage` for the node.
-
-    Returns:
-      The earliest `_ScheduledStage` at or after `self` with `stage == target`.
-    """
-    if target == self.stage:
-      return self
-    # If we are staying in the same stage, we don't advance the generation.
-    generation = self.generation + (1 if target < self.stage else 0)
-    return _ScheduledStage(generation=generation, stage=target)
-
-  @property
-  def is_cpu(self) -> bool:
-    """Returns whether this scheduled stage runs eagerly on CPU."""
-    return self.stage.is_cpu
-
-  @property
-  def is_tpu(self) -> bool:
-    """Returns whether this scheduled stage is compiled for TPU."""
-    return self.stage.is_tpu
-
+_CPU = "cpu"
+_TPU = "tpu"
 
 # Ops with these tags are never constant expressions, even if all their inputs
 # are constants: tracing them into a TPU program would change their random
@@ -383,7 +277,7 @@ _NON_CONSTANT_OP_TAGS = frozenset({
 })
 
 
-def _tensor_device_types(node: torch.fx.Node) -> Set[str]:
+def _tensor_device_types(node: torch.fx.Node) -> set[str]:
   """Returns the device types of the tensors in the value of `node`."""
   return {
       leaf.device.type
@@ -392,10 +286,8 @@ def _tensor_device_types(node: torch.fx.Node) -> Set[str]:
   }
 
 
-def _assign_devices(
-    graph: torch.fx.Graph,
-) -> dict[torch.fx.Node, _Device | None]:
-  """Returns the device each node must run on, or None if any works.
+def _assign_devices(graph: torch.fx.Graph) -> dict[torch.fx.Node, str | None]:
+  """Returns the device type each node must run on, or None if any works.
 
   Nodes that produce CPU tensors run eagerly on CPU, as do nodes that produce no
   tensors from CPU tensors or values computed on CPU, e.g. `.item()` and
@@ -413,25 +305,24 @@ def _assign_devices(
     graph: The graph to assign devices to.
 
   Returns:
-    A mapping from each node other than placeholders and outputs to
-    `_Device.CPU`, `_Device.TPU`, or `None`.
+    A mapping from each node other than placeholders and outputs to "cpu",
+    "tpu", or None.
   """
   # Registered when torch._functorch._activation_offloading is imported.
   offload = getattr(torch.ops.ao, "offload", None)
   constants = set()
   pinned_host = set()
-  devices: dict[torch.fx.Node, _Device | None] = {}
+  devices = {}
   for node in graph.nodes:
     if node.op in ("placeholder", "output"):
       continue
     outputs = _tensor_device_types(node)
     op = getattr(node.target, "overloadpacket", node.target)
     if (offload is not None and op is offload) or (
-        _Device.CPU in outputs
-        and not pinned_host.isdisjoint(node.all_input_nodes)
+        _CPU in outputs and not pinned_host.isdisjoint(node.all_input_nodes)
     ):
       pinned_host.add(node)
-      devices[node] = _Device.TPU
+      devices[node] = _TPU
       continue
     inputs = set().union(*(
         _tensor_device_types(n)
@@ -448,24 +339,21 @@ def _assign_devices(
     ):
       constants.add(node)
       devices[node] = None
-    elif _Device.CPU in outputs or (
+    elif _CPU in outputs or (
         not outputs
-        and (
-            _Device.CPU in inputs
-            or _Device.CPU in map(devices.get, node.all_input_nodes)
-        )
+        and (_CPU in inputs or _CPU in map(devices.get, node.all_input_nodes))
     ):
-      devices[node] = _Device.CPU
+      devices[node] = _CPU
     else:
-      devices[node] = _Device.TPU if outputs or "val" not in node.meta else None
+      devices[node] = _TPU if outputs or "val" not in node.meta else None
 
   for node in reversed(devices):
     if devices[node] is None and any(
-        devices.get(user) == _Device.CPU
-        or (user.op == "output" and _Device.CPU in _tensor_device_types(node))
+        devices.get(user) == _CPU
+        or (user.op == "output" and _CPU in _tensor_device_types(node))
         for user in node.users
     ):
-      devices[node] = _Device.CPU
+      devices[node] = _CPU
   return devices
 
 
@@ -511,6 +399,9 @@ class _WrapperModule(torch.nn.Module):
   def forward(self, *args: Any) -> Any:
     if self.cpu_arg_indices:
       device = torch.accelerator.current_accelerator()
+      # `.to(device)` keeps the strides of dense tensors and makes the rest
+      # contiguous, always with storage offset 0. `_SubmodCompiler.compile_submod`
+      # compiles against the same layout.
       args = tuple(
           arg.to(device) if i in self.cpu_arg_indices else arg
           for i, arg in enumerate(args)
@@ -615,7 +506,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
   def compile_submod(
       self,
       input_mod: torch.fx.GraphModule,
-      args: Sequence[InputType],
+      args: list[torch.Tensor],
       kwargs: Any,
       submod_name: str | None = None,
   ) -> Any:
@@ -641,7 +532,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
     cpu_arg_indices = [
         i
         for i, arg in enumerate(args)
-        if isinstance(arg, torch.Tensor) and arg.device.type == _Device.CPU
+        if isinstance(arg, torch.Tensor) and arg.device.type == _CPU
     ]
     if symbolic_shapes.has_free_unbacked_symbols(
         [args[i] for i in cpu_arg_indices]
@@ -654,8 +545,20 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
           " and `capture_scalar_outputs`."
       )
 
+    # `_WrapperModule.forward` copies CPU arguments to the device with
+    # `.to(device)`, which produces storage offset 0 and, for dense tensors,
+    # the same strides. `torch.empty_like` with the default preserve_format
+    # has the same layout rule. Compile against it: the CPU tensors here may be
+    # views, e.g. `t[1]` of a CPU partition's output, and the executable would
+    # otherwise be built for the view's base storage and read past the copied
+    # buffer. Forcing contiguous_format instead would change the strides of
+    # transposed or channels_last arguments that later views depend on.
+    compile_args = [
+        torch.empty_like(arg) if i in cpu_arg_indices else arg
+        for i, arg in enumerate(args)
+    ]
     compiled_submod_real = self.compiler_fn(
-        input_mod, args, module_name=full_submod_name
+        input_mod, compile_args, module_name=full_submod_name
     )
     wrapper = _WrapperModule(
         compiled_submod_real, unwrap_singleton_tuple, cpu_arg_indices
@@ -715,7 +618,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
       self,
       target: torch.fx.GraphModule,
       recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
-      pg_to_num_collectives: Mapping[ProcessGroupId, int] | None = None,
+      pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
       graph_module_str: str | None = None,
   ):
     """Initializes a _SplitCompiledExecutable.
@@ -845,7 +748,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
 def _unpickle_split_compiled_executable(
     target: torch.fx.GraphModule,
     recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
-    pg_to_num_collectives: Mapping[ProcessGroupId, int] | None = None,
+    pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
     graph_module_str: str | None = None,
 ) -> _SplitCompiledExecutable:
   """Reconstructs a _SplitCompiledExecutable from target.
@@ -870,108 +773,19 @@ def _unpickle_split_compiled_executable(
   )
 
 
-def _format_node(node: torch.fx.Node) -> str:
-  """Formats `node` with its source `file:lineno` if available."""
-  target = node._pretty_print_target(node.target)  # pylint: disable=protected-access
-  if node.stack_trace:
-    trace = torch.fx.graph._parse_stack_trace(node.stack_trace)  # pylint: disable=protected-access
-    if trace and trace.file:
-      return f"{node.name}: {target} ({trace.file}:{trace.lineno})"
-  return f"{node.name}: {target}"
-
-
-def _calls_subgraph(module: torch.fx.GraphModule, node: torch.fx.Node) -> bool:
-  """Returns whether `node` of `module` is a higher-order op with a subgraph."""
-  if not isinstance(node.target, torch._ops.HigherOrderOperator):  # pylint: disable=protected-access
-    return False
-  return any(
-      arg.op == "get_attr"
-      and isinstance(
-          getattr(module, str(arg.target), None), torch.fx.GraphModule
-      )
-      for arg in node.all_input_nodes
-  )
-
-
-def _unpacks_container(node: torch.fx.Node) -> bool:
-  """Returns whether `node` unpacks a non-tensor container."""
-  if node.target is not operator.getitem or not node.args:
-    return False
-  source = node.args[0]
-  if not isinstance(source, torch.fx.Node):
-    return False
-  val = source.meta.get("example_value", source.meta.get("val"))
-  return isinstance(val, (tuple, list, dict))
-
-
-def _is_fully_spmd_safe(graph_module: torch.fx.GraphModule) -> bool:
-  """Returns whether all ops that Dynamo traced are annotated `spmd_safe`.
-
-  Under `torch.compile`, `spmd_safe` must cover the whole compiled graph.
-
-  Args:
-    graph_module: The FX graph module that Dynamo traced.
-
-  Returns:
-    Whether the graph has ops and all of them are `spmd_safe`.
-
-  Raises:
-    ValueError: If only some of the ops are `spmd_safe`.
-  """
-  safe_ops = []
-  unsafe_ops = []
-  for module in graph_module.modules():
-    if not isinstance(module, torch.fx.GraphModule):
-      continue
-    for node in module.graph.nodes:
-      if node.op in ("placeholder", "get_attr", "output"):
-        continue
-      # A higher-order op that calls a subgraph, and container `getitem`
-      # unpackers, only pass values through. The subgraph's ops are checked
-      # instead.
-      if _calls_subgraph(module, node) or _unpacks_container(node):
-        continue
-      if (node.meta.get("custom") or {}).get(
-          spmd_util.SPMD_SAFE_METADATA_KEY, False
-      ):
-        safe_ops.append(node)
-      else:
-        unsafe_ops.append(node)
-  if safe_ops and unsafe_ops:
-    examples = [_format_node(n) for n in unsafe_ops[:3]]
-    raise ValueError(
-        f"The graph is partially annotated with `spmd_safe`: {len(unsafe_ops)}"
-        f" of {len(safe_ops) + len(unsafe_ops)} ops are not `spmd_safe`, e.g."
-        f" {examples}. Under `torch.compile`, `spmd_safe` must cover the whole"
-        " compiled function: either compile the `spmd_safe` function directly,"
-        " or decorate the whole compiled function with `spmd_safe`."
-    )
-  return bool(safe_ops)
-
-
 class SplitCompiler(compiler.Compiler):
   """Compiler that splits the graph on collectives and compiles submodules."""
 
   def __init__(self, base_compiler: compiler.Compiler):
-    """Initializes the SplitCompiler.
-
-    Args:
-      base_compiler: The compiler for the submodules.
-    """
     super().__init__(
         base_compiler.compilation_context, debug=base_compiler._debug
     )
     self.base_compiler = base_compiler
-    # Set by `execute_pre_grad_passes`, which sees the graph before AOTAutograd.
-    self._fully_spmd_safe = False
 
   def execute_pre_grad_passes(
       self,
       graph_module: torch.fx.GraphModule,
   ) -> None:
-    # If the code that Dynamo traced is fully `spmd_safe`, we assume its
-    # forward and backward pass are fully `spmd_safe` as well.
-    self._fully_spmd_safe = _is_fully_spmd_safe(graph_module)
     self.base_compiler.execute_pre_grad_passes(graph_module)
 
   def _compile_graph(
@@ -998,7 +812,7 @@ class SplitCompiler(compiler.Compiler):
             skip_targets={
                 str(node.target)
                 for node, device in devices.items()
-                if node.op == "get_attr" and device == _Device.CPU
+                if node.op == "get_attr" and device == _CPU
             },
         )
     )
@@ -1006,15 +820,12 @@ class SplitCompiler(compiler.Compiler):
     _register_output_namedtuple_globals(graph_module)
     graph_module.recompile()
 
-    # A fully `spmd_safe` graph runs identically on all ranks, so its
-    # collectives can be fused with the surrounding ops.
-    split_collectives = materialize_collectives and not self._fully_spmd_safe
-
     partition_id = 0
     partition_map = {}
-    # Each node runs in the earliest `_ScheduledStage` matching its `_Stage`
-    # after its DAG inputs.
-    stages: dict[torch.fx.Node, _ScheduledStage] = {}
+    # Even stages run on CPU and odd stages on TPU. Each node runs in the
+    # earliest stage after its inputs, so that CPU work that does not depend on
+    # TPU results is batched instead of splitting TPU programs.
+    stages = {}
     last_random_ops = {}
     # Maps device-agnostic nodes to the partition id at their position.
     deferred = {}
@@ -1029,11 +840,17 @@ class SplitCompiler(compiler.Compiler):
         # Random ops on each device keep their order to draw the same values.
         inputs.append(last_random_ops.get(device))
         last_random_ops[device] = node
-      stage = _ScheduledStage.after(stages[n] for n in inputs if n in stages)
-      # `device` is None for unconstrained constants / SymInt ops (`deferred`).
-      if device is not None:
-        stage = stage.advance_to(_Stage(device))
+      stage = max((stages[n] for n in inputs if n in stages), default=0)
+      if device is not None and (stage % 2 == 1) != (device == _TPU):
+        stage += 1
       stages[node] = stage
+
+      in_spmd_safe_region = bool(
+          isinstance(getattr(node, "meta", None), dict)
+          and node.meta.get("custom", {}).get(
+              spmd_util.SPMD_SAFE_METADATA_KEY, False
+          )
+      )
 
       maybe_collective = getattr(node.target, "overloadpacket", node.target)
       is_collective = (
@@ -1060,15 +877,15 @@ class SplitCompiler(compiler.Compiler):
         if producer not in partition_map:
           raise ValueError("wait_tensor producer not found in partition map.")
         partition_map[node] = partition_map[producer]
-        stages[node] = stages[producer]
       elif _is_getitem_of_collective(node):
         if node.args[0] not in partition_map:
           raise ValueError(
               "getitem of a collective producer not found in partition map."
           )
         partition_map[node] = partition_map[node.args[0]]
-        stages[node] = stages[node.args[0]]
-      elif is_collective and split_collectives:
+      elif (
+          is_collective and not in_spmd_safe_region and materialize_collectives
+      ):
         # Make sure the collective doesn't end up in the previous partition.
         partition_id += 1
         partition_map[node] = partition_id
@@ -1088,13 +905,9 @@ class SplitCompiler(compiler.Compiler):
     keys = {node: (partition_map[node], stages[node]) for node in partition_map}
     for node in reversed(deferred):
       user_keys = sorted({keys[user] for user in node.users if user in keys})
-      if user_keys:
-        keys[node] = user_keys[0]
-      else:
-        keys[node] = (
-            deferred[node],
-            stages[node].advance_to(_Stage(_Device.TPU)),
-        )
+      keys[node] = (
+          user_keys[0] if user_keys else (deferred[node], max(stages[node], 1))
+      )
       if _tensor_device_types(node):
         continue
       for key in user_keys[1:]:
@@ -1109,7 +922,9 @@ class SplitCompiler(compiler.Compiler):
     # dependencies.
     partition_ids = {key: i for i, key in enumerate(sorted(set(keys.values())))}
     cpu_submods = {
-        f"submod_{i}" for (_, stage), i in partition_ids.items() if stage.is_cpu
+        f"submod_{i}"
+        for (_, stage), i in partition_ids.items()
+        if stage % 2 == 0
     }
     logging.info(
         "Split graph into %d partitions, %d of which run on CPU",
@@ -1191,7 +1006,7 @@ class SplitCompiler(compiler.Compiler):
     )
 
     should_handshake = False
-    pg_to_num_collectives: Mapping[ProcessGroupId, int] = {}
+    pg_to_num_collectives: dict[ProcessGroupId, int] = {}
     if handshake_stage != tpu_torch_compile.HandshakeStage.OFF:
       pg_to_num_collectives = process_group_utils.get_num_collectives_per_pg(
           graph_module
