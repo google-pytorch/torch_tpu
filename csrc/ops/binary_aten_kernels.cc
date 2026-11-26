@@ -398,11 +398,14 @@ absl::Status ValidateAddAlphaInputs(at::ScalarType promoted_scalar_type,
 absl::StatusOr<mlir::MlirOp> BuildAlphaMulShlo(mlir::MlirOp other_op,
                                                mlir::MlirOp alpha_op) {
   const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
-  auto other_element_type = other_type.getElementType();
-  auto casted_alpha_op =
-      stablehlo::ConvertElementType(alpha_op, other_element_type);
+  const mlir::RankedTensorType alpha_type = GetTensorTypeOrDie(alpha_op);
+  mlir::MlirOp casted_other_op = other_op;
+  if (other_type.getElementType() != alpha_type.getElementType()) {
+    casted_other_op =
+        stablehlo::ConvertElementType(other_op, alpha_type.getElementType());
+  }
   TT_ASSIGN_OR_RETURN((auto [broadcasted_other, broadcasted_alpha]),
-                      ApplyBroadcastIfNeeded(other_op, casted_alpha_op));
+                      ApplyBroadcastIfNeeded(casted_other_op, alpha_op));
   return BuildMulShlo(broadcasted_other, broadcasted_alpha);
 }
 
@@ -792,7 +795,7 @@ absl::StatusOr<at::Tensor> MakeEmptyBinaryOpOut(const at::Tensor& self,
 
 absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
                           MaybePromotedScalar promoted_alpha,
-                          at::ScalarType promoted_scalar_type, at::Tensor& out,
+                          const at::ScalarType opmath_type, at::Tensor& out,
                           OpParamCacheKeys& param_keys) {
   // As an optimization, skip the scaling if alpha is 1.
   if (promoted_alpha.IsOne()) {
@@ -800,13 +803,12 @@ absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
                        {.op_param_cache_keys = std::move(param_keys)});
   }
 
-  TT_ASSIGN_OR_RETURN(
-      const at::Tensor alpha_tensor,
-      promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
+  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
+                      promoted_alpha.GetTensor(opmath_type));
 
   auto op_builder = [](mlir::MlirOp a_op, mlir::MlirOp b_op,
                        mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
-    TT_ASSIGN_OR_RETURN(auto mul_op, BuildAlphaMulShlo(b_op, alpha_op));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp mul_op, BuildAlphaMulShlo(b_op, alpha_op));
     return BuildSubShlo(a_op, mul_op);
   };
 
@@ -814,32 +816,38 @@ absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
                       {.op_param_cache_keys = std::move(param_keys)});
 }
 
+absl::Status AddReluHelperOut(const at::Tensor& self, const at::Tensor& other,
+                              MaybePromotedScalar& promoted_alpha,
+                              const at::ScalarType opmath_type, at::Tensor& out,
+                              OpParamCacheKeys& param_keys) {
+  // As an optimization, skip the scaling if alpha is 1.
+  if (promoted_alpha.IsOne()) {
+    return BinaryOpOut(self, other, out, BuildAddReluShlo,
+                       {.op_param_cache_keys = std::move(param_keys)});
+  }
+
+  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
+                      promoted_alpha.GetTensor(opmath_type));
+  return TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
+                      {.op_param_cache_keys = std::move(param_keys)});
+}
+
 absl::StatusOr<at::Tensor> AddReluScalarHelper(
     const at::Tensor& self, PromotedScalar& promoted_other,
     MaybePromotedScalar& promoted_alpha, at::Tensor& out,
     OpParamCacheKeys& param_keys) {
-  TT_RETURN_IF_ERROR(ValidateAlphaTypeSupported(promoted_alpha.scalar()));
-
   const at::ScalarType promoted_scalar_type =
       at::result_type(self, promoted_other.scalar());
+  const at::ScalarType opmath_type =
+      InferComputationDtype(promoted_scalar_type);
+  TT_RETURN_IF_ERROR(ValidateAddAlphaInputs(
+      promoted_scalar_type, promoted_alpha.scalar(), opmath_type));
 
   TT_ASSIGN_OR_RETURN(const at::Tensor other_tensor,
                       promoted_other.GetTensor(promoted_scalar_type));
 
-  if (promoted_alpha.IsOne()) {
-    TT_RETURN_IF_ERROR(
-        BinaryOpOut(self, other_tensor, out, BuildAddReluShlo,
-                    {.op_param_cache_keys = std::move(param_keys)}));
-    return out;
-  }
-
-  TT_ASSIGN_OR_RETURN(
-      const at::Tensor alpha_tensor,
-      promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
-
-  TT_RETURN_IF_ERROR(
-      TernaryOpOut(self, other_tensor, alpha_tensor, out, BuildAlphaAddReluShlo,
-                   {.op_param_cache_keys = std::move(param_keys)}));
+  TT_RETURN_IF_ERROR(AddReluHelperOut(self, other_tensor, promoted_alpha,
+                                      opmath_type, out, param_keys));
   return out;
 }
 
@@ -1209,26 +1217,14 @@ at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
       PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(
       OpName::kAddReluOut, param_keys, (self, other, promoted_alpha, out), {
-        TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
-
         const at::ScalarType promoted_scalar_type =
             at::result_type(self, other);
-
-        // As an optimization, skip the scaling if alpha is 1.
-        if (promoted_alpha.IsOne()) {
-          TT_THROW_IF_ERROR(
-              BinaryOpOut(self, other, out, BuildAddReluShlo,
-                          {.op_param_cache_keys = std::move(param_keys)}));
-          return out;
-        }
-
-        TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(
-                               InferComputationDtype(promoted_scalar_type)));
-
+        const at::ScalarType opmath_type =
+            InferComputationDtype(promoted_scalar_type);
         TT_THROW_IF_ERROR(
-            TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
-                         {.op_param_cache_keys = std::move(param_keys)}));
+            ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
+        TT_THROW_IF_ERROR(AddReluHelperOut(self, other, promoted_alpha,
+                                           opmath_type, out, param_keys));
         return out;
       });
 }
@@ -1259,29 +1255,18 @@ at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
   MaybePromotedScalar promoted_alpha =
       PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(OpName::kAddReluTensor, param_keys, (self, other, promoted_alpha), {
-    TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
-
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    const at::ScalarType opmath_type =
+        InferComputationDtype(promoted_scalar_type);
+    TT_THROW_IF_ERROR(
+        ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
     TT_ASSIGN_OR_THROW(const Dimensions output_dims,
                        InferSize(self.sizes(), other.sizes()));
     TT_ASSIGN_OR_THROW(
         at::Tensor out,
         MakeEmptyTensor(output_dims, promoted_scalar_type, self.device()));
-
-    if (promoted_alpha.IsOne()) {
-      TT_THROW_IF_ERROR(
-          BinaryOpOut(self, other, out, BuildAddReluShlo,
-                      {.op_param_cache_keys = std::move(param_keys)}));
-      return out;
-    }
-
-    TT_ASSIGN_OR_THROW(
-        const at::Tensor alpha_tensor,
-        promoted_alpha.GetTensor(InferComputationDtype(promoted_scalar_type)));
-
-    TT_THROW_IF_ERROR(
-        TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
-                     {.op_param_cache_keys = std::move(param_keys)}));
+    TT_THROW_IF_ERROR(AddReluHelperOut(self, other, promoted_alpha, opmath_type,
+                                       out, param_keys));
     return out;
   });
 }
@@ -1307,24 +1292,14 @@ at::Tensor& AtenAddRelu_Tensor(at::Tensor& self, const at::Tensor& other,
       PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(
       OpName::kAddRelu_Tensor, param_keys, (self, other, promoted_alpha), {
-        TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
-
         const at::ScalarType promoted_scalar_type =
             at::result_type(self, other);
-
-        if (promoted_alpha.IsOne()) {
-          TT_THROW_IF_ERROR(
-              BinaryOpOut(self, other, self, BuildAddReluShlo,
-                          {.op_param_cache_keys = std::move(param_keys)}));
-          return self;
-        }
-
-        TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(
-                               InferComputationDtype(promoted_scalar_type)));
+        const at::ScalarType opmath_type =
+            InferComputationDtype(promoted_scalar_type);
         TT_THROW_IF_ERROR(
-            TernaryOpOut(self, other, alpha_tensor, self, BuildAlphaAddReluShlo,
-                         {.op_param_cache_keys = std::move(param_keys)}));
+            ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
+        TT_THROW_IF_ERROR(AddReluHelperOut(self, other, promoted_alpha,
+                                           opmath_type, self, param_keys));
         return self;
       });
 }
@@ -1977,31 +1952,39 @@ at::Tensor AtenRshiftTensor(const at::Tensor& self, const at::Tensor& other) {
 
 at::Tensor AtenRsubTensor(const at::Tensor& self, const at::Tensor& other,
                           const at::Scalar& alpha) {
-  auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
+  MaybePromotedScalar promoted_alpha =
+      PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(OpName::kRsub, param_keys, (self, other, promoted_alpha), {
-    TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
     TT_THROW_IF_ERROR(ValidateSubInputs(other, self));
 
     const at::ScalarType promoted_scalar_type = at::result_type(other, self);
+    const at::ScalarType opmath_type =
+        InferComputationDtype(promoted_scalar_type);
+    TT_THROW_IF_ERROR(
+        ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
     TT_ASSIGN_OR_THROW(at::Tensor out,
                        MakeEmptyBinaryOpOut(other, self, promoted_scalar_type));
 
     TT_THROW_IF_ERROR(SubHelperOut(other, self, std::move(promoted_alpha),
-                                   promoted_scalar_type, out, param_keys));
+                                   opmath_type, out, param_keys));
     return out;
   });
 }
 
 at::Tensor& AtenSubOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out) {
-  auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
+  MaybePromotedScalar promoted_alpha =
+      PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   TT_KERNEL(OpName::kSubOut, param_keys, (self, other, promoted_alpha, out), {
-    TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
     TT_THROW_IF_ERROR(ValidateSubInputs(self, other));
 
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    const at::ScalarType opmath_type =
+        InferComputationDtype(promoted_scalar_type);
+    TT_THROW_IF_ERROR(
+        ValidateAddAlphaInputs(promoted_scalar_type, alpha, opmath_type));
     TT_THROW_IF_ERROR(SubHelperOut(self, other, std::move(promoted_alpha),
-                                   promoted_scalar_type, out, param_keys));
+                                   opmath_type, out, param_keys));
     return out;
   });
 }

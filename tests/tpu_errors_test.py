@@ -1020,7 +1020,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test__add_relu_Scalar_complex_alpha(self):
     """Tests _add_relu.Scalar with an alpha of complex type."""
     device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
+    t = torch.ones(4, device=device, dtype=torch.complex64)
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""add_relu(): complex128 alpha value is not yet supported""",
@@ -1031,8 +1031,8 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test__add_relu_Tensor_complex_alpha(self):
     """Tests _add_relu.Tensor with an alpha of complex type."""
     device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    s = torch.ones(4, device=device, dtype=torch.float32)
+    t = torch.ones(4, device=device, dtype=torch.complex64)
+    s = torch.ones(4, device=device, dtype=torch.complex64)
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""add_relu(): complex128 alpha value is not yet supported""",
@@ -1043,9 +1043,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test__add_relu_out_complex_alpha(self):
     """Tests _add_relu.out with an alpha of complex type."""
     device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    s = torch.ones(4, device=device, dtype=torch.float32)
-    out = torch.ones(4, device=device, dtype=torch.float32)
+    t = torch.ones(4, device=device, dtype=torch.complex64)
+    s = torch.ones(4, device=device, dtype=torch.complex64)
+    out = torch.ones(4, device=device, dtype=torch.complex64)
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""add_relu(): complex128 alpha value is not yet supported""",
@@ -1056,7 +1056,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test__add_relu__Scalar_complex_alpha(self):
     """Tests _add_relu_.Scalar with an alpha of complex type."""
     device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
+    t = torch.ones(4, device=device, dtype=torch.complex64)
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""add_relu_(): complex128 alpha value is not yet supported""",
@@ -1067,13 +1067,166 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test__add_relu__Tensor_complex_alpha(self):
     """Tests _add_relu_.Tensor with an alpha of complex type."""
     device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    s = torch.ones(4, device=device, dtype=torch.float32)
+    t = torch.ones(4, device=device, dtype=torch.complex64)
+    s = torch.ones(4, device=device, dtype=torch.complex64)
     with et.assert_raises_message(
         NotImplementedError,
         tpu="""add_relu_(): complex128 alpha value is not yet supported""",
     ):
       torch.ops.aten._add_relu_.Tensor(t, s, alpha=1j)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="tensor",
+          op=torch.ops.aten._add_relu.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="out",
+          op=torch.ops.aten._add_relu.out,
+          is_scalar=False,
+          use_out=True,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="scalar",
+          op=torch.ops.aten._add_relu.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch.ops.aten._add_relu_.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+      dict(
+          testcase_name="inplace_scalar",
+          op=torch.ops.aten._add_relu_.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+  )
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
+  def test__add_relu_alpha_dtype_mismatch(
+      self, op, is_scalar, use_out, tpu_op_name
+  ):
+    device = et.device()
+    a_i32 = torch.ones(2, dtype=torch.int32, device=device)
+    b_i32 = 1 if is_scalar else torch.ones(2, dtype=torch.int32, device=device)
+    out_i32 = (
+        torch.empty(2, dtype=torch.int32, device=device) if use_out else None
+    )
+    for alpha in (1.5, 1.0):
+      with self.subTest(alpha=alpha):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{tpu_op_name}(): for integral input tensors, argument alpha must not be a floating point number""",
+        ):
+          if out_i32 is not None:
+            op(a_i32, b_i32, alpha=alpha, out=out_i32)
+          else:
+            op(a_i32, b_i32, alpha=alpha)
+
+    a_f32 = torch.ones(2, dtype=torch.float32, device=device)
+    b_f32 = (
+        1.0 if is_scalar else torch.ones(2, dtype=torch.float32, device=device)
+    )
+    out_f32 = (
+        torch.empty(2, dtype=torch.float32, device=device) if use_out else None
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): boolean alpha only supported for boolean results""",
+    ):
+      if out_f32 is not None:
+        op(a_f32, b_f32, alpha=True, out=out_f32)
+      else:
+        op(a_f32, b_f32, alpha=True)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): for non-complex input tensors, argument alpha must not be a complex number""",
+    ):
+      if out_f32 is not None:
+        op(a_f32, b_f32, alpha=1 + 2j, out=out_f32)
+      else:
+        op(a_f32, b_f32, alpha=1 + 2j)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="tensor",
+          op=torch.ops.aten._add_relu.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="out",
+          op=torch.ops.aten._add_relu.out,
+          is_scalar=False,
+          use_out=True,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="scalar",
+          op=torch.ops.aten._add_relu.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch.ops.aten._add_relu_.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+      dict(
+          testcase_name="inplace_scalar",
+          op=torch.ops.aten._add_relu_.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+  )
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
+  def test__add_relu_alpha_overflow(self, op, is_scalar, use_out, tpu_op_name):
+    device = et.device()
+    a_i8 = torch.ones(2, dtype=torch.int8, device=device)
+    b_i8 = 1 if is_scalar else torch.ones(2, dtype=torch.int8, device=device)
+    out_i8 = (
+        torch.empty(2, dtype=torch.int8, device=device) if use_out else None
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): value cannot be converted to type int8 without overflow""",
+    ):
+      if out_i8 is not None:
+        op(a_i8, b_i8, alpha=1000, out=out_i8)
+      else:
+        op(a_i8, b_i8, alpha=1000)
+
+    a_f16 = torch.ones(2, dtype=torch.float16, device=device)
+    b_f16 = (
+        1.0 if is_scalar else torch.ones(2, dtype=torch.float16, device=device)
+    )
+    out_f16 = (
+        torch.empty(2, dtype=torch.float16, device=device) if use_out else None
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): value cannot be converted to type float32 without overflow""",
+    ):
+      if out_f16 is not None:
+        op(a_f16, b_f16, alpha=1e40, out=out_f16)
+      else:
+        op(a_f16, b_f16, alpha=1e40)
 
   # CPU kernel runs successfully, broadcasting the inputs.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
