@@ -7298,6 +7298,239 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_tensor_upcast_out)
 
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_clamp_nan_propagation(self, dtype):
+    """Tests NaN propagation when input, min, or max is NaN."""
+    nan = float("nan")
+    x_vals = [nan, -2.0, 0.5, 3.0]
+    min_vals = [0.0, nan, 0.0, 0.0]
+    max_vals = [2.0, 2.0, nan, 2.0]
+
+    # Scalar bounds: input is NaN, min is NaN, max is NaN.
+    # Compare against explicit expected values rather than CPU because
+    # PyTorch 2.11 CPU clamp_out with a single NaN bound does not propagate NaN.
+    x_tpu = torch.tensor(x_vals, dtype=dtype, device="tpu")
+    for min_s, max_s, expected_vals in [
+        (0.0, 2.0, [nan, 0.0, 0.5, 2.0]),
+        (nan, 2.0, [nan, nan, nan, nan]),
+        (0.0, nan, [nan, nan, nan, nan]),
+        (nan, nan, [nan, nan, nan, nan]),
+        (0.0, None, [nan, 0.0, 0.5, 3.0]),
+        (nan, None, [nan, nan, nan, nan]),
+        (None, 2.0, [nan, -2.0, 0.5, 2.0]),
+        (None, nan, [nan, nan, nan, nan]),
+    ]:
+      expected = torch.tensor(expected_vals, dtype=dtype)
+      self.assert_close(
+          golden_result=expected,
+          torch_tpu_result=torch.clamp(x_tpu, min=min_s, max=max_s).cpu(),
+      )
+      self.assert_close(
+          golden_result=expected,
+          torch_tpu_result=x_tpu.clone().clamp_(min=min_s, max=max_s).cpu(),
+      )
+      out = torch.empty_like(x_tpu)
+      torch.clamp(x_tpu, min=min_s, max=max_s, out=out)
+      self.assert_close(
+          golden_result=expected,
+          torch_tpu_result=out.cpu(),
+      )
+
+    # clamp_min / clamp_max scalar variants.
+    for bound in (0.0, nan):
+      self.assert_close_tpu_vs_cpu(
+          lambda device, b=bound: torch.clamp_min(
+              torch.tensor(x_vals, dtype=dtype, device=device), b
+          ),
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, b=bound: torch.clamp_max(
+              torch.tensor(x_vals, dtype=dtype, device=device), b
+          ),
+      )
+
+    # Tensor bounds: NaN in self, min, and max.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp(
+            torch.tensor(x_vals, dtype=dtype, device=device),
+            min=torch.tensor(min_vals, dtype=dtype, device=device),
+            max=torch.tensor(max_vals, dtype=dtype, device=device),
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.tensor(x_vals, dtype=dtype, device=device).clamp_(
+            min=torch.tensor(min_vals, dtype=dtype, device=device),
+            max=torch.tensor(max_vals, dtype=dtype, device=device),
+        ),
+    )
+
+    def _clamp_tensor_out(device):
+      x = torch.tensor(x_vals, dtype=dtype, device=device)
+      out = torch.empty_like(x)
+      torch.clamp(
+          x,
+          min=torch.tensor(min_vals, dtype=dtype, device=device),
+          max=torch.tensor(max_vals, dtype=dtype, device=device),
+          out=out,
+      )
+      return out
+
+    self.assert_close_tpu_vs_cpu(_clamp_tensor_out)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp_min(
+            torch.tensor(x_vals, dtype=dtype, device=device),
+            torch.tensor(min_vals, dtype=dtype, device=device),
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp_max(
+            torch.tensor(x_vals, dtype=dtype, device=device),
+            torch.tensor(max_vals, dtype=dtype, device=device),
+        ),
+    )
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+      ("int32", torch.int32),
+  )
+  def test_clamp_min_greater_than_max(self, dtype):
+    """Tests PyTorch clamp semantics when min >= max (result is max, unless NaN)."""
+    if dtype.is_floating_point:
+      x_vals = [float("nan"), -1.0, 3.0, 10.0]
+    else:
+      x_vals = [-1, 3, 5, 10]
+    for min_s, max_s in ((5, 2), (2, 2)):
+      self.assert_close_tpu_vs_cpu(
+          lambda device, mn=min_s, mx=max_s: torch.clamp(
+              torch.tensor(x_vals, dtype=dtype, device=device), min=mn, max=mx
+          ),
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, mn=min_s, mx=max_s: torch.clamp(
+              torch.tensor(x_vals, dtype=dtype, device=device),
+              min=torch.full((len(x_vals),), mn, dtype=dtype, device=device),
+              max=torch.full((len(x_vals),), mx, dtype=dtype, device=device),
+          ),
+      )
+
+      # Compiled mode lowers scalar bounds as constants; verify NaN is not
+      # dropped by XLA's VclampFloat ub <= lb constant fold.
+      @torch.compile(backend="tpu")
+      def compiled_clamp(t, mn=min_s, mx=max_s):
+        return torch.clamp(t, min=mn, max=mx)
+
+      x_cpu = torch.tensor(x_vals, dtype=dtype)
+      expected = torch.clamp(x_cpu, min=min_s, max=max_s)
+      actual = compiled_clamp(x_cpu.to("tpu")).cpu()
+      self.assert_close(golden_result=expected, torch_tpu_result=actual)
+
+  def test_clamp_uint64_sized_scalar_bounds(self):
+    """Tests clamp on uint64 tensors and with bounds that only fit in uint64.
+
+    CPU cannot promote uint64 with Python int bounds, so the expected values
+    are the ones CUDA returns.
+    """
+    i64 = torch.tensor([-10, 0, 10], dtype=torch.int64, device="tpu")
+    self.assertEqual(
+        torch.clamp_max(i64, 2**63).cpu(),
+        torch.tensor([-10, 0, 10], dtype=torch.int64),
+    )
+
+    u64 = torch.tensor([0, 5, 10], dtype=torch.uint64, device="tpu")
+    self.assertEqual(
+        torch.clamp(u64, min=-100, max=7).cpu(),
+        torch.tensor([0, 5, 7], dtype=torch.uint64),
+    )
+    self.assertEqual(
+        torch.clamp(u64, max=2**64 - 1).cpu(),
+        torch.tensor([0, 5, 10], dtype=torch.uint64),
+    )
+
+  @parameterized.named_parameters(
+      ("uint8", torch.uint8),
+      ("int8", torch.int8),
+      ("int16", torch.int16),
+      ("uint16", torch.uint16),
+      ("int32", torch.int32),
+      ("uint32", torch.uint32),
+      ("int64", torch.int64),
+  )
+  def test_clamp_integral_out_of_range_noop_bounds(self, dtype):
+    """Tests integral clamp with out-of-range no-op scalar bounds.
+
+    Compare against explicit expected values rather than CPU because PyTorch
+    2.11 CPU lacks uint16/uint32 clamp kernels and raises overflow errors for
+    out-of-range no-op scalar bounds.
+    """
+    info = torch.iinfo(dtype)
+    vals = [info.min, 0, 5, info.max]
+    min_bound = info.min if dtype is torch.int64 else info.min - 100
+    max_bound = (
+        info.max if dtype in (torch.int64, torch.uint64) else info.max + 100
+    )
+    x = torch.tensor(vals, dtype=dtype, device="tpu")
+
+    self.assertEqual(
+        torch.clamp(x, min=min_bound, max=5).cpu(),
+        torch.tensor([info.min, 0, 5, 5], dtype=dtype),
+    )
+    self.assertEqual(
+        torch.clamp(x, min=0, max=max_bound).cpu(),
+        torch.tensor([0, 0, 5, info.max], dtype=dtype),
+    )
+    self.assertEqual(
+        torch.clamp(x, min=min_bound, max=max_bound).cpu(),
+        torch.tensor(vals, dtype=dtype),
+    )
+    self.assertEqual(
+        torch.clamp_min(x, min_bound).cpu(),
+        torch.tensor(vals, dtype=dtype),
+    )
+    self.assertEqual(
+        torch.clamp_max(x, max_bound).cpu(),
+        torch.tensor(vals, dtype=dtype),
+    )
+
+  def test_clamp_bool_single_bound_tensor(self):
+    """Tests bool single-bound tensor clamp matching CUDA maximum/minimum."""
+    x_vals = [True, False, True, False]
+    b_vals = [False, False, True, True]
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp(
+            torch.tensor(x_vals, dtype=torch.bool, device=device),
+            min=torch.tensor(b_vals, dtype=torch.bool, device=device),
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp(
+            torch.tensor(x_vals, dtype=torch.bool, device=device),
+            max=torch.tensor(b_vals, dtype=torch.bool, device=device),
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp_min(
+            torch.tensor(x_vals, dtype=torch.bool, device=device),
+            torch.tensor(b_vals, dtype=torch.bool, device=device),
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp_max(
+            torch.tensor(x_vals, dtype=torch.bool, device=device),
+            torch.tensor(b_vals, dtype=torch.bool, device=device),
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.clamp(
+            torch.tensor(x_vals, dtype=torch.bool, device=device), min=1, max=2
+        )
+    )
+
   def test_concurrent_ops(self):
     """Tests that ops can run concurrently without correctness issues."""
 

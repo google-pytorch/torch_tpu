@@ -14,6 +14,8 @@
 
 #include "csrc/ops/clamp/clamp_aten_kernels.h"
 
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -28,10 +30,12 @@
 #include "c10/util/Optional.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/clamp/clamp.h"
@@ -98,6 +102,125 @@ absl::StatusOr<Dimensions> ComputeOutputShape(
   return CopyIntVector(self.sizes());
 }
 
+template <typename T>
+absl::Status ValidateNotComplex(const T& value,
+                                const std::string_view arg_name) {
+  TT_RET_CHECK(!IsComplex(value), error::kInvalidArgument)
+      << "expected " << arg_name << " not to be complex, got "
+      << ToString(GetScalarType(value));
+  return absl::OkStatus();
+}
+
+absl::Status ValidateNotBool(const at::ScalarType computation_scalar_type) {
+  TT_RET_CHECK(!IsBool(computation_scalar_type), error::kInvalidArgument)
+      << "self must not be bool";
+  return absl::OkStatus();
+}
+
+absl::Status ValidateOutDevice(const at::Tensor& out) {
+  TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
+      << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << out.device();
+  return absl::OkStatus();
+}
+
+// Where a scalar clamp bound falls relative to the representable range of an
+// integral dtype, and the limits of that range.
+struct IntegralBoundInfo {
+  bool below_lowest;
+  bool above_max;
+  at::Scalar lowest;
+  at::Scalar max;
+};
+
+// `bound` must hold an integer or bool: a floating-point or complex bound
+// promotes the computation dtype away from the integral type `T`.
+template <typename T>
+IntegralBoundInfo GetIntegralBoundInfoForType(const at::Scalar& bound) {
+  const auto info_for = [](const auto val) -> IntegralBoundInfo {
+    return {
+        .below_lowest = std::cmp_less(val, std::numeric_limits<T>::lowest()),
+        .above_max = std::cmp_greater(val, std::numeric_limits<T>::max()),
+        .lowest = at::Scalar(std::numeric_limits<T>::lowest()),
+        .max = at::Scalar(std::numeric_limits<T>::max()),
+    };
+  };
+  return bound.type() == at::ScalarType::UInt64 ? info_for(bound.toUInt64())
+                                                : info_for(bound.toLong());
+}
+
+// Returns nullopt if `dtype` is not an integral dtype (bool excluded).
+std::optional<IntegralBoundInfo> GetIntegralBoundInfo(
+    const at::Scalar& bound, const at::ScalarType dtype) {
+  switch (dtype) {
+    case at::ScalarType::Byte:
+      return GetIntegralBoundInfoForType<uint8_t>(bound);
+    case at::ScalarType::Char:
+      return GetIntegralBoundInfoForType<int8_t>(bound);
+    case at::ScalarType::Short:
+      return GetIntegralBoundInfoForType<int16_t>(bound);
+    case at::ScalarType::UInt16:
+      return GetIntegralBoundInfoForType<uint16_t>(bound);
+    case at::ScalarType::Int:
+      return GetIntegralBoundInfoForType<int32_t>(bound);
+    case at::ScalarType::UInt32:
+      return GetIntegralBoundInfoForType<uint32_t>(bound);
+    case at::ScalarType::Long:
+      return GetIntegralBoundInfoForType<int64_t>(bound);
+    case at::ScalarType::UInt64:
+      return GetIntegralBoundInfoForType<uint64_t>(bound);
+    default:
+      return std::nullopt;
+  }
+}
+
+// Saturates a no-op out-of-range integral scalar bound (min < lowest or
+// max > max) to the dtype's representable limit before PromoteScalar, so
+// materializing the scalar tensor never overflows or wraps. Invalid
+// out-of-range bounds (min > max or max < lowest) are left unchanged so
+// ValidateIntegralClampScalarBound reports the error inside TT_KERNEL.
+at::Scalar SaturateNoOpIntegralBound(const at::Scalar& bound,
+                                     const at::ScalarType dtype,
+                                     const bool is_lower_bound) {
+  const std::optional<IntegralBoundInfo> info =
+      GetIntegralBoundInfo(bound, dtype);
+  if (!info.has_value()) {
+    return bound;
+  }
+  if (is_lower_bound && info->below_lowest) {
+    return info->lowest;
+  }
+  if (!is_lower_bound && info->above_max) {
+    return info->max;
+  }
+  return bound;
+}
+
+std::optional<at::Scalar> SaturateNoOpIntegralBound(
+    const c10::optional<at::Scalar>& bound, const at::ScalarType dtype,
+    const bool is_lower_bound) {
+  if (!bound.has_value()) {
+    return std::nullopt;
+  }
+  return SaturateNoOpIntegralBound(*bound, dtype, is_lower_bound);
+}
+
+absl::Status ValidateIntegralClampScalarBound(const at::Scalar& bound,
+                                              const at::ScalarType dtype,
+                                              const bool is_lower_bound) {
+  const std::optional<IntegralBoundInfo> info =
+      GetIntegralBoundInfo(bound, dtype);
+  if (!info.has_value()) {
+    return absl::OkStatus();
+  }
+  const bool is_invalid = is_lower_bound ? info->above_max : info->below_lowest;
+  TT_RET_CHECK(!is_invalid, error::kInvalidArgument)
+      << "expected clamp " << (is_lower_bound ? "min" : "max")
+      << " value to be representable as " << ToString(dtype) << ", got "
+      << ToString(bound);
+  return absl::OkStatus();
+}
+
 absl::Status AtenClampTensorHelper(const at::Tensor& self,
                                    const c10::optional<at::Tensor>& min_,
                                    const c10::optional<at::Tensor>& max_,
@@ -107,6 +230,20 @@ absl::Status AtenClampTensorHelper(const at::Tensor& self,
   auto min = SanitizeOptionalTensor(min_);
   auto max = SanitizeOptionalTensor(max_);
 
+  TT_RETURN_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
+  if (min) {
+    TT_RETURN_IF_ERROR(ValidateNotComplex(*min, /*arg_name=*/"min"));
+  }
+  if (max) {
+    TT_RETURN_IF_ERROR(ValidateNotComplex(*max, /*arg_name=*/"max"));
+  }
+  // Two-sided tensor clamp is not implemented for bool (matching CUDA
+  // clamp_cuda), whereas single-sided min/max tensor clamp dispatches to
+  // maximum/minimum which support bool.
+  if (min && max) {
+    TT_RETURN_IF_ERROR(ValidateNotBool(computation_scalar_type));
+  }
+  TT_RETURN_IF_ERROR(ValidateOutDevice(out));
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, computation_scalar_type, allow_out_dtype_cast));
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(computation_scalar_type));
@@ -164,6 +301,28 @@ absl::Status ClampScalarHelper(const at::Tensor& self,
                                at::ScalarType computation_scalar_type,
                                bool allow_out_dtype_cast, at::Tensor& out,
                                OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
+  if (min.has_value()) {
+    TT_RETURN_IF_ERROR(ValidateNotComplex(min->scalar(), /*arg_name=*/"min"));
+  }
+  if (max.has_value()) {
+    TT_RETURN_IF_ERROR(ValidateNotComplex(max->scalar(), /*arg_name=*/"max"));
+  }
+  TT_RETURN_IF_ERROR(ValidateNotBool(computation_scalar_type));
+  TT_RETURN_IF_ERROR(ValidateOutDevice(out));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out, computation_scalar_type, allow_out_dtype_cast));
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(computation_scalar_type));
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
+  if (min.has_value()) {
+    TT_RETURN_IF_ERROR(ValidateIntegralClampScalarBound(
+        min->scalar(), computation_scalar_type, /*is_lower_bound=*/true));
+  }
+  if (max.has_value()) {
+    TT_RETURN_IF_ERROR(ValidateIntegralClampScalarBound(
+        max->scalar(), computation_scalar_type, /*is_lower_bound=*/false));
+  }
+
   std::optional<at::Tensor> min_tensor;
   if (min.has_value()) {
     TT_ASSIGN_OR_RETURN(auto t, min->GetTensor(computation_scalar_type));
@@ -179,26 +338,20 @@ absl::Status ClampScalarHelper(const at::Tensor& self,
                                out, std::move(param_keys));
 }
 
-absl::Status ValidateNotBool(const at::Tensor& tensor,
-                             const std::string_view arg_name) {
-  TT_RET_CHECK(!IsBool(tensor), error::kInvalidArgument)
-      << arg_name << " must not be bool";
-  return absl::OkStatus();
-}
-
 }  // namespace
 
 at::Tensor& AtenClampOut(const at::Tensor& self,
                          const c10::optional<at::Scalar>& min,
                          const c10::optional<at::Scalar>& max,
                          at::Tensor& out) {
-  auto promoted_min = PromoteScalar(min);
-  auto promoted_max = PromoteScalar(max);
+  const at::ScalarType computation_scalar_type =
+      GetComputationType(self, min, max);
+  auto promoted_min = PromoteScalar(SaturateNoOpIntegralBound(
+      min, computation_scalar_type, /*is_lower_bound=*/true));
+  auto promoted_max = PromoteScalar(SaturateNoOpIntegralBound(
+      max, computation_scalar_type, /*is_lower_bound=*/false));
   TT_KERNEL(OpName::kClampOut, param_keys,
             (self, promoted_min, promoted_max, out), {
-              TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
-              const at::ScalarType computation_scalar_type =
-                  GetComputationType(self, min, max);
               TT_THROW_IF_ERROR(ClampScalarHelper(
                   self, std::move(promoted_min), std::move(promoted_max),
                   computation_scalar_type, /*allow_out_dtype_cast=*/false, out,
@@ -209,11 +362,11 @@ at::Tensor& AtenClampOut(const at::Tensor& self,
 
 at::Tensor& AtenClampMinOut(const at::Tensor& self, const at::Scalar& min,
                             at::Tensor& out) {
-  auto promoted_min = PromoteScalar(min);
+  const at::ScalarType computation_scalar_type =
+      GetComputationType(self, min, std::nullopt);
+  auto promoted_min = PromoteScalar(SaturateNoOpIntegralBound(
+      min, computation_scalar_type, /*is_lower_bound=*/true));
   TT_KERNEL(OpName::kClampMinOut, param_keys, (self, promoted_min, out), {
-    TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
-    const at::ScalarType computation_scalar_type =
-        GetComputationType(self, min, std::nullopt);
     TT_THROW_IF_ERROR(ClampScalarHelper(
         self, std::move(promoted_min), std::nullopt, computation_scalar_type,
         /*allow_out_dtype_cast=*/false, out, std::move(param_keys)));
@@ -223,11 +376,11 @@ at::Tensor& AtenClampMinOut(const at::Tensor& self, const at::Scalar& min,
 
 at::Tensor& AtenClampMaxOut(const at::Tensor& self, const at::Scalar& max,
                             at::Tensor& out) {
-  auto promoted_max = PromoteScalar(max);
+  const at::ScalarType computation_scalar_type =
+      GetComputationType(self, std::nullopt, max);
+  auto promoted_max = PromoteScalar(SaturateNoOpIntegralBound(
+      max, computation_scalar_type, /*is_lower_bound=*/false));
   TT_KERNEL(OpName::kClampMaxOut, param_keys, (self, promoted_max, out), {
-    TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
-    const at::ScalarType computation_scalar_type =
-        GetComputationType(self, std::nullopt, max);
     TT_THROW_IF_ERROR(ClampScalarHelper(
         self, std::nullopt, std::move(promoted_max), computation_scalar_type,
         /*allow_out_dtype_cast=*/false, out, std::move(param_keys)));

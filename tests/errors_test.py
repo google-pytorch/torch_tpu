@@ -7865,32 +7865,275 @@ Supported combinations for non-constant padding:
     inp = torch.tensor([-1.0, 2.0], device=et.device(), dtype=torch.complex64)
     out = torch.empty(2, device=et.device(), dtype=torch.float64)
 
-    # Scalar bound: strict endomorphism.
+    # Scalar bound: complex input rejected.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""clamp(): expected the output dtype to be complex64, got float64""",
+        tpu="""clamp(): expected self not to be complex, got complex64""",
         gpu="""clamp is not supported for complex types""",
     ):
       torch.clamp(inp, min=1.0, max=2.0, out=out)
 
-    # Tensor bound: safe casting.
+    # Tensor bound: complex input rejected.
     min_t = torch.zeros(2, device=et.device(), dtype=torch.float64)
     max_t = torch.ones(2, device=et.device(), dtype=torch.float64)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""clamp(): result type complex128 can't be cast to the desired output type float64""",
+        tpu="""clamp(): expected self not to be complex, got complex64""",
         gpu="""clamp is not supported for complex types""",
     ):
       torch.clamp(inp, min=min_t, max=max_t, out=out)
 
+  def test_clamp_complex_inputs(self):
+    c = torch.tensor(
+        [1.0 + 2.0j, -1.0 + 0.5j], device=et.device(), dtype=torch.complex64
+    )
+    c_min = torch.tensor(
+        [0.0 + 0.0j, 0.0 + 0.0j], device=et.device(), dtype=torch.complex64
+    )
+    c_max = torch.tensor(
+        [1.0 + 0.0j, 1.0 + 0.0j], device=et.device(), dtype=torch.complex64
+    )
+    c_out = torch.empty(2, device=et.device(), dtype=torch.complex64)
+    f = torch.tensor([0.5, 1.5], device=et.device(), dtype=torch.float32)
+    f_min = torch.zeros(2, device=et.device(), dtype=torch.float32)
+    f_max = torch.ones(2, device=et.device(), dtype=torch.float32)
+
+    # Complex self across scalar variants (functional/inplace hit meta check;
+    # .out hits AtenClampOut directly).
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp(c, min=0.0, max=1.0)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      c.clone().clamp_(min=0.0, max=1.0)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected self not to be complex, got complex64""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp(c, min=0.0, max=1.0, out=c_out)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp_min(c, 0.0)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp_max(c, 1.0)
+
+    # Complex self across tensor variants.
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp(c, min=c_min, max=c_max)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      c.clone().clamp_(min=c_min, max=c_max)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected self not to be complex, got complex64""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp(c, min=c_min, max=c_max, out=c_out)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_min(): expected self not to be complex, got complex64""",
+        gpu=""""max_elementwise_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.clamp_min(c, c_min)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_max(): expected self not to be complex, got complex64""",
+        gpu=""""min_elementwise_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.clamp_max(c, c_max)
+
+    # Complex min/max tensor bounds with real self.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected min not to be complex, got complex64""",
+        gpu=""""clamp_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.clamp(f, min=c_min, max=f_max)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected max not to be complex, got complex64""",
+        gpu=""""clamp_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.clamp(f, min=f_min, max=c_max)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_min(): expected min not to be complex, got complex64""",
+        gpu=""""max_elementwise_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.clamp_min(f, c_min)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_max(): expected max not to be complex, got complex64""",
+        gpu=""""min_elementwise_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.clamp_max(f, c_max)
+
+    # Complex min/max scalar bounds with real self.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected min not to be complex, got complex128""",
+        gpu="""value cannot be converted to type double without overflow""",
+    ):
+      torch.clamp(f, min=1.0 + 2.0j, max=2.0)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected max not to be complex, got complex128""",
+        gpu="""value cannot be converted to type double without overflow""",
+    ):
+      torch.clamp(f, min=0.0, max=1.0 + 2.0j)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp_min(f, 1.0 + 2.0j)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""clamp is not supported for complex types""",
+        gpu="""clamp is not supported for complex types""",
+    ):
+      torch.clamp_max(f, 1.0 + 2.0j)
+
   def test_clamp_unsupported_bool(self):
     t = torch.tensor([True, False], device=et.device(), dtype=torch.bool)
+    out = torch.empty(2, device=et.device(), dtype=torch.bool)
     with et.assert_raises_message(
         RuntimeError,
         tpu="""clamp(): self must not be bool""",
         gpu=""""clamp_scalar_cuda" not implemented for 'Bool'""",
     ):
       torch.clamp(t, min=False, max=True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_min(): self must not be bool""",
+        gpu=""""clamp_scalar_cuda" not implemented for 'Bool'""",
+    ):
+      torch.clamp_min(t, False)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_max(): self must not be bool""",
+        gpu=""""clamp_scalar_cuda" not implemented for 'Bool'""",
+    ):
+      torch.clamp_max(t, True)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): self must not be bool""",
+        gpu=""""clamp_cuda" not implemented for 'Bool'""",
+    ):
+      torch.clamp(t, min=t, max=t)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): self must not be bool""",
+        gpu=""""clamp_cuda" not implemented for 'Bool'""",
+    ):
+      t.clone().clamp_(min=t, max=t)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): self must not be bool""",
+        gpu=""""clamp_cuda" not implemented for 'Bool'""",
+    ):
+      torch.clamp(t, min=t, max=t, out=out)
+
+  def test_clamp_out_cpu_tensor(self):
+    x = torch.tensor([1.0, 2.0, 3.0], device=et.device(), dtype=torch.float32)
+    min_t = torch.zeros(3, device=et.device(), dtype=torch.float32)
+    max_t = torch.ones(3, device=et.device(), dtype=torch.float32)
+    cpu_out = torch.empty(3, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.clamp(x, min=0.0, max=1.0, out=cpu_out)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.clamp(x, min=min_t, max=max_t, out=cpu_out)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_min(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.clamp_min(x, min_t, out=cpu_out)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_max(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.clamp_max(x, max_t, out=cpu_out)
+
+  def test_clamp_integral_out_of_range_bounds(self):
+    u8 = torch.tensor([0, 10, 255], device=et.device(), dtype=torch.uint8)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected clamp min value to be representable as uint8, got 256""",
+        gpu="""Clamp min value 256 is outside the representable range of Byte""",
+    ):
+      torch.clamp(u8, min=256)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_min(): expected clamp min value to be representable as uint8, got 256""",
+        gpu="""Clamp min value 256 is outside the representable range of Byte""",
+    ):
+      torch.clamp_min(u8, 256)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected clamp max value to be representable as uint8, got -1""",
+        gpu="""Clamp max value -1 is outside the representable range of Byte""",
+    ):
+      torch.clamp(u8, max=-1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_max(): expected clamp max value to be representable as uint8, got -1""",
+        gpu="""Clamp max value -1 is outside the representable range of Byte""",
+    ):
+      torch.clamp_max(u8, -1)
+
+    i8 = torch.tensor([-10, 0, 10], device=et.device(), dtype=torch.int8)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected clamp min value to be representable as int8, got 128""",
+        gpu="""Clamp min value 128 is outside the representable range of Char""",
+    ):
+      torch.clamp(i8, min=128)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected clamp max value to be representable as int8, got -129""",
+        gpu="""Clamp max value -129 is outside the representable range of Char""",
+    ):
+      torch.clamp(i8, max=-129)
+
+    i64 = torch.tensor([-10, 0, 10], device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected clamp min value to be representable as int64, got 9223372036854775808""",
+        gpu="""Clamp min value 9.22337e+18 is outside the representable range of Long""",
+    ):
+      torch.clamp(i64, min=2**63)
 
   def test_bmm_bool(self):
     a = torch.ones(1, 2, 3, dtype=torch.bool, device=et.device())
