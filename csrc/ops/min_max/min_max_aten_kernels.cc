@@ -99,6 +99,16 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
     at::Tensor& indices) {
   ABSL_VLOG(3) << "[AtenMinMaxDim] start";
 
+  TT_RET_CHECK(IsPrivateUse1Device(self), error::kInvalidArgument)
+      << "expected input tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << self.device();
+  TT_RET_CHECK(IsPrivateUse1Device(value), error::kInvalidArgument)
+      << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << value.device();
+  TT_RET_CHECK(IsPrivateUse1Device(indices), error::kInvalidArgument)
+      << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << indices.device();
+
   TT_RETURN_IF_ERROR(ValidateOutDtype(value, self.scalar_type(),
                                       /*allow_out_dtype_cast=*/false));
   TT_RETURN_IF_ERROR(ValidateOutDtype(indices, at::kLong,

@@ -16149,6 +16149,26 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     utils.assert_close(mn_tpu, mn_cpu)
     utils.assert_close(mx_tpu, mx_cpu)
 
+  def test_aminmax_out_disjoint_slices_same_storage(self):
+    # Disjoint slices (contiguous and strided) sharing the same storage must
+    # succeed and match CPU results.
+    x_cpu = torch.tensor([[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]])
+    x_tpu = to(x_cpu, "tpu")
+
+    with self.subTest("contiguous_disjoint"):
+      buf_cpu = torch.empty(6, dtype=torch.float32)
+      buf_tpu = torch.empty(6, dtype=torch.float32, device="tpu")
+      torch.aminmax(x_cpu, dim=0, out=(buf_cpu[:3], buf_cpu[3:]))
+      torch.aminmax(x_tpu, dim=0, out=(buf_tpu[:3], buf_tpu[3:]))
+      utils.assert_close(buf_tpu, buf_cpu)
+
+    with self.subTest("strided_disjoint"):
+      buf_cpu = torch.empty(6, dtype=torch.float32)
+      buf_tpu = torch.empty(6, dtype=torch.float32, device="tpu")
+      torch.aminmax(x_cpu, dim=0, out=(buf_cpu[::2], buf_cpu[1::2]))
+      torch.aminmax(x_tpu, dim=0, out=(buf_tpu[::2], buf_tpu[1::2]))
+      utils.assert_close(buf_tpu, buf_cpu)
+
   def test_max_pool2d_with_indices_nan_selected_index(self):
     # Verify both values and selected_index for max_pool2d_with_indices on NaN windows.
     pool_in = torch.tensor(
