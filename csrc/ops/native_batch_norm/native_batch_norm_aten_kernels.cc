@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -39,6 +40,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -52,13 +54,120 @@ namespace torch_tpu {
 
 namespace {
 
+enum class EmptyParamPolicy {
+  kDisallow,
+  kAllow,
+};
+
 absl::Status ValidateIsFloating(const at::Tensor& tensor,
                                 const std::string_view arg_name) {
   TT_RET_CHECK(c10::isFloatingType(tensor.scalar_type()),
                error::kInvalidArgument)
       << "expected " << arg_name << " to be floating point, got "
       << ToString(tensor.scalar_type());
+  return ValidateNotLowPrecisionFloat(tensor);
+}
+
+absl::Status ValidateInputRank(const at::Tensor& input) {
+  TT_RET_CHECK(input.dim() >= 2, error::kInvalidArgument)
+      << "expected input to have >= 2 dimensions, got " << input.dim() << "D";
   return absl::OkStatus();
+}
+
+absl::Status ValidateBatchNormParam(
+    const std::optional<at::Tensor>& param, const std::string_view arg_name,
+    const int64_t num_features,
+    const EmptyParamPolicy empty_policy = EmptyParamPolicy::kDisallow) {
+  if (!param.has_value()) {
+    return absl::OkStatus();
+  }
+  TT_RETURN_IF_ERROR(ValidateIsFloating(*param, arg_name));
+  const bool allow_empty = empty_policy == EmptyParamPolicy::kAllow;
+  const bool is_valid_shape =
+      param->dim() == 1 &&
+      (param->size(0) == num_features || (allow_empty && param->size(0) == 0));
+  TT_RET_CHECK(is_valid_shape, error::kInvalidArgument)
+      << "expected " << arg_name << " to have shape [" << num_features
+      << "], got " << ToString(param->sizes());
+  return absl::OkStatus();
+}
+
+absl::Status ValidateBatchNormForwardInputs(
+    const at::Tensor& input, const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& bias,
+    const std::optional<at::Tensor>& running_mean,
+    const std::optional<at::Tensor>& running_variance) {
+  TT_RETURN_IF_ERROR(ValidateIsFloating(input, /*arg_name=*/"input"));
+  TT_RETURN_IF_ERROR(ValidateInputRank(input));
+  TT_RET_CHECK(running_mean.has_value() == running_variance.has_value(),
+               error::kInvalidArgument)
+      << "running_mean and running_var must either both be provided or both be "
+         "omitted";
+  const int64_t num_features = input.size(kTorchFeaturesDimensionIndex);
+  TT_RETURN_IF_ERROR(ValidateBatchNormParam(weight, "weight", num_features));
+  TT_RETURN_IF_ERROR(ValidateBatchNormParam(bias, "bias", num_features));
+  TT_RETURN_IF_ERROR(
+      ValidateBatchNormParam(running_mean, "running_mean", num_features));
+  TT_RETURN_IF_ERROR(
+      ValidateBatchNormParam(running_variance, "running_var", num_features));
+  return absl::OkStatus();
+}
+
+absl::Status ValidateBatchNormBackwardInputs(
+    const at::Tensor& grad_out, const at::Tensor& input,
+    const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& running_mean,
+    const std::optional<at::Tensor>& running_variance,
+    const std::optional<at::Tensor>& save_mean,
+    const std::optional<at::Tensor>& save_invstd, const bool training) {
+  TT_RETURN_IF_ERROR(ValidateIsFloating(input, /*arg_name=*/"input"));
+  TT_RETURN_IF_ERROR(ValidateIsFloating(grad_out, /*arg_name=*/"grad_out"));
+  TT_RETURN_IF_ERROR(ValidateInputRank(input));
+  TT_RET_CHECK(grad_out.sizes() == input.sizes(), error::kInvalidArgument)
+      << "expected grad_out to have shape " << ToString(input.sizes())
+      << ", got " << ToString(grad_out.sizes());
+  TT_RET_CHECK(grad_out.scalar_type() == input.scalar_type(),
+               error::kInvalidArgument)
+      << "expected grad_out to have dtype " << ToString(input.scalar_type())
+      << ", got " << ToString(grad_out.scalar_type());
+
+  const int64_t num_features = input.size(kTorchFeaturesDimensionIndex);
+  TT_RETURN_IF_ERROR(ValidateBatchNormParam(weight, "weight", num_features));
+  TT_RETURN_IF_ERROR(
+      ValidateBatchNormParam(running_mean, "running_mean", num_features));
+  TT_RETURN_IF_ERROR(
+      ValidateBatchNormParam(running_variance, "running_var", num_features));
+  // In eval mode, callers (e.g. CPU/cuDNN autograd) may pass empty [0] save
+  // stats tensors.
+  const EmptyParamPolicy save_stats_policy =
+      training ? EmptyParamPolicy::kDisallow : EmptyParamPolicy::kAllow;
+  TT_RETURN_IF_ERROR(ValidateBatchNormParam(save_mean, "save_mean",
+                                            num_features, save_stats_policy));
+  TT_RETURN_IF_ERROR(ValidateBatchNormParam(save_invstd, "save_invstd",
+                                            num_features, save_stats_policy));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<mlir::ElementType> InferBackwardWeightDtype(
+    const mlir::ElementType fallback_dtype, const bool training,
+    const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& running_mean,
+    const std::optional<at::Tensor>& running_variance,
+    const std::optional<at::Tensor>& save_mean,
+    const std::optional<at::Tensor>& save_invstd) {
+  for (const auto& param : {weight, running_mean, running_variance}) {
+    if (param.has_value()) {
+      return ConvertTo<mlir::ElementType>(param->scalar_type());
+    }
+  }
+  if (training) {
+    for (const auto& param : {save_mean, save_invstd}) {
+      if (param.has_value()) {
+        return ConvertTo<mlir::ElementType>(param->scalar_type());
+      }
+    }
+  }
+  return fallback_dtype;
 }
 
 inline std::optional<mlir::MlirOp> GetOptionalMlirOp(
@@ -81,7 +190,8 @@ absl::StatusOr<BatchNormDispatchParams> PrepareBatchNormDispatch(
     std::optional<at::Tensor> bias, std::optional<at::Tensor> running_mean,
     std::optional<at::Tensor> running_variance, bool training, double momentum,
     double eps) {
-  TT_RETURN_IF_ERROR(ValidateIsFloating(input, /*arg_name=*/"input"));
+  TT_RETURN_IF_ERROR(ValidateBatchNormForwardInputs(
+      input, weight, bias, running_mean, running_variance));
   ABSL_VLOG(1) << "TpuBatchNorm weight: " << !!weight << ", bias: " << !!bias
                << ", running_mean: " << !!running_mean
                << ", running_variance: " << !!running_variance
@@ -181,7 +291,8 @@ absl::Status TpuBatchNormTrainingUpdateStats(
     std::optional<at::Tensor> bias, const at::Tensor& running_mean,
     const at::Tensor& running_variance, double momentum, double eps,
     OpParamCacheKeys param_keys, std::array<at::Tensor, 3>& outputs) {
-  TT_RETURN_IF_ERROR(ValidateIsFloating(input, /*arg_name=*/"input"));
+  TT_RETURN_IF_ERROR(ValidateBatchNormForwardInputs(
+      input, weight, bias, running_mean, running_variance));
   TT_ASSIGN_OR_RETURN(const auto input_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
   const auto acc_type = ToAccumulateType(input.scalar_type());
@@ -305,6 +416,15 @@ absl::Status TpuBatchNormOut(const at::Tensor& input,
                              bool training, double momentum, double eps,
                              OpParamCacheKeys param_keys, at::Tensor& out,
                              at::Tensor& save_mean, at::Tensor& save_invstd) {
+  TT_RETURN_IF_ERROR(ValidateBatchNormForwardInputs(
+      input, weight, bias, running_mean, running_variance));
+  const auto acc_type = ToAccumulateType(input.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, input.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(save_mean, acc_type, /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(save_invstd, acc_type, /*allow_out_dtype_cast=*/false));
   if (ShouldUpdateRunningStats(input, running_mean, running_variance,
                                training)) {
     std::array<at::Tensor, 3> outputs = {out, save_mean, save_invstd};
@@ -331,8 +451,9 @@ absl::StatusOr<DeviceBufferRefArray<3>> TpuBatchNormBackward(
     std::optional<at::Tensor> save_mean, std::optional<at::Tensor> save_invstd,
     bool training, double eps, std::array<bool, 3> output_mask,
     OpParamCacheKeys param_keys) {
-  TT_RETURN_IF_ERROR(ValidateIsFloating(input, /*arg_name=*/"input"));
-  TT_RETURN_IF_ERROR(ValidateIsFloating(grad_out, /*arg_name=*/"grad_out"));
+  TT_RETURN_IF_ERROR(ValidateBatchNormBackwardInputs(
+      grad_out, input, weight, running_mean, running_variance, save_mean,
+      save_invstd, training));
 
   std::vector<at::Tensor> inputs;
   inputs.reserve(7);  // Max inputs
@@ -370,15 +491,10 @@ absl::StatusOr<DeviceBufferRefArray<3>> TpuBatchNormBackward(
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(grad_out.scalar_type()));
 
-  mlir::ElementType weight_dtype = output_dtype;
-  for (const auto& param :
-       {weight, running_mean, running_variance, save_mean, save_invstd}) {
-    if (param.has_value()) {
-      TT_ASSIGN_OR_RETURN(weight_dtype,
-                          ConvertTo<mlir::ElementType>(param->scalar_type()));
-      break;
-    }
-  }
+  TT_ASSIGN_OR_RETURN(
+      const mlir::ElementType weight_dtype,
+      InferBackwardWeightDtype(output_dtype, training, weight, running_mean,
+                               running_variance, save_mean, save_invstd));
 
   absl::Span<const int64_t> input_dims = input.sizes();
   int64_t num_features = input.size(kTorchFeaturesDimensionIndex);

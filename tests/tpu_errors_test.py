@@ -6689,5 +6689,310 @@ class ProfilerErrorsTest(et.TpuOnlyErrorTestBase):
         sync.synchronize(c)
 
 
+class NativeBatchNormErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @parameterized.named_parameters(
+      (
+          "weight_wrong_size",
+          "weight",
+          (5,),
+          True,
+          "native_batch_norm(): expected weight to have shape [3], got [5]",
+      ),
+      (
+          "bias_wrong_size",
+          "bias",
+          (5,),
+          True,
+          "native_batch_norm(): expected bias to have shape [3], got [5]",
+      ),
+      (
+          "running_var_wrong_size_eval",
+          "running_var",
+          (5,),
+          False,
+          (
+              "native_batch_norm(): expected running_var to have shape [3],"
+              " got [5]"
+          ),
+      ),
+  )
+  @et.why_tpu_only(
+      "CUDA's raw aten::native_batch_norm kernel does not validate 1D"
+      " parameter lengths when size > C and silently reads the first C"
+      " elements, whereas TPU validates strictly to prevent StableHLO"
+      " verification failures."
+  )
+  def test_native_batch_norm_invalid_param_1d_shape(
+      self, bad_arg, bad_shape, training, tpu_msg
+  ):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    params = {
+        "weight": torch.ones((3,), device=et.device()),
+        "bias": torch.zeros((3,), device=et.device()),
+        "running_mean": torch.zeros((3,), device=et.device()),
+        "running_var": torch.ones((3,), device=et.device()),
+    }
+    params[bad_arg] = torch.ones(bad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp,
+          params["weight"],
+          params["bias"],
+          params["running_mean"],
+          params["running_var"],
+          training,
+          0.1,
+          1e-5,
+      )
+
+  @parameterized.named_parameters(
+      (
+          "native_batch_norm_out",
+          "native_batch_norm_out",
+          "native_batch_norm(): expected weight to have shape [3], got [5]",
+      ),
+      (
+          "legit",
+          "legit",
+          (
+              "native_batch_norm_legit(): expected weight to have shape [3],"
+              " got [5]"
+          ),
+      ),
+      (
+          "legit_no_stats",
+          "legit_no_stats",
+          (
+              "native_batch_norm_legit(): expected weight to have shape [3],"
+              " got [5]"
+          ),
+      ),
+      (
+          "legit_out",
+          "legit_out",
+          (
+              "native_batch_norm_legit(): expected weight to have shape [3],"
+              " got [5]"
+          ),
+      ),
+      (
+          "legit_no_stats_out",
+          "legit_no_stats_out",
+          (
+              "native_batch_norm_legit(): expected weight to have shape [3],"
+              " got [5]"
+          ),
+      ),
+  )
+  @et.why_tpu_only(
+      "CUDA's raw aten::native_batch_norm* kernels do not validate 1D"
+      " parameter lengths when size > C, whereas TPU validates strictly."
+  )
+  def test_native_batch_norm_variant_invalid_weight_shape(
+      self, variant, tpu_msg
+  ):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    bad_weight = torch.ones((5,), device=et.device())
+    bias = torch.zeros((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    out = torch.empty(0, device=et.device())
+    save_mean = torch.empty(0, device=et.device())
+    save_invstd = torch.empty(0, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+    ):
+      if variant == "native_batch_norm_out":
+        torch.ops.aten.native_batch_norm.out(
+            inp,
+            bad_weight,
+            bias,
+            running_mean,
+            running_var,
+            True,
+            0.1,
+            1e-5,
+            out=out,
+            save_mean=save_mean,
+            save_invstd=save_invstd,
+        )
+      elif variant == "legit":
+        torch.ops.aten._native_batch_norm_legit(
+            inp, bad_weight, bias, running_mean, running_var, True, 0.1, 1e-5
+        )
+      elif variant == "legit_no_stats":
+        torch.ops.aten._native_batch_norm_legit.no_stats(
+            inp, bad_weight, bias, True, 0.1, 1e-5
+        )
+      elif variant == "legit_out":
+        torch.ops.aten._native_batch_norm_legit.out(
+            inp,
+            bad_weight,
+            bias,
+            running_mean,
+            running_var,
+            True,
+            0.1,
+            1e-5,
+            out=out,
+            save_mean=save_mean,
+            save_invstd=save_invstd,
+        )
+      else:
+        torch.ops.aten._native_batch_norm_legit.no_stats_out(
+            inp,
+            bad_weight,
+            bias,
+            True,
+            0.1,
+            1e-5,
+            out=out,
+            save_mean=save_mean,
+            save_invstd=save_invstd,
+        )
+
+  @et.why_tpu_only(
+      "CUDA's training batch_norm_update_stats_and_invert only dispatches on"
+      " running_mean's dtype and silently accepts complex64 running_var,"
+      " whereas TPU validates all parameter dtypes."
+  )
+  def test_native_batch_norm_training_non_floating_running_var(self):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    bias = torch.zeros((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), dtype=torch.complex64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm(): expected running_var to be floating point, got complex64""",
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+      )
+
+  @parameterized.named_parameters(
+      (
+          "weight_wrong_size",
+          "weight",
+          (5,),
+          True,
+          (
+              "native_batch_norm_backward(): expected weight to have shape [3],"
+              " got [5]"
+          ),
+      ),
+      (
+          "running_mean_wrong_size",
+          "running_mean",
+          (5,),
+          False,
+          (
+              "native_batch_norm_backward(): expected running_mean to have"
+              " shape [3], got [5]"
+          ),
+      ),
+      (
+          "save_mean_wrong_size",
+          "save_mean",
+          (5,),
+          True,
+          (
+              "native_batch_norm_backward(): expected save_mean to have shape"
+              " [3], got [5]"
+          ),
+      ),
+      (
+          "save_invstd_wrong_size",
+          "save_invstd",
+          (5,),
+          True,
+          (
+              "native_batch_norm_backward(): expected save_invstd to have shape"
+              " [3], got [5]"
+          ),
+      ),
+      (
+          "save_mean_wrong_size_eval",
+          "save_mean",
+          (5,),
+          False,
+          (
+              "native_batch_norm_backward(): expected save_mean to have shape"
+              " [3], got [5]"
+          ),
+      ),
+  )
+  @et.why_tpu_only(
+      "CUDA's raw aten::native_batch_norm_backward kernel does not validate 1D"
+      " parameter lengths when size > C and silently reads the first C"
+      " elements, whereas TPU validates strictly."
+  )
+  def test_native_batch_norm_backward_invalid_param_1d_shape(
+      self, bad_arg, bad_shape, training, tpu_msg
+  ):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    grad_out = torch.ones((2, 3, 4, 4), device=et.device())
+    params = {
+        "weight": torch.ones((3,), device=et.device()),
+        "running_mean": torch.zeros((3,), device=et.device()),
+        "running_var": torch.ones((3,), device=et.device()),
+        "save_mean": torch.zeros((3,), device=et.device()),
+        "save_invstd": torch.ones((3,), device=et.device()),
+    }
+    params[bad_arg] = torch.ones(bad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          params["weight"],
+          params["running_mean"],
+          params["running_var"],
+          params["save_mean"],
+          params["save_invstd"],
+          training,
+          1e-5,
+          [True, True, True],
+      )
+
+  @et.why_tpu_only(
+      "CUDA reshapes grad_out to [N, C, H*W] without validating individual"
+      " spatial dims when numel matches, whereas TPU validates"
+      " grad_out.sizes() == input.sizes()."
+  )
+  def test_native_batch_norm_backward_mismatched_spatial_grad_out_shape(self):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    grad_out = torch.ones((2, 3, 2, 8), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    save_mean = torch.zeros((3,), device=et.device())
+    save_invstd = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): expected grad_out to have shape [2, 3, 4, 4], got [2, 3, 2, 8]""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          save_mean,
+          save_invstd,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+
+
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)

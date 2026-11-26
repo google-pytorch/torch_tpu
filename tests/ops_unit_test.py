@@ -3607,6 +3607,101 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_op)
 
+  @parameterized.product(
+      shape=[(2, 0, 4, 4), (0, 3, 4, 4), (2, 3, 0, 4)],
+      training=[True, False],
+  )
+  def test_native_batch_norm_empty_dims(self, shape, training):
+    """Tests forward and backward with empty channel/batch/spatial dims."""
+    c = shape[1]
+    inp = torch.empty(shape, dtype=torch.float32, device="tpu")
+    weight = torch.ones((c,), dtype=torch.float32, device="tpu")
+    bias = torch.zeros((c,), dtype=torch.float32, device="tpu")
+    running_mean = torch.zeros((c,), dtype=torch.float32, device="tpu")
+    running_var = torch.ones((c,), dtype=torch.float32, device="tpu")
+
+    out, save_mean, save_invstd = torch.ops.aten.native_batch_norm(
+        inp, weight, bias, running_mean, running_var, training, 0.1, 1e-5
+    )
+    self.assertEqual(out.shape, shape)
+    self.assertEqual(save_mean.shape, (c,))
+    self.assertEqual(save_invstd.shape, (c,))
+
+    grad_out = torch.empty(shape, dtype=torch.float32, device="tpu")
+    grad_input, grad_weight, grad_bias = (
+        torch.ops.aten.native_batch_norm_backward(
+            grad_out,
+            inp,
+            weight,
+            running_mean,
+            running_var,
+            save_mean,
+            save_invstd,
+            training,
+            1e-5,
+            [True, True, True],
+        )
+    )
+    self.assertEqual(grad_input.shape, shape)
+    self.assertEqual(grad_weight.shape, (c,))
+    self.assertEqual(grad_bias.shape, (c,))
+    torch.accelerator.synchronize()
+
+  def test_native_batch_norm_backward_eval_empty_save_stats(self):
+    """Tests eval-mode native_batch_norm_backward with empty [0] save stats."""
+    shape = (2, 3, 4, 4)
+    grad_out = torch.randn(shape, dtype=torch.bfloat16)
+    inp = torch.randn(shape, dtype=torch.bfloat16)
+    save_mean = torch.empty((0,), dtype=torch.float32)
+    save_invstd = torch.empty((0,), dtype=torch.float32)
+
+    grad_input, grad_weight, grad_bias = (
+        torch.ops.aten.native_batch_norm_backward(
+            grad_out.to("tpu"),
+            inp.to("tpu"),
+            None,
+            None,
+            None,
+            save_mean.to("tpu"),
+            save_invstd.to("tpu"),
+            False,
+            1e-5,
+            [True, True, True],
+        )
+    )
+    self.assertEqual(grad_input.shape, shape)
+    self.assertEqual(grad_input.dtype, torch.bfloat16)
+    self.assertEqual(grad_weight.shape, (3,))
+    self.assertEqual(grad_weight.dtype, torch.bfloat16)
+    self.assertEqual(grad_bias.shape, (3,))
+    self.assertEqual(grad_bias.dtype, torch.bfloat16)
+
+    # Eval defaults: mean=0, var=1, weight=1, eps=1e-5.
+    inv_std = torch.rsqrt(torch.tensor(1.0 + 1e-5, dtype=torch.float32))
+    expected_grad_input = (grad_out.float() * inv_std).to(torch.bfloat16)
+    expected_grad_weight = (
+        (grad_out.float() * inp.float()).sum(dim=(0, 2, 3)) * inv_std
+    ).to(torch.bfloat16)
+    expected_grad_bias = grad_out.float().sum(dim=(0, 2, 3)).to(torch.bfloat16)
+    self.assert_close(
+        golden_result=expected_grad_input,
+        torch_tpu_result=grad_input.cpu(),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+    self.assert_close(
+        golden_result=expected_grad_weight,
+        torch_tpu_result=grad_weight.cpu(),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+    self.assert_close(
+        golden_result=expected_grad_bias,
+        torch_tpu_result=grad_bias.cpu(),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+
   def test_bernoulli_distribution(self):
     """Tests bernoulli to produce the correct distribution."""
     n = 1000

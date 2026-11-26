@@ -195,7 +195,7 @@ csrc/ops/mm/mm_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 4}
 csrc/ops/mse_loss/mse_loss_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
 csrc/ops/multinomial/multinomial_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/native_batch_norm/native_batch_norm.cc: {remaining: 0, total: 1, infeasible: 0}
-csrc/ops/native_batch_norm/native_batch_norm_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/native_batch_norm/native_batch_norm_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/native_multi_head_attention/native_multi_head_attention_aten_kernels.cc: {remaining: 0, total: 25, infeasible: 0}
 csrc/ops/native_norm/native_norm_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/nll_loss/nll_loss.cc: {remaining: 0, total: 3, infeasible: 3}
