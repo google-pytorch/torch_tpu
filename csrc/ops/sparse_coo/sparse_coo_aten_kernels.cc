@@ -192,8 +192,9 @@ at::Tensor& AddOutDenseSparse(const at::Tensor& self, const at::Tensor& other,
                               OpParamCacheKeys pk, at::Tensor& out) {
   std::optional<at::Tensor> alpha_tensor_opt;
   if (!promoted_alpha.IsOne()) {
-    TT_ASSIGN_OR_THROW(alpha_tensor_opt,
-                       promoted_alpha.GetTensor(out.scalar_type()));
+    TT_ASSIGN_OR_THROW(
+        alpha_tensor_opt,
+        promoted_alpha.GetTensor(InferComputationDtype(out.scalar_type())));
   }
   TT_CHECK_THROW(!out.is_sparse(), error::kInvalidArgument)
       << "expected dense output tensor when adding dense and sparse tensors, "

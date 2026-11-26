@@ -11779,6 +11779,98 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(sp_cpu_roundtrip.to_dense(), sp_cpu_src.to_dense())
 
   @parameterized.named_parameters(
+      ("bfloat16", torch.bfloat16, 256.0, 384.0),
+      ("float16", torch.float16, 2048.0, 2176.0),
+  )
+  def test_sparse_coo_low_precision_accumulation(
+      self, dtype, base_value, expected_sum
+  ):
+    """Tests fp32 accumulation for bf16/fp16 sparse COO ops."""
+    num_ones = 128
+    nnz = 1 + num_ones
+    indices = torch.zeros((2, nnz), dtype=torch.long, device="tpu")
+    values = torch.ones(nnz, dtype=dtype, device="tpu")
+    values[0] = base_value
+    expected_1d = torch.tensor([expected_sum], dtype=dtype)
+    expected_2d = torch.tensor([[expected_sum]], dtype=dtype)
+
+    sp = torch.sparse_coo_tensor(indices, values, size=(1, 1), device="tpu")
+
+    coalesced = sp.coalesce()
+    self.assertTrue(coalesced.is_coalesced())
+    self.assertEqual(coalesced._nnz(), 1)
+    self.assertEqual(coalesced.values().cpu(), expected_1d, atol=0, rtol=0)
+
+    dense_from_sparse = sp.to_dense()
+    self.assertEqual(dense_from_sparse.cpu(), expected_2d, atol=0, rtol=0)
+
+    dense_base = torch.tensor([[base_value]], dtype=dtype, device="tpu")
+    sp_ones = torch.sparse_coo_tensor(
+        torch.zeros((2, num_ones), dtype=torch.long, device="tpu"),
+        torch.ones(num_ones, dtype=dtype, device="tpu"),
+        size=(1, 1),
+        device="tpu",
+    )
+    added = torch.add(dense_base, sp_ones)
+    self.assertEqual(added.cpu(), expected_2d, atol=0, rtol=0)
+
+    sp_half_terms = torch.sparse_coo_tensor(
+        torch.zeros((2, num_ones * 2), dtype=torch.long, device="tpu"),
+        torch.ones(num_ones * 2, dtype=dtype, device="tpu"),
+        size=(1, 1),
+        device="tpu",
+    )
+    added_alpha = torch.add(dense_base, sp_half_terms, alpha=0.5)
+    self.assertEqual(added_alpha.cpu(), expected_2d, atol=0, rtol=0)
+
+    # Non-dyadic alpha (0.1) would truncate in bf16/fp16 if materialized in
+    # out.scalar_type() before f32 opmath accumulation. Starting at -9.5 yields
+    # 0.5 in f32 (-9.5 + 100 * 0.1), whereas truncated alpha shifts the sum by
+    # multiple ULPs in both bfloat16 (0.5078125) and float16 (0.49755859375).
+    non_dyadic_alpha = 0.1
+    sp_non_dyadic = torch.sparse_coo_tensor(
+        torch.zeros((2, 100), dtype=torch.long, device="tpu"),
+        torch.ones(100, dtype=dtype, device="tpu"),
+        size=(1, 1),
+        device="tpu",
+    )
+    dense_offset = torch.full((1, 1), -9.5, dtype=dtype, device="tpu")
+    expected_non_dyadic = torch.add(
+        dense_offset.float().cpu(),
+        sp_non_dyadic.cpu().float(),
+        alpha=non_dyadic_alpha,
+    ).to(dtype)
+    added_non_dyadic = torch.add(
+        dense_offset, sp_non_dyadic, alpha=non_dyadic_alpha
+    )
+    self.assertEqual(
+        added_non_dyadic.cpu(), expected_non_dyadic, atol=0, rtol=0
+    )
+
+    sp_empty = torch.sparse_coo_tensor(
+        torch.empty((2, 0), dtype=torch.long, device="tpu"),
+        torch.empty((0,), dtype=dtype, device="tpu"),
+        size=(1, 1),
+        device="tpu",
+    )
+    empty_coalesced = sp_empty.coalesce()
+    self.assertTrue(empty_coalesced.is_coalesced())
+    self.assertEqual(empty_coalesced._nnz(), 0)
+    self.assertEqual(empty_coalesced.dtype, dtype)
+    self.assertEqual(
+        sp_empty.to_dense().cpu(),
+        torch.zeros((1, 1), dtype=dtype),
+        atol=0,
+        rtol=0,
+    )
+    self.assertEqual(
+        torch.add(dense_base, sp_empty).cpu(),
+        dense_base.cpu(),
+        atol=0,
+        rtol=0,
+    )
+
+  @parameterized.named_parameters(
       ("1d_empty_indices", 16, (0,)),
       ("2d_empty_indices", 16, (2, 0)),
       ("0_row_weight", 0, (0,)),
