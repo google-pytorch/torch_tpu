@@ -255,8 +255,8 @@ csrc/ops/stride/stride_helper.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/take/take_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/tanh/tanh_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/tensor_factories/tensor_factories_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 2}
-csrc/ops/thnn_fused_gru_cell/thnn_fused_gru_cell_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
-csrc/ops/thnn_fused_lstm_cell/thnn_fused_lstm_cell_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
+csrc/ops/thnn_fused_gru_cell/thnn_fused_gru_cell_aten_kernels.cc: {remaining: 0, total: 15, infeasible: 0}
+csrc/ops/thnn_fused_lstm_cell/thnn_fused_lstm_cell_aten_kernels.cc: {remaining: 0, total: 18, infeasible: 0}
 csrc/ops/threshold/threshold_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/to_copy/to_copy_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/ops/transformer_encoder_layer_fwd/_transformer_encoder_layer_fwd_aten_kernels.cc: {remaining: 0, total: 26, infeasible: 0}
