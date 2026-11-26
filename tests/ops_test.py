@@ -4727,7 +4727,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_var(self):
     self.do_test_op(
         "var",
-        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,)
+        exclude_dtypes=(torch.bool,)
         # TODO(b/589910660): Eager CUDA rejects integer dtypes (TorchTPU
         # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled(_INTEGER_DTYPES, ()),

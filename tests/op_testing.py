@@ -395,9 +395,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "mm.dtype",
     "sparse_coo_mul",
     "sparse_coo_neg",
-    # TODO: Remove "std" once find_cast_pairs avoids real->complex pairs.
-    "std",
-    "var",
     # go/keep-sorted end
 }
 

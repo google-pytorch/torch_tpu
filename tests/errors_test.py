@@ -2873,6 +2873,17 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.var(t, dim=0, out=out)
 
+  def test_reduction_unsupported_complex_out_dtype_var_all_dims(self):
+    """Var full-reduction out-variant fails for real input and complex out."""
+    t = torch.ones(3, device=et.device(), dtype=torch.float32)
+    out = torch.empty((), device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""var(): expected the output dtype not to be complex for a real input, got complex64""",
+        gpu=""""std_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.var(t, out=out)
+
   def test_unfold_size_too_large(self):
     """Unfold fails when size is larger than dimension."""
     t = torch.ones(5, device=et.device())
