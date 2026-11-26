@@ -1153,10 +1153,23 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:handshake",
+        "//src/torch_tpu/_internal/distributed:handshake_consensus",
         "//src/torch_tpu/_internal/distributed:handshake_messages",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
         "@pypi//pyzmq",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "handshake_consensus_test",
+    srcs = ["handshake_consensus_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:handshake_consensus",
+        "//src/torch_tpu/_internal/distributed:process_group_utils",
+        "//tests:seed_test_utils",
     ],
 )
 

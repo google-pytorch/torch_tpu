@@ -25,10 +25,13 @@ import portpicker
 import torch.distributed as dist
 from torch_tpu._internal import env
 from torch_tpu._internal.distributed import handshake
+from torch_tpu._internal.distributed import handshake_consensus
 from torch_tpu._internal.distributed import handshake_messages
 from tests import seed_test_utils
 import zmq
 
+_ExpectedHandshakeClaim = handshake_consensus._ExpectedHandshakeClaim
+_ProcessGroupState = handshake_consensus._ProcessGroupState
 _CollectiveHandshakeConsensus = handshake._CollectiveHandshakeConsensus
 _CollectiveHandshakeRequestZMQEnvelope = (
     handshake._CollectiveHandshakeRequestZMQEnvelope
@@ -235,6 +238,20 @@ class CollectiveHandshakeConsensusTest(seed_test_utils.RepeatableTest):
         await consensus.get_from_ranks([0, 4])
 
     asyncio.run(_test())
+
+
+class HandshakeConsensusProcessGroupStateTest(seed_test_utils.RepeatableTest):
+  """Unit tests for `handshake_consensus._ProcessGroupState` error handling."""
+
+  def test_claimants_have_to_make_the_same_claim(self) -> None:
+    state = _ProcessGroupState(ProcessGroupId([0, 1, 2]))
+    state.add_claimant(0, _ExpectedHandshakeClaim(0, 2, "a"))
+
+    with self.assertRaisesRegex(ValueError, "rank 1 cannot claim"):
+      state.add_claimant(1, _ExpectedHandshakeClaim(0, 2, "b"))
+    with self.assertRaisesRegex(ValueError, "rank 1 cannot claim"):
+      state.add_claimant(1, _ExpectedHandshakeClaim(0, 1, "a"))
+    self.assertEqual(state.claimants, (0,))
 
 
 class GetValidatedHandshakePortTest(seed_test_utils.RepeatableTest):
