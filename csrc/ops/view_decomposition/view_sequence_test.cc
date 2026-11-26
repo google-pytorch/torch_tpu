@@ -299,6 +299,37 @@ TEST(Simplify, ReshapeConj) {
                });
 }
 
+TEST(Simplify, MoveSliceBeforeReshape) {
+  // Equivalent to:
+  // torch.arange(32).view(4, 8).view(32)[8:16]
+  // which is the same as torch.arange(32).view(4, 8)[1:2, :].view(8).
+  SimplifyTest(
+      {4, 8},
+      {ReshapePrimitive{.base_sizes = {4, 8}, .new_sizes = {32}},
+       SlicePrimitive{
+           .slice_dims = {{.start_index = 8, .limit_index = 16, .stride = 1}}}},
+      {SlicePrimitive{
+           .slice_dims = {{.start_index = 1, .limit_index = 2, .stride = 1},
+                          {.start_index = 0, .limit_index = 8, .stride = 1}}},
+       ReshapePrimitive{.base_sizes = {1, 8}, .new_sizes = {8}}});
+}
+
+TEST(Simplify, DoNotMoveSliceBeforeReshapeThatSelectsOtherElements) {
+  // Equivalent to:
+  // torch.arange(16).view(8, 2).view(2, 8)[:, :3]
+  // The slice [0:6, 0:1] of the (8, 2) base has the same storage offset and
+  // last element, but selects elements [0, 2, 4, 6, 8, 10] instead of
+  // [0, 1, 2, 8, 9, 10], so the slice stays after the reshape.
+  ViewSequence sequence = {
+      ReshapePrimitive{.base_sizes = {8, 2}, .new_sizes = {2, 8}},
+      SlicePrimitive{
+          .slice_dims = {{.start_index = 0, .limit_index = 2, .stride = 1},
+                         {.start_index = 0, .limit_index = 3, .stride = 1}}}};
+  ViewSequence expected = sequence;  // Should not be modified
+
+  SimplifyTest({8, 2}, std::move(sequence), std::move(expected));
+}
+
 TEST(ViewPrimitiveEquality, ConjPrimitive) {
   ViewPrimitive c1 = ConjPrimitive{.is_set = true};
   ViewPrimitive c2 = ConjPrimitive{.is_set = true};

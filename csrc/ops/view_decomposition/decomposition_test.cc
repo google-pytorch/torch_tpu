@@ -1407,6 +1407,33 @@ TEST(DecomposeIntoViewSequence, StridedSliceOfTwoDimensionalBase) {
   DecomposeAndCheckElements({5, 4}, view_layout);
 }
 
+TEST(DecomposeIntoViewSequence, SliceOfReshapedBaseWithSpareElements) {
+  // torch.arange(16.).view(8, 2).view(2, 8)[:, :3]. Moving the slice before the
+  // reshape of the base gives the slice [0:6, 0:1], which has the same storage
+  // offset and last element but selects elements [0, 2, 4, 6, 8, 10] instead
+  // of [0, 1, 2, 8, 9, 10].
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 8}, {.size = 3, .stride = 1}},
+      .storage_offset = 0,
+  };
+  DecomposeAndCheckElements({8, 2}, view_layout);
+
+  // torch.arange(16.).view(8, 2).view(2, 8)[:, 1:4]
+  view_layout.storage_offset = 1;
+  DecomposeAndCheckElements({8, 2}, view_layout);
+}
+
+TEST(DecomposeIntoViewSequence, NarrowViewOfWideBaseWithSpareElements) {
+  // torch.arange(9.).view(torch.bfloat16).as_strided((2, 3), (8, 1)). The
+  // bitcast to bfloat16 turns the base into shape (9, 2).
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 8}, {.size = 3, .stride = 1}},
+      .storage_offset = 0,
+  };
+  DecomposeAndCheckElements({9}, view_layout, mlir::ElementType::F32,
+                            mlir::ElementType::BF16);
+}
+
 // Calls fn with every view layout with up to 3 dimensions of size <= 3, stride
 // <= 7 and storage offset <= 1, and the number of elements of the smallest
 // contiguous base that holds the view.
@@ -1463,6 +1490,26 @@ TEST(DecomposeIntoViewSequence, SmallLayoutsOfTwoDimensionalBases) {
   ForEachSmallLayout([](const StridedLayout& view_layout, int64_t numel) {
     CheckSmallLayout({(numel + 1) / 2, 2}, view_layout);
     CheckSmallLayout({(numel + 2) / 3, 3}, view_layout);
+  });
+}
+
+TEST(DecomposeIntoViewSequence, SmallLayoutsOfBasesWithSpareRows) {
+  // Moving a slice before the reshape of a base with more rows than the view
+  // needs can match the storage offset and the last element of the view
+  // without matching its other elements.
+  ForEachSmallLayout([](const StridedLayout& view_layout, int64_t numel) {
+    for (const Dimensions& row_shape :
+         {Dimensions{2}, Dimensions{3}, Dimensions{2, 2}, Dimensions{3, 2}}) {
+      const int64_t row_numel =
+          absl::c_accumulate(row_shape, int64_t{1}, std::multiplies<>());
+      const int64_t min_rows = (numel + row_numel - 1) / row_numel;
+      for (int64_t rows = min_rows + 1; rows <= min_rows + 2; ++rows) {
+        Dimensions contiguous_base_shape = {rows};
+        contiguous_base_shape.insert(contiguous_base_shape.end(),
+                                     row_shape.begin(), row_shape.end());
+        CheckSmallLayout(contiguous_base_shape, view_layout);
+      }
+    }
   });
 }
 

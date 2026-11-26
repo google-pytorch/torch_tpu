@@ -591,6 +591,30 @@ class SliceTest(LayoutTest):
         lambda tensor: tensor[1:99, ::2],
     )
 
+  @parameterized.parameters(
+      # The view decomposition must not turn x.view(2, 8)[:, :3] of an (8, 2)
+      # tensor x into x[0:6, 0:1].view(2, 3), which has the same first and
+      # last elements but strides (6, 2) instead of (8, 1).
+      ((8, 2), (2, 8), (slice(None), slice(None, 3))),
+      ((8, 2), (2, 8), (slice(None), slice(1, 4))),
+      ((5, 2), (2, 5), (slice(None), slice(None, 2))),
+      # Control: the same view of a (9, 2) tensor was already right.
+      ((9, 2), (2, 9), (slice(None), slice(None, 3))),
+  )
+  def test_slice_after_view(self, base_shape, view_shape, index):
+    base_cpu = torch.arange(
+        torch.Size(base_shape).numel(), dtype=torch.float32
+    ).reshape(base_shape)
+    base_tpu = base_cpu.to(self.tpu_device)
+    utils.assert_close(
+        base_tpu.view(view_shape)[index].cpu(),
+        base_cpu.view(view_shape)[index],
+    )
+
+    base_cpu.view(view_shape)[index] = -1.0
+    base_tpu.view(view_shape)[index] = -1.0
+    utils.assert_close(base_tpu.cpu(), base_cpu)
+
 
 class SelectTest(LayoutTest, seed_test_utils.RepeatableTest):
   # Slice performs a select in cases where it changes the number of dimensions.
@@ -1194,6 +1218,21 @@ class ViewDtypeTest(LayoutTest):
         base_shape=(17,),
         base_int_type=torch.uint32,
         view_int_dtype=torch.uint16,
+    )
+
+  def test_strided_view_of_smaller_size(self):
+    # The bfloat16 elements of the float32 base are 0, 1, ..., 17. The view
+    # reads [0, 1, 2] and [8, 9, 10].
+    base_cpu = torch.arange(18, dtype=torch.bfloat16).view(torch.float32)
+    base_tpu = base_cpu.to(self.tpu_device)
+    view_cpu = base_cpu.view(torch.bfloat16).as_strided((2, 3), (8, 1))
+    view_tpu = base_tpu.view(torch.bfloat16).as_strided((2, 3), (8, 1))
+    utils.assert_close(view_tpu.cpu(), view_cpu)
+
+    view_cpu.fill_(-1.0)
+    view_tpu.fill_(-1.0)
+    utils.assert_close(
+        base_tpu.view(torch.bfloat16).cpu(), base_cpu.view(torch.bfloat16)
     )
 
   def test_bool_to_real(self):
