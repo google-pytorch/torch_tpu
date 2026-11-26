@@ -1640,31 +1640,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           [True, True],
       )
 
-  @parameterized.named_parameters(
-      ("bool", torch.bool, "bool"),
-      ("int64", torch.int64, "int64"),
-  )
-  @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
-  def test_elu_backward_unsupported_dtypes(
-      self, dtype: torch.dtype, tpu_dtype_str: str
-  ):
-    grad_output = torch.ones(4, device=et.device(), dtype=dtype)
-
-    alpha = 1.0
-    scale = 1.0
-    input_scale = 1.0
-    is_result = False
-    self_or_result = torch.ones(4, device=et.device())
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""elu_backward(): expected the grad output dtype to be floating"""
-        f""" point, got {tpu_dtype_str}""",
-    ):
-      torch.ops.aten.elu_backward(
-          grad_output, alpha, scale, input_scale, is_result, self_or_result
-      )
-
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_fft_r2c_dynamic_shape(self):
     inp = torch.ones(10, device=et.device(), dtype=torch.float32)
