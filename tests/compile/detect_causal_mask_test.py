@@ -53,7 +53,10 @@ class DetectCausalMaskTest(seed_test_utils.RepeatableTest):
         (1, 1, seq_len, seq_len), dtype=torch.bfloat16
     )
     finite_neg_mask[0, 0, ~lower_tri] = -65504.0
-    self.assertTrue(detect_causal_mask._is_causal_mask(finite_neg_mask))
+    self.assertFalse(detect_causal_mask._is_causal_mask(finite_neg_mask))
+
+    float_mask[0, 0, 1, 0] = 1e-5
+    self.assertFalse(detect_causal_mask._is_causal_mask(float_mask))
 
     # All zeros (non-causal, bidirectional)
     zero_mask = torch.zeros((1, 1, seq_len, seq_len), dtype=torch.float32)
@@ -562,62 +565,25 @@ class DetectCausalMaskTest(seed_test_utils.RepeatableTest):
     utils.assert_close(grad_v_transformed, grad_v_orig)
 
   def test_numerical_correctness_sdpa_float_finite_neg_mask(self):
-    seq_len = 16
-    batch_size = 2
-    num_heads = 4
-    head_dim = 32
+    def attention(q, k, v):
+      mask = torch.tensor([[0.0, -1000.0], [0.0, 0.0]])
+      return torch.ops.aten.scaled_dot_product_attention.default(q, k, v, mask)
 
-    lower_tri = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool))
-    mask = torch.zeros((1, 1, seq_len, seq_len), dtype=torch.float32)
-    mask[0, 0, ~lower_tri] = -65504.0
-
-    graph = fx.Graph()
-    q = graph.placeholder("q")
-    k = graph.placeholder("k")
-    v = graph.placeholder("v")
-    m = graph.placeholder("mask")
-
-    sdpa = graph.call_function(
-        torch.ops.aten.scaled_dot_product_attention.default,
-        (q, k, v, m, 0.0, False),
-    )
-    graph.output(sdpa)
-    gm = fx.GraphModule(torch.nn.Module(), graph)
-
-    q_val = torch.randn(
-        batch_size, num_heads, seq_len, head_dim, requires_grad=True
-    )
-    k_val = torch.randn(
-        batch_size, num_heads, seq_len, head_dim, requires_grad=True
-    )
-    v_val = torch.randn(
-        batch_size, num_heads, seq_len, head_dim, requires_grad=True
-    )
-
-    out_orig = gm(q_val, k_val, v_val, mask)
-    out_orig.sum().backward()
-    grad_q_orig = q_val.grad.clone()
-    grad_k_orig = k_val.grad.clone()
-    grad_v_orig = v_val.grad.clone()
-
-    q_val.grad.zero_()
-    k_val.grad.zero_()
-    v_val.grad.zero_()
-
-    example_inputs = [q_val.detach(), k_val.detach(), v_val.detach(), mask]
-    detect_causal_mask.apply(gm, example_inputs)
-
-    out_transformed = gm(q_val, k_val, v_val, mask)
-    out_transformed.sum().backward()
-    grad_q_transformed = q_val.grad.clone()
-    grad_k_transformed = k_val.grad.clone()
-    grad_v_transformed = v_val.grad.clone()
-
-    # exp(-65504.0) is effectively 0 in float32, so outputs match closely
-    utils.assert_close(out_transformed, out_orig, atol=1e-4, rtol=1e-4)
-    utils.assert_close(grad_q_transformed, grad_q_orig, atol=1e-4, rtol=1e-4)
-    utils.assert_close(grad_k_transformed, grad_k_orig, atol=1e-4, rtol=1e-4)
-    utils.assert_close(grad_v_transformed, grad_v_orig, atol=1e-4, rtol=1e-4)
+    gm = fx.symbolic_trace(attention)
+    # The first query still prefers the second key: 40 * 40 - 1000 > 0.
+    inputs = [
+        torch.tensor(pair).reshape(1, 1, 2, 1).requires_grad_()
+        for pair in ([40.0, 0.0], [0.0, 40.0], [0.0, 1.0])
+    ]
+    expected = gm(*inputs)
+    expected_grads = torch.autograd.grad(expected.sum(), inputs)
+    detect_causal_mask.apply(gm)
+    actual = gm(*inputs)
+    utils.assert_close(actual, expected)
+    for grad, expected_grad in zip(
+        torch.autograd.grad(actual.sum(), inputs), expected_grads
+    ):
+      utils.assert_close(grad, expected_grad)
 
   def test_numerical_correctness_sliced_causal_mask(self):
     full_seq_len = 32

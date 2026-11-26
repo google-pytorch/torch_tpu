@@ -77,10 +77,8 @@ def _is_causal_mask(tensor: Any) -> bool:
       lower_values = tensor_cpu[lower_triangular]
       upper_values = tensor_cpu[upper_triangular]
 
-      is_lower_tri_zero = torch.all(torch.abs(lower_values) < 1e-4)
-      is_upper_tri_neginf = torch.all(
-          (upper_values <= -1000.0) | torch.isneginf(upper_values)
-      )
+      is_lower_tri_zero = torch.all(lower_values == 0)
+      is_upper_tri_neginf = torch.all(torch.isneginf(upper_values))
       return bool(is_lower_tri_zero and is_upper_tri_neginf)
   except Exception:
     return False
