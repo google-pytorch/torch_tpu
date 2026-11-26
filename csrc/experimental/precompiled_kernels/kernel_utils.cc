@@ -68,6 +68,11 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileMosaicKernel(
       BuildMosaicCustomCall(serialized_kernel, inputs, output,
                             operand_to_metadata, aliased_parameter,
                             std::move(operands_transform)));
+  // The kernel runs on a single device. Compile it without a device
+  // assignment, so that every process of a multi-process job can share one
+  // executable (also through the persistent caches) and run it on its own
+  // device; see `Execute`.
+  compile_options->compile_portable_executable = true;
   xla::ExecutableBuildOptions& build =
       compile_options->executable_build_options;
   build.set_run_backend_only(true);
