@@ -1016,64 +1016,276 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.add(t, s, alpha=1j)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="tensor",
+          op=torch.ops.aten._add_relu.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="out",
+          op=torch.ops.aten._add_relu.out,
+          is_scalar=False,
+          use_out=True,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="scalar",
+          op=torch.ops.aten._add_relu.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch.ops.aten._add_relu_.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+      dict(
+          testcase_name="inplace_scalar",
+          op=torch.ops.aten._add_relu_.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+  )
   @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
-  def test__add_relu_Scalar_complex_alpha(self):
-    """Tests _add_relu.Scalar with an alpha of complex type."""
+  def test__add_relu_unsupported_dtype(
+      self, op, is_scalar, use_out, tpu_op_name
+  ):
     device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""add_relu(): complex128 alpha value is not yet supported""",
-    ):
-      torch.ops.aten._add_relu.Scalar(t, 2.0, 1j)
 
-  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
-  def test__add_relu_Tensor_complex_alpha(self):
-    """Tests _add_relu.Tensor with an alpha of complex type."""
-    device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    s = torch.ones(4, device=device, dtype=torch.float32)
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""add_relu(): complex128 alpha value is not yet supported""",
-    ):
-      torch.ops.aten._add_relu.Tensor(t, s, alpha=1j)
+    # Bool inputs must be rejected regardless of alpha (1, True, False, 2).
+    a_bool = torch.tensor([True, False], dtype=torch.bool, device=device)
+    b_bool = (
+        True
+        if is_scalar
+        else torch.tensor([False, True], dtype=torch.bool, device=device)
+    )
+    out_bool = (
+        torch.empty(2, dtype=torch.bool, device=device) if use_out else None
+    )
+    for alpha in (1, True, False, 2):
+      with self.subTest(dtype="bool", alpha=alpha):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{tpu_op_name}(): expected promoted input dtype to be neither bool nor complex, got bool""",
+        ):
+          if out_bool is not None:
+            op(a_bool, b_bool, alpha=alpha, out=out_bool)
+          else:
+            op(a_bool, b_bool, alpha=alpha)
 
-  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
-  def test__add_relu_out_complex_alpha(self):
-    """Tests _add_relu.out with an alpha of complex type."""
-    device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    s = torch.ones(4, device=device, dtype=torch.float32)
-    out = torch.ones(4, device=device, dtype=torch.float32)
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""add_relu(): complex128 alpha value is not yet supported""",
+    # Complex64 and complex128 inputs (including complex alpha).
+    for dtype, dtype_name in (
+        (torch.complex64, "complex64"),
+        (torch.complex128, "complex128"),
     ):
-      torch.ops.aten._add_relu.out(t, s, alpha=1j, out=out)
+      a_c = torch.ones(2, dtype=dtype, device=device)
+      b_c = 1.0 if is_scalar else torch.ones(2, dtype=dtype, device=device)
+      out_c = torch.empty(2, dtype=dtype, device=device) if use_out else None
+      for alpha in (1, 1j):
+        with self.subTest(dtype=dtype_name, alpha=alpha):
+          with et.assert_raises_message(
+              RuntimeError,
+              tpu=f"""{tpu_op_name}(): expected promoted input dtype to be neither bool nor complex, got {dtype_name}""",
+          ):
+            if out_c is not None:
+              op(a_c, b_c, alpha=alpha, out=out_c)
+            else:
+              op(a_c, b_c, alpha=alpha)
 
-  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
-  def test__add_relu__Scalar_complex_alpha(self):
-    """Tests _add_relu_.Scalar with an alpha of complex type."""
-    device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""add_relu_(): complex128 alpha value is not yet supported""",
-    ):
-      torch.ops.aten._add_relu_.Scalar(t, 2.0, alpha=1j)
+    # Mixed real + complex inputs (including complex scalar other).
+    a_f32 = torch.ones(2, dtype=torch.float32, device=device)
+    b_c64 = (
+        1 + 2j
+        if is_scalar
+        else torch.ones(2, dtype=torch.complex64, device=device)
+    )
+    out_c64 = (
+        torch.empty(2, dtype=torch.complex64, device=device)
+        if use_out
+        else None
+    )
+    with self.subTest(case="real_plus_complex"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{tpu_op_name}(): expected promoted input dtype to be neither bool nor complex, got complex64""",
+      ):
+        if out_c64 is not None:
+          op(a_f32, b_c64, alpha=1, out=out_c64)
+        else:
+          op(a_f32, b_c64, alpha=1)
 
+    if not is_scalar:
+      a_c64 = torch.ones(2, dtype=torch.complex64, device=device)
+      b_f32 = torch.ones(2, dtype=torch.float32, device=device)
+      with self.subTest(case="complex_plus_real"):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{tpu_op_name}(): expected promoted input dtype to be neither bool nor complex, got complex64""",
+        ):
+          if out_c64 is not None:
+            op(a_c64, b_f32, alpha=1, out=out_c64)
+          else:
+            op(a_c64, b_f32, alpha=1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="tensor",
+          op=torch.ops.aten._add_relu.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="out",
+          op=torch.ops.aten._add_relu.out,
+          is_scalar=False,
+          use_out=True,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="scalar",
+          op=torch.ops.aten._add_relu.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch.ops.aten._add_relu_.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+      dict(
+          testcase_name="inplace_scalar",
+          op=torch.ops.aten._add_relu_.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+  )
   @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
-  def test__add_relu__Tensor_complex_alpha(self):
-    """Tests _add_relu_.Tensor with an alpha of complex type."""
+  def test__add_relu_alpha_dtype_mismatch(
+      self, op, is_scalar, use_out, tpu_op_name
+  ):
     device = et.device()
-    t = torch.ones(4, device=device, dtype=torch.float32)
-    s = torch.ones(4, device=device, dtype=torch.float32)
+    a_i32 = torch.ones(2, dtype=torch.int32, device=device)
+    b_i32 = 1 if is_scalar else torch.ones(2, dtype=torch.int32, device=device)
+    out_i32 = (
+        torch.empty(2, dtype=torch.int32, device=device) if use_out else None
+    )
+    for alpha in (1.5, 1.0):
+      with self.subTest(alpha=alpha):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{tpu_op_name}(): for integral input tensors, argument alpha must not be a floating point number""",
+        ):
+          if out_i32 is not None:
+            op(a_i32, b_i32, alpha=alpha, out=out_i32)
+          else:
+            op(a_i32, b_i32, alpha=alpha)
+
+    a_f32 = torch.ones(2, dtype=torch.float32, device=device)
+    b_f32 = (
+        1.0 if is_scalar else torch.ones(2, dtype=torch.float32, device=device)
+    )
+    out_f32 = (
+        torch.empty(2, dtype=torch.float32, device=device) if use_out else None
+    )
     with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""add_relu_(): complex128 alpha value is not yet supported""",
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): boolean alpha only supported for boolean results""",
     ):
-      torch.ops.aten._add_relu_.Tensor(t, s, alpha=1j)
+      if out_f32 is not None:
+        op(a_f32, b_f32, alpha=True, out=out_f32)
+      else:
+        op(a_f32, b_f32, alpha=True)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): for non-complex input tensors, argument alpha must not be a complex number""",
+    ):
+      if out_f32 is not None:
+        op(a_f32, b_f32, alpha=1 + 2j, out=out_f32)
+      else:
+        op(a_f32, b_f32, alpha=1 + 2j)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="tensor",
+          op=torch.ops.aten._add_relu.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="out",
+          op=torch.ops.aten._add_relu.out,
+          is_scalar=False,
+          use_out=True,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="scalar",
+          op=torch.ops.aten._add_relu.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu",
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch.ops.aten._add_relu_.Tensor,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+      dict(
+          testcase_name="inplace_scalar",
+          op=torch.ops.aten._add_relu_.Scalar,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="add_relu_",
+      ),
+  )
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
+  def test__add_relu_alpha_overflow(self, op, is_scalar, use_out, tpu_op_name):
+    device = et.device()
+    a_i8 = torch.ones(2, dtype=torch.int8, device=device)
+    b_i8 = 1 if is_scalar else torch.ones(2, dtype=torch.int8, device=device)
+    out_i8 = (
+        torch.empty(2, dtype=torch.int8, device=device) if use_out else None
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): value cannot be converted to type int8 without overflow""",
+    ):
+      if out_i8 is not None:
+        op(a_i8, b_i8, alpha=1000, out=out_i8)
+      else:
+        op(a_i8, b_i8, alpha=1000)
+
+    a_f16 = torch.ones(2, dtype=torch.float16, device=device)
+    b_f16 = (
+        1.0 if is_scalar else torch.ones(2, dtype=torch.float16, device=device)
+    )
+    out_f16 = (
+        torch.empty(2, dtype=torch.float16, device=device) if use_out else None
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): value cannot be converted to type float32 without overflow""",
+    ):
+      if out_f16 is not None:
+        op(a_f16, b_f16, alpha=1e40, out=out_f16)
+      else:
+        op(a_f16, b_f16, alpha=1e40)
 
   # CPU kernel runs successfully, broadcasting the inputs.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
