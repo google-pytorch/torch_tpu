@@ -38,10 +38,6 @@ on:
         description: 'The pip index URL to download the torch wheel from'
         type: string
         default: 'https://download.pytorch.org/whl/nightly/cpu'
-  pull_request:
-    branches:
-      - main
-    types: [opened, synchronize, reopened, labeled]
   schedule:
     - cron: '0 7 * * *'  # Run automatically every day at 0:00 AM PDT
 

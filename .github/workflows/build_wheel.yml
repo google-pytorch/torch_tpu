@@ -37,10 +37,6 @@ on:
   push:
     branches:
       - main
-  # No base-branch filter: `branches:` matches the PR *base*, and stacked
-  # pull requests target the layer below them, not main.
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
 
 # Prevent "overly broad permissions" Zizmor finding.
 permissions:

@@ -75,6 +75,7 @@ _BUILD_HEADER = """\
 package(default_visibility = ["//visibility:public"])
 """
 
+# LINT.IfChange(pytorch_test_glob_rules)
 _SUBDIR_SUPPORT_TEMPLATE = """
 filegroup(
     name = "{subdir}_support",
@@ -103,6 +104,7 @@ filegroup(
     ){extra_targets_expr},
 )
 """
+# LINT.ThenChange(../ci/tools/oot_impacted_targets.py:pytorch_test_glob_rules)
 
 # LINT.IfChange(torch_test_module_format)
 def _extract_test_modules(build_content):
@@ -115,7 +117,10 @@ def _extract_test_modules(build_content):
             modules.append(trimmed[len(prefix):-2])
     return modules
 
-# LINT.ThenChange(../ci/tools/gen_torch_tests.py:torch_test_module_format)
+# LINT.ThenChange(
+#     ../ci/tools/gen_torch_tests.py:torch_test_module_format,
+#     ../ci/tools/oot_impacted_targets.py:torch_test_module_format,
+# )
 
 def _check_exec(result, what):
     if result.return_code != 0:

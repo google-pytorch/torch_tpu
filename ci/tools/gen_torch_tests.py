@@ -117,7 +117,10 @@ def torch_test_target(test_module: str) -> str:
       f'    torch_test_module = "{test_module}",\n'
       ")"
   )
-  # LINT.ThenChange(../../bazel/pytorch_test_repo.bzl:torch_test_module_format)
+  # LINT.ThenChange(
+  #     ../../bazel/pytorch_test_repo.bzl:torch_test_module_format,
+  #     oot_impacted_targets.py:torch_test_module_format,
+  # )
 
 
 def write_to_build_file(
