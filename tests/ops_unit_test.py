@@ -23753,6 +23753,102 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       self.assertEqual(x_dynamism_info[0].dimension, 0)
       self.assertEqual(x_dynamism_info[0].upper_bound, 8)
 
+  @parameterized.named_parameters(
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_bernoulli_low_precision_small_p(self, dtype):
+    """Verifies small p is not distorted by bf16/f16 uniform quantization."""
+    device = torch.device("tpu")
+    # About 20 of the samples are expected to be 1, so their mean is well above
+    # 0 and below 4e-4.
+    n = 200_000
+    p = 1e-4
+
+    torch.manual_seed(0)
+    x = torch.empty(n, dtype=dtype, device=device)
+    x.bernoulli_(p)
+    self.assertBetween(x.float().mean().item(), 1e-5, 4e-4)
+
+    torch.manual_seed(1)
+    y = torch.bernoulli(torch.empty(n, dtype=dtype, device=device), p)
+    self.assertBetween(y.float().mean().item(), 1e-5, 4e-4)
+
+    p_tensor = torch.full((n,), p, dtype=dtype, device=device)
+    torch.manual_seed(2)
+    z = torch.bernoulli(p_tensor)
+    self.assertBetween(z.float().mean().item(), 1e-5, 4e-4)
+
+    torch.manual_seed(3)
+    out = torch.empty(n, dtype=dtype, device=device)
+    torch.bernoulli(p_tensor, out=out)
+    self.assertBetween(out.float().mean().item(), 1e-5, 4e-4)
+
+    torch.manual_seed(4)
+    w = torch.empty(n, dtype=dtype, device=device)
+    w.bernoulli_(p_tensor)
+    self.assertBetween(w.float().mean().item(), 1e-5, 4e-4)
+
+  def test_bernoulli_rng_state_advancement_matches_uniform_dtype(self):
+    """Verifies generator state advances by the uniform sampling bit width."""
+    device = torch.device("tpu")
+    n = 64
+
+    # float64 p consumes 64-bit uniform samples regardless of output dtype.
+    p_f64 = torch.full((n,), 0.5, dtype=torch.float64, device=device)
+    gen_ref = torch.Generator(device=device)
+    gen_ref.manual_seed(42)
+    torch.bernoulli(p_f64, generator=gen_ref)
+    ref_state = gen_ref.get_state()
+
+    for out_dtype in (torch.float32, torch.int32):
+      gen_out = torch.Generator(device=device)
+      gen_out.manual_seed(42)
+      out = torch.empty((n,), dtype=out_dtype, device=device)
+      torch.bernoulli(p_f64, generator=gen_out, out=out)
+      self.assertTrue(torch.equal(gen_out.get_state(), ref_state))
+
+      gen_inplace = torch.Generator(device=device)
+      gen_inplace.manual_seed(42)
+      dst = torch.empty((n,), dtype=out_dtype, device=device)
+      dst.bernoulli_(p_f64, generator=gen_inplace)
+      self.assertTrue(torch.equal(gen_inplace.get_state(), ref_state))
+
+    # bfloat16/float16 consume 32-bit uniform samples (same as float32).
+    gen_f32 = torch.Generator(device=device)
+    gen_f32.manual_seed(7)
+    torch.empty((n,), dtype=torch.float32, device=device).bernoulli_(
+        0.5, generator=gen_f32
+    )
+    f32_state = gen_f32.get_state()
+
+    for low_dtype in (torch.bfloat16, torch.float16):
+      gen_low = torch.Generator(device=device)
+      gen_low.manual_seed(7)
+      torch.empty((n,), dtype=low_dtype, device=device).bernoulli_(
+          0.5, generator=gen_low
+      )
+      self.assertTrue(torch.equal(gen_low.get_state(), f32_state))
+
+  def test_bernoulli_empty_tensors_parity(self):
+    """Verifies empty-tensor bernoulli variants match PyTorch CPU/CUDA."""
+    device = torch.device("tpu")
+    # Empty self returns early before tensor-p dtype/value checks on CPU/CUDA.
+    empty_f32 = torch.empty((0,), dtype=torch.float32, device=device)
+    empty_i32 = torch.empty((0,), dtype=torch.int32, device=device)
+    empty_f32.bernoulli_(empty_i32)
+    self.assertEqual(empty_f32.shape, (0,))
+
+    empty_2d = torch.empty((0, 3), dtype=torch.float32, device=device)
+    bad_p = torch.tensor([-0.5, 1.5, float("nan")], device=device)
+    empty_2d.bernoulli_(bad_p)
+    self.assertEqual(empty_2d.shape, (0, 3))
+
+    out = torch.empty((2, 2), dtype=torch.float32, device=device)
+    res = torch.bernoulli(empty_2d, out=out)
+    self.assertIs(res, out)
+    self.assertEqual(out.shape, (0, 3))
+
   def test_multinomial_out_resizing(self):
     device = torch.device("tpu")
     weights = torch.tensor([[0.1, 0.9], [0.8, 0.2]], device=device)

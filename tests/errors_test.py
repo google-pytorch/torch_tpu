@@ -5193,32 +5193,175 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       t_complex.exponential_()
 
-  def test_bernoulli_invalid_p(self):
+  @parameterized.named_parameters(
+      ("negative_non_empty", (2, 2), -0.5, "-0.5"),
+      ("gt_one_non_empty", (2, 2), 1.5, "1.5"),
+      ("nan_non_empty", (2, 2), float("nan"), "nan"),
+      ("inf_non_empty", (2, 2), float("inf"), "inf"),
+      ("neg_inf_non_empty", (2, 2), float("-inf"), "-inf"),
+      ("negative_empty", (0,), -0.5, "-0.5"),
+      ("gt_one_empty", (0,), 1.5, "1.5"),
+      ("nan_empty", (0,), float("nan"), "nan"),
+      ("inf_empty", (0,), float("inf"), "inf"),
+      ("neg_inf_empty", (0,), float("-inf"), "-inf"),
+  )
+  def test_bernoulli_invalid_p(self, shape, p, p_str):
     device = et.device()
-    t = torch.ones((2, 2), device=device, dtype=torch.float32)
+    t = torch.ones(shape, device=device, dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bernoulli(): expected p to be in the range [0, 1], got 1.5""",
-        gpu="""bernoulli_ expects p to be in [0, 1], but got p=1.5""",
+        tpu=f"""bernoulli(): expected p to be in the range [0, 1], got {p_str}""",
+        gpu=f"""bernoulli_ expects p to be in [0, 1], but got p={p_str}""",
     ):
-      t.bernoulli(p=1.5)
+      t.bernoulli(p=p)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bernoulli_(): expected p to be in the range [0, 1], got 1.5""",
-        gpu="""bernoulli_ expects p to be in [0, 1], but got p=1.5""",
+        tpu=f"""bernoulli_(): expected p to be in the range [0, 1], got {p_str}""",
+        gpu=f"""bernoulli_ expects p to be in [0, 1], but got p={p_str}""",
     ):
-      t.bernoulli_(1.5)
+      t.bernoulli_(p)
+
+  def test_bernoulli_complex_self_dtype(self):
+    device = et.device()
+    t_complex = torch.ones((2, 2), device=device, dtype=torch.complex64)
+    p = torch.full((2, 2), 0.5, device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli(): expected probabilities tensor to have floating type, got complex64""",
+        gpu="""expected probabilities tensor to have floating type, got ComplexFloat""",
+    ):
+      torch.bernoulli(t_complex)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli(): expected the input dtype not to be complex, got complex64""",
+        gpu=""""bernoulli_scalar_cuda_" not implemented for 'ComplexFloat'""",
+    ):
+      t_complex.bernoulli(p=0.5)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected the input dtype not to be complex, got complex64""",
+        gpu=""""bernoulli_scalar_cuda_" not implemented for 'ComplexFloat'""",
+    ):
+      t_complex.bernoulli_(0.5)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected the input dtype not to be complex, got complex64""",
+        gpu=""""bernoulli_tensor_cuda_self_" not implemented for 'ComplexFloat'""",
+    ):
+      t_complex.bernoulli_(p)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected probabilities tensor to have floating type, got complex64""",
+        gpu="""expected probabilities tensor to have floating type, got ComplexFloat""",
+    ):
+      p.bernoulli_(t_complex)
 
   def test_bernoulli_complex_out_dtype(self):
     device = et.device()
     t = torch.rand((2, 2), device=device, dtype=torch.float32)
-    out = torch.empty((2, 2), device=device, dtype=torch.complex64)
+    out = torch.empty((3, 3), device=device, dtype=torch.complex64)
     with et.assert_raises_message(
         RuntimeError,
         tpu="""bernoulli(): expected the output dtype not to be complex, got complex64""",
         gpu=""""bernoulli_tensor_cuda_self_" not implemented for 'ComplexFloat'""",
     ):
       torch.bernoulli(t, out=out)
+    # Like CUDA, `out` is resized before its dtype is validated.
+    self.assertEqual(out.shape, (2, 2))
+
+  def test_bernoulli_low_precision_float_dtype(self):
+    device = et.device()
+    t_fp8 = torch.zeros((2, 2), device=device, dtype=torch.float8_e4m3fn)
+    t_f32 = torch.full((2, 2), 0.5, device=device, dtype=torch.float32)
+    out_fp8 = torch.empty((2, 2), device=device, dtype=torch.float8_e4m3fn)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bernoulli(): not implemented for float8_e4m3fn""",
+        gpu=""""bernoulli_tensor_cuda_self_" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.bernoulli(t_fp8)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bernoulli(): not implemented for float8_e4m3fn""",
+        gpu=""""bernoulli_tensor_cuda_self_" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.bernoulli(t_f32, out=out_fp8)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bernoulli(): not implemented for float8_e4m3fn""",
+        gpu=""""bernoulli_scalar_cuda_" not implemented for 'Float8_e4m3fn'""",
+    ):
+      t_fp8.bernoulli(p=0.5)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bernoulli_(): not implemented for float8_e4m3fn""",
+        gpu=""""bernoulli_scalar_cuda_" not implemented for 'Float8_e4m3fn'""",
+    ):
+      t_fp8.bernoulli_(0.5)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bernoulli_(): not implemented for float8_e4m3fn""",
+        gpu=""""bernoulli_tensor_cuda_self_" not implemented for 'Float8_e4m3fn'""",
+    ):
+      t_fp8.bernoulli_(t_f32)
+
+  @et.gpu_crashes_or_raises(
+      "CUDA triggers a device-side assert when tensor p is outside [0, 1]."
+  )
+  def test_bernoulli_tensor_p_out_of_range(self):
+    device = et.device()
+    for bad_values in (
+        [-0.5, 0.5],
+        [0.5, 1.5],
+        [0.5, float("nan")],
+        [float("-inf"), 0.5],
+        [0.5, float("inf")],
+        1.5,
+    ):
+      bad_p = torch.tensor(bad_values, device=device, dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli(): all probabilities in p must be in the range [0, 1]""",
+      ):
+        torch.bernoulli(bad_p)
+
+  @et.gpu_crashes_or_raises(
+      "CUDA triggers a device-side assert when tensor p is outside [0, 1]."
+  )
+  def test_bernoulli_out_tensor_p_out_of_range(self):
+    device = et.device()
+    out = torch.empty((3, 3), device=device, dtype=torch.float32)
+    for bad_values in (
+        [-0.5, 0.5],
+        [0.5, 1.5],
+        [0.5, float("nan")],
+    ):
+      bad_p = torch.tensor(bad_values, device=device, dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli(): all probabilities in p must be in the range [0, 1]""",
+      ):
+        torch.bernoulli(bad_p, out=out)
+      # Like CUDA, `out` is resized before the values are validated.
+      self.assertEqual(out.shape, (2,))
+
+  @et.gpu_crashes_or_raises(
+      "CUDA triggers a device-side assert when tensor p is outside [0, 1]."
+  )
+  def test_bernoulli_inplace_tensor_p_out_of_range(self):
+    device = et.device()
+    t = torch.zeros((2,), device=device, dtype=torch.float32)
+    for bad_values in (
+        [-0.5, 0.5],
+        [0.5, 1.5],
+        [0.5, float("nan")],
+    ):
+      bad_p = torch.tensor(bad_values, device=device, dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""bernoulli_(): all probabilities in p must be in the range [0, 1]""",
+      ):
+        t.bernoulli_(bad_p)
 
   def test_bernoulli_non_floating_p_dtype(self):
     device = et.device()
@@ -5239,13 +5382,15 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
   def test_bernoulli_out_non_floating_p_dtype(self):
     device = et.device()
     t = torch.ones((2, 2), device=device, dtype=torch.int32)
-    out = torch.empty((2, 2), device=device, dtype=torch.float32)
+    out = torch.empty((3, 3), device=device, dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
         tpu="""bernoulli(): expected probabilities tensor to have floating type, got int32""",
         gpu="""expected probabilities tensor to have floating type, got Int""",
     ):
       torch.bernoulli(t, out=out)
+    # Like CUDA, `out` is resized before the dtype of `p` is validated.
+    self.assertEqual(out.shape, (2, 2))
 
   def test_bernoulli_p_not_broadcastable_to_self(self):
     device = et.device()

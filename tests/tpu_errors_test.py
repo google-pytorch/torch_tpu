@@ -1185,6 +1185,69 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         t.cpu()
 
+  @et.why_tpu_only(
+      "CUDA supports cross-device bernoulli probabilities/out via implicit"
+      " .to(device) copy."
+  )
+  def test_bernoulli_device_mismatch(self):
+    device = et.device()
+    t_tpu = torch.full((2, 2), 0.5, device=device, dtype=torch.float32)
+    t_cpu = torch.full((2, 2), 0.5, device="cpu", dtype=torch.float32)
+    out_tpu = torch.empty((2, 2), device=device, dtype=torch.float32)
+    out_cpu = torch.empty((2, 2), device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli(): expected the output tensor to be on tpu, got cpu""",
+    ):
+      torch.bernoulli(t_tpu, out=out_cpu)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli(): expected probabilities tensor to be on tpu, got cpu""",
+    ):
+      torch.bernoulli(t_cpu, out=out_tpu)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected probabilities tensor to be on tpu, got cpu""",
+    ):
+      t_tpu.bernoulli_(t_cpu)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected the input tensor to be on tpu, got cpu""",
+    ):
+      t_cpu.bernoulli_(t_tpu)
+    # Empty tensors skip sampling but not device validation.
+    empty_tpu = torch.empty((0,), device=device, dtype=torch.float32)
+    empty_cpu = torch.empty((0,), device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli(): expected probabilities tensor to be on tpu, got cpu""",
+    ):
+      torch.bernoulli(empty_cpu, out=out_tpu)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected probabilities tensor to be on tpu, got cpu""",
+    ):
+      empty_tpu.bernoulli_(empty_cpu)
+
+  @et.why_tpu_only(
+      "CUDA casts float8 probabilities tensor p to float32 before sampling."
+  )
+  def test_bernoulli_low_precision_float_p_dtype(self):
+    device = et.device()
+    p_fp8 = torch.zeros((2, 2), device=device, dtype=torch.float8_e4m3fn)
+    t_f32 = torch.zeros((2, 2), device=device, dtype=torch.float32)
+    out_f32 = torch.empty((2, 2), device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bernoulli(): not implemented for float8_e4m3fn""",
+    ):
+      torch.bernoulli(p_fp8, out=out_f32)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bernoulli_(): not implemented for float8_e4m3fn""",
+    ):
+      t_f32.bernoulli_(p_fp8)
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_dynamic_kernel(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
