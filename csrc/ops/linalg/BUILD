@@ -69,6 +69,7 @@ torch_tpu_cc_library(
         "//csrc/ops/all_any",
         "//csrc/ops/eye:eye_lib",
         "//csrc/ops/gather",
+        "//csrc/ops/linalg/eigh:eigh_builder_kernels",
         "//csrc/ops/linalg/qr:qr_lib",
         "//csrc/ops/linalg/vector_norm:pnorm",
         "//csrc/ops/macros:kernel",

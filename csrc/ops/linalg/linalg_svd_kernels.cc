@@ -45,6 +45,7 @@
 #include "csrc/ops/all_any/all_any.h"
 #include "csrc/ops/eye/eye_lib.h"
 #include "csrc/ops/gather/gather.h"
+#include "csrc/ops/linalg/eigh/eigh_builder_kernels.h"
 #include "csrc/ops/linalg/qr/qr_lib.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
@@ -57,9 +58,7 @@
 #include "csrc/ops/sort/sort.h"
 #include "csrc/ops/unary.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
@@ -125,63 +124,6 @@ absl::StatusOr<mlir::MlirOp> BuildMatMulShlo(mlir::MlirOp lhs,
       /*rhs_contracting_dimensions=*/{rhs_rank - 2});
 
   return mlir::stablehlo::DotGeneral(lhs, rhs, dot_dims);
-}
-
-mlir::stablehlo::CustomCallOp BuildCustomCallOp(
-    mlir::MlirBuilder& builder, llvm::StringRef call_target_name,
-    llvm::ArrayRef<mlir::Type> result_types,
-    llvm::ArrayRef<mlir::Value> operands, llvm::StringRef backend_config = "") {
-  mlir::OpBuilder& op_builder = builder.getOpBuilder();
-
-  std::vector<mlir::NamedAttribute> attributes;
-  attributes.reserve(3 + (backend_config.empty() ? 0 : 1));
-  attributes.push_back(op_builder.getNamedAttr(
-      "call_target_name", op_builder.getStringAttr(call_target_name)));
-  attributes.push_back(op_builder.getNamedAttr("has_side_effect",
-                                               op_builder.getBoolAttr(false)));
-  attributes.push_back(op_builder.getNamedAttr(
-      "api_version",
-      mlir::stablehlo::CustomCallApiVersionAttr::get(
-          &builder.getContext(),
-          mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL)));
-  if (!backend_config.empty()) {
-    attributes.push_back(op_builder.getNamedAttr(
-        "backend_config", op_builder.getStringAttr(backend_config)));
-  }
-
-  const mlir::Location loc = builder.getLoc();
-  return mlir::stablehlo::CustomCallOp::create(op_builder, loc, result_types,
-                                               operands, attributes);
-}
-
-absl::StatusOr<MlirOpResults<2>> BuildEighShlo(mlir::MlirOp input) {
-  const mlir::RankedTensorType a_type = GetTensorTypeOrDie(input);
-
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType a_elem_type,
-                      ConvertTo<mlir::ElementType>(a_type.getElementType()));
-  const mlir::ElementType w_elem_type = RealComponentOf(a_elem_type);
-
-  mlir::MlirBuilder& builder = input.getBuilder();
-  const mlir::Type w_mlir_type =
-      mlir::getElementType(builder.getContext(), w_elem_type);
-
-  const llvm::ArrayRef<int64_t> a_shape = a_type.getShape();
-  const auto w_type =
-      mlir::RankedTensorType::get(a_shape.drop_back(1), w_mlir_type);
-
-  // We use similar values as `jax.lax.eigh`:
-  // lower=true(1), sort_eigenvalues=false(0), max_iter=100, tol=1e-6 for single
-  // precision, 1e-12 for double precision.
-  const char* kBackendConfig = (w_elem_type == mlir::ElementType::F64)
-                                   ? "1,0,100,1e-12"
-                                   : "1,0,100,1e-6";
-  mlir::stablehlo::CustomCallOp eigh_op =
-      BuildCustomCallOp(builder, "Eigh",
-                        /*result_types=*/{a_type, w_type},
-                        /*operands=*/{input.getValue()}, kBackendConfig);
-
-  return {{mlir::MlirOp(builder, eigh_op.getResult(0)),
-           mlir::MlirOp(builder, eigh_op.getResult(1))}};
 }
 
 absl::StatusOr<mlir::MlirOp> ConvertToComplexIfNeeded(mlir::MlirOp scalar,
@@ -1302,7 +1244,9 @@ absl::StatusOr<MlirOpResults<2>> BuildEighWithDiagonalShift(mlir::MlirOp h) {
                       BuildDiagonalShiftMatrix(h_norm, element_type, h_shape));
   const mlir::MlirOp h_reg = mlir::stablehlo::Add(h, shift_result.shift_matrix);
 
-  TT_ASSIGN_OR_RETURN(const auto eigh_results, BuildEighShlo(h_reg));
+  TT_ASSIGN_OR_RETURN(
+      const auto eigh_results,
+      BuildEighShlo(h_reg, EighTriangle::kLower, EighOrder::kUnsorted));
   const mlir::MlirOp v = eigh_results[0];
   const mlir::MlirOp s_reg = eigh_results[1];
 

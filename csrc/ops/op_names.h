@@ -513,6 +513,7 @@ enum class OpName {
   kLiftFreshOut,
   kLinalgCholeskyExL,
   kLinalgCrossOut,
+  kLinalgEighEigenvalues,
   kLinalgInvExInverse,
   kLinalgLuFactorExOut,
   kLinalgLuOut,
@@ -1890,6 +1891,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "linalg_cholesky_ex.L";
     case OpName::kLinalgCrossOut:
       return "linalg_cross.out";
+    case OpName::kLinalgEighEigenvalues:
+      return "_linalg_eigh.eigenvalues";
     case OpName::kLinalgInvExInverse:
       return "linalg_inv_ex.inverse";
     case OpName::kLinalgLuFactorExOut:

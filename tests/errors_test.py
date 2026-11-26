@@ -17273,6 +17273,70 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.cumsum(scalar, dim=-2, out=out)
 
+  def test_linalg_eigh_rank_too_low(self):
+    a = torch.empty(2, device=et.device())
+    values = a.new_empty((0,))
+    vectors = a.new_empty((0,))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_eigh(): expected input tensor to have at least 2 dimensions, got 1""",
+        gpu="""linalg.eigh: The input tensor A must have at least 2 dimensions.""",
+    ):
+      torch.linalg.eigh(a, out=(values, vectors))
+
+  def test_linalg_eigh_non_square(self):
+    a = torch.empty((2, 3), device=et.device())
+    values = a.new_empty((0,))
+    vectors = a.new_empty((0,))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_eigh(): expected input tensor's last 2 dimensions to be equal, got [2, 3]""",
+        gpu="""linalg.eigh: A must be batches of square matrices, but they are 2 by 3 matrices""",
+    ):
+      torch.linalg.eigh(a, out=(values, vectors))
+
+  def test_linalg_eigh_invalid_uplo(self):
+    a = torch.empty((2, 2), device=et.device())
+    values = a.new_empty((0,))
+    vectors = a.new_empty((0,))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_eigh(): expected UPLO to be 'L' or 'U', got 'X'""",
+        gpu="""Expected UPLO argument to be 'L' or 'U', but got X""",
+    ):
+      torch.linalg.eigh(a, UPLO="X", out=(values, vectors))
+
+  def test_linalg_eigh_out_device_mismatch(self):
+    a = torch.eye(2, device=et.device())
+    values = torch.empty(2, device=et.device())
+    vectors = torch.empty((2, 2), device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_eigh(): expected input and outputs on the same TPU device, got tpu:0, tpu:0, and cpu""",
+        gpu="""Expected all tensors to be on the same device, but got eigenvectors is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__linalg_eigh_out_eigenvalues)""",
+    ):
+      torch.linalg.eigh(a, out=(values, vectors))
+
+  @parameterized.named_parameters(
+      ("eigenvalues", torch.int32, torch.float32),
+      ("eigenvectors", torch.float32, torch.int32),
+  )
+  def test_linalg_eigh_out_dtype_mismatch(self, values_dtype, vectors_dtype):
+    a = torch.empty((2, 2), dtype=torch.float32, device=et.device())
+    values = torch.empty((2,), dtype=values_dtype, device=et.device())
+    vectors = torch.empty((2, 2), dtype=vectors_dtype, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_eigh(): expected the output dtype to be float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+    ):
+      torch.linalg.eigh(a, out=(values, vectors))
+
   @parameterized.named_parameters(
       ("u_mismatch", "u"),
       ("s_mismatch", "s"),
