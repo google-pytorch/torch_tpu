@@ -20269,6 +20269,39 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.ops.aten.embedding.out(weight, indices, out=out)
 
+  def test_embedding_float4_weight(self):
+    weight = torch.empty(
+        (4, 2), dtype=torch.float4_e2m1fn_x2, device=et.device()
+    )
+    indices = torch.tensor([0, 2], device=et.device())
+    out = torch.empty((2, 2), dtype=torch.float4_e2m1fn_x2, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""embedding(): not implemented for float4_e2m1fn_x2""",
+        gpu=""""index_select_cuda" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.nn.functional.embedding(indices, weight)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""embedding(): not implemented for float4_e2m1fn_x2""",
+        gpu=""""index_select_cuda" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.ops.aten.embedding.out(weight, indices, out=out)
+
+  def test_embedding_out_cpu_out(self):
+    weight = torch.ones(4, 3, dtype=torch.float32, device=et.device())
+    indices = torch.tensor(
+        [[0, 2], [1, 3]], dtype=torch.int64, device=et.device()
+    )
+    out = torch.zeros(1, 3, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.ops.aten.embedding.out(weight, indices, out=out)
+    self.assertEqual(out.device.type, "cpu")
+
   def test_scaled_mm_invalid_scale_a_orientation(self):
     """Tests that scaled_mm rejects a 2-D row-wise scale_a with wrong orientation."""
     device = et.device()

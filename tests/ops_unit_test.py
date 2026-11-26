@@ -10991,6 +10991,93 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(run_scalar)
 
   @parameterized.named_parameters(
+      (
+          "weight_different_shape",
+          (4, 3),
+          torch.float32,
+          [[0, 2], [1, 3]],
+          "weight",
+      ),
+      (
+          "weight_same_shape_permutation",
+          (4, 3),
+          torch.float32,
+          [3, 2, 0, 1],
+          "weight",
+      ),
+      (
+          "weight_same_shape_duplicate_indices",
+          (4, 3),
+          torch.float32,
+          [3, 3, 0, 0],
+          "weight",
+      ),
+      (
+          "weight_growing_storage",
+          (4, 3),
+          torch.float32,
+          [[0, 2], [1, 3], [3, 0]],
+          "weight",
+      ),
+      (
+          "weight_partial_view",
+          (4, 3),
+          torch.float32,
+          [3, 2],
+          "weight_slice",
+      ),
+      (
+          "weight_offset_view",
+          (4, 3),
+          torch.float32,
+          [3, 0],
+          "weight_offset_slice",
+      ),
+      (
+          "weight_strided_view",
+          (4, 3),
+          torch.float32,
+          [3, 1],
+          "weight_strided_slice",
+      ),
+      (
+          "indices_alias",
+          (4, 3),
+          torch.int64,
+          [[0, 2], [1, 3]],
+          "indices",
+      ),
+  )
+  def test_embedding_out_aliased(
+      self, weight_shape, dtype, indices_data, alias_target
+  ):
+    weight_cpu = torch.arange(math.prod(weight_shape), dtype=dtype).reshape(
+        weight_shape
+    )
+    indices_cpu = torch.tensor(indices_data, dtype=torch.int64)
+
+    def run(device):
+      weight = to(weight_cpu.clone(), device=device)
+      indices = to(indices_cpu.clone(), device=device)
+      if alias_target == "weight":
+        out = weight
+      elif alias_target == "weight_slice":
+        out = weight[:2]
+      elif alias_target == "weight_offset_slice":
+        out = weight[2:]
+      elif alias_target == "weight_strided_slice":
+        out = weight[::2]
+      else:
+        out = indices
+      res = torch.ops.aten.embedding.out(weight, indices, out=out)
+      self.assertIs(res, out)
+      if alias_target.endswith("_slice"):
+        return weight
+      return out
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.named_parameters(
       ("float32", torch.float32),
       ("bfloat16", torch.bfloat16),
       ("float16", torch.float16),
