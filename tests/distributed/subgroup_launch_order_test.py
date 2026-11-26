@@ -120,9 +120,12 @@ def _skip_reason(test_name: str) -> str | None:
         "The SparseCores halt in all-to-alls of subslice programs before"
         " libtpu 0.0.51."
     )
-  if test_name == "test_uneven_pair_scans" and sys.version_info >= (3, 15):
-    # TODO(b/589658374): Re-enable once the Pallas fake kernel no longer fails
-    # to initialize the JAX TPU backend on Python 3.15.
+  if (
+      test_name == "test_uneven_pair_scans"
+      or test_name.startswith("test_uneven_group_kernels")
+  ) and sys.version_info >= (3, 15):
+    # TODO(b/589658374): Re-enable once exporting a Pallas `jax_op` no longer
+    # fails to initialize the JAX TPU backend on Python 3.15 (JAX 0.11.1).
     return (
         "b/589658374: Fails to initialize the JAX TPU backend on Python 3.15."
     )
