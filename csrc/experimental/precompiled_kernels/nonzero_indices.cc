@@ -74,7 +74,7 @@ using kiln::Tile;
 // Distance field of a position word.
 constexpr int64_t kDistanceShift = kTileShift;
 constexpr int64_t kWindow = 16384;    // Scratch capacity, not an input limit.
-constexpr int64_t kZeroRows = 16;     // Storage rows per high-word zero DMA.
+constexpr int64_t kZeroRows = 512;    // Storage rows per high-word zero DMA.
 constexpr int64_t kWindowShift = 14;  // kWindow == 1 << kWindowShift
 
 // Storage rows per 128 coordinate tuples in each word plane of the S64[K,rank]
@@ -187,22 +187,24 @@ class NonzeroKernel {
 
  private:
   // View `rows` 128-word storage rows of the S32 output at `q`.
-  kiln::HbmRef OutputRows(Scalar q, int64_t rows) {
+  kiln::HbmRef OutputRows(Scalar q, kiln::IndexArg rows) {
     return output_(kiln::Slice(q, rows), kiln::Slice(0, kLanes));
   }
 
-  // Zero the high-word half of S64 storage in 16-row DMAs plus 1-row tails.
+  // Zero the high-word half of S64 storage in kZeroRows-row DMAs, starting all
+  // of them before waiting for any so that they overlap.
   void ZeroHighWords() {
+    kiln::Store(zeros_, kiln::Zeros(kiln::i32(kZeroRows, kLanes)));
+    const kiln::Semaphore sem = kiln::AllocaDmaSemaphore();
     const Scalar rows = output_.Dim(0);
     const Scalar half = rows >> 1;
-    const Scalar end = rows - (half & (kZeroRows - 1));
-    kiln::Store(zeros_, kiln::Zeros(kiln::i32(kZeroRows, kLanes)));
-    kiln::For(half, end, kZeroRows, [this](Scalar q) {
-      kiln::SyncCopy(zeros_, OutputRows(q, kZeroRows));
-    });
-    kiln::For(end, rows, [this](Scalar q) {
-      kiln::SyncCopy(zeros_(kiln::Slice(0, 1)), OutputRows(q, 1));
-    });
+    const auto copy = [this, &sem, &rows](Scalar q) {
+      const Scalar n = Min(rows - q, kZeroRows);
+      return kiln::MakeAsyncCopy(zeros_(kiln::Slice(0, n)), OutputRows(q, n),
+                                 sem);
+    };
+    kiln::For(half, rows, kZeroRows, [&copy](Scalar q) { copy(q).Start(); });
+    kiln::For(half, rows, kZeroRows, [&copy](Scalar q) { copy(q).Wait(); });
   }
 
   // Scan a rank-one input by row windows. Otherwise scan each [M,N] slice in
