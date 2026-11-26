@@ -36,7 +36,10 @@
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/api_error_utils.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/status_builder.h"
+#include "csrc/ops/python_context.h"
 #include "torch/library.h"
 
 // JAX input preprocessing library
@@ -142,127 +145,151 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
          int64_t sc_simd_width, int64_t hbm_word_size_in_4b,
          bool allow_id_dropping, std::string_view table_name,
          bool enable_minibatching) -> c10::Dict<std::string, at::Tensor> {
-    TT_CHECK_THROW(
-        input_indices.dtype() == at::kInt || input_indices.dtype() == at::kLong,
-        error::kInvalidArgument)
-        << "indices must be int32 or int64";
-    TT_CHECK_THROW(
-        input_offsets.dtype() == at::kInt || input_offsets.dtype() == at::kLong,
-        error::kInvalidArgument)
-        << "offsets must be int32 or int64";
+    return RunWithApiErrorHandling(
+        "preprocess_sparse_dense_matmul_input",
+        [&input_indices, &input_offsets, max_ids_per_partition,
+         max_unique_ids_per_partition, suggested_coo_buffer_size, batch_size,
+         combiner, local_device_count, global_device_count, num_sc_per_device,
+         sc_simd_width, hbm_word_size_in_4b, allow_id_dropping, table_name,
+         enable_minibatching]() -> c10::Dict<std::string, at::Tensor> {
+          TT_CHECK_THROW(input_indices.dtype() == at::kInt ||
+                             input_indices.dtype() == at::kLong,
+                         error::kInvalidArgument)
+              << "indices must be int32 or int64";
+          TT_CHECK_THROW(input_offsets.dtype() == at::kInt ||
+                             input_offsets.dtype() == at::kLong,
+                         error::kInvalidArgument)
+              << "offsets must be int32 or int64";
 
-    std::string table_name_str(table_name);
-    auto contiguous_indices = input_indices.contiguous();
-    auto contiguous_offsets = input_offsets.contiguous();
+          std::string table_name_str(table_name);
+          auto contiguous_indices = input_indices.contiguous();
+          auto contiguous_offsets = input_offsets.contiguous();
 
-    std::vector<std::unique_ptr<sc_preprocessing::AbstractInputBatch>>
-        input_batches;
-    input_batches.push_back(CreateInputBatch(
-        contiguous_indices, contiguous_offsets, table_name_str));
-    const std::optional<int64_t> max_col_id = InferMaxColId(
-        contiguous_indices, global_device_count, num_sc_per_device);
+          std::vector<std::unique_ptr<sc_preprocessing::AbstractInputBatch>>
+              input_batches;
+          input_batches.push_back(CreateInputBatch(
+              contiguous_indices, contiguous_offsets, table_name_str));
+          const std::optional<int64_t> max_col_id = InferMaxColId(
+              contiguous_indices, global_device_count, num_sc_per_device);
 
-    sc_preprocessing::OutputCsrArrays sc_output_buffers;
+          sc_preprocessing::OutputCsrArrays sc_output_buffers;
 
-    sc_preprocessing::PreprocessSparseDenseMatmulInputOptions sc_options{
-        .local_device_count = static_cast<int>(local_device_count),
-        .global_device_count = static_cast<int>(global_device_count),
-        .num_sc_per_device = static_cast<int>(num_sc_per_device),
-        .sc_simd_width = static_cast<int>(sc_simd_width),
-        .hbm_word_size_in_4b = static_cast<int>(hbm_word_size_in_4b),
-        .sharding_strategy = sc_preprocessing::ShardingStrategy::kMod,
-        .allow_id_dropping = allow_id_dropping,
-        .minibatching_mode =
-            enable_minibatching ? sc_preprocessing::MinibatchingMode::kDevice
-                                : sc_preprocessing::MinibatchingMode::kDisabled,
-    };
-    const int row_pointers_size_per_device =
-        sc_options.GetRowPointersSizePerDevice();
+          sc_preprocessing::PreprocessSparseDenseMatmulInputOptions sc_options{
+              .local_device_count = static_cast<int>(local_device_count),
+              .global_device_count = static_cast<int>(global_device_count),
+              .num_sc_per_device = static_cast<int>(num_sc_per_device),
+              .sc_simd_width = static_cast<int>(sc_simd_width),
+              .hbm_word_size_in_4b = static_cast<int>(hbm_word_size_in_4b),
+              .sharding_strategy = sc_preprocessing::ShardingStrategy::kMod,
+              .allow_id_dropping = allow_id_dropping,
+              .minibatching_mode =
+                  enable_minibatching
+                      ? sc_preprocessing::MinibatchingMode::kDevice
+                      : sc_preprocessing::MinibatchingMode::kDisabled,
+          };
+          const int row_pointers_size_per_device =
+              sc_options.GetRowPointersSizePerDevice();
 
-    int32_t required_buffer_size =
-        static_cast<int32_t>(suggested_coo_buffer_size);
-    if (required_buffer_size <= 0) {
-      required_buffer_size = 128;  // Default fallback
-    }
-
-    int total_row_pointers_size =
-        local_device_count * row_pointers_size_per_device;
-    int total_coo_buffer_size = local_device_count * required_buffer_size;
-
-    at::Tensor row_pointers = at::zeros({total_row_pointers_size}, at::kInt);
-    at::Tensor embedding_ids = at::empty({total_coo_buffer_size}, at::kInt);
-    at::Tensor sample_ids = at::empty({total_coo_buffer_size}, at::kInt);
-    at::Tensor gains = at::empty({total_coo_buffer_size}, at::kFloat);
-
-    // Wrap PyTorch data tensors DIRECTLY
-    Eigen::Map<sc_preprocessing::MatrixXi> row_pointers_map(
-        row_pointers.data_ptr<int32_t>(), local_device_count,
-        row_pointers_size_per_device);
-    Eigen::Map<sc_preprocessing::MatrixXi> embedding_ids_map(
-        embedding_ids.data_ptr<int32_t>(), local_device_count,
-        required_buffer_size);
-    Eigen::Map<sc_preprocessing::MatrixXi> sample_ids_map(
-        sample_ids.data_ptr<int32_t>(), local_device_count,
-        required_buffer_size);
-    Eigen::Map<sc_preprocessing::MatrixXf> gains_map(
-        gains.data_ptr<float>(), local_device_count, required_buffer_size);
-
-    sc_output_buffers.lhs_row_pointers.emplace(table_name_str,
-                                               row_pointers_map);
-    sc_output_buffers.lhs_embedding_ids.emplace(table_name_str,
-                                                embedding_ids_map);
-    sc_output_buffers.lhs_sample_ids.emplace(table_name_str, sample_ids_map);
-    sc_output_buffers.lhs_gains.emplace(table_name_str, gains_map);
-
-    TT_ASSIGN_OR_THROW(
-        const auto preprocess_result,
-        sc_preprocessing::PreprocessSparseDenseMatmulInput(
-            absl::MakeSpan(input_batches),
-            {{table_name_str,
-              {sc_preprocessing::FeatureMetadataInStack(
-                  absl::StrCat(table_name_str, "_feature_0"),
-                  /*feature_index=*/0, static_cast<int>(max_ids_per_partition),
-                  static_cast<int>(max_unique_ids_per_partition),
-                  /*row_offset=*/0,
-                  /*col_offset=*/0,
-                  /*col_shift=*/0, batch_size,
-                  suggested_coo_buffer_size > 0
-                      ? std::make_optional(
-                            static_cast<int>(suggested_coo_buffer_size))
-                      : std::nullopt,
-                  sc_preprocessing::GetRowCombiner(combiner), max_col_id)}}},
-            sc_options, &sc_output_buffers));
-
-    c10::Dict<std::string, at::Tensor> outputs;
-    outputs.insert("row_pointers", row_pointers);
-    outputs.insert("embedding_ids", embedding_ids);
-    outputs.insert("sample_ids", sample_ids);
-    outputs.insert("gains", gains);
-
-    const auto& stats = preprocess_result.stats;
-    auto insert_vector_stat = [&]  // REF_CAPTURE_OK=called locally
-        (std::string_view key, const auto& map) {
-          if (auto it = map.find(table_name_str); it != map.end()) {
-            const auto& vec = it->second;
-            at::Tensor tensor =
-                at::empty({static_cast<int64_t>(vec.size())}, at::kInt);
-            std::memcpy(tensor.data_ptr<int32_t>(), vec.data(),
-                        vec.size() * sizeof(int32_t));
-            outputs.insert(key, tensor);
+          int32_t required_buffer_size =
+              static_cast<int32_t>(suggested_coo_buffer_size);
+          if (required_buffer_size <= 0) {
+            required_buffer_size = 128;  // Default fallback
           }
-        };
 
-    insert_vector_stat("max_ids_per_partition", stats.max_ids_per_partition);
-    insert_vector_stat("max_unique_ids_per_partition",
-                       stats.max_unique_ids_per_partition);
-    insert_vector_stat("required_buffer_sizes", stats.required_buffer_sizes);
+          int total_row_pointers_size =
+              local_device_count * row_pointers_size_per_device;
+          int total_coo_buffer_size = local_device_count * required_buffer_size;
 
-    if (auto it = stats.dropped_id_count.find(table_name_str);
-        it != stats.dropped_id_count.end()) {
-      outputs.insert("dropped_id_count", at::full({1}, it->second, at::kInt));
-    }
+          at::Tensor row_pointers =
+              at::zeros({total_row_pointers_size}, at::kInt);
+          at::Tensor embedding_ids =
+              at::empty({total_coo_buffer_size}, at::kInt);
+          at::Tensor sample_ids = at::empty({total_coo_buffer_size}, at::kInt);
+          at::Tensor gains = at::empty({total_coo_buffer_size}, at::kFloat);
 
-    return outputs;
+          // Wrap PyTorch data tensors DIRECTLY
+          Eigen::Map<sc_preprocessing::MatrixXi> row_pointers_map(
+              row_pointers.data_ptr<int32_t>(), local_device_count,
+              row_pointers_size_per_device);
+          Eigen::Map<sc_preprocessing::MatrixXi> embedding_ids_map(
+              embedding_ids.data_ptr<int32_t>(), local_device_count,
+              required_buffer_size);
+          Eigen::Map<sc_preprocessing::MatrixXi> sample_ids_map(
+              sample_ids.data_ptr<int32_t>(), local_device_count,
+              required_buffer_size);
+          Eigen::Map<sc_preprocessing::MatrixXf> gains_map(
+              gains.data_ptr<float>(), local_device_count,
+              required_buffer_size);
+
+          sc_output_buffers.lhs_row_pointers.emplace(table_name_str,
+                                                     row_pointers_map);
+          sc_output_buffers.lhs_embedding_ids.emplace(table_name_str,
+                                                      embedding_ids_map);
+          sc_output_buffers.lhs_sample_ids.emplace(table_name_str,
+                                                   sample_ids_map);
+          sc_output_buffers.lhs_gains.emplace(table_name_str, gains_map);
+
+          const auto preprocess_result = WrapJaxError(
+              sc_preprocessing::PreprocessSparseDenseMatmulInput(
+                  absl::MakeSpan(input_batches),
+                  {{table_name_str,
+                    {sc_preprocessing::FeatureMetadataInStack(
+                        absl::StrCat(table_name_str, "_feature_0"),
+                        /*feature_index=*/0,
+                        static_cast<int>(max_ids_per_partition),
+                        static_cast<int>(max_unique_ids_per_partition),
+                        /*row_offset=*/0,
+                        /*col_offset=*/0,
+                        /*col_shift=*/0, batch_size,
+                        suggested_coo_buffer_size > 0
+                            ? std::make_optional(
+                                  static_cast<int>(suggested_coo_buffer_size))
+                            : std::nullopt,
+                        sc_preprocessing::GetRowCombiner(combiner),
+                        max_col_id)}}},
+                  sc_options, &sc_output_buffers),
+              "failed to preprocess sparse-dense matmul inputs");
+          if (!preprocess_result.ok()) {
+            TT_THROW_TT_ERROR_(
+                internal::SetRootOpNamePayload(preprocess_result.status(),
+                                               GetRootOpName(std::nullopt)),
+                TT_SOURCE_LOCATION);
+          }
+
+          c10::Dict<std::string, at::Tensor> outputs;
+          outputs.insert("row_pointers", row_pointers);
+          outputs.insert("embedding_ids", embedding_ids);
+          outputs.insert("sample_ids", sample_ids);
+          outputs.insert("gains", gains);
+
+          const auto& stats = preprocess_result->stats;
+          auto insert_vector_stat = [&]  // REF_CAPTURE_OK=called locally
+              (std::string_view key, const auto& map) {
+                if (auto it = map.find(table_name_str); it != map.end()) {
+                  const auto& vec = it->second;
+                  at::Tensor tensor =
+                      at::empty({static_cast<int64_t>(vec.size())}, at::kInt);
+                  std::memcpy(tensor.data_ptr<int32_t>(), vec.data(),
+                              vec.size() * sizeof(int32_t));
+                  outputs.insert(key, tensor);
+                }
+              };
+
+          insert_vector_stat("max_ids_per_partition",
+                             stats.max_ids_per_partition);
+          insert_vector_stat("max_unique_ids_per_partition",
+                             stats.max_unique_ids_per_partition);
+          insert_vector_stat("required_buffer_sizes",
+                             stats.required_buffer_sizes);
+
+          if (auto it = stats.dropped_id_count.find(table_name_str);
+              it != stats.dropped_id_count.end()) {
+            outputs.insert("dropped_id_count",
+                           at::full({1}, it->second, at::kInt));
+          }
+
+          return outputs;
+        });
   };
 
   // Registers preprocess_sparse_dense_matmul_input op.

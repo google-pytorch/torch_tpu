@@ -97,6 +97,8 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
 
   static ParsedCustomConfig ParseCustomConfig(std::string_view custom_config);
 
+  void StartImpl();
+
   mutable absl::Mutex mutex_;
   std::unique_ptr<tsl::ProfilerSession> session_;
   tensorflow::profiler::XSpace xspace_;

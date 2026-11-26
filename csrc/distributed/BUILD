@@ -32,6 +32,7 @@ torch_tpu_cc_library(
     srcs = ["window_tpu.cc"],
     hdrs = ["window_tpu.h"],
     deps = [
+        "//csrc/common:api_error_utils",
         "//csrc/common:device_type",
         "//csrc/common:error_utils",
         "//csrc/common:macro_utils",
@@ -60,6 +61,7 @@ torch_tpu_cc_library(
         ":types",
         ":utils",
         ":window_tpu",
+        "//csrc/common:api_error_utils",
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:device_type",

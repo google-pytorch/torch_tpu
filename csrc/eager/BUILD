@@ -367,6 +367,7 @@ torch_tpu_cc_library(
     srcs = ["host_allocator.cc"],
     hdrs = ["host_allocator.h"],
     deps = [
+        "//csrc/common:api_error_utils",
         "//csrc/common:error_utils",
         "//csrc/common:warnings",
         "//csrc/pjrt:pjrt_state",
@@ -425,6 +426,7 @@ torch_tpu_cc_library(
         ":tensor_to_buffer",
         "//csrc/common:api_error_utils",
         "//csrc/common:cache_key",
+        "//csrc/common:device_type",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",

@@ -36,6 +36,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/cord.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/util/Exception.h"
@@ -1586,11 +1587,29 @@ TEST_F(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
   // Missing space before.
   EXPECT_DEATH(
       ThrowWithMessage("context  -- the XLA compiler failed with: error"),
-      HasSubstr("spaces before the XLA compiler error sentinel"));
+      HasSubstr("spaces before the external error sentinel"));
   // More than 1 space before.
   EXPECT_DEATH(
       ThrowWithMessage("context -- the XLA compiler failed with:  error"),
-      HasSubstr("spaces after the XLA compiler error sentinel"));
+      HasSubstr("spaces after the external error sentinel"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingJaxErrorSentinel) {
+  EXPECT_DEATH(ThrowWithMessage("context  -- JAX failed with: error"),
+               HasSubstr("spaces before the external error sentinel"));
+  EXPECT_DEATH(ThrowWithMessage("context -- JAX failed with:  error"),
+               HasSubstr("spaces after the external error sentinel"));
+  EXPECT_DEATH(ThrowWithMessage(" -- JAX failed with: error"),
+               HasSubstr("context must not be empty"));
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, SkipsFormatChecksAfterJaxSentinel) {
+  // The trailing JAX message may start uppercase, end with '.', and mention
+  // StableHLO types without failing ErrorFormatChecker.
+  EXPECT_THROW(
+      ThrowWithMessage(
+          "failed to preprocess inputs -- JAX failed with: Capitalized f32."),
+      c10::Error);
 }
 
 TEST_F(ErrorMessageGuidelinesDeathTest, ContainsStableHloTypeName) {
@@ -2230,6 +2249,35 @@ TEST(WrapXlaErrorTest, PassesMessageThroughVerbatim) {
 
 TEST(WrapXlaErrorTest, ReturnsOkStatusUnchanged) {
   EXPECT_TRUE(WrapXlaError(absl::OkStatus(), "context").ok());
+}
+
+TEST(WrapJaxErrorTest, PassesMessageThroughVerbatimAndPreservesCodeAndPayload) {
+  absl::Status raw(error::kInvalidArgument, "Capitalized JAX message.\n");
+  raw.SetPayload("test_key", absl::Cord("test_val"));
+
+  const absl::Status status = WrapJaxError(raw, "failed to preprocess inputs");
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_EQ(status.message(),
+            "failed to preprocess inputs -- JAX failed with: Capitalized JAX "
+            "message.\n");
+  EXPECT_EQ(status.GetPayload("test_key"), absl::Cord("test_val"));
+}
+
+TEST(WrapJaxErrorTest, ReturnsOkStatusAndStatusOrUnchanged) {
+  EXPECT_TRUE(WrapJaxError(absl::OkStatus(), "context").ok());
+
+  const absl::StatusOr<int> ok_result =
+      WrapJaxError(absl::StatusOr<int>(42), "ctx");
+  ASSERT_TRUE(ok_result.ok());
+  EXPECT_EQ(*ok_result, 42);
+
+  const absl::StatusOr<int> error_result = WrapJaxError(
+      absl::StatusOr<int>(absl::Status(error::kInternal, "Bad JAX.")),
+      "failed to run");
+  EXPECT_FALSE(error_result.ok());
+  EXPECT_EQ(error_result.status().code(), error::kInternal);
+  EXPECT_EQ(error_result.status().message(),
+            "failed to run -- JAX failed with: Bad JAX.");
 }
 
 TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {

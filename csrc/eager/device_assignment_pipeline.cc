@@ -169,14 +169,18 @@ absl::Status VerifySameDeviceSet(absl::Span<const int64_t> resolved_da,
                     << VectorToString(op.device_assignment)
                     << " differs from resolved device assignment "
                     << VectorToString(resolved_da);
-  TT_RET_CHECK(op.device_assignment.size() == resolved_da.size(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=collectives use world-sized device
+                 // assignments matching resolved_da.
+      op.device_assignment.size() == resolved_da.size(),
+      error::kInvalidArgument)
       << "device assignment mismatch across operations. All operations in "
          "the traversal must share the same world-sized device assignment";
   const absl::flat_hash_set<int64_t> resolved_devs(resolved_da.begin(),
                                                    resolved_da.end());
   for (int64_t dev_id : op.device_assignment) {
-    TT_RET_CHECK(resolved_devs.contains(dev_id), error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=collectives use world-sized device
+                   // assignments matching resolved_da.
+        resolved_devs.contains(dev_id), error::kInvalidArgument)
         << "device assignment mismatch across operations. All operations in "
            "the traversal must share the same world-sized device assignment";
   }
@@ -327,10 +331,11 @@ absl::Status TileOperationOverGroups(mlir::Operation* absl_nonnull root_op,
   const int64_t group_size = op_da.size();
   const std::optional<std::vector<int64_t>>  // INT_VEC_OK
       rank_to_partition = BuildRankToPartition(global_da, resolved_da);
-  TT_RET_CHECK(group_size > 0 && !global_da.empty() &&
-                   global_da.size() % op_da.size() == 0 &&
-                   rank_to_partition.has_value(),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=ResolveGlobalDeviceAssignment ensures
+                 // global_da matches resolved_da
+      group_size > 0 && !global_da.empty() &&
+          global_da.size() % op_da.size() == 0 && rank_to_partition.has_value(),
+      error::kInvalidArgument)
       << "op device assignment " << VectorToString(op_da)
       << " is not a permutation of the resolved device assignment "
       << VectorToString(resolved_da);
