@@ -24,6 +24,7 @@ from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch.fx.experimental import proxy_tensor
 from torch.utils import checkpoint
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
@@ -526,6 +527,38 @@ class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
     self.assertLen(graphs, 2)
     for gm in graphs:
       self.assertTrue(split_compiler._is_fully_spmd_safe(gm))
+
+  def test_clone_graph_module_clones_child_graph_modules(self):
+    def fn(pred, x):
+      return torch.cond(
+          pred,
+          lambda t: t + torch.tensor([1.0]),
+          lambda t: t - torch.tensor([1.0]),
+          (x,),
+      )
+
+    gm = proxy_tensor.make_fx(fn)(torch.tensor(True), torch.tensor([2.0]))
+    gm.meta["tag"] = "parent"
+    gm.true_graph_0.meta["tag"] = "child"
+
+    child_buffers = dict(gm.true_graph_0.named_buffers())
+    self.assertLen(child_buffers, 1)
+    const_name, child_const = next(iter(child_buffers.items()))
+
+    cloned = split_compiler._clone_graph_module(gm)
+
+    self.assertIsNot(cloned, gm)
+    self.assertIsNot(cloned.true_graph_0, gm.true_graph_0)
+    self.assertIsNot(cloned.false_graph_0, gm.false_graph_0)
+    self.assertIsNot(cloned.true_graph_0.graph, gm.true_graph_0.graph)
+    self.assertIs(getattr(cloned.true_graph_0, const_name), child_const)
+    self.assertEqual(cloned.meta, gm.meta)
+    self.assertIsNot(cloned.meta, gm.meta)
+    self.assertEqual(cloned.true_graph_0.meta, gm.true_graph_0.meta)
+    self.assertIsNot(cloned.true_graph_0.meta, gm.true_graph_0.meta)
+
+    setattr(cloned.true_graph_0, const_name, torch.tensor([2.0]))
+    self.assertIs(getattr(gm.true_graph_0, const_name), child_const)
 
 
 if __name__ == "__main__":

@@ -550,6 +550,22 @@ def _allow_non_fake_inputs(
     fake_mode.allow_non_fake_inputs = previous
 
 
+def _clone_graph_module(gm: torch.fx.GraphModule) -> torch.fx.GraphModule:
+  """Clones `gm`'s graph, metadata dicts, and child GraphModules.
+
+  Only the graph structure and top-level `meta` dicts are copied; tensor
+  attributes are shared by reference so that large weights are not duplicated
+  and constant tensors keep their underlying device buffers.
+  """
+  with unset_fake_temporarily():
+    cloned = torch.fx.GraphModule(gm, copy.deepcopy(gm.graph))
+  cloned.meta = copy.copy(gm.meta)
+  for name, child in list(cloned.named_children()):
+    if isinstance(child, torch.fx.GraphModule):
+      setattr(cloned, name, _clone_graph_module(child))
+  return cloned
+
+
 class _SubmodCompiler(torch.fx.interpreter.Interpreter):
   """Interpreter to propagate shape information and compile submodules.
 
@@ -671,14 +687,8 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
       real_mod = self.fetch_attr(str(n.target))
 
       # Copy the submodule's graph before compiling to prevent compiler-time
-      # metadata mutation and structural corruption of nodes/inputs. Only the
-      # graph structure is copied; tensor attributes are shared by reference so
-      # that large weights are not duplicated and constant tensors keep their
-      # underlying device buffers.
-      with unset_fake_temporarily():
-        comp_mod = torch.fx.GraphModule(real_mod, copy.deepcopy(real_mod.graph))
-        # Preserve compiler annotations without deep-copying tensor attributes.
-        comp_mod.meta = copy.copy(real_mod.meta)
+      # metadata mutation and structural corruption of nodes/inputs.
+      comp_mod = _clone_graph_module(real_mod)
       compiled_submod_real = self.compile_submod(
           comp_mod, new_args, kwargs, submod_name=str(n.target)
       )
