@@ -16918,9 +16918,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           x = x_cpu.to(device)
           var_out = torch.empty(3, dtype=out_dtype, device=device)
           std_out = torch.empty(3, dtype=out_dtype, device=device)
+          var_out_all = torch.empty((), dtype=out_dtype, device=device)
+          std_out_all = torch.empty((), dtype=out_dtype, device=device)
           torch.var(x, dim=0, out=var_out)
           torch.std(x, dim=0, out=std_out)
-          return var_out, std_out
+          torch.var(x, out=var_out_all)
+          torch.std(x, out=std_out_all)
+          return var_out, std_out, var_out_all, std_out_all
 
         with self.subTest(dtype=dtype, out_dtype=out_dtype):
           self.assert_close_tpu_vs_cpu(compute)
