@@ -258,6 +258,37 @@ absl::Status ValidateArgumentLayouts(
   return absl::OkStatus();
 }
 
+// Like `executable.Execute` with one argument list. A portable executable, e.g.
+// a precompiled unbounded dynamic kernel, has no device assignment and so no
+// addressable devices: it runs on the device of this process.
+absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>>
+ExecuteOnLocalDevices(
+    const xla::PjRtLoadedExecutable& executable,
+    const std::vector<xla::PjRtBuffer* absl_nullable>& argument_buffers,
+    const xla::ExecuteOptions& options,
+    std::optional<std::vector<xla::Future<>>>& returned_futures) {
+  if (!executable.addressable_devices().empty()) {
+    return WrapXlaError(
+        executable.Execute(absl::MakeConstSpan(&argument_buffers, 1), options,
+                           returned_futures),
+        /* context= */ "failed to run executable");
+  }
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device,
+                      PjrtBackend::GetInstance().GetDevice());
+  std::optional<xla::Future<>> returned_future;
+  std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results(1);
+  TT_ASSIGN_OR_RETURN(
+      results[0],
+      WrapXlaError(executable.ExecutePortable(
+                       argument_buffers, device, options, returned_future,
+                       /*fill_future=*/returned_futures.has_value()),
+                   /* context= */ "failed to run portable executable"));
+  if (returned_future.has_value()) {
+    returned_futures->push_back(*std::move(returned_future));
+  }
+  return results;
+}
+
 }  // namespace
 
 absl::StatusOr<PjRtBufferPointers> Execute(
@@ -317,13 +348,11 @@ absl::StatusOr<PjRtBufferPointers> Execute(
     returned_futures.emplace();
   }
 
-  TT_ASSIGN_OR_RETURN(
-      std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
-          results_per_device,
-      WrapXlaError(executable->GetLoadedExecutable()->Execute(
-                       absl::MakeConstSpan(&argument_buffers, 1),
-                       execute_options, returned_futures),
-                   /* context= */ "failed to run executable"));
+  TT_ASSIGN_OR_RETURN(std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
+                          results_per_device,
+                      ExecuteOnLocalDevices(*executable->GetLoadedExecutable(),
+                                            argument_buffers, execute_options,
+                                            returned_futures));
 
   if (!ephemeral_buffers.empty()) {
     TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA execution contracts guarantee

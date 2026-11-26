@@ -224,6 +224,7 @@ class CountingPjRtLoadedExecutable final : public xla::PjRtLoadedExecutable {
       xla::PjRtDevice* device, const xla::ExecuteOptions& options,
       std::optional<xla::Future<>>& returned_future,
       bool fill_future) const override {
+    last_portable_fill_future_ = fill_future;
     const std::vector<xla::PjRtBuffer*> unwrapped_args =
         UnwrapBuffers(argument_handles);
     TT_ASSIGN_OR_RETURN(
@@ -231,6 +232,12 @@ class CountingPjRtLoadedExecutable final : public xla::PjRtLoadedExecutable {
                                                 returned_future, fill_future));
     MaybeWrapOutputs(outputs);
     return outputs;
+  }
+
+  // The `fill_future` argument of the last `ExecutePortable` call, or
+  // `std::nullopt` if there was no such call. Not thread-safe.
+  std::optional<bool> last_portable_fill_future() const {
+    return last_portable_fill_future_;
   }
 
  private:
@@ -259,6 +266,7 @@ class CountingPjRtLoadedExecutable final : public xla::PjRtLoadedExecutable {
 
   absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> wrapped_;
   absl_nullable std::shared_ptr<std::atomic<int>> output_on_device_shape_calls_;
+  mutable std::optional<bool> last_portable_fill_future_;
 };
 
 }  // namespace torch_tpu
