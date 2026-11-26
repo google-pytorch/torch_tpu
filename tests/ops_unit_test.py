@@ -17617,6 +17617,84 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  @parameterized.named_parameters(
+      ("bool_complex64", torch.bool, torch.complex64),
+      ("bool_complex128", torch.bool, torch.complex128),
+      ("int32_complex64", torch.int32, torch.complex64),
+      ("bfloat16_complex64", torch.bfloat16, torch.complex64),
+      ("float64_complex64", torch.float64, torch.complex64),
+      ("float64_complex128", torch.float64, torch.complex128),
+  )
+  def test_where_mixed_complex_promotion(self, real_dtype, complex_dtype):
+    cond_cpu = torch.tensor([True, False, True, False], dtype=torch.bool)
+    if real_dtype == torch.bool:
+      real_cpu = torch.tensor([True, False, False, True], dtype=torch.bool)
+    else:
+      real_cpu = torch.tensor([1, 2, 3, 4], dtype=real_dtype)
+    complex_cpu = torch.tensor(
+        [1.0 + 2.0j, 3.0 + 4.0j, -5.0 + 0.5j, 0.0 - 1.0j], dtype=complex_dtype
+    )
+
+    cond_tpu = cond_cpu.to("tpu")
+    real_tpu = real_cpu.to("tpu")
+    complex_tpu = complex_cpu.to("tpu")
+
+    for lhs_cpu, rhs_cpu, lhs_tpu, rhs_tpu in (
+        (real_cpu, complex_cpu, real_tpu, complex_tpu),
+        (complex_cpu, real_cpu, complex_tpu, real_tpu),
+    ):
+      with self.subTest(lhs_dtype=lhs_tpu.dtype, rhs_dtype=rhs_tpu.dtype):
+        expected = torch.where(cond_cpu, lhs_cpu, rhs_cpu)
+        actual = torch.where(cond_tpu, lhs_tpu, rhs_tpu)
+        self.assert_close(
+            golden_result=expected,
+            torch_tpu_result=actual.cpu(),
+        )
+
+        out_tpu = torch.empty(0, dtype=expected.dtype, device="tpu")
+        ret = torch.where(cond_tpu, lhs_tpu, rhs_tpu, out=out_tpu)
+        self.assertIs(ret, out_tpu)
+        self.assertEqual(out_tpu.shape, expected.shape)
+        self.assert_close(
+            golden_result=expected,
+            torch_tpu_result=out_tpu.cpu(),
+        )
+
+    # Verify StableHLO lowering constructs complex values via stablehlo.complex
+    # rather than emitting a direct stablehlo.convert to complex<...>.
+    debugs = []
+    compiled = torch.compile(
+        torch.where,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    compiled_out = compiled(cond_tpu, real_tpu, complex_tpu)
+    self.assert_close(
+        golden_result=torch.where(cond_cpu, real_cpu, complex_cpu),
+        torch_tpu_result=compiled_out.cpu(),
+    )
+    self.assertNotEmpty(debugs)
+    shlo = debugs[0].stablehlo_forward_text[0]
+    self.assertIn("stablehlo.complex", shlo)
+    self.assertNotRegex(shlo, r"stablehlo\.convert[^\n]*->[^\n]*complex<")
+
+  def test_where_uint8_condition(self):
+    cond_cpu = torch.tensor([0, 1, 2, 255], dtype=torch.uint8)
+    x_cpu = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
+    y_cpu = torch.tensor([-1.0, -2.0, -3.0, -4.0], dtype=torch.float32)
+
+    expected = torch.where(cond_cpu, x_cpu, y_cpu)
+    cond_tpu = cond_cpu.to("tpu")
+    x_tpu = x_cpu.to("tpu")
+    y_tpu = y_cpu.to("tpu")
+
+    actual = torch.where(cond_tpu, x_tpu, y_tpu)
+    self.assert_close(golden_result=expected, torch_tpu_result=actual.cpu())
+
+    out_tpu = torch.empty(0, dtype=torch.float32, device="tpu")
+    torch.where(cond_tpu, x_tpu, y_tpu, out=out_tpu)
+    self.assert_close(golden_result=expected, torch_tpu_result=out_tpu.cpu())
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
