@@ -1451,6 +1451,33 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         torch.nn.functional.embedding_bag(indices, weight, offsets)
 
+  @parameterized.named_parameters(
+      ("dense", "embedding_dense_backward"),
+      ("sparse", "embedding_sparse_backward"),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_embedding_backward_dynamic_shape_arg(self, op_name):
+    op_fn = getattr(torch.ops.aten, op_name)
+    with self.subTest(arg="grad_output"):
+      grad_output = torch.ones(4, 8, dtype=torch.float32, device=et.device())
+      indices = torch.zeros(4, dtype=torch.int64, device=et.device())
+      dynamism.mark_dynamic(grad_output, 0, 2, 8)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{op_name}(): expected all dimensions of the grad_output tensor to be static, got 1 dynamic dimension within shape [4 (up to 8), 8]""",
+      ):
+        op_fn(grad_output, indices, 10, -1, False)
+
+    with self.subTest(arg="indices"):
+      grad_output = torch.ones(4, 8, dtype=torch.float32, device=et.device())
+      indices = torch.zeros(4, dtype=torch.int64, device=et.device())
+      dynamism.mark_dynamic(indices, 0, 2, 8)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""{op_name}(): expected all dimensions of the indices tensor to be static, got 1 dynamic dimension within shape [4 (up to 8)]""",
+      ):
+        op_fn(grad_output, indices, 10, -1, False)
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_glu_dynamic_split_dim(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
@@ -4268,6 +4295,71 @@ module {
         torch.ops.aten.embedding_sparse_backward(
             torch.ones(2, 3, device="tpu"),
             torch.tensor([0.0, 1.0], dtype=torch.float32, device="tpu"),
+            5,
+            -1,
+            False,
+        )
+
+    with self.subTest("embedding_sparse_backward_float8_grad_output"):
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""embedding_sparse_backward(): not implemented for float8_e4m3fn""",
+      ):
+        torch.ops.aten.embedding_sparse_backward(
+            torch.ones(2, 3, device="tpu").to(torch.float8_e4m3fn),
+            torch.tensor([0, 1], dtype=torch.long, device="tpu"),
+            5,
+            -1,
+            False,
+        )
+
+    with self.subTest("embedding_sparse_backward_0d_grad_output"):
+      with et.assert_raises_message(
+          IndexError,
+          tpu="""embedding_sparse_backward(): expected grad_output to have at least 1 dimension, got 0D""",
+      ):
+        torch.ops.aten.embedding_sparse_backward(
+            torch.tensor(1.0, device="tpu"),
+            torch.tensor(0, dtype=torch.long, device="tpu"),
+            5,
+            -1,
+            False,
+        )
+
+    with self.subTest("embedding_sparse_backward_negative_num_weights"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_sparse_backward(): expected num_weights to be >= 0, got -1""",
+      ):
+        torch.ops.aten.embedding_sparse_backward(
+            torch.ones(2, 3, device="tpu"),
+            torch.tensor([0, 1], dtype=torch.long, device="tpu"),
+            -1,
+            -1,
+            False,
+        )
+
+    with self.subTest("embedding_sparse_backward_grad_shape_mismatch"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_sparse_backward(): expected grad_output leading dimensions to have 2 elements matching indices shape [2], got grad_output shape [3, 3]""",
+      ):
+        torch.ops.aten.embedding_sparse_backward(
+            torch.ones(3, 3, device="tpu"),
+            torch.tensor([0, 1], dtype=torch.long, device="tpu"),
+            5,
+            -1,
+            False,
+        )
+
+    with self.subTest("embedding_sparse_backward_cpu_indices"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_sparse_backward(): expected tensor to be on tpu, got cpu""",
+      ):
+        torch.ops.aten.embedding_sparse_backward(
+            torch.ones(2, 3, device="tpu"),
+            torch.tensor([0, 1], dtype=torch.long, device="cpu"),
             5,
             -1,
             False,

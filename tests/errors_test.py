@@ -20269,6 +20269,168 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.ops.aten.embedding.out(weight, indices, out=out)
 
+  def test_embedding_float4_weight(self):
+    weight = torch.empty(
+        (4, 2), dtype=torch.float4_e2m1fn_x2, device=et.device()
+    )
+    indices = torch.tensor([0, 2], device=et.device())
+    out = torch.empty((2, 2), dtype=torch.float4_e2m1fn_x2, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""embedding(): not implemented for float4_e2m1fn_x2""",
+        gpu=""""index_select_cuda" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.nn.functional.embedding(indices, weight)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""embedding(): not implemented for float4_e2m1fn_x2""",
+        gpu=""""index_select_cuda" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.ops.aten.embedding.out(weight, indices, out=out)
+
+  def test_embedding_out_cpu_out(self):
+    weight = torch.ones(4, 3, dtype=torch.float32, device=et.device())
+    indices = torch.tensor(
+        [[0, 2], [1, 3]], dtype=torch.int64, device=et.device()
+    )
+    out = torch.zeros(1, 3, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.ops.aten.embedding.out(weight, indices, out=out)
+    self.assertEqual(out.device.type, "cpu")
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32, "float32", "torch.cuda.FloatTensor"),
+      ("int8", torch.int8, "int8", "torch.cuda.CharTensor"),
+      ("bool", torch.bool, "bool", "CUDABoolType"),
+  )
+  def test_embedding_dense_backward_invalid_indices_dtype(
+      self, indices_dtype, tpu_dtype_name, gpu_tensor_name
+  ):
+    grad_output = torch.ones(4, 8, dtype=torch.float32, device=et.device())
+    indices = torch.zeros(4, dtype=indices_dtype, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""embedding_dense_backward(): expected indices to be int64 or int32, got {tpu_dtype_name}""",
+        gpu=f"""Expected tensor for argument #1 'indices' to have one of the following scalar types: Long, Int; but got {gpu_tensor_name} instead (while checking arguments for embedding_backward)""",
+    ):
+      torch.ops.aten.embedding_dense_backward(
+          grad_output, indices, 10, -1, False
+      )
+
+  @parameterized.named_parameters(
+      ("2d_mismatch", (5, 8), (4,), "[4]", "[5, 8]", 4, 40),
+      ("1d_grad_with_1d_indices", (8,), (4,), "[4]", "[8]", 4, 8),
+      ("3d_mismatch", (2, 3, 8), (4,), "[4]", "[2, 3, 8]", 4, 48),
+      ("empty_indices_nonempty_grad", (5, 8), (0,), "[0]", "[5, 8]", 0, 40),
+  )
+  def test_embedding_dense_backward_grad_output_shape_mismatch(
+      self,
+      grad_shape,
+      indices_shape,
+      indices_shape_str,
+      grad_shape_str,
+      num_indices,
+      grad_numel,
+  ):
+    grad_output = torch.ones(
+        grad_shape, dtype=torch.float32, device=et.device()
+    )
+    indices = torch.zeros(indices_shape, dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""embedding_dense_backward(): expected grad_output leading dimensions to have {num_indices} elements matching indices shape {indices_shape_str}, got grad_output shape {grad_shape_str}""",
+        gpu=f"""shape '[{num_indices}, 8]' is invalid for input of size {grad_numel}""",
+    ):
+      torch.ops.aten.embedding_dense_backward(
+          grad_output, indices, 10, -1, False
+      )
+
+  @parameterized.named_parameters(
+      ("bool", torch.bool, "bool", "Bool"),
+      ("int64", torch.int64, "int64", "Long"),
+      ("complex64", torch.complex64, "complex64", "ComplexFloat"),
+      ("float8_e4m3fn", torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+  )
+  def test_embedding_dense_backward_unsupported_grad_output_dtype(
+      self, dtype, tpu_dtype, gpu_dtype
+  ):
+    grad_output = torch.ones(4, 8, device=et.device()).to(dtype)
+    indices = torch.zeros(4, dtype=torch.int64, device=et.device())
+    for scale_grad_by_freq, gpu_kernel in (
+        (False, "embedding_backward"),
+        (True, "embedding_bag_backward_cuda_compute_grad_weight"),
+    ):
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""embedding_dense_backward(): not implemented for {tpu_dtype}""",
+          gpu=f""""{gpu_kernel}" not implemented for '{gpu_dtype}'""",
+      ):
+        torch.ops.aten.embedding_dense_backward(
+            grad_output, indices, 10, -1, scale_grad_by_freq
+        )
+
+  def test_embedding_dense_backward_float4_grad_output(self):
+    grad_output = torch.empty(
+        (4, 2), dtype=torch.float4_e2m1fn_x2, device=et.device()
+    )
+    indices = torch.zeros(4, dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""embedding_dense_backward(): not implemented for float4_e2m1fn_x2""",
+        gpu=""""embedding_backward" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.ops.aten.embedding_dense_backward(
+          grad_output, indices, 10, -1, False
+      )
+
+  def test_embedding_dense_backward_0d_grad_output(self):
+    grad_output = torch.tensor(1.0, dtype=torch.float32, device=et.device())
+    indices = torch.tensor(0, dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""embedding_dense_backward(): expected grad_output to have at least 1 dimension, got 0D""",
+        gpu="""Dimension specified as -1 but tensor has no dimensions""",
+    ):
+      torch.ops.aten.embedding_dense_backward(
+          grad_output, indices, 10, -1, False
+      )
+
+  def test_embedding_dense_backward_negative_num_weights(self):
+    grad_output = torch.ones(4, 8, dtype=torch.float32, device=et.device())
+    indices = torch.zeros(4, dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding_dense_backward(): expected num_weights to be >= 0, got -1""",
+        gpu="""zeros: Dimension size must be non-negative.""",
+    ):
+      torch.ops.aten.embedding_dense_backward(
+          grad_output, indices, -1, -1, False
+      )
+
+  @parameterized.named_parameters(
+      ("indices_on_cpu", False, "cpu", "cuda:0"),
+      ("grad_output_on_cpu", True, "cuda:0", "cpu"),
+  )
+  def test_embedding_dense_backward_device_mismatch(
+      self, grad_on_cpu, gpu_indices_dev, gpu_other_dev
+  ):
+    grad_device = "cpu" if grad_on_cpu else et.device()
+    indices_device = et.device() if grad_on_cpu else "cpu"
+    grad_output = torch.ones(4, 8, dtype=torch.float32, device=grad_device)
+    indices = torch.zeros(4, dtype=torch.int64, device=indices_device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding_dense_backward(): expected tensor to be on tpu, got cpu""",
+        gpu=f"""Expected all tensors to be on the same device, but got indices is on {gpu_indices_dev}, different from other tensors on {gpu_other_dev} (when checking argument in method wrapper_CUDA__embedding_dense_backward)""",
+    ):
+      torch.ops.aten.embedding_dense_backward(
+          grad_output, indices, 10, -1, False
+      )
+
   def test_scaled_mm_invalid_scale_a_orientation(self):
     """Tests that scaled_mm rejects a 2-D row-wise scale_a with wrong orientation."""
     device = et.device()

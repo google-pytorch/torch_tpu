@@ -32,6 +32,7 @@
 #include "c10/core/TensorOptions.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -48,7 +49,6 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/sparse_coo/sparse_coo.h"
 #include "csrc/ops/sparse_coo/sparse_coo_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -84,8 +84,42 @@ absl::Status ValidateEmbeddingArgs(const at::Tensor& weight,
       error::kInvalidArgument)
       << "expected indices to be int64 or int32, got "
       << ToString(indices.scalar_type());
+  // The dispatched output shape doesn't account for the two values that
+  // float4_e2m1fn_x2 packs into each element. CUDA doesn't support it either.
+  TT_RET_CHECK(weight.scalar_type() != at::ScalarType::Float4_e2m1fn_x2,
+               error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(weight.scalar_type());
   TT_RETURN_IF_ERROR(ValidateStaticShape(weight, "weight"));
   TT_RETURN_IF_ERROR(ValidateStaticShape(indices, "indices"));
+  return absl::OkStatus();
+}
+
+absl::Status ValidateEmbeddingBackwardArgs(const at::Tensor& grad_output,
+                                           const at::Tensor& indices,
+                                           const int64_t num_weights) {
+  TT_RET_CHECK(
+      indices.scalar_type() == at::kLong || indices.scalar_type() == at::kInt,
+      error::kInvalidArgument)
+      << "expected indices to be int64 or int32, got "
+      << ToString(indices.scalar_type());
+  // The device shape of float4_e2m1fn_x2 doesn't match its PyTorch shape, and
+  // CUDA doesn't support low-precision floats either.
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(grad_output));
+  TT_RETURN_IF_ERROR(ValidateStaticShape(grad_output, "grad_output"));
+  TT_RETURN_IF_ERROR(ValidateStaticShape(indices, "indices"));
+  TT_RET_CHECK(grad_output.dim() >= 1, error::kPythonIndexError)
+      << "expected grad_output to have at least 1 dimension, got 0D";
+  TT_RET_CHECK(num_weights >= 0, error::kInvalidArgument)
+      << "expected num_weights to be >= 0, got " << num_weights;
+  int64_t grad_leading_numel = 1;
+  for (int64_t i = 0; i < grad_output.dim() - 1; ++i) {
+    TT_ASSIGN_OR_RETURN(grad_leading_numel,
+                        SafeMultiply(grad_leading_numel, grad_output.size(i)));
+  }
+  TT_RET_CHECK(grad_leading_numel == indices.numel(), error::kInvalidArgument)
+      << "expected grad_output leading dimensions to have " << indices.numel()
+      << " elements matching indices shape " << ToString(indices.sizes())
+      << ", got grad_output shape " << ToString(grad_output.sizes());
   return absl::OkStatus();
 }
 
@@ -97,22 +131,6 @@ Dimensions GetEmbeddingOutputDims(const at::Tensor& weight,
   Dimensions out_dims = CopyIntVector(indices.sizes());
   out_dims.push_back(weight.size(1));
   return out_dims;
-}
-
-absl::StatusOr<DeviceBufferRef> BuildAndDispatchEmbedding(
-    const at::Tensor& weight, const at::Tensor& indices,
-    const Dimensions& out_dims, OpParamCacheKeys&& pk) {
-  TT_ASSIGN_OR_RETURN(const auto result_dtype,
-                      ConvertTo<mlir::ElementType>(weight.scalar_type()));
-
-  auto builder_fn = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
-    return BuildEmbeddingShlo(inputs[0], inputs[1]);
-  };
-
-  return DispatchOp<2, 1>(builder_fn, {weight, indices},
-                          {.out_dtype = result_dtype,
-                           .out_dims = out_dims,
-                           .op_param_cache_keys = std::move(pk)});
 }
 
 absl::StatusOr<int64_t> ExtractValidCount(const at::Tensor& count_tensor) {
@@ -296,10 +314,17 @@ at::Tensor AtenEmbedding(const at::Tensor& weight, const at::Tensor& indices,
        IgnoreInCacheKey(sparse, "Unused in forward")),
       {
         TT_THROW_IF_ERROR(ValidateEmbeddingArgs(weight, indices));
-        Dimensions out_dims = GetEmbeddingOutputDims(weight, indices);
-        TT_ASSIGN_OR_THROW(auto result,
-                           BuildAndDispatchEmbedding(weight, indices, out_dims,
-                                                     std::move(pk)));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType result_dtype,
+                           ConvertTo<mlir::ElementType>(weight.scalar_type()));
+        auto builder_fn = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+          return BuildEmbeddingShlo(inputs[0], inputs[1]);
+        };
+        TT_ASSIGN_OR_THROW(
+            auto result,
+            DispatchOp<2>(std::move(builder_fn), {weight, indices},
+                          {.out_dtype = result_dtype,
+                           .out_dims = GetEmbeddingOutputDims(weight, indices),
+                           .op_param_cache_keys = std::move(pk)}));
         return MakeTensor(std::move(result));
       });
 }
@@ -315,17 +340,25 @@ at::Tensor& AtenEmbeddingOut(const at::Tensor& weight,
        IgnoreInCacheKey(sparse, "Unused in forward"), out),
       {
         TT_THROW_IF_ERROR(ValidateEmbeddingArgs(weight, indices));
+        TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+            << "expected out tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
         TT_CHECK_THROW(out.scalar_type() == weight.scalar_type(),
                        error::kInvalidArgument)
             << "expected out tensor to have dtype "
             << ToString(weight.scalar_type()) << ", got "
             << ToString(out.scalar_type());
-        Dimensions out_dims = GetEmbeddingOutputDims(weight, indices);
-        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_dims));
-        TT_ASSIGN_OR_THROW(auto result,
-                           BuildAndDispatchEmbedding(weight, indices, out_dims,
-                                                     std::move(pk)));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+        const Dimensions out_dims = GetEmbeddingOutputDims(weight, indices);
+        TT_ASSIGN_OR_THROW(const mlir::ElementType result_dtype,
+                           ConvertTo<mlir::ElementType>(weight.scalar_type()));
+        auto builder_fn = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+          return BuildEmbeddingShlo(inputs[0], inputs[1]);
+        };
+        TT_THROW_IF_ERROR(
+            DispatchOpOut<2>(std::move(builder_fn), {weight, indices}, out,
+                             {.out_dtype = result_dtype,
+                              .out_dims = out_dims,
+                              .op_param_cache_keys = std::move(pk)}));
         return out;
       });
 }
@@ -521,6 +554,15 @@ at::Tensor AtenEmbeddingDenseBackward(const at::Tensor& grad_output,
       (grad_output, indices, num_weights, padding_idx, scale_grad_by_freq), {
         int64_t nw_val = num_weights.expect_int();
         int64_t pi_val = padding_idx.expect_int();
+        TT_THROW_IF_ERROR(
+            ValidateEmbeddingBackwardArgs(grad_output, indices, nw_val));
+        // CUDA only implements these floating-point dtypes.
+        const at::ScalarType grad_dtype = grad_output.scalar_type();
+        TT_CHECK_THROW(grad_dtype == at::kHalf || grad_dtype == at::kBFloat16 ||
+                           grad_dtype == at::kFloat ||
+                           grad_dtype == at::kDouble,
+                       error::kPythonNotImplementedError)
+            << "not implemented for " << ToString(grad_dtype);
 
         auto builder_fn = [nw_val, pi_val, scale_grad_by_freq](
                               FixedSizeSpan<mlir::MlirOp, 2> inputs) {
@@ -585,11 +627,8 @@ at::Tensor AtenEmbeddingSparseBackward(const at::Tensor& grad,
             (grad, indices, num_weights, padding_idx, scale_grad_by_freq), {
               TT_CHECK_THROW(!scale_grad_by_freq, error::kInvalidArgument)
                   << "scale_grad_by_freq not supported with sparse gradients";
-              TT_CHECK_THROW(indices.scalar_type() == at::kLong ||
-                                 indices.scalar_type() == at::kInt,
-                             error::kInvalidArgument)
-                  << "expected indices to be int64 or int32, got "
-                  << ToString(indices.scalar_type());
+              TT_THROW_IF_ERROR(
+                  ValidateEmbeddingBackwardArgs(grad, indices, num_weights));
               return DispatchEmbeddingSparseBackward(
                   grad, indices, num_weights, padding_idx, scale_grad_by_freq,
                   std::move(pk));
