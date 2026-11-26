@@ -42,6 +42,7 @@
 #include "ATen/ops/tril.h"
 #include "ATen/ops/triu.h"
 #include "ATen/ops/where.h"
+#include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
@@ -426,24 +427,28 @@ absl::Status ValidatePivotsShape(const at::Tensor& tensor,
 }
 
 // Applies permutation represented by `pivots` in-place to either rows or
-// columns of `tensor`. If inverse=true, applies the inverse permutation.
+// columns of `tensor`. `pivots`'s batch dimensions must be broadcastable to
+// `tensor`'s batch dimensions (validated by callers). If inverse=true, applies
+// the inverse permutation.
 absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
                                 bool to_rows, bool inverse) {
-  const int64_t size = to_rows ? tensor.size(-2) : tensor.size(-1);
-  TT_RETURN_IF_ERROR(ValidatePivotsShape(tensor, pivots, size));
-
   if (tensor.numel() == 0 || pivots.numel() == 0) {
     return absl::OkStatus();
   }
 
-  // Flatten batch dimensions.
+  const int64_t rows = tensor.size(-2);
+  const int64_t cols = tensor.size(-1);
+  const int64_t size = to_rows ? rows : cols;
+
+  // Build permutation on pivots' unbroadcasted batch shape so the sequential
+  // swap loop does not scale with broadcasted batch dimensions in `tensor`.
   const at::Tensor pivots_flat =
       at::reshape(pivots, {-1, pivots.size(-1)}).to(at::kLong).sub(1);
-  const int64_t n_batch = pivots_flat.size(0);
+  const int64_t n_pivots_batch = pivots_flat.size(0);
   const int64_t n_pivots = pivots_flat.size(1);
   at::Tensor permutation = at::arange(size, pivots.options().dtype(at::kLong))
                                .unsqueeze(0)
-                               .expand({n_batch, size})
+                               .expand({n_pivots_batch, size})
                                .clone();
   for (int64_t i = 0; i < n_pivots; ++i) {
     // Forward swaps apply P^T, reverse swaps apply P.
@@ -456,12 +461,24 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
     permutation.select(1, k).copy_(permutation_at_pivot.squeeze(1));
     permutation.scatter_(1, pivot_index, permutation_at_k);
   }
-  const int64_t rows = tensor.size(-2);
-  const int64_t cols = tensor.size(-1);
-  const at::Tensor tensor_flat = tensor.reshape({n_batch, rows, cols});
+
+  Dimensions perm_shape =
+      CopyIntVector(pivots.sizes().slice(0, pivots.dim() - 1));
+  perm_shape.push_back(size);
+  Dimensions target_perm_shape =
+      CopyIntVector(tensor.sizes().slice(0, tensor.dim() - 2));
+  target_perm_shape.push_back(size);
+  if (perm_shape != target_perm_shape) {
+    permutation = permutation.reshape(perm_shape)
+                      .expand(target_perm_shape)
+                      .reshape({-1, size});
+  }
+
+  const int64_t n_tensor_batch = permutation.size(0);
+  const at::Tensor tensor_flat = tensor.reshape({n_tensor_batch, rows, cols});
   const at::Tensor gather_indices =
-      to_rows ? permutation.unsqueeze(2).expand({n_batch, rows, cols})
-              : permutation.unsqueeze(1).expand({n_batch, rows, cols});
+      to_rows ? permutation.unsqueeze(2).expand({n_tensor_batch, rows, cols})
+              : permutation.unsqueeze(1).expand({n_tensor_batch, rows, cols});
   const at::Tensor permuted =
       at::gather(tensor_flat, to_rows ? 1 : 2, gather_indices);
   tensor.copy_(permuted.reshape(tensor.sizes()));
@@ -580,9 +597,9 @@ absl::Status ValidateLuSolveDtypesAndDevice(const at::Tensor& lu,
   return absl::OkStatus();
 }
 
-absl::Status ValidateLuSolveShapes(const at::Tensor& lu,
-                                   const at::Tensor& pivots,
-                                   const at::Tensor& b, bool left) {
+absl::StatusOr<Dimensions> ValidateAndInferLuSolveBatchDims(
+    const at::Tensor& lu, const at::Tensor& pivots, const at::Tensor& b,
+    bool left) {
   TT_RET_CHECK(lu.dim() >= 2, error::kInvalidArgument)
       << "expected lu to have at least 2 dimensions, got " << lu.dim();
   TT_RET_CHECK(lu.size(-2) == lu.size(-1), error::kInvalidArgument)
@@ -590,20 +607,8 @@ absl::Status ValidateLuSolveShapes(const at::Tensor& lu,
       << lu.size(-1);
   TT_RET_CHECK(pivots.dim() >= 1, error::kInvalidArgument)
       << "expected pivots to have at least 1 dimension, got " << pivots.dim();
-  // TODO: PyTorch checks that `b` is able to be broadcasted into `lu`
-  // batch dimensions.
-  //
-  // See link below:
-  // https://github.com/pytorch/pytorch/blob/b323a6e5a358588d36e6f797ac81d89bf199546c/aten/src/ATen/native/BatchLinearAlgebra.cpp#L684
-  TT_RET_CHECK(b.dim() == lu.dim(), error::kInvalidArgument)
-      << "expected b to have the same number of dimensions as lu (" << lu.dim()
-      << "), got " << b.dim();
-  TT_RET_CHECK(
-      b.sizes().slice(0, b.dim() - 2) == lu.sizes().slice(0, lu.dim() - 2),
-      error::kInvalidArgument)
-      << "expected b and lu to have the same batch dimensions, got "
-      << ToString(b.sizes().slice(0, b.dim() - 2)) << " and "
-      << ToString(lu.sizes().slice(0, lu.dim() - 2));
+  TT_RET_CHECK(b.dim() >= 2, error::kInvalidArgument)
+      << "expected b to have at least 2 dimensions, got " << b.dim();
   if (left) {
     TT_RET_CHECK(b.size(-2) == lu.size(-2), error::kInvalidArgument)
         << "expected b second-to-last dimension to match the second-to-last "
@@ -618,7 +623,8 @@ absl::Status ValidateLuSolveShapes(const at::Tensor& lu,
   TT_RET_CHECK(pivots.size(-1) == lu.size(-1), error::kInvalidArgument)
       << "expected pivots size to match the size of the matrix (" << lu.size(-1)
       << "), got " << pivots.size(-1);
-  return absl::OkStatus();
+  return InferSize(b.sizes().slice(0, b.dim() - 2),
+                   lu.sizes().slice(0, lu.dim() - 2));
 }
 
 absl::Status ValidateLuFactorExInputs(const at::Tensor& a, const at::Tensor& lu,
@@ -747,11 +753,31 @@ at::Tensor& AtenLinalgLuSolveOut(const at::Tensor& lu, const at::Tensor& pivots,
       OpName::kLinalgLuSolveOut, param_keys,
       (lu, pivots, b, left, adjoint, out), {
         TT_THROW_IF_ERROR(ValidateLuSolveDtypesAndDevice(lu, pivots, b, out));
-        TT_THROW_IF_ERROR(ValidateLuSolveShapes(lu, pivots, b, left));
-        const at::Tensor lu_src = out.is_alias_of(lu) ? lu.clone() : lu;
-        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, b.sizes()));
+        TT_ASSIGN_OR_THROW(
+            const Dimensions batch_dims,
+            ValidateAndInferLuSolveBatchDims(lu, pivots, b, left));
+        Dimensions b_broad_shape = batch_dims;
+        b_broad_shape.push_back(b.size(-2));
+        b_broad_shape.push_back(b.size(-1));
 
-        if (lu_src.numel() == 0 || b.numel() == 0) return out;
+        if (absl::c_linear_search(b_broad_shape, 0)) {
+          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, b_broad_shape));
+          return out;
+        }
+
+        const at::Tensor lu_src = out.is_alias_of(lu) ? lu.clone() : lu;
+        const at::Tensor pivots_src =
+            out.is_alias_of(pivots) ? pivots.clone() : pivots;
+        const bool b_needs_clone =
+            out.is_alias_of(b) &&
+            (!out.is_same(b) || !out.sizes().equals(b_broad_shape));
+        const at::Tensor b_src = b_needs_clone ? b.clone() : b;
+
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, b_broad_shape));
+
+        const at::Tensor b_expanded = b_src.sizes().equals(b_broad_shape)
+                                          ? b_src
+                                          : b_src.expand(b_broad_shape);
 
         // Note: the four cases we are dealing with here are
         // 1. left=True, adjoint=False: P L U X = B
@@ -766,10 +792,10 @@ at::Tensor& AtenLinalgLuSolveOut(const at::Tensor& lu, const at::Tensor& pivots,
         // This is true in cases 1 and 3.
         const bool inversion_order_is_p_l_u = left ^ adjoint;
 
-        const auto p_inversion = [pivots, inversion_order_is_p_l_u,
+        const auto p_inversion = [pivots_src, inversion_order_is_p_l_u,
                                   left](at::Tensor& t) -> absl::Status {
           TT_RETURN_IF_ERROR(
-              ApplyPivotsInPlace(t, pivots, /*to_rows=*/left,
+              ApplyPivotsInPlace(t, pivots_src, /*to_rows=*/left,
                                  /*inverse=*/inversion_order_is_p_l_u));
           return absl::OkStatus();
         };
@@ -806,7 +832,9 @@ at::Tensor& AtenLinalgLuSolveOut(const at::Tensor& lu, const at::Tensor& pivots,
                                            /*unitriangular=*/false, "U");
             };
 
-        out.copy_(b);
+        if (!out.is_same(b_expanded)) {
+          out.copy_(b_expanded);
+        }
         if (inversion_order_is_p_l_u) {
           TT_THROW_IF_ERROR(p_inversion(out));
           TT_THROW_IF_ERROR(l_inversion(out));

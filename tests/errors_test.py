@@ -9618,12 +9618,12 @@ Note: this function is intended to be used with the output produced by torch.lin
       ):
         torch.linalg.lu_solve(lu, pivots_i64, b, out=out)
 
-    with self.subTest("b_rank_mismatch"):
+    with self.subTest("b_rank_too_low"):
       b_1d = torch.ones((3,), device=et.device(), dtype=torch.float32)
       out = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""linalg_lu_solve(): expected b to have the same number of dimensions as lu (2), got 1""",
+          tpu="""linalg_lu_solve(): expected b to have at least 2 dimensions, got 1""",
           gpu="""linalg.lu_solve: The input tensor B must have at least 2 dimensions.""",
       ):
         torch.linalg.lu_solve(lu, pivots, b_1d, out=out)
@@ -9646,7 +9646,7 @@ Note: this function is intended to be used with the output produced by torch.lin
       out = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""linalg_lu_solve(): expected b and lu to have the same batch dimensions, got [4] and [2]""",
+          tpu="""linalg_lu_solve(): the size of tensor a (4) must match the size of tensor b (2) at non-singleton dimension 0""",
           gpu="""The size of tensor a (4) must match the size of tensor b (2) at non-singleton dimension 0""",
       ):
         torch.linalg.lu_solve(lu_b, pivots_b, b_mismatched, out=out)
@@ -9661,7 +9661,7 @@ Note: this function is intended to be used with the output produced by torch.lin
       out = torch.empty((5, 5), device=et.device(), dtype=torch.float32)
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""linalg_lu_solve(): expected b and lu to have the same batch dimensions, got [2] and [0]""",
+          tpu="""linalg_lu_solve(): the size of tensor a (2) must match the size of tensor b (0) at non-singleton dimension 0""",
           gpu="""The size of tensor a (2) must match the size of tensor b (0) at non-singleton dimension 0""",
       ):
         torch.linalg.lu_solve(lu_empty, pivots_empty, b_nonempty, out=out)
