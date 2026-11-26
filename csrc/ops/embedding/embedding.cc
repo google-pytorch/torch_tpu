@@ -961,8 +961,10 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingRenormShlo(mlir::MlirOp weight,
   const int64_t ed = wt.getDimSize(1);
   const auto it = GetTensorTypeOrDie(indices);
   if (it.getRank() == 0) {
+    // DynamicSlice requires all start indices to have the same element type,
+    // and `indices` may be int32 or int64.
     mlir::MlirOp z =
-        MakeScalarConstant(weight.getBuilder(), 0, mlir::ElementType::I64);
+        MakeScalarConstant(weight.getBuilder(), 0, it.getElementType());
     mlir::MlirOp st[] = {indices, z};
     int64_t sz[] = {1, ed};
     TT_ASSIGN_OR_RETURN(

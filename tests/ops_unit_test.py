@@ -11719,6 +11719,62 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  @parameterized.named_parameters(
+      ("0d_int32", 1, torch.int32),
+      ("0d_int64", 1, torch.int64),
+      ("1d_int32", [1], torch.int32),
+      ("1d_int64", [1], torch.int64),
+      ("1d_duplicates_int32", [3, 0, 3, 0], torch.int32),
+      ("1d_duplicates_int64", [3, 0, 3, 0], torch.int64),
+      ("2d_int32", [[0, 2], [3, 2]], torch.int32),
+      ("2d_int64", [[0, 2], [3, 2]], torch.int64),
+  )
+  def test_embedding_renorm_indices(self, indices, index_dtype):
+    """Tests embedding_renorm_ across index ranks and index dtypes."""
+
+    def fn(device):
+      # Row 0 is already within max_norm and must stay unchanged.
+      weight = torch.tensor(
+          [
+              [0.1, 0.2, 0.2],
+              [1.0, 1.0, 1.0],
+              [3.0, 0.0, 4.0],
+              [0.5, 2.0, 1.0],
+          ],
+          device=device,
+      )
+      torch.ops.aten.embedding_renorm_(
+          weight,
+          torch.tensor(indices, dtype=index_dtype, device=device),
+          max_norm=0.5,
+          norm_type=2.0,
+      )
+      return weight
+
+    self.assert_close_tpu_vs_cpu(fn)
+
+  def test_embedding_renorm_functional_max_norm_0d_int32(self):
+    """Tests F.embedding with max_norm and 0-D int32 indices."""
+
+    def fn(device):
+      weight = torch.tensor(
+          [
+              [0.1, 0.2, 0.2],
+              [1.0, 1.0, 1.0],
+              [3.0, 0.0, 4.0],
+              [0.5, 2.0, 1.0],
+          ],
+          device=device,
+      )
+      out = torch.nn.functional.embedding(
+          torch.tensor(1, dtype=torch.int32, device=device),
+          weight,
+          max_norm=0.5,
+      )
+      return out, weight
+
+    self.assert_close_tpu_vs_cpu(fn)
+
   def test_materialize_empty_tensor(self):
     """Tests that materializing an empty tensor works."""
     prev_deterministic_algorithms = torch.are_deterministic_algorithms_enabled()
