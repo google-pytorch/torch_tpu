@@ -20579,6 +20579,538 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
       )
       torch.accelerator.synchronize()
 
+  @parameterized.named_parameters(
+      (
+          "0d",
+          (),
+          "native_batch_norm(): expected input to have >= 2 dimensions, got 0D",
+          "Dimension specified as 1 but tensor has no dimensions",
+      ),
+      (
+          "1d",
+          (3,),
+          "native_batch_norm(): expected input to have >= 2 dimensions, got 1D",
+          (
+              "Dimension out of range (expected to be in range of [-1, 0], but"
+              " got 1)"
+          ),
+      ),
+  )
+  def test_native_batch_norm_invalid_input_rank(self, shape, tpu_msg, gpu_msg):
+    inp = torch.ones(shape, device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    bias = torch.zeros((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    err_type = RuntimeError if et.is_on_tpu() else IndexError
+    with et.assert_raises_message(
+        err_type,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+      )
+
+  @et.gpu_crashes_or_raises(
+      "CUDA indexes strides()[1] without rank check in native_batch_norm.out."
+  )
+  def test_native_batch_norm_out_invalid_input_rank(self):
+    inp = torch.ones((3,), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    bias = torch.zeros((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    out = torch.empty(0, device=et.device())
+    save_mean = torch.empty(0, device=et.device())
+    save_invstd = torch.empty(0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm(): expected input to have >= 2 dimensions, got 1D""",
+    ):
+      torch.ops.aten.native_batch_norm.out(
+          inp,
+          weight,
+          bias,
+          running_mean,
+          running_var,
+          True,
+          0.1,
+          1e-5,
+          out=out,
+          save_mean=save_mean,
+          save_invstd=save_invstd,
+      )
+      torch.accelerator.synchronize()
+
+  @et.gpu_crashes_or_raises(
+      "CUDA indexes strides()[1] without rank check in"
+      " native_batch_norm_backward."
+  )
+  def test_native_batch_norm_backward_invalid_input_rank(self):
+    inp = torch.ones((3,), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): expected input to have >= 2 dimensions, got 1D""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          inp,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          running_mean,
+          running_var,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+      torch.accelerator.synchronize()
+
+  def test_native_batch_norm_mismatched_running_stats_presence(self):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    bias = torch.zeros((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""native_batch_norm(): running_mean and running_var must either both be provided or both be omitted""",
+        gpu="""running_mean and running_var must either both be None or neither be None""",
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp, weight, bias, running_mean, None, True, 0.1, 1e-5
+      )
+    with et.assert_raises_message(
+        err_type,
+        tpu="""native_batch_norm(): running_mean and running_var must either both be provided or both be omitted""",
+        gpu="""running_mean and running_var must either both be None or neither be None""",
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp, weight, bias, None, running_var, False, 0.1, 1e-5
+      )
+
+  @parameterized.named_parameters(
+      (
+          "weight_2d",
+          "weight",
+          (1, 3),
+          True,
+          "native_batch_norm(): expected weight to have shape [3], got [1, 3]",
+          "TensorAccessor expected 1 dims but tensor has 2",
+      ),
+      (
+          "bias_0d",
+          "bias",
+          (),
+          False,
+          "native_batch_norm(): expected bias to have shape [3], got []",
+          "TensorAccessor expected 1 dims but tensor has 0",
+      ),
+      (
+          "running_mean_wrong_size",
+          "running_mean",
+          (5,),
+          True,
+          (
+              "native_batch_norm(): expected running_mean to have shape [3],"
+              " got [5]"
+          ),
+          (
+              "The size of tensor a (3) must match the size of tensor b (5) at"
+              " non-singleton dimension 0"
+          ),
+      ),
+      (
+          "running_mean_2d",
+          "running_mean",
+          (1, 3),
+          False,
+          (
+              "native_batch_norm(): expected running_mean to have shape [3],"
+              " got [1, 3]"
+          ),
+          "TensorAccessor expected 1 dims but tensor has 2",
+      ),
+  )
+  def test_native_batch_norm_invalid_param_shape(
+      self, bad_arg, bad_shape, training, tpu_msg, gpu_msg
+  ):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    params = {
+        "weight": torch.ones((3,), device=et.device()),
+        "bias": torch.zeros((3,), device=et.device()),
+        "running_mean": torch.zeros((3,), device=et.device()),
+        "running_var": torch.ones((3,), device=et.device()),
+    }
+    params[bad_arg] = torch.ones(bad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp,
+          params["weight"],
+          params["bias"],
+          params["running_mean"],
+          params["running_var"],
+          training,
+          0.1,
+          1e-5,
+      )
+
+  @parameterized.named_parameters(
+      (
+          "int32",
+          torch.int32,
+          "native_batch_norm(): expected input to be floating point, got int32",
+          "\"batch_norm_stats_cuda\" not implemented for 'Int'",
+      ),
+      (
+          "bool",
+          torch.bool,
+          "native_batch_norm(): expected input to be floating point, got bool",
+          "\"batch_norm_stats_cuda\" not implemented for 'Bool'",
+      ),
+  )
+  def test_native_batch_norm_non_floating_input(self, dtype, tpu_msg, gpu_msg):
+    inp = torch.ones((2, 3, 4, 4), dtype=dtype, device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    bias = torch.zeros((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+      )
+
+  @parameterized.named_parameters(
+      (
+          "float8_e4m3fn",
+          torch.float8_e4m3fn,
+          (2, 3, 4, 4),
+          "native_batch_norm(): not implemented for float8_e4m3fn",
+          "\"batch_norm_stats_cuda\" not implemented for 'Float8_e4m3fn'",
+      ),
+      (
+          "float4_e2m1fn_x2",
+          torch.float4_e2m1fn_x2,
+          (2, 3, 4, 3),
+          "native_batch_norm(): not implemented for float4_e2m1fn_x2",
+          re.compile(
+              r'false INTERNAL ASSERT FAILED at ".*AccumulateType\.cpp":\d+,'
+              r" please report a bug to PyTorch\. Unrecognized ScalarType:"
+              r" Float4_e2m1fn_x2"
+          ),
+      ),
+  )
+  def test_native_batch_norm_low_precision_float(
+      self, dtype, shape, tpu_msg, gpu_msg
+  ):
+    inp = torch.empty(shape, dtype=dtype, device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    bias = torch.zeros((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp, weight, bias, running_mean, running_var, True, 0.1, 1e-5
+      )
+
+  @parameterized.named_parameters(
+      (
+          "out_wrong_dtype",
+          torch.float32,
+          torch.int32,
+          torch.float32,
+          torch.float32,
+          (
+              "native_batch_norm(): expected the output dtype to be float32,"
+              " got int32"
+          ),
+          "Expected output to have type Float but got Int",
+      ),
+      (
+          "save_mean_wrong_dtype",
+          torch.bfloat16,
+          torch.bfloat16,
+          torch.bfloat16,
+          torch.float32,
+          (
+              "native_batch_norm(): expected the output dtype to be float32,"
+              " got bfloat16"
+          ),
+          "Expected out_mean to have type Float but got BFloat16",
+      ),
+      (
+          "save_invstd_wrong_dtype",
+          torch.bfloat16,
+          torch.bfloat16,
+          torch.float32,
+          torch.bfloat16,
+          (
+              "native_batch_norm(): expected the output dtype to be float32,"
+              " got bfloat16"
+          ),
+          "Expected out_invstd to have type Float but got BFloat16",
+      ),
+  )
+  def test_native_batch_norm_out_mismatched_dtype(
+      self,
+      input_dtype,
+      out_dtype,
+      save_mean_dtype,
+      save_invstd_dtype,
+      tpu_msg,
+      gpu_msg,
+  ):
+    inp = torch.ones((2, 3, 4, 4), dtype=input_dtype, device=et.device())
+    weight = torch.ones((3,), dtype=torch.float32, device=et.device())
+    bias = torch.zeros((3,), dtype=torch.float32, device=et.device())
+    running_mean = torch.zeros((3,), dtype=torch.float32, device=et.device())
+    running_var = torch.ones((3,), dtype=torch.float32, device=et.device())
+    out = torch.empty((2, 3, 4, 4), dtype=out_dtype, device=et.device())
+    save_mean = torch.empty((3,), dtype=save_mean_dtype, device=et.device())
+    save_invstd = torch.empty((3,), dtype=save_invstd_dtype, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm.out(
+          inp,
+          weight,
+          bias,
+          running_mean,
+          running_var,
+          True,
+          0.1,
+          1e-5,
+          out=out,
+          save_mean=save_mean,
+          save_invstd=save_invstd,
+      )
+
+  @parameterized.named_parameters(
+      (
+          "weight_int32",
+          "weight",
+          torch.int32,
+          True,
+          (
+              "native_batch_norm(): expected weight to be floating point,"
+              " got int32"
+          ),
+          "Expected weight to have type Float but got Int",
+      ),
+      (
+          "bias_bool",
+          "bias",
+          torch.bool,
+          True,
+          "native_batch_norm(): expected bias to be floating point, got bool",
+          "Expected bias to have type Float but got Bool",
+      ),
+      (
+          "running_mean_int32",
+          "running_mean",
+          torch.int32,
+          True,
+          (
+              "native_batch_norm(): expected running_mean to be floating point,"
+              " got int32"
+          ),
+          "\"batch_norm_update_stats_cuda\" not implemented for 'Int'",
+      ),
+      (
+          "running_var_complex64_eval",
+          "running_var",
+          torch.complex64,
+          False,
+          (
+              "native_batch_norm(): expected running_var to be floating point,"
+              " got complex64"
+          ),
+          "\"batch_norm_invert_std_cuda\" not implemented for 'ComplexFloat'",
+      ),
+  )
+  def test_native_batch_norm_non_floating_param(
+      self, bad_arg, dtype, training, tpu_msg, gpu_msg
+  ):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    params = {
+        "weight": torch.ones((3,), device=et.device()),
+        "bias": torch.zeros((3,), device=et.device()),
+        "running_mean": torch.zeros((3,), device=et.device()),
+        "running_var": torch.ones((3,), device=et.device()),
+    }
+    params[bad_arg] = torch.ones((3,), dtype=dtype, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten.native_batch_norm(
+          inp,
+          params["weight"],
+          params["bias"],
+          params["running_mean"],
+          params["running_var"],
+          training,
+          0.1,
+          1e-5,
+      )
+
+  def test_native_batch_norm_backward_mismatched_grad_out_shape(self):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    grad_out = torch.ones((2, 5, 4, 4), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    save_mean = torch.zeros((3,), device=et.device())
+    save_invstd = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): expected grad_out to have shape [2, 3, 4, 4], got [2, 5, 4, 4]""",
+        gpu="""shape '[2, 3, 16]' is invalid for input of size 160""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          save_mean,
+          save_invstd,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+
+  def test_native_batch_norm_backward_mismatched_grad_out_dtype(self):
+    inp = torch.ones((2, 3, 4, 4), dtype=torch.float32, device=et.device())
+    grad_out = torch.ones(
+        (2, 3, 4, 4), dtype=torch.bfloat16, device=et.device()
+    )
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    save_mean = torch.zeros((3,), device=et.device())
+    save_invstd = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): expected grad_out to have dtype float32, got bfloat16""",
+        gpu="""Expected grad_output to have type Float but got BFloat16""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          save_mean,
+          save_invstd,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+
+  def test_native_batch_norm_backward_non_floating_grad_out(self):
+    inp = torch.ones((2, 3, 4, 4), dtype=torch.float32, device=et.device())
+    grad_out = torch.ones((2, 3, 4, 4), dtype=torch.int32, device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    save_mean = torch.zeros((3,), device=et.device())
+    save_invstd = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): expected grad_out to be floating point, got int32""",
+        gpu="""Expected grad_output to have type Float but got Int""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          save_mean,
+          save_invstd,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+
+  def test_native_batch_norm_backward_invalid_param_rank(self):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    grad_out = torch.ones((2, 3, 4, 4), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((1, 3), device=et.device())
+    save_mean = torch.zeros((3,), device=et.device())
+    save_invstd = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): expected running_var to have shape [3], got [1, 3]""",
+        gpu="""TensorAccessor expected 1 dims but tensor has 2""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          save_mean,
+          save_invstd,
+          False,
+          1e-5,
+          [True, True, True],
+      )
+
+  @et.gpu_crashes_or_raises(
+      "CUDA hits illegal memory access when save_mean is empty with"
+      " training=True."
+  )
+  def test_native_batch_norm_backward_empty_save_mean_train(self):
+    inp = torch.ones((2, 3, 4, 4), device=et.device())
+    grad_out = torch.ones((2, 3, 4, 4), device=et.device())
+    weight = torch.ones((3,), device=et.device())
+    running_mean = torch.zeros((3,), device=et.device())
+    running_var = torch.ones((3,), device=et.device())
+    save_mean = torch.empty((0,), device=et.device())
+    save_invstd = torch.ones((3,), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_batch_norm_backward(): expected save_mean to have shape [3], got [0]""",
+        gpu="""CUDA error: an illegal memory access was encountered""",
+    ):
+      torch.ops.aten.native_batch_norm_backward(
+          grad_out,
+          inp,
+          weight,
+          running_mean,
+          running_var,
+          save_mean,
+          save_invstd,
+          True,
+          1e-5,
+          [True, True, True],
+      )
+      torch.accelerator.synchronize()
+
   def test_div_unsupported_mode(self):
     lhs = torch.ones((2, 2), device=et.device())
     rhs = torch.ones((2, 2), device=et.device())
