@@ -23,10 +23,14 @@ While pull requests fixing bugs or implementing features are always welcome,
 they are by no means required. **Submitting a clear, well-isolated bug report or
 feature issue is in itself a valuable contribution.**
 
-For anything more complicated than trivial fixes, please open an issue first
-before writing code, to allow for discussion about the right shape of the
-solution and to make the issue discoverable and prevent duplicate work. Linking
-your PR to that issue also helps us prioritize its review (see
+For anything more complicated than trivial fixes, please open or comment on an
+existing issue (or [an RFC](#proposing-major-changes-and-api-design) for major
+architectural or API changes) *before* writing code. In particular, prior
+alignment is required for new operators, edits to hot-path lowerings, new APIs
+or shared utilities, and changes exceeding roughly 300 non-generated, non-test
+lines. Aligning upfront lets maintainers confirm the approach, avoid duplicate
+work, and agree on how to split larger changes into focused PRs. Linking your PR
+to that issue also helps us prioritize its review (see
 [What We Expect From Contributors](#what-we-expect-from-contributors)).
 
 ### What Makes a Great Bug Report
@@ -136,8 +140,8 @@ fails, or the internal change fails presubmit, see the
 
 ## Proposing Major Changes and API Design
 
-While most changes start with an issue, non-trivial architectural changes or new
-public APIs benefit from a Request for Comments (RFC) discussion before
+While most changes start with an issue, major architectural changes or new
+public APIs require a Request for Comments (RFC) discussion before
 implementation begins.
 
 *   **API Philosophy**: We aim to make TorchTPU feel native to PyTorch. When
@@ -166,8 +170,11 @@ author is fully responsible for the code they submit.** This means:
     of subtle bugs, regressions, or licensing violations.
 *   **No automated low-effort submissions**: Pull requests that appear to be
     unreviewed, automated LLM output waste reviewer time and will be closed.
-    Please expect to spend at least as much time preparing your code for
-    submission as you expect maintainers to spend reviewing it.
+    When a PR shows systemic un-audited generation, maintainers will close it or
+    pause review with high-level feedback pointing back to this policy rather
+    than giving line-by-line fixes. Please expect to spend at least as much time
+    preparing your code for submission as you expect maintainers to spend
+    reviewing it.
 *   **Optional attribution**: If an AI assistant provided meaningful help, you
     may add an `Assisted-by:` tag in your commit message. AI assistants should
     not be considered co-authors on any commits.
@@ -186,6 +193,9 @@ A constructive review process relies on mutual respect for time and attention.
 
 *   **Thoughtful feedback**: We review code for correctness, clarity, and long-
     term maintainability, focusing on the problem rather than the person.
+*   **Alignment before line-by-line review**: When a PR lacks required prior
+    alignment, maintainers will close it or pause review with high-level
+    feedback pointing back to this guide rather than giving line-by-line fixes.
 *   **Commitment to main branch stability**: We follow a strict revert-on-
     breakage policy so our main branch remains dependable for everyone.
 *   **Up-to-date contribution documentation**: All requirements for contribution
@@ -194,8 +204,9 @@ A constructive review process relies on mutual respect for time and attention.
 
 ### What We Expect From Contributors
 
-*   **Small, focused PRs**: Submit pull requests that do one thing well. A
-    concise 100-line diff gets reviewed far faster than a 1,000-line rewrite.
+*   **Small, focused PRs**: Submit pull requests that do one thing well, and
+    split larger approved changes into focused PRs. A concise 100-line diff gets
+    reviewed far faster than a 1,000-line rewrite.
 *   **Clear context**: Explain what your change does and why it is needed. All
     non-trivial PRs must
     [link to the relevant GitHub issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue).

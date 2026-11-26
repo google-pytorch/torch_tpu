@@ -1,6 +1,8 @@
 ## Description
 
 <!-- Provide a clear and concise description of the changes in this PR and why they are needed. -->
+<!-- For non-trivial changes, link the aligned issue (e.g. `Fixes #<issue>`). -->
+<!-- Confirm you have self-reviewed your diff per CONTRIBUTING.md. -->
 
 ## Test Plan
 
