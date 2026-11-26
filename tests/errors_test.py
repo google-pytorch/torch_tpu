@@ -6768,15 +6768,89 @@ Supported combinations for non-constant padding:
     ):
       torch._foreach_abs_(self_list)
 
-  def test_foreach_add_int_tensors_float_alpha(self):
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="list",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="inplace_list",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="tensor",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=False,
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=False,
+      ),
+  )
+  def test_foreach_add_int_tensors_float_alpha(
+      self, op: Callable[..., Any], op_name: str, other_is_list: bool
+  ):
     self_list = [torch.tensor([1, 2], dtype=torch.int32, device=et.device())]
-    other_list = [torch.tensor([3, 4], dtype=torch.int32, device=et.device())]
+    other = (
+        [torch.tensor([3, 4], dtype=torch.int32, device=et.device())]
+        if other_is_list
+        else torch.tensor(3, dtype=torch.int32, device=et.device())
+    )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""foreach_add(): expected alpha to be integral for integral input tensors, got float64""",
+        tpu=f"""{op_name}(): expected alpha to be integral for integral input tensors, got float64""",
         gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
     ):
-      torch._foreach_add(self_list, other_list, alpha=1.5)
+      op(self_list, other, alpha=1.5)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="list",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="inplace_list",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="tensor",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=False,
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=False,
+      ),
+  )
+  def test_foreach_add_mixed_int_tensors_bool_alpha(
+      self, op: Callable[..., Any], op_name: str, other_is_list: bool
+  ):
+    self_list = [torch.tensor([1, 2], dtype=torch.int32, device=et.device())]
+    other = (
+        [torch.tensor([3, 4], dtype=torch.int64, device=et.device())]
+        if other_is_list
+        else torch.tensor(3, dtype=torch.int64, device=et.device())
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected input tensor dtypes to be bool when alpha dtype is bool, got int32 and int64""",
+        gpu="""Boolean alpha only supported for Boolean results.""",
+    ):
+      op(self_list, other, alpha=True)
 
   def test_foreach_add_int_tensors_bool_alpha(self):
     if et.is_on_gpu():
@@ -6913,6 +6987,30 @@ Supported combinations for non-constant padding:
         gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
     ):
       torch._foreach_sub_(self_list, other_list, alpha=1.5)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="out_of_place",
+          op=torch._foreach_sub,
+          op_name="foreach_sub",
+      ),
+      dict(
+          testcase_name="inplace",
+          op=torch._foreach_sub_,
+          op_name="foreach_sub_",
+      ),
+  )
+  def test_foreach_sub_bool_alpha(self, op: Callable[..., Any], op_name: str):
+    self_list = [
+        torch.tensor([1.0, 2.0], dtype=torch.float32, device=et.device())
+    ]
+    other_list = [torch.tensor([3, 4], dtype=torch.int32, device=et.device())]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected the alpha argument not to be bool, got true""",
+        gpu="""Boolean alpha only supported for Boolean results.""",
+    ):
+      op(self_list, other_list, alpha=True)
 
   def test_foreach_sqrt_inplace_integral(self):
     self_list = [
