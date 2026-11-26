@@ -197,7 +197,8 @@ torch_tpu_py_test(
         "JAX_PLATFORMS": "cpu",
         "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
     },
-    shard_count = 4,
+    # Interpret-mode cases are slow under ASan; 4 shards hit the timeout.
+    shard_count = 8,
     tags = ["notsan"],  # TODO(b/584257115): Fails under OSS TSan.
     deps = if_oss(
         ["//shims/ortools"],
