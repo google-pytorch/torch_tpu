@@ -23,7 +23,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -46,6 +48,10 @@ namespace {
 template <typename ReturnType, typename DispatchFn>
 ReturnType DispatchWhere(const at::Tensor& condition, const at::Tensor& self,
                          const at::Tensor& other, DispatchFn&& dispatch_fn) {
+  TT_RET_CHECK(IsBool(condition) || condition.scalar_type() == at::kByte,
+               error::kInvalidArgument)
+      << "expected condition to be a bool or uint8 tensor, got "
+      << ToString(condition.scalar_type());
   const at::ScalarType output_aten_type =
       at::promoteTypes(self.scalar_type(), other.scalar_type());
   TT_ASSIGN_OR_RETURN(const auto output_element_type,
@@ -92,6 +98,9 @@ at::Tensor& AtenWhereSelfOut(const at::Tensor& condition,
                              const at::Tensor& self, const at::Tensor& other,
                              at::Tensor& out) {
   TT_KERNEL(OpName::kWhereSelfOut, _, (condition, self, other, out), {
+    TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+        << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+        << ", got " << out.device();
     TT_THROW_IF_ERROR((DispatchWhere<absl::Status>(
         condition, self, other,
         [&]  // REF_CAPTURE_OK=called synchronously

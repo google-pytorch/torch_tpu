@@ -14040,6 +14040,42 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.where(condition, inp, other, out=out)
 
+  @parameterized.named_parameters(
+      ("int32", torch.int32, "int32", "Int"),
+      ("float32", torch.float32, "float32", "Float"),
+      ("bfloat16", torch.bfloat16, "bfloat16", "BFloat16"),
+      ("complex64", torch.complex64, "complex64", "ComplexFloat"),
+  )
+  def test_where_invalid_condition_dtype(
+      self, cond_dtype, tpu_dtype_name, gpu_dtype_name
+  ):
+    condition = torch.tensor([1, 0], device=et.device(), dtype=cond_dtype)
+    inp = torch.ones(2, device=et.device(), dtype=torch.float32)
+    other = torch.zeros(2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, device=et.device(), dtype=torch.float32)
+
+    tpu_msg = f"""where(): expected condition to be a bool or uint8 tensor, got {tpu_dtype_name}"""
+    gpu_msg = f"""where expected condition to be a boolean tensor, but got a tensor with dtype {gpu_dtype_name}"""
+
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      torch.where(condition, inp, other)
+
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      torch.where(condition, inp, other, out=out)
+
+  def test_where_out_cpu_tensor(self):
+    condition = torch.tensor([True, False], device=et.device())
+    inp = torch.ones(2, device=et.device(), dtype=torch.float32)
+    other = torch.zeros(2, device=et.device(), dtype=torch.float32)
+    out_cpu = torch.empty(2, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""where(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.where(condition, inp, other, out=out_cpu)
+
   def test_bucketize_unsupported_complex_dtype_1(self):
     input_tensor = torch.tensor([1 + 1j], device=et.device())
     boundaries = torch.tensor([0.5], device=et.device())

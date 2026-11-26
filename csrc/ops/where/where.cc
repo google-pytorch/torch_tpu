@@ -19,9 +19,7 @@
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
-#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -31,10 +29,7 @@ namespace torch_tpu {
 absl::StatusOr<mlir::MlirOp> BuildWhereShlo(
     mlir::MlirOp condition, mlir::MlirOp input, mlir::MlirOp other,
     mlir::ElementType output_element_type) {
-  mlir::MLIRContext& ctx = condition.getContext();
   const mlir::RankedTensorType condition_type = GetTensorTypeOrDie(condition);
-  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other);
 
   // Apply element type conversion before broadcasting to minimize the amount of
   // data that needs to be copied around.
@@ -42,13 +37,10 @@ absl::StatusOr<mlir::MlirOp> BuildWhereShlo(
     condition =
         mlir::stablehlo::ConvertElementType(condition, mlir::ElementType::PRED);
   }
-  mlir::Type output_type = mlir::getElementType(ctx, output_element_type);
-  if (input_type.getElementType() != output_type) {
-    input = mlir::stablehlo::ConvertElementType(input, output_type);
-  }
-  if (other_type.getElementType() != output_type) {
-    other = mlir::stablehlo::ConvertElementType(other, output_type);
-  }
+  TT_ASSIGN_OR_RETURN(
+      input, ComplexSafeConvertElementType(input, output_element_type));
+  TT_ASSIGN_OR_RETURN(
+      other, ComplexSafeConvertElementType(other, output_element_type));
 
   TT_ASSIGN_OR_RETURN((auto [bcast_condition, bcast_input, bcast_other]),
                       ApplyBroadcastIfNeeded(condition, input, other));

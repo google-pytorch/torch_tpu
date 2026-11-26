@@ -280,7 +280,7 @@ csrc/ops/view_decomposition/reshape_primitive.cc: {remaining: 0, total: 7, infea
 csrc/ops/view_decomposition/slice_primitive.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/view_decomposition/view_sequence.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/ops/weight_norm/weight_norm_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 0}
-csrc/ops/where/where_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/where/where_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/xlogy/xlogy_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/pjrt/pjrt_client.cc: {remaining: 0, total: 1, infeasible: 1}
 csrc/pjrt/pjrt_execute.cc: {remaining: 0, total: 6, infeasible: 5}
