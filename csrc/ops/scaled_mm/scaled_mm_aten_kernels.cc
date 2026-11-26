@@ -45,6 +45,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
@@ -60,30 +61,61 @@ namespace {
 
 enum class Operand { kLhs, kRhs };
 
+// Returns true for FP8 types that XLA:TPU lowers directly from dot_general
+// without pre-upcasting operands to F32.
+// TODO: b/580592461 - Keep native f4E2M1FN x f4E2M1FN operands once XLA:TPU
+// FP4 canonicalization is available in a supporting libtpu version.
+bool IsNativeFp8Type(mlir::Type type) {
+  return mlir::isa<mlir::Float8E4M3FNType, mlir::Float8E5M2Type>(type);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildStablehloDotGeneral(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
   mlir::MlirBuilder& builder = lhs.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
-  auto dot_dimension_numbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/{1}, /*rhs_contracting_dimensions=*/{0});
+  const auto dot_dimension_numbers =
+      mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+          /*lhs_contracting_dimensions=*/{1},
+          /*rhs_contracting_dimensions=*/{0});
 
-  auto precision_config_attr =
-      mlir::stablehlo::PrecisionConfigAttr::get(&ctx, {precision, precision});
+  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
+  const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
 
-  auto lhs_type = GetTensorTypeOrDie(lhs);
-  auto rhs_type = GetTensorTypeOrDie(rhs);
-  Dimensions result_shape = {lhs_type.getShape()[0], rhs_type.getShape()[1]};
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType lhs_elem_type,
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType lhs_elem_type,
                       ConvertTo<mlir::ElementType>(lhs_type.getElementType()));
-  TT_ASSIGN_OR_RETURN(auto comp_dtype, InferComputationDtype(lhs_elem_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(lhs_elem_type));
 
-  auto result_type = mlir::RankedTensorType::get(
-      result_shape, mlir::getElementType(ctx, comp_dtype));
+  const bool keep_native = IsNativeFp8Type(lhs_type.getElementType()) &&
+                           IsNativeFp8Type(rhs_type.getElementType());
+  if (!keep_native) {
+    TT_ASSIGN_OR_RETURN(lhs, CastIfNeeded(lhs, comp_dtype));
+    TT_ASSIGN_OR_RETURN(rhs, CastIfNeeded(rhs, comp_dtype));
+  }
 
-  return mlir::stablehlo::DotGeneral(
-      result_type, lhs, rhs, dot_dimension_numbers, precision_config_attr);
+  // Native FP8 contractions require DEFAULT precision so XLA:TPU uses native
+  // quantized MXU lowering instead of upcasting to F32/BF16.
+  const mlir::stablehlo::Precision effective_precision =
+      keep_native
+          ? mlir::stablehlo::Precision::
+                DEFAULT  // EXPLICIT_PRECISION_OK=Native FP8 dot_general
+                         // requires DEFAULT precision for TPU MXU lowering.
+          : precision;
+  const auto precision_config_attr = mlir::stablehlo::PrecisionConfigAttr::get(
+      &ctx, {effective_precision, effective_precision});
+
+  const int64_t lhs_k = lhs_type.getShape()[1];
+  const int64_t rhs_k = rhs_type.getShape()[0];
+  TT_RET_CHECK(mlir::ShapedType::isDynamic(lhs_k) ||
+                   mlir::ShapedType::isDynamic(rhs_k) || lhs_k == rhs_k,
+               error::kInvalidArgument)
+      << "expected lhs contracting dimension to match rhs contracting "
+         "dimension, got "
+      << lhs_k << " and " << rhs_k;
+
+  return mlir::stablehlo::DotGeneral(lhs, rhs, dot_dimension_numbers,
+                                     precision_config_attr, comp_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> ReshapeScaleIfNeeded(mlir::MlirOp scale,
@@ -118,9 +150,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
                       BuildStablehloDotGeneral(lhs, rhs, precision));
 
-  // Cast mm_result to F32 to avoid type mismatch with scales (which are F32).
+  // Cast mm_result and scales to F32 to avoid element type mismatches.
   TT_ASSIGN_OR_RETURN(mm_result,
                       CastIfNeeded(mm_result, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(scale_a, CastIfNeeded(scale_a, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(scale_b, CastIfNeeded(scale_b, mlir::ElementType::F32));
 
   // Normalize row-wise / per-channel scales to [M, 1] / [1, N] so they
   // broadcast along the correct axis of the [M, N] result. Scalar (tensorwise)
@@ -146,9 +180,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   // further reduce multiplications.
   bool folded_scale_result = false;
   if (!bias.has_value() && scale_result.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_result_f32,
+                        CastIfNeeded(*scale_result, mlir::ElementType::F32));
     TT_ASSIGN_OR_RETURN(
         auto bcast_scale_result,
-        ApplyBroadcastIfNeeded<2>({combined_scale, *scale_result}));
+        ApplyBroadcastIfNeeded<2>({combined_scale, scale_result_f32}));
 
     combined_scale =
         mlir::stablehlo::Mul(bcast_scale_result[0], bcast_scale_result[1]);
@@ -687,11 +723,6 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
-  TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
-                      InferComputationDtype(self_elem_dtype));
-
   const mlir::stablehlo::Precision current_precision =
       GetAndAddPrecisionTo(param_keys);
 
@@ -708,7 +739,6 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
       std::move(op_builder), inputs, out,
       {.out_dtype = target_elem_dtype,
        .out_dims = output_dims,
-       .computation_dtype = comp_dtype,
        .op_param_cache_keys = std::move(param_keys)});
 }
 
@@ -800,11 +830,6 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
-  TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
-                      InferComputationDtype(self_elem_dtype));
-
   mlir::stablehlo::Precision current_precision =
       use_fast_accum ? mlir::stablehlo::Precision::
                            DEFAULT  // EXPLICIT_PRECISION_OK=use_fast_accum
@@ -847,7 +872,6 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
       std::move(op_builder), inputs, out,
       {.out_dtype = target_elem_dtype,
        .out_dims = output_dims,
-       .computation_dtype = comp_dtype,
        .op_param_cache_keys = std::move(param_keys)});
 }
 
