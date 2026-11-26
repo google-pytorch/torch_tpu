@@ -1168,6 +1168,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:handshake_consensus",
+        "//src/torch_tpu/_internal/distributed:handshake_messages",
         "//src/torch_tpu/_internal/distributed:process_group_utils",
         "//tests:seed_test_utils",
     ],

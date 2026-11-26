@@ -240,6 +240,107 @@ class CollectiveHandshakeConsensusTest(seed_test_utils.RepeatableTest):
     asyncio.run(_test())
 
 
+class HandshakeConsensusSubmitTest(seed_test_utils.RepeatableTest):
+  """Unit tests for requests that the consensus for arbitrary groups refuses.
+
+  The consensus is `handshake_consensus.CollectiveHandshakeConsensus`.
+  """
+
+  def setUp(self) -> None:
+    super().setUp()
+    self.consensus = handshake_consensus.CollectiveHandshakeConsensus()
+
+  def submit(self, rank: int, start: int, end: int) -> dict[int, bool]:
+    """Submits a request of `rank` for collectives `[start, end)` of {0, 1}.
+
+    Args:
+      rank: The rank sending the request.
+      start: The number of collectives of the process group before the graph.
+      end: `start` plus the number of collectives of the process group in the
+        graph.
+
+    Returns:
+      Whether each response is a success, by rank.
+    """
+    responses = self.consensus.submit(
+        _make_request(
+            rank,
+            participating_ranks=[0, 1],
+            num_collectives_in_graph=end - start,
+            collective_count_before=start,
+        )
+    )
+    return {
+        responder: response.success for responder, response in responses.items()
+    }
+
+  def test_second_request_of_a_rank_before_the_response(self) -> None:
+    self.submit(0, 0, 1)
+
+    with self.assertRaisesRegex(ValueError, "already has a pending request"):
+      self.submit(0, 1, 2)
+
+  def test_debug_mode_rejects_requests_that_restart_or_skip(self) -> None:
+    self.enter_context(
+        mock.patch.object(
+            handshake_messages,
+            "is_torch_tpu_debug_mode",
+            autospec=True,
+            return_value=True,
+        )
+    )
+    self.submit(0, 0, 2)
+    self.submit(1, 0, 2)
+
+    with self.assertRaisesRegex(ValueError, "earlier requests end at 2"):
+      self.submit(0, 1, 3)
+    with self.assertRaisesRegex(ValueError, "earlier requests end at 2"):
+      self.submit(0, 3, 4)
+    # The refused requests are ignored.
+    self.assertEmpty(self.submit(0, 2, 3))
+    self.assertEqual(self.submit(1, 2, 3), {0: True, 1: True})
+
+  def test_debug_mode_ignores_request_for_a_process_group_without_its_rank(
+      self,
+  ) -> None:
+    self.enter_context(
+        mock.patch.object(
+            handshake_messages,
+            "is_torch_tpu_debug_mode",
+            autospec=True,
+            return_value=True,
+        )
+    )
+    one_collective = ProcessGroupCollectiveCount(
+        collective_count_before=0, num_collectives_in_graph=1
+    )
+    # Rank 0 is a member of the first process group, but not of the second.
+    request = CollectiveHandshakeRequest(
+        pg_collective_counts=RankCollectiveCounts({
+            ProcessGroupId([0, 1]): one_collective,
+            ProcessGroupId([1, 2]): one_collective,
+        }),
+        executable_fingerprint="fp",
+        rank=0,
+    )
+
+    with self.assertRaisesRegex(ValueError, "not a member"):
+      self.consensus.submit(request)
+
+    self.assertEmpty(self.submit(0, 0, 1))
+    self.assertEqual(self.submit(1, 0, 1), {0: True, 1: True})
+
+  def test_request_on_a_second_process_group_is_refused(self) -> None:
+    # TODO: b/553328238 - Remove once more than one process group is supported.
+    self.submit(0, 0, 1)
+
+    with self.assertRaisesRegex(NotImplementedError, "more than one process"):
+      self.consensus.submit(_make_request(1, participating_ranks=[1, 2]))
+
+    # The refused request is ignored.
+    self.assertEqual(self.submit(1, 0, 1), {0: True, 1: True})
+
+
 class HandshakeConsensusProcessGroupStateTest(seed_test_utils.RepeatableTest):
   """Unit tests for `handshake_consensus._ProcessGroupState` error handling."""
 
