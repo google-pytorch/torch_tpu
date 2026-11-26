@@ -369,6 +369,20 @@ mlir::MlirOp ApplyScatterMeanCount(
       /*unique_indices=*/false)[0];
 
   mlir::MlirOp div_res = mlir::stablehlo::Div(sum_result, total_count);
+  // stablehlo.divide rounds signed integer quotients toward zero, but PyTorch
+  // floors integer means. The count is positive wherever the quotient is
+  // used, so the quotient was rounded up exactly when quotient * count
+  // exceeds the sum.
+  if (computation_type.isSignlessInteger() &&
+      !computation_type.isInteger(/*width=*/1)) {
+    mlir::MlirOp product = mlir::stablehlo::Mul(div_res, total_count);
+    mlir::MlirOp rounded_up = mlir::stablehlo::Compare(
+        product, sum_result, mlir::stablehlo::ComparisonDirection::GT);
+    mlir::MlirOp one_bcast =
+        mlir::stablehlo::BroadcastInDim(total_count_type, one, {});
+    mlir::MlirOp rounded_down = mlir::stablehlo::Subtract(div_res, one_bcast);
+    div_res = mlir::stablehlo::Select(rounded_up, rounded_down, div_res);
+  }
   mlir::MlirOp zero_bcast =
       mlir::stablehlo::BroadcastInDim(total_count_type, zero, {});
   mlir::MlirOp is_hit = mlir::stablehlo::Compare(

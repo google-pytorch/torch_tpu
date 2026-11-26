@@ -12651,6 +12651,43 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     rtol, atol = (1.7e-6, 2.3e-6) if dtype == torch.complex64 else (None, None)
     self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
 
+  @parameterized.product(
+      op=["scatter_reduce", "index_reduce"],
+      dtype=[torch.int8, torch.int16, torch.int32, torch.int64, torch.float32],
+      include_self=[True, False],
+  )
+  def test_scatter_index_reduce_mean_rounding(
+      self, op: str, dtype: torch.dtype, include_self: bool
+  ):
+    """scatter_reduce and index_reduce round integer means down.
+
+    PyTorch floors integer means, e.g. (-3 - 2 + 0) / 3 is -2, not -1. Several
+    positions get negative non-integer means both with and without self,
+    position 2 gets no update, and float32 means stay unrounded.
+
+    ops_test skips scatter_reduce's mean variant on TPU, and its index_reduce
+    mean samples have no negative non-integer means.
+
+    Args:
+      op: The reduction op, "scatter_reduce" or "index_reduce".
+      dtype: Input tensor data type.
+      include_self: Whether to include the self tensor values.
+    """
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      x = torch.tensor([-3, 4, 1, -6, 5, 2], dtype=dtype, device=device)
+      index = torch.tensor([0, 0, 1, 1, 3, 3, 3, 4, 4, 5, 5], device=device)
+      src = torch.tensor(
+          [-2, 0, -1, -4, 4, -3, -1, 3, 4, -9, 2], dtype=dtype, device=device
+      )
+      if op == "scatter_reduce":
+        return x.scatter_reduce(
+            0, index, src, reduce="mean", include_self=include_self
+        )
+      return x.index_reduce(0, index, src, "mean", include_self=include_self)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_scatter_add_broadcast_index_lowers_to_row_scatter(self):
     """The broadcast-index scatter_add lowers to a row (window) scatter.
 
