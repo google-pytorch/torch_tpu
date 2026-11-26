@@ -49,6 +49,10 @@ struct TpuLayout {
   mlir::ElementType element_type = static_cast<mlir::ElementType>(-1);
 };
 
+// Returns the dimension index along which a `float4_e2m1fn_x2` tensor is
+// packed (stride 1), or -1 if no valid packed dimension exists.
+int64_t FindFp4PackedDim(const at::Tensor& tensor);
+
 // Resolves the TPU layout for a PyTorch tensor. This maps the PyTorch tensor's
 // logical layout (sizes, strides, offset, dtype) to a TPU/StableHLO-compatible
 // logical layout. For packed formats like FP4, this includes applying morphing

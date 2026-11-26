@@ -456,6 +456,92 @@ class FP4Test(seed_test_utils.RepeatableTest):
     self.assertEqual(unit_t.shape, torch.Size([1, 4]))
     self.assertTrue(torch.equal(unit_t, unit_t))
 
+  def test_fp4_scaled_mm_v2_mxfp4_blockwise(self):
+    """Tests non-square MXFP4 BlockWise1x32 eager and compiled with swizzling."""
+    device = torch.device("tpu")
+    m, k_packed, n = 128, 128, 256
+    k_unpacked = 2 * k_packed  # 256 -> k_logical = 8 blocks of 32
+    k_logical = k_unpacked // 32
+
+    a_cpu = torch.randint(0, 256, (m, k_packed), dtype=torch.uint8).view(
+        torch.float4_e2m1fn_x2
+    )
+    b_raw_cpu = torch.randint(0, 256, (n, k_packed), dtype=torch.uint8).view(
+        torch.float4_e2m1fn_x2
+    )
+    a_f32 = quantize_utils.decode_sub_byte_tensor(a_cpu)
+    b_f32 = quantize_utils.decode_sub_byte_tensor(b_raw_cpu).t()
+
+    # Use float8_e8m0fnu block scales (exact powers of two).
+    scale_a_logical = (torch.rand(m, k_logical, dtype=torch.float32) + 0.5).to(
+        torch.float8_e8m0fnu
+    )
+    scale_b_logical = (torch.rand(k_logical, n, dtype=torch.float32) + 0.5).to(
+        torch.float8_e8m0fnu
+    )
+
+    def swizzle_32_4_4(scale_2d: torch.Tensor) -> torch.Tensor:
+      rows, cols = scale_2d.shape
+      tiles = scale_2d.view(rows // 128, 128, cols // 4, 4).transpose(1, 2)
+      return tiles.reshape(-1, 4, 32, 4).transpose(1, 2).reshape(-1)
+
+    scale_a_swiz = swizzle_32_4_4(scale_a_logical)
+    scale_b_swiz = swizzle_32_4_4(scale_b_logical.t().contiguous())
+
+    sa_exp = (
+        scale_a_logical.float()
+        .unsqueeze(-1)
+        .expand(m, k_logical, 32)
+        .reshape(m, k_unpacked)
+    )
+    sb_exp = (
+        scale_b_logical.float()
+        .unsqueeze(1)
+        .expand(k_logical, 32, n)
+        .reshape(k_unpacked, n)
+    )
+    expected = torch.matmul(a_f32 * sa_exp, b_f32 * sb_exp).to(torch.bfloat16)
+
+    a_tpu = a_cpu.to(device)
+    b_tpu = b_raw_cpu.to(device).t()
+
+    for swizzle, sa_cpu, sb_cpu in (
+        (0, scale_a_logical, scale_b_logical),
+        (1, scale_a_swiz, scale_b_swiz),
+    ):
+      sa_tpu = sa_cpu.to(device)
+      sb_tpu = sb_cpu.to(device)
+
+      def run_mxfp4(x, y, sa, sb, swiz=swizzle):
+        return torch._scaled_mm_v2(
+            x,
+            y,
+            [sa],
+            [3],  # BlockWise1x32
+            [swiz],
+            [sb],
+            [3],  # BlockWise1x32
+            [swiz],
+            None,
+            torch.bfloat16,
+        )
+
+      with self.subTest(swizzle=swizzle, compiled=False):
+        out_eager = run_mxfp4(a_tpu, b_tpu, sa_tpu, sb_tpu)
+        self.assertEqual(out_eager.shape, torch.Size([m, n]))
+        utils.assert_close(
+            out_eager.cpu().float(), expected.float(), atol=2e-1, rtol=2e-2
+        )
+
+      with self.subTest(swizzle=swizzle, compiled=True):
+        torch._dynamo.reset()
+        compiled_fn = torch.compile(run_mxfp4, backend="tpu", fullgraph=True)
+        out_compiled = compiled_fn(a_tpu, b_tpu, sa_tpu, sb_tpu)
+        self.assertEqual(out_compiled.shape, torch.Size([m, n]))
+        utils.assert_close(
+            out_compiled.cpu().float(), expected.float(), atol=2e-1, rtol=2e-2
+        )
+
 
 if __name__ == "__main__":
   absltest.main()

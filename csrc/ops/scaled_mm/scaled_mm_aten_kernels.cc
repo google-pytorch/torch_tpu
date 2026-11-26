@@ -36,6 +36,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/macro_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -45,6 +46,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
@@ -60,30 +62,63 @@ namespace {
 
 enum class Operand { kLhs, kRhs };
 
+// Returns true for FP8 types that XLA:TPU lowers directly from dot_general
+// without pre-upcasting operands to F32.
+// TODO: b/580592461 - Keep native f4E2M1FN x f4E2M1FN operands once XLA:TPU
+// FP4 canonicalization is available in a supporting libtpu version.
+bool IsNativeFp8Type(mlir::Type type) {
+  return mlir::isa<mlir::Float8E4M3FNType, mlir::Float8E5M2Type>(type);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildStablehloDotGeneral(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
   mlir::MlirBuilder& builder = lhs.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
-  auto dot_dimension_numbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
-      &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
-      /*lhs_contracting_dimensions=*/{1}, /*rhs_contracting_dimensions=*/{0});
+  const auto dot_dimension_numbers =
+      mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &ctx, /*lhs_batching_dimensions=*/{}, /*rhs_batching_dimensions=*/{},
+          /*lhs_contracting_dimensions=*/{1},
+          /*rhs_contracting_dimensions=*/{0});
 
-  auto precision_config_attr =
-      mlir::stablehlo::PrecisionConfigAttr::get(&ctx, {precision, precision});
+  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
+  const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
 
-  auto lhs_type = GetTensorTypeOrDie(lhs);
-  auto rhs_type = GetTensorTypeOrDie(rhs);
-  Dimensions result_shape = {lhs_type.getShape()[0], rhs_type.getShape()[1]};
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType lhs_elem_type,
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType lhs_elem_type,
                       ConvertTo<mlir::ElementType>(lhs_type.getElementType()));
-  TT_ASSIGN_OR_RETURN(auto comp_dtype, InferComputationDtype(lhs_elem_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(lhs_elem_type));
 
-  auto result_type = mlir::RankedTensorType::get(
-      result_shape, mlir::getElementType(ctx, comp_dtype));
+  const bool keep_native = IsNativeFp8Type(lhs_type.getElementType()) &&
+                           IsNativeFp8Type(rhs_type.getElementType());
+  if (!keep_native) {
+    TT_ASSIGN_OR_RETURN(lhs, CastIfNeeded(lhs, comp_dtype));
+    TT_ASSIGN_OR_RETURN(rhs, CastIfNeeded(rhs, comp_dtype));
+  }
 
-  return mlir::stablehlo::DotGeneral(
-      result_type, lhs, rhs, dot_dimension_numbers, precision_config_attr);
+  // Native FP8 contractions require DEFAULT precision so XLA:TPU uses native
+  // quantized MXU lowering instead of upcasting to F32/BF16.
+  const mlir::stablehlo::Precision effective_precision =
+      keep_native
+          ? mlir::stablehlo::Precision::
+                DEFAULT  // EXPLICIT_PRECISION_OK=Native FP8 dot_general
+                         // requires DEFAULT precision for TPU MXU lowering.
+          : precision;
+  const auto precision_config_attr = mlir::stablehlo::PrecisionConfigAttr::get(
+      &ctx, {effective_precision, effective_precision});
+
+  const int64_t lhs_k = lhs_type.getShape()[1];
+  const int64_t rhs_k = rhs_type.getShape()[0];
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Unpacked contracting dimensions and FP4
+                 // packing are validated before MLIR lowering.
+      mlir::ShapedType::isDynamic(lhs_k) ||
+          mlir::ShapedType::isDynamic(rhs_k) || lhs_k == rhs_k,
+      error::kInvalidArgument)
+      << "expected lhs contracting dimension to match rhs contracting "
+         "dimension, got "
+      << lhs_k << " and " << rhs_k;
+
+  return mlir::stablehlo::DotGeneral(lhs, rhs, dot_dimension_numbers,
+                                     precision_config_attr, comp_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> ReshapeScaleIfNeeded(mlir::MlirOp scale,
@@ -118,9 +153,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
                       BuildStablehloDotGeneral(lhs, rhs, precision));
 
-  // Cast mm_result to F32 to avoid type mismatch with scales (which are F32).
+  // Cast mm_result and scales to F32 to avoid element type mismatches.
   TT_ASSIGN_OR_RETURN(mm_result,
                       CastIfNeeded(mm_result, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(scale_a, CastIfNeeded(scale_a, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(scale_b, CastIfNeeded(scale_b, mlir::ElementType::F32));
 
   // Normalize row-wise / per-channel scales to [M, 1] / [1, N] so they
   // broadcast along the correct axis of the [M, N] result. Scalar (tensorwise)
@@ -146,9 +183,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   // further reduce multiplications.
   bool folded_scale_result = false;
   if (!bias.has_value() && scale_result.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_result_f32,
+                        CastIfNeeded(*scale_result, mlir::ElementType::F32));
     TT_ASSIGN_OR_RETURN(
         auto bcast_scale_result,
-        ApplyBroadcastIfNeeded<2>({combined_scale, *scale_result}));
+        ApplyBroadcastIfNeeded<2>({combined_scale, scale_result_f32}));
 
     combined_scale =
         mlir::stablehlo::Mul(bcast_scale_result[0], bcast_scale_result[1]);
@@ -199,6 +238,65 @@ int64_t SwizzledScaleNumel(int64_t outer, int64_t k_logical) {
          at::ceil_div(k_logical, int64_t{4}) * 4;
 }
 
+int64_t UnpackedContractingSize(const at::Tensor& tensor, int64_t dim) {
+  const int64_t factor = tensor.scalar_type() == at::kFloat4_e2m1fn_x2 ? 2 : 1;
+  return tensor.size(dim) * factor;
+}
+
+absl::Status ValidateFp4OperandPacking(const at::Tensor& self,
+                                       const at::Tensor& mat2) {
+  if (self.scalar_type() == at::kFloat4_e2m1fn_x2) {
+    TT_RET_CHECK(FindFp4PackedDim(self) == 1, error::kInvalidArgument)
+        << "expected float4_e2m1fn_x2 self to be contiguous along dim 1 "
+           "(row-major), got strides "
+        << ToString(self.strides());
+  }
+  if (mat2.scalar_type() == at::kFloat4_e2m1fn_x2) {
+    TT_RET_CHECK(FindFp4PackedDim(mat2) == 0, error::kInvalidArgument)
+        << "expected float4_e2m1fn_x2 mat2 to be contiguous along dim 0 "
+           "(column-major), got strides "
+        << ToString(mat2.strides());
+  }
+  return absl::OkStatus();
+}
+
+absl::Status ValidateFp4OutputShape(at::ScalarType target_scalar_type,
+                                    int64_t n) {
+  if (target_scalar_type == at::kFloat4_e2m1fn_x2) {
+    TT_RET_CHECK(n % 2 == 0, error::kInvalidArgument)
+        << "expected even column size for float4_e2m1fn_x2 output, got " << n;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status ValidateBlockwiseScale(const at::Tensor& scale,
+                                    at::blas::SwizzleType swizzle,
+                                    int64_t outer, int64_t k_unpacked,
+                                    bool is_lhs, std::string_view name) {
+  TT_RET_CHECK(k_unpacked % 32 == 0, error::kInvalidArgument)
+      << "expected contracting dimension to be divisible by 32 for "
+         "BlockWise1x32 scaling, got "
+      << k_unpacked;
+  const int64_t k_logical = k_unpacked / 32;
+  if (swizzle == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    const int64_t expected_numel = SwizzledScaleNumel(outer, k_logical);
+    TT_RET_CHECK(scale.numel() == expected_numel, error::kInvalidArgument)
+        << "expected scale buffer to have " << expected_numel
+        << " elements for outer=" << outer << " and k_logical=" << k_logical
+        << ", got " << scale.numel() << " (" << ToString(scale.sizes()) << ")";
+    return absl::OkStatus();
+  }
+  const int64_t expected_d0 = is_lhs ? outer : k_logical;
+  const int64_t expected_d1 = is_lhs ? k_logical : outer;
+  TT_RET_CHECK(scale.dim() == 2 && scale.size(0) == expected_d0 &&
+                   scale.size(1) == expected_d1,
+               error::kInvalidArgument)
+      << "expected " << name << " to have shape [" << expected_d0 << ", "
+      << expected_d1 << "] for BlockWise1x32 scaling, got "
+      << ToString(scale.sizes());
+  return absl::OkStatus();
+}
+
 #if TT_TORCH_VERSION_GE(2, 14)  // See scaled_mm_aten_kernels.h.
 absl::Status ValidateScaledMmV2Inputs(
     const at::Tensor& self, const at::Tensor& mat2,
@@ -229,7 +327,10 @@ absl::Status ValidateScaledMmV2Inputs(
 
   TT_RETURN_IF_ERROR(ValidateIsMatrix(self, "self"));
   TT_RETURN_IF_ERROR(ValidateIsMatrix(mat2, "mat2"));
-  TT_RET_CHECK(self.size(1) == mat2.size(0), error::kInvalidArgument)
+  TT_RETURN_IF_ERROR(ValidateFp4OperandPacking(self, mat2));
+  const int64_t k_a = UnpackedContractingSize(self, 1);
+  const int64_t k_b = UnpackedContractingSize(mat2, 0);
+  TT_RET_CHECK(k_a == k_b, error::kInvalidArgument)
       << "expected column size of first matrix to match row size of second "
          "matrix, got shapes "
       << ToString(self.sizes()) << " and " << ToString(mat2.sizes());
@@ -294,24 +395,17 @@ absl::Status ValidateScaledMmV2Inputs(
   TT_RETURN_IF_ERROR(check_swizzle(swiz_a, "scale_a"));
   TT_RETURN_IF_ERROR(check_swizzle(swiz_b, "scale_b"));
 
-  // A swizzled scale buffer is flat. Checking the element count of the scale
-  // satisfy the need for swizzle and corresponding mat.
-  const auto check_swizzled_scale = [](const at::Tensor& scale, int64_t outer,
-                                       int64_t k_logical) -> absl::Status {
-    const int64_t expected_numel = SwizzledScaleNumel(outer, k_logical);
-    TT_RET_CHECK(scale.numel() == expected_numel, error::kInvalidArgument)
-        << "expected scale buffer to have " << expected_numel
-        << " elements for outer=" << outer << " and k_logical=" << k_logical
-        << ", got " << scale.numel() << " (" << ToString(scale.sizes()) << ")";
-    return absl::OkStatus();
-  };
-  if (swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4) {
-    TT_RETURN_IF_ERROR(
-        check_swizzled_scale(scale_a.front(), self.size(0), self.size(1) / 32));
+  if (scaling_a == at::blas::ScalingType::BlockWise1x32 ||
+      swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    TT_RETURN_IF_ERROR(ValidateBlockwiseScale(scale_a.front(), swiz_a,
+                                              self.size(0), k_a,
+                                              /*is_lhs=*/true, "scale_a"));
   }
-  if (swiz_b == at::blas::SwizzleType::SWIZZLE_32_4_4) {
-    TT_RETURN_IF_ERROR(
-        check_swizzled_scale(scale_b.front(), mat2.size(1), mat2.size(0) / 32));
+  if (scaling_b == at::blas::ScalingType::BlockWise1x32 ||
+      swiz_b == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    TT_RETURN_IF_ERROR(ValidateBlockwiseScale(scale_b.front(), swiz_b,
+                                              mat2.size(1), k_b,
+                                              /*is_lhs=*/false, "scale_b"));
   }
 
   if (bias.has_value()) {
@@ -580,9 +674,10 @@ absl::Status ValidateScaledMmInputs(
     const std::optional<at::Tensor>& scale_result) {
   TT_RETURN_IF_ERROR(ValidateIsMatrix(self, "self"));
   TT_RETURN_IF_ERROR(ValidateIsMatrix(mat2, "mat2"));
+  TT_RETURN_IF_ERROR(ValidateFp4OperandPacking(self, mat2));
 
-  const int64_t k_a = self.size(1);
-  const int64_t k_b = mat2.size(0);
+  const int64_t k_a = UnpackedContractingSize(self, 1);
+  const int64_t k_b = UnpackedContractingSize(mat2, 0);
   TT_RET_CHECK(k_a == k_b, error::kInvalidArgument)
       << "expected column size of first matrix to match row size of second "
          "matrix, got shapes "
@@ -682,15 +777,11 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
   Dimensions output_dims = {self.size(0), mat2.size(1)};
   at::ScalarType target_scalar_type =
       out_dtype.has_value() ? *out_dtype : self.scalar_type();
+  TT_RETURN_IF_ERROR(ValidateFp4OutputShape(target_scalar_type, mat2.size(1)));
   TT_RETURN_IF_ERROR(ValidateOutDtype(out, target_scalar_type,
                                       /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
-                      InferComputationDtype(self_elem_dtype));
 
   const mlir::stablehlo::Precision current_precision =
       GetAndAddPrecisionTo(param_keys);
@@ -708,7 +799,6 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
       std::move(op_builder), inputs, out,
       {.out_dtype = target_elem_dtype,
        .out_dims = output_dims,
-       .computation_dtype = comp_dtype,
        .op_param_cache_keys = std::move(param_keys)});
 }
 
@@ -795,15 +885,11 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
   Dimensions output_dims = {self.size(0), mat2.size(1)};
   at::ScalarType target_scalar_type =
       out_dtype.has_value() ? *out_dtype : self.scalar_type();
+  TT_RETURN_IF_ERROR(ValidateFp4OutputShape(target_scalar_type, mat2.size(1)));
   TT_RETURN_IF_ERROR(ValidateOutDtype(out, target_scalar_type,
                                       /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
-                      InferComputationDtype(self_elem_dtype));
 
   mlir::stablehlo::Precision current_precision =
       use_fast_accum ? mlir::stablehlo::Precision::
@@ -847,7 +933,6 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
       std::move(op_builder), inputs, out,
       {.out_dtype = target_elem_dtype,
        .out_dims = output_dims,
-       .computation_dtype = comp_dtype,
        .op_param_cache_keys = std::move(param_keys)});
 }
 
