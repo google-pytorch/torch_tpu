@@ -28,6 +28,7 @@ from torch.fx.experimental import proxy_tensor
 from torch.utils import checkpoint
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
+from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.distributed import collective_ops
 from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
@@ -388,6 +389,129 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     self.assertEqual(num_partitions, [1, 1])
     utils.assert_close(x.grad.cpu(), torch.full((2, 2), 7.0))
 
+  def test_move_constants_to_cpu(self):
+    const = torch.tensor([1.0, 2.0], device="tpu")
+    gm = proxy_tensor.make_fx(lambda x: x + const)(
+        torch.ones((2,), device="tpu")
+    )
+    buffers = dict(gm.named_buffers())
+    self.assertLen(buffers, 1)
+    const_name = next(iter(buffers))
+
+    split_compiler._move_constants_to_cpu(gm)
+
+    moved = getattr(gm, const_name)
+    self.assertEqual(moved.device.type, "cpu")
+    utils.assert_close(moved, torch.tensor([1.0, 2.0]))
+
+  def test_move_constants_to_cpu_nested_param(self):
+    child_param = torch.nn.Parameter(
+        torch.tensor([2.0], device="tpu"), requires_grad=True
+    )
+
+    def branch(t):
+      return t + child_param
+
+    def fn(pred, x):
+      return torch.ops.higher_order.cond(pred, branch, branch, (x,))
+
+    with torch.no_grad():
+      parent_gm = proxy_tensor.make_fx(fn)(
+          torch.tensor(True, device="tpu"), torch.ones((1,), device="tpu")
+      )
+
+    child_params = dict(parent_gm.true_graph_0.named_parameters())
+    self.assertLen(child_params, 1)
+    param_name = next(iter(child_params))
+
+    split_compiler._move_constants_to_cpu(parent_gm)
+
+    moved_param = getattr(parent_gm.true_graph_0, param_name)
+    self.assertIsInstance(moved_param, torch.nn.Parameter)
+    self.assertEqual(moved_param.device.type, "cpu")
+    self.assertTrue(moved_param.requires_grad)
+
+  def test_move_constants_to_cpu_under_fake_mode(self):
+    const = torch.tensor([1.0], device="tpu")
+    gm = proxy_tensor.make_fx(lambda x: x + const)(
+        torch.ones((1,), device="tpu")
+    )
+    buffers = dict(gm.named_buffers())
+    self.assertLen(buffers, 1)
+    const_name = next(iter(buffers))
+
+    with torch._subclasses.fake_tensor.FakeTensorMode():
+      split_compiler._move_constants_to_cpu(gm)
+
+    moved = getattr(gm, const_name)
+    self.assertEqual(moved.device.type, "cpu")
+    self.assertNotIsInstance(moved, torch._subclasses.fake_tensor.FakeTensor)
+
+  @parameterized.named_parameters(
+      ("generator", "generator", "generator"),
+      ("pinned_host", "pinned_host", "pinned-host or custom-layout"),
+      ("custom_layout", "custom_layout", "pinned-host or custom-layout"),
+  )
+  def test_pickle_graph_rejects_unsupported_inputs(
+      self, kind: str, expected_regex: str
+  ):
+    gm = torch.fx.symbolic_trace(lambda x, extra: x * 2.0)
+
+    x = torch.ones((2, 2), device="tpu")
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
+    fake_x = fake_mode.from_tensor(x)
+    if kind == "generator":
+      extra = tpu_torch_compile.make_export_mode_device_generator(
+          torch.Generator(device="tpu")
+      )
+    elif kind == "pinned_host":
+      extra = fake_mode.from_tensor(torch.ones((2, 2), device="tpu"))
+      extra._is_pinned_host = True
+    else:
+      extra = fake_mode.from_tensor(torch.ones((2, 2), device="tpu"))
+      extra._tpu_device_layout = tpu_torch_compile.get_default_layout(
+          x.dtype, x.shape
+      )
+
+    state = split_compiler._SnapshotState(
+        gm, (fake_x, extra), is_fwd=True, module_name=None
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Compiler unit test.
+        pickle.PicklingError, expected_regex
+    ):
+      split_compiler._pickle_graph(state)
+
+  def test_recompile_fn_pickle_preserves_cpu_placement(self):
+    def fn(x):
+      c = torch.tensor([1.0, 2.0, 3.0])
+      return x * c.to(x.device) + (torch.ones(3) * c).to(x.device)
+
+    x = torch.tensor([2.0, 3.0, 4.0], device="tpu")
+    c = torch.tensor([1.0, 2.0, 3.0])
+    with torch.no_grad():
+      gm = proxy_tensor.make_fx(
+          fn, tracing_mode="fake", _allow_non_fake_inputs=True
+      )(x)
+    fake_x = torch._subclasses.fake_tensor.FakeTensorMode().from_tensor(x)
+    recompile_fn = split_compiler._RecompileFn(
+        split_compiler.SplitCompiler(compiler.StaticCompiler()),
+        split_compiler._SnapshotState(
+            gm, (fake_x,), is_fwd=True, module_name=None
+        ),
+    )
+
+    recompiled = pickle.loads(pickle.dumps(recompile_fn))()
+    num_cpu_partitions = sum(
+        isinstance(submod, torch.fx.GraphModule)
+        for submod in recompiled._split_gm.children()
+    )
+    self.assertEqual(
+        (len(recompiled.compiled_executables), num_cpu_partitions), (1, 1)
+    )
+    utils.assert_close(
+        recompiled(x).cpu(), torch.tensor([2.0, 3.0, 4.0]) * c + c
+    )
+
 
 class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
 
@@ -559,6 +683,16 @@ class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
 
     setattr(cloned.true_graph_0, const_name, torch.tensor([2.0]))
     self.assertIs(getattr(gm.true_graph_0, const_name), child_const)
+
+  def test_recompile_fn_rejects_unexpected_unpickled_payload(self):
+    bad_payload = pickle.dumps("not_a_snapshot")
+    recompile_fn = split_compiler._RecompileFn(
+        split_compiler.SplitCompiler(compiler.StaticCompiler()), bad_payload
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Compiler unit test.
+        pickle.UnpicklingError, r"Expected _SnapshotState, got str\."
+    ):
+      recompile_fn()
 
 
 if __name__ == "__main__":

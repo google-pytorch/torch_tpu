@@ -14,7 +14,9 @@
 
 """End-to-end tests for distributed handshake protocol."""
 
+import gc
 import os
+import pickle
 from unittest import mock
 
 from absl.testing import absltest
@@ -22,7 +24,12 @@ from absl.testing import parameterized
 import portpicker
 import torch
 from torch import distributed as dist
+from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
+from torch.distributed import _functional_collectives as funcol
+from torch.fx.experimental import proxy_tensor
 from torch_tpu._internal import compile as tpu_compile
+from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import continuous_test_utils
@@ -425,6 +432,45 @@ class _HandshakeE2ETestMixin(metaclass=parameterized.TestGeneratorMetaclass):
     expected_iter1 = expected_iter0 * 5.0
     utils.assert_close(res1, torch.ones(4, device="tpu") * expected_iter1)
 
+  def _compile_pickled_add_and_all_reduce(
+      self, x: torch.Tensor, y: torch.Tensor
+  ) -> tuple[torch.Tensor, bytes]:
+    debugs: list[tpu_compile.TpuCompileDebug] = []
+
+    def add_and_all_reduce(x, y):
+      z = torch.add(x, y)
+      dist.all_reduce(z)
+      return z
+
+    compiled_fn = torch.compile(
+        add_and_all_reduce,
+        backend="tpu",
+        fullgraph=True,
+        options={"serializable": True, "debug_callback": debugs.append},
+    )
+    res = compiled_fn(x, y)
+    executable = debugs[0].compiled_executables[0]
+    return res, pickle.dumps(executable)
+
+  def test_handshake_pickled_executable(self) -> None:
+    rank = self.rank  # pyrefly: ignore[missing-attribute]
+    world_size = self.world_size
+    x = torch.ones(4, device="tpu") * (rank + 1)
+    y = torch.ones(4, device="tpu") * 2
+    expected = torch.ones(4) * sum(r + 3 for r in range(world_size))
+
+    cache_dir = os.path.join(
+        self.create_tempdir().full_path,  # pyrefly: ignore[missing-attribute]
+        str(rank),
+    )
+    with temporary_cache_dir(cache_dir):
+      res, payload = self._compile_pickled_add_and_all_reduce(x, y)
+      utils.assert_close(res.cpu(), expected)
+
+      unpickled = pickle.loads(payload)
+      (unpickled_out,) = unpickled([x, y])
+      utils.assert_close(unpickled_out.cpu(), expected)
+
 
 class HandshakeCompileStageE2ETest(
     _HandshakeE2ETestMixin,
@@ -438,6 +484,124 @@ class HandshakeDispatchStageE2ETest(
     continuous_test_utils.TpuMultiProcContinuousTest,
 ):
   _handshake_stage = "DISPATCH_STAGE"
+
+  def test_handshake_pickled_executable_rank_divergence(self) -> None:
+    rank = self.rank
+    world_size = self.world_size
+    x = torch.ones(4, device="tpu") * (rank + 1)
+    y = torch.ones(4, device="tpu") * 2
+
+    cache_dir = os.path.join(self.create_tempdir().full_path, str(rank))
+    with temporary_cache_dir(cache_dir):
+      _, payload = self._compile_pickled_add_and_all_reduce(x, y)
+
+      if rank == 0:
+
+        def diverged(x, y):
+          z = torch.add(x, y)
+          z = torch.mul(z, 5.0)
+          dist.all_reduce(z)
+          return z
+
+        compiled_diverged = torch.compile(
+            diverged,
+            backend="tpu",
+            fullgraph=True,
+            options={"serializable": True},
+        )
+        out_diverged = compiled_diverged(x, y)
+      else:
+        unpickled = pickle.loads(payload)
+        (out_diverged,) = unpickled([x, y])
+        self.assertGreater(len(unpickled.compiled_executables), 1)
+
+      expected_diverged = torch.ones(4) * (
+          15 + sum(r + 3 for r in range(1, world_size))
+      )
+      utils.assert_close(out_diverged.cpu(), expected_diverged)
+
+  def test_handshake_pickled_spmd_safe_backward_local_module(self) -> None:
+    rank = self.rank
+    world_size = self.world_size
+    debugs: list[tpu_compile.TpuCompileDebug] = []
+
+    class LocalBlock(torch.nn.Module):
+
+      @torch.tpu.distributed.spmd_safe
+      def forward(self, x):
+        return funcol.all_reduce(x * 2.0, "sum", dist.group.WORLD) + x * 3.0
+
+    block = LocalBlock()
+
+    cache_dir = os.path.join(self.create_tempdir().full_path, str(rank))
+    with temporary_cache_dir(cache_dir):
+      compiled = torch.compile(
+          block,
+          backend="tpu",
+          options={"serializable": True, "debug_callback": debugs.append},
+      )
+      x = torch.ones((2, 2), device="tpu", requires_grad=True)
+      compiled(x).sum().backward()
+      utils.assert_close(
+          x.grad.cpu(), torch.full((2, 2), 2.0 * world_size + 3.0)
+      )
+
+      bwd_executable = debugs[0].compiled_executables[1]
+      self.assertIsNotNone(bwd_executable.recompile_fn)
+      unpickled_bwd = pickle.loads(pickle.dumps(bwd_executable))
+      recompiled_bwd = unpickled_bwd.recompile_fn()
+      # `_fully_spmd_safe` keeps `LocalBlock`'s backward fused (1 program, not
+      # split on collectives), and `fwd_nn_module_stack` on `LocalBlock` is
+      # filtered.
+      self.assertLen(recompiled_bwd.compiled_executables, 1)
+      self.assertEqual(
+          recompiled_bwd.fingerprint(),
+          bwd_executable.recompile_fn().fingerprint(),
+      )
+
+  def test_handshake_pickled_constant_takes_no_device_memory(self) -> None:
+    world_size = self.world_size
+    gc.collect()
+    torch.accelerator.synchronize()
+    mem_baseline = torch.accelerator.memory_allocated()
+
+    x = torch.ones(64, dtype=torch.float32, device="tpu")
+
+    def trace_with_large_const(x_in: torch.Tensor) -> torch.fx.GraphModule:
+      # 32 MiB float32 constant (2048 * 64 * 64 * 4 bytes).
+      const = torch.full((2048, 64, 64), 2.0, dtype=torch.float32, device="tpu")
+
+      def fn(t):
+        y = (t + const)[0, 0, :4]
+        return funcol.all_reduce(y, "sum", dist.group.WORLD)
+
+      with torch.no_grad():
+        return proxy_tensor.make_fx(
+            fn, tracing_mode="fake", _allow_non_fake_inputs=True
+        )(x_in)
+
+    gm = trace_with_large_const(x)
+    fake_x = torch._subclasses.fake_tensor.FakeTensorMode().from_tensor(x)
+    executable = split_compiler.SplitCompiler(compiler.StaticCompiler())(
+        gm, (fake_x,)
+    )
+    del gm
+
+    gc.collect()
+    torch.accelerator.synchronize()
+    self.assertLess(
+        torch.accelerator.memory_allocated() - mem_baseline, 5 * 1024 * 1024
+    )
+
+    torch.accelerator.reset_peak_memory_stats()
+    mem_before = torch.accelerator.memory_allocated()
+    unpickled = pickle.loads(pickle.dumps(executable))
+    self.assertIsNotNone(unpickled.recompile_fn)
+    recompiled = unpickled.recompile_fn()
+    torch.accelerator.synchronize()
+    peak_mem_increase = torch.accelerator.max_memory_allocated() - mem_before
+    self.assertLess(peak_mem_increase, 5 * 1024 * 1024)  # < 5 MiB
+    utils.assert_close(recompiled(x).cpu(), torch.full((4,), 3.0 * world_size))
 
 
 if __name__ == "__main__":

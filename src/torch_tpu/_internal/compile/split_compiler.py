@@ -26,6 +26,7 @@ import dataclasses
 import enum
 import functools
 import operator
+import pickle
 import threading
 from typing import Any, ClassVar
 
@@ -34,8 +35,12 @@ import torch
 from torch._dynamo.utils import detect_fake_mode
 from torch._inductor.utils import InputType
 from torch._logging import LazyString
+from torch._subclasses.fake_tensor import FakeTensorMode
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 import torch.distributed as dist
+from torch.export.unflatten import _assign_attr
+from torch.export.unflatten import _AttrKind
+from torch.fx import _graph_pickler
 from torch.fx.experimental import symbolic_shapes
 from torch.fx.passes import graph_transform_observer
 from torch.fx.passes.split_module import split_module
@@ -54,6 +59,7 @@ from torch_tpu._internal.distributed import collective_ops
 from torch_tpu._internal.distributed import handshake
 from torch_tpu._internal.distributed import process_group_utils
 from torch_tpu._internal.distributed import spmd_util
+from torch_tpu._internal.utils import fx_utils
 
 ProcessGroupId = handshake.ProcessGroupId
 RankCollectiveCounts = handshake.RankCollectiveCounts
@@ -566,6 +572,28 @@ def _clone_graph_module(gm: torch.fx.GraphModule) -> torch.fx.GraphModule:
   return cloned
 
 
+def _move_constants_to_cpu(
+    gm_or_graph: torch.fx.GraphModule | torch.fx.Graph,
+) -> None:
+  """Moves device tensor `get_attr` attributes in `gm_or_graph` to CPU."""
+  # Disable FakeTensorMode so `.to("cpu")` copies real tensor data to host
+  # memory instead of running under AOTAutograd's active fake mode.
+  with unset_fake_temporarily():
+    for gm, attr_target, target in fx_utils.iter_tensor_get_attrs(gm_or_graph):
+      if target.device.type == "cpu":
+        continue
+      cpu_target = target.to("cpu")
+      if isinstance(target, torch.nn.Parameter):
+        _assign_attr(
+            torch.nn.Parameter(cpu_target, requires_grad=target.requires_grad),
+            gm,
+            attr_target,
+            _AttrKind.PARAMETER,
+        )
+      else:
+        _assign_attr(cpu_target, gm, attr_target, _AttrKind.CONSTANT)
+
+
 class _SubmodCompiler(torch.fx.interpreter.Interpreter):
   """Interpreter to propagate shape information and compile submodules.
 
@@ -949,6 +977,90 @@ def _is_fully_spmd_safe(graph_module: torch.fx.GraphModule) -> bool:
   return bool(safe_ops)
 
 
+def _is_picklable_node_meta(key: str) -> bool:
+  """Returns whether `node.meta[key]` is safe for `GraphPickler` to pickle."""
+  # `_node_metadata_key_filter_safe` drops `nn_module_stack`,
+  # `source_fn_stack`, and `fwd_source_fn_stack` (which can hold local
+  # classes or callables), but not `fwd_nn_module_stack`. AOTAutograd copies
+  # `nn_module_stack` to `fwd_nn_module_stack` on backward nodes, so local
+  # `nn.Module` classes fail to pickle unless we drop it too.
+  return (
+      _graph_pickler._node_metadata_key_filter_safe(key)  # pylint: disable=protected-access
+      and key != "fwd_nn_module_stack"
+  )
+
+
+@dataclasses.dataclass(frozen=True)
+class _SnapshotState:
+  """Inputs captured to recompile a graph split on collectives."""
+
+  graph_module: torch.fx.GraphModule
+  example_inputs: Sequence[InputType]
+  is_fwd: bool
+  module_name: str | None
+
+
+def _pickle_graph(state: _SnapshotState) -> bytes:
+  """Pickles `state` with `GraphPickler`."""
+  for example_input in state.example_inputs:
+    if isinstance(example_input, torch.Generator):
+      # Export-mode TPU generators abort in C++ when `get_state()` is called.
+      raise pickle.PicklingError("Cannot pickle a graph with generator inputs.")
+    # TODO: b/590227168 - Support pinned-host and custom-layout inputs.
+    # `GraphPickler` does not preserve custom attributes on `FakeTensor`s.
+    if (
+        compiler.is_pinned_host_tensor(example_input)
+        or getattr(example_input, "_tpu_device_layout", None) is not None
+    ):
+      raise pickle.PicklingError(
+          "Cannot pickle a graph with pinned-host or custom-layout inputs."
+      )
+  # Default `_ops_filter_safe` only allows `aten`/`fbgemm` and rejects
+  # `_c10d_functional` and `tpu` collectives. `ops_filter=None` pickles any
+  # `torch.ops.*` op by dotted name (must be registered before `loads`).
+  options = _graph_pickler.Options(
+      ops_filter=None,
+      node_metadata_key_filter=_is_picklable_node_meta,
+  )
+  return _graph_pickler.GraphPickler.dumps(state, options)
+
+
+@dataclasses.dataclass(frozen=True)
+class _RecompileFn:
+  """Picklable callback that recompiles a graph split on collectives."""
+
+  _split_compiler: "SplitCompiler"
+  _state: _SnapshotState | bytes
+
+  def __call__(self) -> _SplitCompiledExecutable:
+    if isinstance(self._state, bytes):
+      fake_mode = FakeTensorMode(shape_env=symbolic_shapes.ShapeEnv())
+      state = _graph_pickler.GraphPickler.loads(self._state, fake_mode)
+      if not isinstance(state, _SnapshotState):
+        raise pickle.UnpicklingError(
+            f"Expected _SnapshotState, got {type(state).__name__}."
+        )
+      graph_module = state.graph_module
+    else:
+      state = self._state
+      graph_module = _clone_graph_module(state.graph_module)
+    return self._split_compiler._compile_graph(  # pylint: disable=protected-access
+        graph_module,
+        state.example_inputs,
+        state.is_fwd,
+        materialize_collectives=True,
+        module_name=state.module_name,
+    )
+
+  def __reduce__(self) -> tuple[Any, ...]:
+    payload = (
+        self._state
+        if isinstance(self._state, bytes)
+        else _pickle_graph(self._state)
+    )
+    return _RecompileFn, (self._split_compiler, payload)
+
+
 class SplitCompiler(compiler.Compiler):
   """Compiler that splits the graph on collectives and compiles submodules."""
 
@@ -1224,14 +1336,11 @@ class SplitCompiler(compiler.Compiler):
       materialize_collectives = (
           False  # We set this so the first compilation doesn't split the graph
       )
-      recompile_fn = functools.partial(
-          self._compile_graph,
-          graph_module,
-          example_inputs,
-          is_fwd,
-          # Split the graph if a recompilation occurs.
-          materialize_collectives=True,
-          module_name=module_name,
+      snapshot = _clone_graph_module(graph_module)
+      _move_constants_to_cpu(snapshot)
+      recompile_fn = _RecompileFn(
+          self,
+          _SnapshotState(snapshot, example_inputs, is_fwd, module_name),
       )
 
     executable = self._compile_graph(

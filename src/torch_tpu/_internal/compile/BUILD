@@ -72,6 +72,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/distributed:handshake",
         "//src/torch_tpu/_internal/distributed:process_group_utils",
         "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/utils:fx_utils",
     ],
 )
 
