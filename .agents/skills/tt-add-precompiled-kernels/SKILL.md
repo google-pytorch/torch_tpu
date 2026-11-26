@@ -107,8 +107,9 @@ Add `csrc/experimental/precompiled_kernels/{kernel}.{h,cc}` (e.g.
     `kiln::EmitPipeline`.
 *   **Parameters**: the payloads as unbounded-dynamic shapes with the contract's
     tiled layouts (`MakeUnbounded`), then, for each dynamic payload, an
-    S32[rank] shape with layout `{0:T(128)}` that receives its runtime
-    dimensions (`NonzeroParameters`).
+    S32[rank] shape in pinned host memory (`MakeRuntimeDimsShape(rank)`, layout
+    `{0:T(128)S(5)}`) that receives its runtime dimensions
+    (`NonzeroParameters`).
 *   **Outputs**: `Execute` allocates the outputs whose size the host knows (e.g.
     nonzero's K) and donates them: list them in `donated_output_params` and
     alias the kernel's result to them. Mosaic has no S64 memrefs, so write int64
@@ -121,7 +122,9 @@ Add `csrc/experimental/precompiled_kernels/{kernel}.{h,cc}` (e.g.
     of each dynamic payload (`metadata_params`), the parameter shapes, the
     output transform and `is_compatible` (step 3). Its hooks are plain function
     pointers cached with the executable, so pass per-kernel constants as
-    template parameters, not captures.
+    template parameters, not captures. Give each metadata parameter the shape
+    `MakeRuntimeDimsShape(rank)` (`kernel_utils.h`) so executions reuse pooled
+    pinned host buffers rather than creating a device buffer per call.
 *   **Build function**: build the `kiln::Kernel` and compile it with
     `CompileMosaicKernel` (`kernel_utils.h`), as `BuildNonzeroIndicesExecutable`
     does. It serializes the kernel, wraps it with `BuildMosaicCustomCall`

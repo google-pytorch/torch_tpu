@@ -47,6 +47,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "csrc/pjrt/pjrt_client.h"
+#include "csrc/pjrt/runtime_shape_metadata_pool.h"
 #include "tsl/profiler/lib/profiler_factory.h"
 #include "tsl/profiler/lib/profiler_interface.h"
 #include "xla/backends/profiler/plugin/plugin_tracer.h"  // IWYU pragma: keep for xla::profiler::PluginTracer
@@ -382,6 +383,7 @@ absl::Status PjrtBackend::InitializeInternal() {
   visible_device_count_ = static_cast<int>(std::max<int64_t>(
       visible_device_count, static_cast<int64_t>(addressable_devices.size())));
   global_device_id_ = device_->global_device_id().value();
+  runtime_shape_metadata_pool_ = RuntimeShapeMetadataPool::Create();
   return absl::OkStatus();
 }
 
@@ -525,6 +527,17 @@ absl::StatusOr<xla::Layout> PjrtBackend::GetDefaultLayout(
   return default_layout_cache_.Get(*client, element_type, dims);
 }
 
+absl::StatusOr<absl_nonnull std::shared_ptr<RuntimeShapeMetadataPool>>
+PjrtBackend::GetRuntimeShapeMetadataPool() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                 // with a successful EnsureInitialized().
+      runtime_shape_metadata_pool_ != nullptr, error::kInternal)
+      << "runtime shape metadata pool is not initialized";
+  return runtime_shape_metadata_pool_;
+}
+
 void PjrtBackend::Shutdown() {
   if (IsInBadFork()) {
     return;
@@ -535,6 +548,8 @@ void PjrtBackend::Shutdown() {
   }
   ABSL_VLOG(1) << "ShutdownPjRt";
 
+  // The buffers of a client must be destroyed before it.
+  runtime_shape_metadata_pool_.reset();
   client_.reset();
   default_layout_cache_.Clear();
   device_ = nullptr;

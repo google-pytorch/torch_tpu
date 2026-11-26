@@ -101,6 +101,7 @@ xla::Shape MakeS32RowViewShape() {
 xla::Shape MakeRuntimeDimsShape(const int64_t rank) {
   xla::Shape dims = xla::ShapeUtil::MakeShape(xla::S32, {rank});
   *dims.mutable_layout() = Default1DLayout(kLanes);
+  dims.mutable_layout()->set_memory_space(xla::Layout::kHostMemorySpace);
   return dims;
 }
 

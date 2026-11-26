@@ -36,6 +36,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/pjrt/runtime_shape_metadata_pool.h"
 #include "xla/layout.h"
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -221,6 +222,11 @@ class PjrtBackend {
                                                absl::Span<const int64_t> dims)
       ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns the PjRt client's runtime shape metadata buffer pool, reset on
+  // Shutdown(). Triggers lazy initialization if needed.
+  absl::StatusOr<absl_nonnull std::shared_ptr<RuntimeShapeMetadataPool>>
+  GetRuntimeShapeMetadataPool() ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Shuts down the PjRt runtime and resets the global state.
   void Shutdown() ABSL_LOCKS_EXCLUDED(mutex_);
 
@@ -252,6 +258,9 @@ class PjrtBackend {
   bool tpu_reachable_ ABSL_GUARDED_BY(mutex_) = true;
   // Default layouts of `client_`, cleared on Shutdown.
   DefaultLayoutCache default_layout_cache_;
+  // Runtime shape metadata buffers of `client_`, reset on Shutdown.
+  std::shared_ptr<RuntimeShapeMetadataPool> absl_nullable
+  runtime_shape_metadata_pool_ ABSL_GUARDED_BY(mutex_);
   std::atomic<BadForkChecker> bad_fork_checker_{nullptr};
   std::atomic<OnInitializedHook> on_initialized_hook_{nullptr};
 };
