@@ -37,6 +37,12 @@ inputs:
       Set to true to bypass bazel-diff target selection and run all tests
     required: false
     default: 'false'
+  filter_ops_tests:
+    description: >-
+      Set to false to retain impacted ops-test targets even when no files in
+      OPS_TEST_PATHS changed (e.g. in postsubmit).
+    required: false
+    default: 'true'
   mode:
     description: >-
       Execution mode: calculate (compute the diff and report whether
@@ -79,6 +85,7 @@ runs:
           --bazel-config="${{ inputs.bazel_config }}" \
           --extra-bazel-flags="${{ inputs.extra_bazel_flags }}" \
           --test-all="${{ inputs.test_all }}" \
+          --filter-ops-tests="${{ inputs.filter_ops_tests }}" \
           --mode="${{ inputs.mode }}" \
           --impacted-targets-file="${{ inputs.impacted_targets_file }}" || rc=$?
         echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"

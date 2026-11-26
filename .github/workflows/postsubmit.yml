@@ -107,6 +107,10 @@ jobs:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
       # Disable ipc isolation to prevent shm limit issues.
       options: --ipc=host
+    env:
+      CACHE_PREFIX: >-
+        postsubmit-last-success-${{
+        matrix.job_info.newest_deps_config || matrix.job_info.bazel_config }}
     steps:
       - run: echo "Start running tests."
       # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
@@ -132,6 +136,43 @@ jobs:
             echo "::notice::Commit $GITHUB_SHA is superseded by latest main HEAD ($LATEST_SHA). Exiting early to process latest HEAD."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+      # Restore the last successful postsubmit commit SHA from cache to enable
+      # incremental bazel-diff runs.
+      - name: Restore last successful commit SHA
+        if: >-
+          github.event_name == 'push' &&
+          steps.check_superseded.outputs.skip != 'true'
+        # actions/cache v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: restore-last-success
+        with:
+          path: last_success_sha.txt
+          key: ${{ env.CACHE_PREFIX }}-${{ github.sha }}
+          restore-keys: |
+            ${{ env.CACHE_PREFIX }}-
+      - name: Determine BASE_SHA for bazel-diff
+        id: bazel-diff-base
+        if: >-
+          github.event_name == 'push' &&
+          steps.check_superseded.outputs.skip != 'true'
+        shell: bash
+        run: |
+          BASE_SHA=""
+          if [ -f last_success_sha.txt ]; then
+            CANDIDATE_SHA=$(tr -d '[:space:]' < last_success_sha.txt)
+            if [[ "$CANDIDATE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] && \
+               [ "$CANDIDATE_SHA" != "$GITHUB_SHA" ] && \
+               git fetch --depth=1 --quiet origin "$CANDIDATE_SHA"; then
+              BASE_SHA="$CANDIDATE_SHA"
+              echo "Last successful postsubmit commit: $BASE_SHA"
+            else
+              echo "Cached SHA '$CANDIDATE_SHA' invalid, matches HEAD," \
+                "or missing on origin; falling back to full run."
+            fi
+          else
+            echo "No previous commit recorded; falling back to full run."
+          fi
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
       # Enable remote connections. Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.
       - name: Wait For Connection
@@ -142,36 +183,48 @@ jobs:
       - name: Use newest dependencies lock
         if: steps.check_superseded.outputs.skip != 'true' && matrix.job_info.use_latest_deps
         run: cp requirements/requirements_3_14_latest.txt requirements/requirements_3_14.txt
-      # Build test targets before running tests on hardware.
-      - name: Build Test Targets
-        if: steps.check_superseded.outputs.skip != 'true'
-        run: bazel build --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
-      # Checkpoint: Skip execution if a newer commit landed on main while building targets.
-      - name: Skip if superseded during build
-        id: check_superseded_midway
-        if: steps.check_superseded.outputs.skip != 'true' && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git fetch origin main --quiet
-          LATEST_SHA=$(git rev-parse origin/main)
-          if [ "$GITHUB_SHA" != "$LATEST_SHA" ]; then
-            echo "::notice::Commit $GITHUB_SHA was superseded by latest main HEAD ($LATEST_SHA) during build phase. Skipping TPU test execution."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
       # Runs only when a check above skipped the tests. GitHub still concludes this job as
       # `success`; dashboards match the `job-skipped:` name prefix to report it as skipped instead.
       - name: "job-skipped: superseded by newer main HEAD"
-        if: steps.check_superseded.outputs.skip == 'true' || steps.check_superseded_midway.outputs.skip == 'true'
+        if: steps.check_superseded.outputs.skip == 'true'
         run: echo "::notice::Commit $GITHUB_SHA was superseded by a newer main HEAD. Tests were skipped."
-      - name: Run Bazel Test
-        if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true'
-        run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
+      # Use bazel-diff for incremental test execution based on
+      # [HEAD - LAST_SUCCESSFUL_COMMIT].
+      - name: Run Impacted Tests via bazel-diff
+        if: steps.check_superseded.outputs.skip != 'true'
+        uses: ./.github/actions/bazel-diff
+        with:
+          base_sha: ${{ steps.bazel-diff-base.outputs.base_sha }}
+          current_sha: ${{ github.sha }}
+          bazel_config: ${{ matrix.job_info.bazel_config }}
+          extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
+          test_all: >-
+            ${{ contains(github.event.pull_request.labels.*.name,
+            'ci:disable-bazel-diff') }}
+          filter_ops_tests: 'false'
       # The regular configs exclude the tests tagged `requires-newest-deps`; the
       # newest-deps lanes run them here.
       - name: Run tests that require the newest dependencies
-        if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true' && matrix.job_info.newest_deps_config
-        run: bazel test --config=${{ matrix.job_info.newest_deps_config }} ${{ matrix.job_info.extra_flags }} //...
+        if: >-
+          steps.check_superseded.outputs.skip != 'true' &&
+          matrix.job_info.newest_deps_config
+        run: >-
+          bazel test --config=${{ matrix.job_info.newest_deps_config }}
+          ${{ matrix.job_info.extra_flags }} //...
+      - name: Record successful commit SHA
+        if: >-
+          success() && github.event_name == 'push' &&
+          steps.check_superseded.outputs.skip != 'true'
+        run: echo "$GITHUB_SHA" > last_success_sha.txt
+      - name: Save last successful commit SHA
+        if: >-
+          success() && github.event_name == 'push' &&
+          steps.check_superseded.outputs.skip != 'true'
+        # actions/cache v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: last_success_sha.txt
+          key: ${{ env.CACHE_PREFIX }}-${{ github.sha }}
       - name: Upload Test Logs on Failure
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: failure()
