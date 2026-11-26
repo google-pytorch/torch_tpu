@@ -146,7 +146,7 @@ absl::StatusOr<std::string> UnescapeString(std::string_view s) {
     if (escaped) {
       if (c != '\\' && c != '"') {
         return TT_ERROR(error::kInvalidArgument)
-               << "Invalid escape sequence: \\" << std::string(1, c)
+               << "invalid escape sequence: \\" << std::string(1, c)
                << " (only \\\\ and \\\" are supported)";
       }
       result.push_back(c);
@@ -158,7 +158,7 @@ absl::StatusOr<std::string> UnescapeString(std::string_view s) {
     }
   }
   if (escaped) {
-    return TT_ERROR(error::kInvalidArgument) << "Trailing backslash in string";
+    return TT_ERROR(error::kInvalidArgument) << "trailing backslash in string";
   }
   return result;
 }
@@ -190,7 +190,7 @@ absl::Status SetAdvancedConfigValue(tensorflow::ProfileOptions& opts,
     } else {
       return TT_ERROR(error::kInvalidArgument)
              << "expected the advanced option '" << key
-             << "' to be a quoted string, boolean (true/false), or integer, "
+             << "' to be a quoted string, Boolean (true/false), or integer, "
              << "got '" << val << "'";
     }
   }
@@ -272,6 +272,37 @@ absl::StatusOr<ProfilerOption> SplitConfigItem(std::string_view item) {
   return ProfilerOption{key, val};
 }
 
+namespace {
+
+// Validates that custom_config contains only ASCII characters, returning an
+// InvalidArgument error otherwise. When a non-ASCII byte is found, it walks
+// past any UTF-8 continuation bytes ((byte & 0xC0) == 0x80) so the error
+// message reports the full multi-byte character rather than splitting it.
+absl::Status ValidateAsciiConfig(const std::string_view custom_config) {
+  const auto non_ascii_it = std::find_if(
+      custom_config.begin(), custom_config.end(), [](const char c) {
+        return !absl::ascii_isascii(static_cast<unsigned char>(c));
+      });
+  if (non_ascii_it != custom_config.end()) {
+    const size_t pos =
+        static_cast<size_t>(non_ascii_it - custom_config.begin());
+    size_t end = pos + 1;
+    while (end < custom_config.size() &&
+           (static_cast<unsigned char>(custom_config[end]) & 0xC0) == 0x80) {
+      ++end;
+    }
+    const std::string_view first_non_ascii =
+        custom_config.substr(pos, end - pos);
+    return TT_ERROR(error::kInvalidArgument)
+           << "expected custom_config to contain only ASCII characters, got '"
+           << custom_config << "' where '" << first_non_ascii
+           << "' is not ASCII";
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
 // Parses the custom configuration string from Kineto. Leading and trailing
 // whitespace is ignored around keys and values. The configuration string is
 // expected to be a comma-separated list of key-value pairs, where keys and
@@ -285,14 +316,7 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   bool& out_python_tracer_level_set) {
   out_worker_rank = std::nullopt;
   out_python_tracer_level_set = false;
-  if (!std::all_of(custom_config.begin(), custom_config.end(), [](char c) {
-        return absl::ascii_isascii(static_cast<unsigned char>(c));
-      })) {
-    return TT_ERROR(error::kInvalidArgument)
-           << "custom_config contains non-ASCII characters (this is a known "
-              "limitation): "
-           << custom_config;
-  }
+  TT_RETURN_IF_ERROR(ValidateAsciiConfig(custom_config));
   for (std::string_view item : SplitConfig(custom_config, ',')) {
     absl::StatusOr<ProfilerOption> profiler_option = SplitConfigItem(item);
     if (!profiler_option.ok()) {

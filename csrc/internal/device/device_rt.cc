@@ -87,7 +87,9 @@ void PySynchronizeDevice(int device_index, bool wait) {
   if (wait) {
     const c10::impl::DeviceGuardImplInterface* impl =
         c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
-    TT_CHECK_THROW(impl != nullptr, error::kInternal)
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=TpuDeviceGuardImpl is statically
+                     // registered via C10_REGISTER_GUARD_IMPL.
+        impl != nullptr, error::kInternal)
         << "TPU DeviceGuardImpl not found";
 
     impl->synchronizeDevice(device_index);
@@ -107,7 +109,9 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
                              std::optional<int64_t> stream_id) {
   const c10::impl::DeviceGuardImplInterface* impl =
       c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
-  TT_CHECK_THROW(impl != nullptr, error::kInternal)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=TpuDeviceGuardImpl is statically
+                   // registered via C10_REGISTER_GUARD_IMPL.
+      impl != nullptr, error::kInternal)
       << "TPU DeviceGuardImpl not found";
 
   c10::DeviceIndex index = device_index.has_value()
@@ -179,7 +183,9 @@ void InitRuntimeOptions(const std::string& device_type) {
 int64_t PyGetCurrentStreamId(std::optional<int> device_index) {
   const c10::impl::DeviceGuardImplInterface* impl =
       c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
-  TT_CHECK_THROW(impl != nullptr, error::kInternal)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=TpuDeviceGuardImpl is statically
+                   // registered via C10_REGISTER_GUARD_IMPL.
+      impl != nullptr, error::kInternal)
       << "TPU DeviceGuardImpl not found";
 
   c10::DeviceIndex index = device_index.has_value()
@@ -204,7 +210,9 @@ c10::Stream MakeStream(const c10::impl::DeviceGuardImplInterface& impl,
 void PySetCurrentStreamId(int64_t stream_id, std::optional<int> device_index) {
   const c10::impl::DeviceGuardImplInterface* impl =
       c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
-  TT_CHECK_THROW(impl != nullptr, error::kInternal)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=TpuDeviceGuardImpl is statically
+                   // registered via C10_REGISTER_GUARD_IMPL.
+      impl != nullptr, error::kInternal)
       << "TPU DeviceGuardImpl not found";
   impl->exchangeStream(MakeStream(*impl, stream_id, device_index));
 }
@@ -212,7 +220,9 @@ void PySetCurrentStreamId(int64_t stream_id, std::optional<int> device_index) {
 void PySynchronizeStream(int64_t stream_id, std::optional<int> device_index) {
   const c10::impl::DeviceGuardImplInterface* impl =
       c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
-  TT_CHECK_THROW(impl != nullptr, error::kInternal)
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=TpuDeviceGuardImpl is statically
+                   // registered via C10_REGISTER_GUARD_IMPL.
+      impl != nullptr, error::kInternal)
       << "TPU DeviceGuardImpl not found";
   impl->synchronizeStream(MakeStream(*impl, stream_id, device_index));
 }

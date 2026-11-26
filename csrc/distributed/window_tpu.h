@@ -193,6 +193,18 @@ class WindowTpu : public c10d::Window {
   c10d::WindowAttr get_attr(int64_t peerRank) override;
 
  private:
+  void TensorRegisterImpl(const at::Tensor& tensor, bool owning);
+  c10::intrusive_ptr<c10d::Work> PutImpl(const at::Tensor& tensor,
+                                         int64_t dstRank,
+                                         int64_t targetOffsetNelems,
+                                         bool asyncOp,
+                                         const c10d::PutOptions& opts);
+  c10::intrusive_ptr<c10d::Work> SignalImpl(int64_t peerRank, bool asyncOp,
+                                            const c10d::SignalOptions& opts);
+  c10::intrusive_ptr<c10d::Work> WaitSignalImpl(
+      int64_t peerRank, bool asyncOp, const c10d::WaitSignalOptions& opts);
+  at::Tensor MapRemoteTensorImpl(int64_t rank);
+
   // Internal helper methods for the 3 distinct Put transfer modalities.
   c10::intrusive_ptr<c10d::Work> PutDeviceToHostDma(const at::Tensor& tensor,
                                                     int64_t targetOffsetNelems,
