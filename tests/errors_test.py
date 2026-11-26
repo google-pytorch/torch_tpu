@@ -10902,6 +10902,26 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.ops.aten.hardswish_backward(grad, self_val)
 
+  def test_hardswish_backward_complex_mixed_dtype(self):
+    grad = torch.ones((2, 3), device=et.device(), dtype=torch.complex64)
+    self_val = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardswish_backward(): expected the input dtype to be floating point, got complex64""",
+        gpu=""""hardswish_backward_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.ops.aten.hardswish_backward(grad, self_val)
+
+  def test_hardswish_backward_non_broadcastable_shapes(self):
+    grad = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    self_val = torch.ones((2, 4), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardswish_backward(): the size of tensor a (3) must match the size of tensor b (4) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (3) must match the size of tensor b (4) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.hardswish_backward(grad, self_val)
+
   def test_hardsigmoid_unsupported_dtype(self):
     t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
