@@ -3960,6 +3960,18 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.addmm(input_, mat1, mat2, out_dtype=out_dtype)
 
+  def test_addmm_beta_zero_cpu_self(self):
+    input_cpu = torch.ones(2, 2, device="cpu", dtype=torch.float32)
+    mat1 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    mat2 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""addmm(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_addmm_out_out)""",
+    ):
+      torch.addmm(input_cpu, mat1, mat2, beta=0.0, out=out)
+
   def test__addmm_activation_mismatched_inner_dimensions(self):
     input_ = torch.ones(3, 2, device=et.device(), dtype=torch.float32)
     mat1 = torch.ones(3, 4, device=et.device(), dtype=torch.float32)

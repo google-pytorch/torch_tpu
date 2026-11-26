@@ -30453,6 +30453,296 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  @parameterized.named_parameters(
+      dict(testcase_name="addmm", variant="addmm", expect_no_mul=True),
+      dict(testcase_name="addmm_out", variant="addmm_out", expect_no_mul=True),
+      dict(
+          testcase_name="addmm_activation_relu",
+          variant="addmm_activation_relu",
+          expect_no_mul=True,
+      ),
+      dict(
+          testcase_name="addmm_activation_gelu",
+          variant="addmm_activation_gelu",
+          expect_no_mul=False,
+      ),
+      dict(
+          testcase_name="addmm_dtype", variant="addmm_dtype", expect_no_mul=True
+      ),
+      dict(
+          testcase_name="addmm_dtype_out",
+          variant="addmm_dtype_out",
+          expect_no_mul=True,
+      ),
+  )
+  def test_addmm_default_scalars_build_mlir(
+      self, variant: str, expect_no_mul: bool
+  ) -> None:
+    b_cpu = torch.tensor([[1.0, -2.0], [3.0, -4.0]], dtype=torch.float32)
+    m1_cpu = torch.tensor([[0.5, 1.5], [-1.0, 2.0]], dtype=torch.float32)
+    m2_cpu = torch.tensor([[2.0, -0.5], [1.0, 0.25]], dtype=torch.float32)
+    b = b_cpu.to("tpu")
+    m1 = m1_cpu.to("tpu")
+    m2 = m2_cpu.to("tpu")
+    torch.accelerator.synchronize()
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      if variant == "addmm":
+        z = torch.addmm(b, m1, m2)
+        expected = torch.addmm(b_cpu, m1_cpu, m2_cpu)
+      elif variant == "addmm_out":
+        out = torch.empty(2, 2, dtype=torch.float32, device="tpu")
+        z = torch.addmm(b, m1, m2, out=out)
+        expected = torch.addmm(b_cpu, m1_cpu, m2_cpu)
+      elif variant == "addmm_activation_relu":
+        z = torch.ops.aten._addmm_activation(b, m1, m2, use_gelu=False)
+        expected = torch.ops.aten._addmm_activation(
+            b_cpu, m1_cpu, m2_cpu, use_gelu=False
+        )
+      elif variant == "addmm_activation_gelu":
+        z = torch.ops.aten._addmm_activation(b, m1, m2, use_gelu=True)
+        expected = torch.ops.aten._addmm_activation(
+            b_cpu, m1_cpu, m2_cpu, use_gelu=True
+        )
+      elif variant == "addmm_dtype":
+        z = torch.ops.aten.addmm.dtype(b, m1, m2, torch.float32)
+        expected = torch.addmm(b_cpu, m1_cpu, m2_cpu)
+      elif variant == "addmm_dtype_out":
+        out = torch.empty(2, 2, dtype=torch.float32, device="tpu")
+        z = torch.ops.aten.addmm.dtype_out(b, m1, m2, torch.float32, out=out)
+        expected = torch.addmm(b_cpu, m1_cpu, m2_cpu)
+      else:
+        raise ValueError(f"Unknown variant: {variant}")
+
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([z], [b, m1, m2])
+    )
+    self.assertNotIn("%arg3", mlir_text)
+    if expect_no_mul:
+      self.assertNotIn("stablehlo.multiply", mlir_text)
+    self.assert_close(golden_result=expected, torch_tpu_result=z.cpu())
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="addmm_alpha_one",
+          variant="addmm",
+          alpha=1.0,
+      ),
+      dict(
+          testcase_name="addmm_alpha_two_point_five",
+          variant="addmm",
+          alpha=2.5,
+      ),
+      dict(
+          testcase_name="addmm_alpha_zero",
+          variant="addmm",
+          alpha=0.0,
+      ),
+      dict(
+          testcase_name="addmm_out",
+          variant="addmm_out",
+          alpha=1.0,
+      ),
+      dict(
+          testcase_name="addmm_activation",
+          variant="addmm_activation",
+          alpha=1.0,
+      ),
+      dict(
+          testcase_name="addmm_dtype",
+          variant="addmm_dtype",
+          alpha=1.0,
+      ),
+      dict(
+          testcase_name="addmm_dtype_out",
+          variant="addmm_dtype_out",
+          alpha=1.0,
+      ),
+  )
+  def test_addmm_zero_beta_no_cache_miss_on_self_shape_change(
+      self, variant: str, alpha: float
+  ) -> None:
+    mat1_cpu = (torch.arange(7 * 11, dtype=torch.float32) % 5 - 2.0).reshape(
+        7, 11
+    )
+    mat2_cpu = (torch.arange(11 * 13, dtype=torch.float32) % 5 - 2.0).reshape(
+        11, 13
+    )
+    mat1 = mat1_cpu.to("tpu")
+    mat2 = mat2_cpu.to("tpu")
+    self_shapes = [(1, 13), (7, 13), (13,), (7, 1), (1,)]
+    self_tensors = [
+        torch.full(shape, 99.0, dtype=torch.float32, device="tpu")
+        for shape in self_shapes
+    ]
+    out_tensors = [
+        torch.empty(7, 13, dtype=torch.float32, device="tpu")
+        for _ in self_shapes
+    ]
+    torch.accelerator.synchronize()
+
+    def run_variant(self_t: torch.Tensor, out_t: torch.Tensor) -> torch.Tensor:
+      if variant == "addmm":
+        return torch.addmm(self_t, mat1, mat2, beta=0.0, alpha=alpha)
+      if variant == "addmm_out":
+        return torch.addmm(self_t, mat1, mat2, beta=0.0, alpha=alpha, out=out_t)
+      if variant == "addmm_activation":
+        return torch.ops.aten._addmm_activation(
+            self_t, mat1, mat2, beta=0.0, alpha=alpha, use_gelu=False
+        )
+      if variant == "addmm_dtype":
+        return torch.ops.aten.addmm.dtype(
+            self_t, mat1, mat2, torch.float32, beta=0.0, alpha=alpha
+        )
+      if variant == "addmm_dtype_out":
+        return torch.ops.aten.addmm.dtype_out(
+            self_t,
+            mat1,
+            mat2,
+            torch.float32,
+            beta=0.0,
+            alpha=alpha,
+            out=out_t,
+        )
+      raise ValueError(f"Unknown variant: {variant}")
+
+    expected = alpha * (mat1_cpu @ mat2_cpu)
+    if variant == "addmm_activation":
+      expected = torch.relu(expected)
+
+    # Warm up with the first self shape.
+    warmup_res = run_variant(self_tensors[0], out_tensors[0])
+    torch.accelerator.synchronize()
+    self.assert_close(golden_result=expected, torch_tpu_result=warmup_res.cpu())
+
+    # Changing self's broadcast shape must not trigger any compilation cache
+    # misses when beta == 0.
+    before_misses = torch.tpu._get_cache_misses()
+    for self_t, out_t in zip(self_tensors[1:], out_tensors[1:], strict=True):
+      res = run_variant(self_t, out_t)
+      torch.accelerator.synchronize()
+      self.assert_close(golden_result=expected, torch_tpu_result=res.cpu())
+    self.assertEqual(torch.tpu._get_cache_misses() - before_misses, 0)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="beta0_alpha0", beta=0.0, alpha=0.0),
+      dict(testcase_name="beta0_alpha1", beta=0.0, alpha=1.0),
+      dict(testcase_name="beta0_alpha2", beta=0.0, alpha=2.0),
+      dict(testcase_name="beta1_alpha0", beta=1.0, alpha=0.0),
+      dict(testcase_name="beta1_alpha1", beta=1.0, alpha=1.0),
+      dict(testcase_name="beta1_alpha2", beta=1.0, alpha=2.0),
+      dict(testcase_name="beta2_alpha0", beta=2.0, alpha=0.0),
+      dict(testcase_name="beta2_alpha1", beta=2.0, alpha=1.0),
+      dict(testcase_name="beta2_alpha2", beta=2.0, alpha=2.0),
+  )
+  def test_addmm_scalar_special_values(self, beta: float, alpha: float) -> None:
+    mat1_cpu = torch.tensor(
+        [[1.0, -2.0, 0.5], [0.25, 3.0, -1.5], [-0.5, 1.0, 2.0]],
+        dtype=torch.float32,
+    )
+    mat2_cpu = torch.tensor(
+        [[0.5, -1.0, 2.0, 0.25], [1.0, 0.5, -0.5, 1.5], [-2.0, 1.0, 0.25, 0.5]],
+        dtype=torch.float32,
+    )
+    for self_shape in ((1, 4), (3, 4)):
+      self_cpu = (
+          torch.arange(math.prod(self_shape), dtype=torch.float32).reshape(
+              self_shape
+          )
+          * 0.5
+          - 1.0
+      )
+      with self.subTest(self_shape=self_shape):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, s=self_cpu: torch.addmm(
+                s.to(device),
+                mat1_cpu.to(device),
+                mat2_cpu.to(device),
+                beta=beta,
+                alpha=alpha,
+            )
+        )
+        self.assert_close_tpu_vs_cpu(
+            lambda device, s=self_cpu: torch.ops.aten._addmm_activation(
+                s.to(device),
+                mat1_cpu.to(device),
+                mat2_cpu.to(device),
+                beta=beta,
+                alpha=alpha,
+                use_gelu=False,
+            )
+        )
+        self.assert_close_tpu_vs_cpu(
+            lambda device, s=self_cpu: torch.ops.aten._addmm_activation(
+                s.to(device),
+                mat1_cpu.to(device),
+                mat2_cpu.to(device),
+                beta=beta,
+                alpha=alpha,
+                use_gelu=True,
+            ),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+        expected = torch.addmm(
+            self_cpu, mat1_cpu, mat2_cpu, beta=beta, alpha=alpha
+        )
+        tpu_dtype_res = torch.ops.aten.addmm.dtype(
+            self_cpu.to("tpu"),
+            mat1_cpu.to("tpu"),
+            mat2_cpu.to("tpu"),
+            torch.float32,
+            beta=beta,
+            alpha=alpha,
+        )
+        self.assert_close(
+            golden_result=expected, torch_tpu_result=tpu_dtype_res.cpu()
+        )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="nan_alpha1", bad_val=float("nan"), alpha=1.0),
+      dict(testcase_name="inf_alpha1", bad_val=float("inf"), alpha=1.0),
+      dict(testcase_name="nan_alpha2", bad_val=float("nan"), alpha=2.0),
+      dict(testcase_name="inf_alpha2", bad_val=float("inf"), alpha=2.0),
+  )
+  def test_addmm_zero_beta_ignores_non_finite_self(
+      self, bad_val: float, alpha: float
+  ) -> None:
+    bad_self = torch.full((2, 3), bad_val, dtype=torch.float32)
+    mat1 = torch.ones(2, 4, dtype=torch.float32)
+    mat2 = torch.full((4, 3), 2.0, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addmm(
+            bad_self.to(device),
+            mat1.to(device),
+            mat2.to(device),
+            beta=0.0,
+            alpha=alpha,
+        )
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="nan_beta1", bad_val=float("nan"), beta=1.0),
+      dict(testcase_name="inf_beta1", bad_val=float("inf"), beta=1.0),
+      dict(testcase_name="nan_beta2", bad_val=float("nan"), beta=2.0),
+      dict(testcase_name="inf_beta2", bad_val=float("inf"), beta=2.0),
+  )
+  def test_addmm_zero_alpha_ignores_non_finite_mat(
+      self, bad_val: float, beta: float
+  ) -> None:
+    self_input = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32)
+    bad_mat1 = torch.full((2, 4), bad_val, dtype=torch.float32)
+    mat2 = torch.ones(4, 3, dtype=torch.float32)
+    tpu_res = torch.addmm(
+        self_input.to("tpu"),
+        bad_mat1.to("tpu"),
+        mat2.to("tpu"),
+        beta=beta,
+        alpha=0.0,
+    )
+    expected = (self_input * beta).expand(2, 3)
+    self.assert_close(golden_result=expected, torch_tpu_result=tpu_res.cpu())
+
 
 if __name__ == "__main__":
   absltest.main()
