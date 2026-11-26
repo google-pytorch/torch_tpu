@@ -27949,6 +27949,170 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             atol=0,
         )
 
+  @parameterized.named_parameters(
+      ("bcast_empty_out", (2, 1), (1, 3), (0,)),
+      ("bcast_wrong_shape_out", (2, 1), (1, 3), (5,)),
+      ("scalar_grad", (), (2, 3), (0,)),
+      ("scalar_self", (2, 3), (), (0,)),
+      ("zero_elem_grad", (0, 3), (1, 3), (0,)),
+      ("zero_elem_self", (1, 3), (0, 3), (0,)),
+      ("zero_elem_bcast", (2, 0), (1, 1), (0,)),
+  )
+  def test_softplus_backward_broadcast_and_resize(
+      self, grad_shape, self_shape, init_out_shape
+  ):
+    beta, threshold = 1.5, 10.0
+    if grad_shape == (2, 1) and self_shape == (1, 3):
+      g_cpu = torch.tensor([[0.5], [-2.0]], dtype=torch.float32)
+      s_cpu = torch.tensor([[-5.0, 0.0, 10.0]], dtype=torch.float32)
+    else:
+      g_cpu = torch.full(grad_shape, 1.5, dtype=torch.float32)
+      s_cpu = torch.full(self_shape, 0.25, dtype=torch.float32)
+
+    ref = torch.ops.aten.softplus_backward(g_cpu, s_cpu, beta, threshold)
+    res_func = torch.ops.aten.softplus_backward(
+        g_cpu.to("tpu"), s_cpu.to("tpu"), beta, threshold
+    )
+    self.assertEqual(res_func.shape, ref.shape)
+    self.assert_close(
+        golden_result=ref, torch_tpu_result=res_func, rtol=1e-3, atol=1e-4
+    )
+
+    gi_tpu = torch.empty(init_out_shape, dtype=torch.float32, device="tpu")
+    res_out = torch.ops.aten.softplus_backward.grad_input(
+        g_cpu.to("tpu"), s_cpu.to("tpu"), beta, threshold, grad_input=gi_tpu
+    )
+    self.assertIs(res_out, gi_tpu)
+    self.assertEqual(gi_tpu.shape, ref.shape)
+    self.assert_close(
+        golden_result=ref, torch_tpu_result=gi_tpu, rtol=1e-3, atol=1e-4
+    )
+
+  @parameterized.named_parameters(
+      ("f32_bf16", torch.float32, torch.bfloat16),
+      ("bf16_f32", torch.bfloat16, torch.float32),
+      ("bf16_f16", torch.bfloat16, torch.float16),
+      ("f32_f64", torch.float32, torch.float64),
+      ("f32_i32", torch.float32, torch.int32),
+      ("i32_f32", torch.int32, torch.float32),
+      ("bool_f32", torch.bool, torch.float32),
+      ("bf16_i32", torch.bfloat16, torch.int32),
+      ("f16_bool", torch.float16, torch.bool),
+  )
+  def test_softplus_backward_mixed_dtype(self, grad_dtype, self_dtype):
+    beta, threshold = 1.5, 10.0
+    g_cpu = torch.tensor([[1, 0, 2]], dtype=grad_dtype)
+    s_cpu = torch.tensor([[-2], [10]], dtype=self_dtype)
+    ref = torch.ops.aten.softplus_backward(g_cpu, s_cpu, beta, threshold)
+    res = torch.ops.aten.softplus_backward(
+        g_cpu.to("tpu"), s_cpu.to("tpu"), beta, threshold
+    )
+    self.assertEqual(res.dtype, ref.dtype)
+    self.assertEqual(res.shape, ref.shape)
+    if ref.dtype in (torch.bfloat16, torch.float16):
+      rtol, atol = 1e-2, 1e-2
+    else:
+      rtol, atol = 1e-3, 1e-4
+    self.assert_close(
+        golden_result=ref, torch_tpu_result=res, rtol=rtol, atol=atol
+    )
+
+  @parameterized.named_parameters(
+      ("f32_f32_to_bf16", torch.float32, torch.float32, torch.bfloat16),
+      ("f32_bf16_to_bf16", torch.float32, torch.bfloat16, torch.bfloat16),
+      ("f32_f32_to_f64", torch.float32, torch.float32, torch.float64),
+      ("f64_f32_to_f32", torch.float64, torch.float32, torch.float32),
+  )
+  def test_softplus_backward_grad_input_cast(
+      self, grad_dtype, self_dtype, out_dtype
+  ):
+    beta, threshold = 1.5, 10.0
+    g_cpu = torch.tensor([[1.0], [-0.5]], dtype=grad_dtype)
+    s_cpu = torch.tensor([[-3.0, 0.5, 12.0]], dtype=self_dtype)
+    ref = torch.empty(0, dtype=out_dtype)
+    torch.ops.aten.softplus_backward.grad_input(
+        g_cpu, s_cpu, beta, threshold, grad_input=ref
+    )
+    gi_tpu = torch.empty(0, dtype=out_dtype, device="tpu")
+    res = torch.ops.aten.softplus_backward.grad_input(
+        g_cpu.to("tpu"), s_cpu.to("tpu"), beta, threshold, grad_input=gi_tpu
+    )
+    self.assertIs(res, gi_tpu)
+    self.assertEqual(gi_tpu.dtype, out_dtype)
+    self.assertEqual(gi_tpu.shape, ref.shape)
+    if out_dtype in (torch.bfloat16, torch.float16):
+      rtol, atol = 1e-2, 1e-2
+    else:
+      rtol, atol = 1e-3, 1e-4
+    self.assert_close(
+        golden_result=ref, torch_tpu_result=gi_tpu, rtol=rtol, atol=atol
+    )
+
+  def test_softplus_backward_edge_alias_and_compiled(self):
+    beta, threshold = 1.5, 10.0
+
+    # Edge values (NaN, +/-Inf) with broadcast.
+    g_edge = torch.tensor([[1.0], [-1.0]], dtype=torch.float32)
+    s_edge = torch.tensor(
+        [[float("nan"), float("inf"), float("-inf")]], dtype=torch.float32
+    )
+    ref_edge = torch.ops.aten.softplus_backward(g_edge, s_edge, beta, threshold)
+    res_edge = torch.ops.aten.softplus_backward(
+        g_edge.to("tpu"), s_edge.to("tpu"), beta, threshold
+    )
+    self.assert_close(
+        golden_result=ref_edge, torch_tpu_result=res_edge, rtol=1e-3, atol=1e-4
+    )
+
+    # Matching-shape input alias and DEFER_AND_FUSE resize.
+    g_same = torch.tensor([[1.0, 0.5], [-1.0, 2.0]], dtype=torch.float32)
+    s_same = torch.tensor([[-2.0, 0.5], [1.0, 12.0]], dtype=torch.float32)
+    ref_same = torch.ops.aten.softplus_backward(g_same, s_same, beta, threshold)
+    g_bcast = torch.tensor([[0.5], [-2.0]], dtype=torch.float32)
+    s_bcast = torch.tensor([[-5.0, 0.0, 10.0]], dtype=torch.float32)
+    ref_bcast = torch.ops.aten.softplus_backward(
+        g_bcast, s_bcast, beta, threshold
+    )
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      s_alias = s_same.to("tpu")
+      res_alias = torch.ops.aten.softplus_backward.grad_input(
+          g_same.to("tpu"), s_alias, beta, threshold, grad_input=s_alias
+      )
+      self.assertIs(res_alias, s_alias)
+      gi_def = torch.empty(0, dtype=torch.float32, device="tpu")
+      res_def = torch.ops.aten.softplus_backward.grad_input(
+          g_bcast.to("tpu"),
+          s_bcast.to("tpu"),
+          beta,
+          threshold,
+          grad_input=gi_def,
+      )
+      self.assertIs(res_def, gi_def)
+      self.assert_close(
+          golden_result=ref_same, torch_tpu_result=s_alias, rtol=1e-3, atol=1e-4
+      )
+      self.assert_close(
+          golden_result=ref_bcast, torch_tpu_result=gi_def, rtol=1e-3, atol=1e-4
+      )
+
+    # Compiled execution with broadcasted mixed-dtype inputs.
+    def fn(g, s):
+      return torch.ops.aten.softplus_backward(g, s, beta, threshold)
+
+    compiled_fn = torch.compile(fn, backend="tpu", fullgraph=True)
+    g_comp = torch.tensor([[1.0], [-0.5]], dtype=torch.float32)
+    s_comp = torch.tensor([[-3.0, 0.5, 12.0]], dtype=torch.bfloat16)
+    ref_comp = torch.ops.aten.softplus_backward(g_comp, s_comp, beta, threshold)
+    actual_comp = compiled_fn(g_comp.to("tpu"), s_comp.to("tpu"))
+    self.assertEqual(actual_comp.dtype, ref_comp.dtype)
+    self.assertEqual(actual_comp.shape, ref_comp.shape)
+    self.assert_close(
+        golden_result=ref_comp,
+        torch_tpu_result=actual_comp,
+        rtol=1e-3,
+        atol=1e-4,
+    )
+
 
 class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""
