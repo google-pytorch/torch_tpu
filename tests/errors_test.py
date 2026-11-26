@@ -22496,7 +22496,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     with et.assert_raises_message(
         RuntimeError,
         tpu="""chunk_cat(): expected out to be on tpu:0, got cpu""",
-        gpu="""_chunk_cat_out_cuda: mismatch between input and out tensor devices""",
+        gpu="""Expected all tensors to be on the same device, but got tensors is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out__chunk_cat_out)""",
     ):
       torch._chunk_cat(tensors, 0, 2, out=out)
 
