@@ -872,6 +872,110 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(hy.shape, (0, 8))
     self.assertEqual(ws.shape, (0, 40))
 
+  def test_thnn_fused_lstm_cell_backward_both_grads_none(self):
+    """Verifies backward returns Nones when both grads are None."""
+    device = torch.device("tpu")
+    cx = torch.randn(2, 4, device=device)
+    cy = torch.randn(2, 4, device=device)
+    workspace = torch.randn(2, 16, device=device)
+    grad_gates, grad_cx, grad_bias = (
+        torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+            None, None, cx, cy, workspace, True
+        )
+    )
+    self.assertIsNone(grad_gates)
+    self.assertIsNone(grad_cx)
+    self.assertIsNone(grad_bias)
+
+  @parameterized.named_parameters(
+      ("grad_hy_only", True, False),
+      ("grad_cy_only", False, True),
+      ("both_grads", True, True),
+  )
+  def test_thnn_fused_lstm_cell_backward_optional_grads(
+      self, use_grad_hy, use_grad_cy
+  ):
+    """Verifies LSTM cell backward with optional grad_hy and grad_cy."""
+    torch.manual_seed(0)
+    batch, hidden = 3, 5
+    ig_cpu = torch.randn(batch, 4 * hidden, requires_grad=True)
+    hg_cpu = torch.randn(batch, 4 * hidden, requires_grad=True)
+    cx_cpu = torch.randn(batch, hidden, requires_grad=True)
+    ib_cpu = torch.randn(4 * hidden, requires_grad=True)
+    hb_cpu = torch.randn(4 * hidden, requires_grad=True)
+    grad_hy_cpu = torch.randn(batch, hidden) if use_grad_hy else None
+    grad_cy_cpu = torch.randn(batch, hidden) if use_grad_cy else None
+
+    # CPU reference via manual LSTM cell equations.
+    gates = ig_cpu + hg_cpu + ib_cpu + hb_cpu
+    ingate, forgetgate, cellgate, outgate = gates.chunk(4, dim=1)
+    ingate = ingate.sigmoid()
+    forgetgate = forgetgate.sigmoid()
+    cellgate = cellgate.tanh()
+    outgate = outgate.sigmoid()
+    cy_ref = forgetgate * cx_cpu + ingate * cellgate
+    hy_ref = outgate * cy_ref.tanh()
+    outputs = []
+    grad_outputs = []
+    if grad_hy_cpu is not None:
+      outputs.append(hy_ref)
+      grad_outputs.append(grad_hy_cpu)
+    if grad_cy_cpu is not None:
+      outputs.append(cy_ref)
+      grad_outputs.append(grad_cy_cpu)
+    ref_grads = torch.autograd.grad(
+        outputs, (ig_cpu, cx_cpu, ib_cpu), grad_outputs=grad_outputs
+    )
+
+    device = torch.device("tpu")
+    hy_tpu, cy_tpu, ws_tpu = torch.ops.aten._thnn_fused_lstm_cell(
+        ig_cpu.detach().to(device),
+        hg_cpu.detach().to(device),
+        cx_cpu.detach().to(device),
+        ib_cpu.detach().to(device),
+        hb_cpu.detach().to(device),
+    )
+    grad_gates_tpu, grad_cx_tpu, grad_bias_tpu = (
+        torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+            grad_hy_cpu.to(device) if grad_hy_cpu is not None else None,
+            grad_cy_cpu.to(device) if grad_cy_cpu is not None else None,
+            cx_cpu.detach().to(device),
+            cy_tpu,
+            ws_tpu,
+            True,
+        )
+    )
+    self.assert_close(
+        golden_result=hy_ref.detach(),
+        torch_tpu_result=hy_tpu,
+        rtol=1e-4,
+        atol=1e-4,
+    )
+    self.assert_close(
+        golden_result=cy_ref.detach(),
+        torch_tpu_result=cy_tpu,
+        rtol=1e-4,
+        atol=1e-4,
+    )
+    self.assert_close(
+        golden_result=ref_grads[0],
+        torch_tpu_result=grad_gates_tpu,
+        rtol=1e-4,
+        atol=1e-4,
+    )
+    self.assert_close(
+        golden_result=ref_grads[1],
+        torch_tpu_result=grad_cx_tpu,
+        rtol=1e-4,
+        atol=1e-4,
+    )
+    self.assert_close(
+        golden_result=ref_grads[2],
+        torch_tpu_result=grad_bias_tpu,
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
   def test_ldexp_integer_promotion(self):
     """Tests that ldexp promotes integer base and exponent to float."""
     self.assert_close_tpu_vs_cpu(

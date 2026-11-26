@@ -15575,6 +15575,426 @@ Note: this function is intended to be used with the output produced by torch.lin
           ig, hg, cx, None, None, out0=out0, out1=out1, out2=out2
       )
 
+  def test_thnn_fused_gru_cell_dtype_mismatch(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device, dtype=torch.float32)
+    hg = torch.randn(2, 12, device=device, dtype=torch.float32)
+    hx = torch.randn(2, 4, device=device, dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected all inputs to have the same dtype, got input_gates: float32, hidden_gates: float32, hx: float64""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx)
+
+  def test_thnn_fused_gru_cell_invalid_input_gates_rank(self):
+    device = et.device()
+    ig = torch.randn(12, device=device)
+    hg = torch.randn(12, device=device)
+    hx = torch.randn(2, 4, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected argument #1 'input_gates' to be 2D, got 1D""",
+        gpu="""Expected 2-dimensional tensor, but got 1-dimensional tensor for argument #1 'input_gates' (while checking arguments for _thnn_fused_gru_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx)
+
+  def test_thnn_fused_gru_cell_invalid_hx_rank(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device)
+    hg = torch.randn(2, 12, device=device)
+    hx = torch.randn(2, 4, 1, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected argument #3 'hx' to be 2D, got 3D""",
+        gpu="""Expected 2-dimensional tensor, but got 3-dimensional tensor for argument #5 'prev_hidden' (while checking arguments for _thnn_fused_gru_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx)
+
+  def test_thnn_fused_gru_cell_only_input_bias(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device)
+    hg = torch.randn(2, 12, device=device)
+    hx = torch.randn(2, 4, device=device)
+    ib = torch.randn(12, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected 'input_bias' and 'hidden_bias' to both be provided or both be None, got input_bias: Tensor, hidden_bias: None""",
+        gpu="""sym_strides() called on an undefined Tensor""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx, ib, None)
+
+  def test_thnn_fused_gru_cell_invalid_input_bias_shape(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device)
+    hg = torch.randn(2, 12, device=device)
+    hx = torch.randn(2, 4, device=device)
+    ib = torch.randn(4, device=device)
+    hb = torch.randn(4, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected 'input_bias' to have shape [12], got [4]""",
+        gpu="""Expected tensor for argument #3 'input_bias' to have 12 elements; but it actually has 4 elements (while checking arguments for _thnn_fused_gru_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx, ib, hb)
+
+  def test_thnn_fused_gru_cell_invalid_input_bias_rank(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device)
+    hg = torch.randn(2, 12, device=device)
+    hx = torch.randn(2, 4, device=device)
+    ib = torch.randn(1, 12, device=device)
+    hb = torch.randn(1, 12, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected 'input_bias' to have shape [12], got [1, 12]""",
+        gpu="""Expected 1-dimensional tensor, but got 2-dimensional tensor for argument #3 'input_bias' (while checking arguments for _thnn_fused_gru_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx, ib, hb)
+
+  def test_thnn_fused_gru_cell_invalid_hidden_bias_shape(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device)
+    hg = torch.randn(2, 12, device=device)
+    hx = torch.randn(2, 4, device=device)
+    ib = torch.randn(12, device=device)
+    hb = torch.randn(4, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected 'hidden_bias' to have shape [12], got [4]""",
+        gpu="""Expected tensor for argument #3 'input_bias' to have same size as tensor for argument #4 'hidden_bias'; but [12] does not equal [4] (while checking arguments for _thnn_fused_gru_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx, ib, hb)
+
+  def test_thnn_fused_gru_cell_bias_dtype_mismatch(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device, dtype=torch.float32)
+    hg = torch.randn(2, 12, device=device, dtype=torch.float32)
+    hx = torch.randn(2, 4, device=device, dtype=torch.float32)
+    ib = torch.randn(12, device=device, dtype=torch.float64)
+    hb = torch.randn(12, device=device, dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected 'input_bias' and 'hidden_bias' to have the same dtype as 'input_gates' (float32), got input_bias: float64, hidden_bias: float64""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx, ib, hb)
+
+  def test_thnn_fused_gru_cell_backward_integral_dtype(self):
+    device = et.device()
+    grad_hy = torch.zeros(2, 4, device=device, dtype=torch.int32)
+    workspace = torch.zeros(2, 20, device=device, dtype=torch.int32)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""thnn_fused_gru_cell_backward(): not implemented for int32""",
+        gpu=""""_thnn_fused_gru_cell_cuda_backward" not implemented for 'Int'""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell_backward(grad_hy, workspace, False)
+
+  def test_thnn_fused_gru_cell_backward_dtype_mismatch(self):
+    device = et.device()
+    grad_hy = torch.randn(2, 4, device=device, dtype=torch.float32)
+    workspace = torch.randn(2, 20, device=device, dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell_backward(): expected argument #2 'workspace' to have the same dtype as argument #1 'grad_hy' (float32), got float64""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell_backward(grad_hy, workspace, False)
+
+  def test_thnn_fused_gru_cell_backward_invalid_grad_hy_rank(self):
+    device = et.device()
+    grad_hy = torch.randn(4, device=device)
+    workspace = torch.randn(2, 20, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell_backward(): expected argument #1 'grad_hy' to be 2D, got 1D""",
+        gpu="""Expected 2-dimensional tensor, but got 1-dimensional tensor for argument #1 'grad_hy' (while checking arguments for fused_gru_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell_backward(grad_hy, workspace, False)
+
+  def test_thnn_fused_gru_cell_backward_invalid_workspace_shape(self):
+    device = et.device()
+    grad_hy = torch.randn(2, 4, device=device)
+    workspace = torch.randn(2, 12, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell_backward(): expected argument #2 'workspace' to have shape [2, 20], got [2, 12]""",
+        gpu="""Expected tensor of size [2, 20], but got tensor of size [2, 12] for argument #2 'workspace' (while checking arguments for fused_gru_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell_backward(grad_hy, workspace, False)
+
+  def test_thnn_fused_lstm_cell_invalid_input_gates_rank(self):
+    device = et.device()
+    ig = torch.randn(16, device=device)
+    hg = torch.randn(16, device=device)
+    cx = torch.randn(2, 4, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected argument #1 'input_gates' to be 2D, got 1D""",
+        gpu="""Expected 2-dimensional tensor, but got 1-dimensional tensor for argument #1 'input_gates' (while checking arguments for _thnn_fused_lstm_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx)
+
+  def test_thnn_fused_lstm_cell_invalid_cx_rank(self):
+    device = et.device()
+    ig = torch.randn(2, 16, device=device)
+    hg = torch.randn(2, 16, device=device)
+    cx = torch.randn(2, 4, 1, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected argument #3 'cx' to be 2D, got 3D""",
+        gpu="""Expected 2-dimensional tensor, but got 3-dimensional tensor for argument #5 'prev_hidden' (while checking arguments for _thnn_fused_lstm_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx)
+
+  def test_thnn_fused_lstm_cell_only_input_bias(self):
+    device = et.device()
+    ig = torch.randn(2, 16, device=device)
+    hg = torch.randn(2, 16, device=device)
+    cx = torch.randn(2, 4, device=device)
+    ib = torch.randn(16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected 'input_bias' and 'hidden_bias' to both be provided or both be None, got input_bias: Tensor, hidden_bias: None""",
+        gpu="""sym_strides() called on an undefined Tensor""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx, ib, None)
+
+  def test_thnn_fused_lstm_cell_invalid_input_bias_shape(self):
+    device = et.device()
+    ig = torch.randn(2, 16, device=device)
+    hg = torch.randn(2, 16, device=device)
+    cx = torch.randn(2, 4, device=device)
+    ib = torch.randn(4, device=device)
+    hb = torch.randn(4, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected 'input_bias' to have shape [16], got [4]""",
+        gpu="""Expected tensor for argument #3 'input_bias' to have 16 elements; but it actually has 4 elements (while checking arguments for _thnn_fused_lstm_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx, ib, hb)
+
+  def test_thnn_fused_lstm_cell_invalid_input_bias_rank(self):
+    device = et.device()
+    ig = torch.randn(2, 16, device=device)
+    hg = torch.randn(2, 16, device=device)
+    cx = torch.randn(2, 4, device=device)
+    ib = torch.randn(1, 16, device=device)
+    hb = torch.randn(1, 16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected 'input_bias' to have shape [16], got [1, 16]""",
+        gpu="""Expected 1-dimensional tensor, but got 2-dimensional tensor for argument #3 'input_bias' (while checking arguments for _thnn_fused_lstm_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx, ib, hb)
+
+  def test_thnn_fused_lstm_cell_invalid_hidden_bias_shape(self):
+    device = et.device()
+    ig = torch.randn(2, 16, device=device)
+    hg = torch.randn(2, 16, device=device)
+    cx = torch.randn(2, 4, device=device)
+    ib = torch.randn(16, device=device)
+    hb = torch.randn(4, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected 'hidden_bias' to have shape [16], got [4]""",
+        gpu="""Expected tensor for argument #3 'input_bias' to have same size as tensor for argument #4 'hidden_bias'; but [16] does not equal [4] (while checking arguments for _thnn_fused_lstm_cell_cuda)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx, ib, hb)
+
+  def test_thnn_fused_lstm_cell_bias_dtype_mismatch(self):
+    device = et.device()
+    ig = torch.randn(2, 16, device=device, dtype=torch.float32)
+    hg = torch.randn(2, 16, device=device, dtype=torch.float32)
+    cx = torch.randn(2, 4, device=device, dtype=torch.float32)
+    ib = torch.randn(16, device=device, dtype=torch.float64)
+    hb = torch.randn(16, device=device, dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected 'input_bias' and 'hidden_bias' to have the same dtype as 'input_gates' (float32), got input_bias: float64, hidden_bias: float64""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx, ib, hb)
+
+  def test_thnn_fused_lstm_cell_backward_integral_dtype(self):
+    device = et.device()
+    grad_hy = torch.zeros(2, 4, device=device, dtype=torch.int32)
+    grad_cy = torch.zeros(2, 4, device=device, dtype=torch.int32)
+    cx = torch.zeros(2, 4, device=device, dtype=torch.int32)
+    cy = torch.zeros(2, 4, device=device, dtype=torch.int32)
+    workspace = torch.zeros(2, 16, device=device, dtype=torch.int32)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): not implemented for int32""",
+        gpu=""""_thnn_fused_lstm_cell_cuda_backward" not implemented for 'Int'""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_lstm_cell_backward_dtype_mismatch(self):
+    device = et.device()
+    grad_hy = torch.randn(2, 4, device=device, dtype=torch.float64)
+    grad_cy = torch.randn(2, 4, device=device, dtype=torch.float32)
+    cx = torch.randn(2, 4, device=device, dtype=torch.float32)
+    cy = torch.randn(2, 4, device=device, dtype=torch.float32)
+    workspace = torch.randn(2, 16, device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): expected all inputs to have the same dtype as workspace (float32), got grad_hy: float64, grad_cy: float32, cx: float32, cy: float32""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_lstm_cell_backward_invalid_grad_hy_rank(self):
+    device = et.device()
+    grad_hy = torch.randn(4, device=device)
+    grad_cy = torch.randn(2, 4, device=device)
+    cx = torch.randn(2, 4, device=device)
+    cy = torch.randn(2, 4, device=device)
+    workspace = torch.randn(2, 16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): expected argument #1 'grad_hy' to be 2D, got 1D""",
+        gpu="""Expected 2-dimensional tensor, but got 1-dimensional tensor for argument #1 'grad_hy' (while checking arguments for fused_lstm_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_lstm_cell_backward_invalid_grad_cy_only_rank(self):
+    device = et.device()
+    grad_cy = torch.randn(4, device=device)
+    cx = torch.randn(2, 4, device=device)
+    cy = torch.randn(2, 4, device=device)
+    workspace = torch.randn(2, 16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): expected argument #2 'grad_cy' to be 2D, got 1D""",
+        gpu="""Expected 2-dimensional tensor, but got 1-dimensional tensor for argument #2 'grad_cy' (while checking arguments for fused_lstm_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          None, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_lstm_cell_backward_grad_cy_shape_mismatch(self):
+    device = et.device()
+    grad_hy = torch.randn(2, 4, device=device)
+    grad_cy = torch.randn(2, 5, device=device)
+    cx = torch.randn(2, 4, device=device)
+    cy = torch.randn(2, 4, device=device)
+    workspace = torch.randn(2, 16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): expected argument #2 'grad_cy' to have shape [2, 4], got [2, 5]""",
+        gpu="""Expected tensor of size [2, 4], but got tensor of size [2, 5] for argument #2 'grad_cy' (while checking arguments for fused_lstm_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_lstm_cell_backward_cx_shape_mismatch(self):
+    device = et.device()
+    grad_hy = torch.randn(2, 4, device=device)
+    grad_cy = torch.randn(2, 4, device=device)
+    cx = torch.randn(2, 5, device=device)
+    cy = torch.randn(2, 4, device=device)
+    workspace = torch.randn(2, 16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): expected argument #3 'cx' to have shape [2, 4], got [2, 5]""",
+        gpu="""Expected tensor of size [2, 4], but got tensor of size [2, 5] for argument #3 'cx' (while checking arguments for fused_lstm_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_lstm_cell_backward_cy_shape_mismatch(self):
+    device = et.device()
+    grad_hy = torch.randn(2, 4, device=device)
+    grad_cy = torch.randn(2, 4, device=device)
+    cx = torch.randn(2, 4, device=device)
+    cy = torch.randn(2, 5, device=device)
+    workspace = torch.randn(2, 16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): expected argument #4 'cy' to have shape [2, 4], got [2, 5]""",
+        gpu="""Expected tensor of size [2, 4], but got tensor of size [2, 5] for argument #4 'cy' (while checking arguments for fused_lstm_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_lstm_cell_backward_invalid_workspace_shape(self):
+    device = et.device()
+    grad_hy = torch.randn(2, 4, device=device)
+    grad_cy = torch.randn(2, 4, device=device)
+    cx = torch.randn(2, 4, device=device)
+    cy = torch.randn(2, 4, device=device)
+    workspace = torch.randn(2, 8, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): expected argument #5 'workspace' to have shape [2, 16], got [2, 8]""",
+        gpu="""Expected tensor for argument #5 'workspace' to have 32 elements; but it actually has 16 elements (while checking arguments for fused_lstm_cell_backward)""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
+  def test_thnn_fused_gru_cell_fp8_dtype(self):
+    device = et.device()
+    ig = torch.zeros(2, 12, device=device, dtype=torch.float8_e4m3fn)
+    hg = torch.zeros(2, 12, device=device, dtype=torch.float8_e4m3fn)
+    hx = torch.zeros(2, 4, device=device, dtype=torch.float8_e4m3fn)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""thnn_fused_gru_cell(): not implemented for float8_e4m3fn""",
+        gpu=""""_thnn_fused_gru_cell_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx)
+
+  def test_thnn_fused_gru_cell_backward_fp8_dtype(self):
+    device = et.device()
+    grad_hy = torch.zeros(2, 4, device=device, dtype=torch.float8_e4m3fn)
+    workspace = torch.zeros(2, 20, device=device, dtype=torch.float8_e4m3fn)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""thnn_fused_gru_cell_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""_thnn_fused_gru_cell_cuda_backward" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell_backward(grad_hy, workspace, False)
+
+  def test_thnn_fused_lstm_cell_fp8_dtype(self):
+    device = et.device()
+    ig = torch.zeros(2, 16, device=device, dtype=torch.float8_e4m3fn)
+    hg = torch.zeros(2, 16, device=device, dtype=torch.float8_e4m3fn)
+    cx = torch.zeros(2, 4, device=device, dtype=torch.float8_e4m3fn)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""thnn_fused_lstm_cell(): not implemented for float8_e4m3fn""",
+        gpu=""""_thnn_fused_lstm_cell_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx)
+
+  def test_thnn_fused_lstm_cell_backward_fp8_dtype(self):
+    device = et.device()
+    grad_hy = torch.zeros(2, 4, device=device, dtype=torch.float8_e4m3fn)
+    grad_cy = torch.zeros(2, 4, device=device, dtype=torch.float8_e4m3fn)
+    cx = torch.zeros(2, 4, device=device, dtype=torch.float8_e4m3fn)
+    cy = torch.zeros(2, 4, device=device, dtype=torch.float8_e4m3fn)
+    workspace = torch.zeros(2, 16, device=device, dtype=torch.float8_e4m3fn)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""thnn_fused_lstm_cell_backward_impl(): not implemented for float8_e4m3fn""",
+        gpu=""""_thnn_fused_lstm_cell_cuda_backward" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell_backward_impl(
+          grad_hy, grad_cy, cx, cy, workspace, False
+      )
+
   def test_fused_moving_avg_obs_fq_helper_non_floating(self):
     dev = et.device()
     self_t = torch.ones((2, 3), dtype=torch.int32, device=dev)

@@ -27,6 +27,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/ArrayRef.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
@@ -44,6 +45,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -201,12 +203,16 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildLstmCellBackwardShlo(
   return std::array<mlir::MlirOp, 2>{grad_gates, grad_cx};
 }
 
-absl::Status ValidateThnnFusedLstmCellInputs(const at::Tensor& input_gates,
-                                             const at::Tensor& hidden_gates,
-                                             const at::Tensor& cx) {
+// Validates input tensor ranks, shapes, dtypes, and paired biases for the fused
+// LSTM cell.
+absl::Status ValidateThnnFusedLstmCellInputs(
+    const at::Tensor& input_gates, const at::Tensor& hidden_gates,
+    const at::Tensor& cx, const std::optional<at::Tensor>& input_bias,
+    const std::optional<at::Tensor>& hidden_bias) {
   TT_RET_CHECK(c10::isFloatingType(input_gates.scalar_type()),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(input_gates.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(input_gates));
   TT_RET_CHECK(input_gates.scalar_type() == hidden_gates.scalar_type() &&
                    input_gates.scalar_type() == cx.scalar_type(),
                error::kInvalidArgument)
@@ -214,12 +220,17 @@ absl::Status ValidateThnnFusedLstmCellInputs(const at::Tensor& input_gates,
       << ToString(input_gates.scalar_type())
       << ", hidden_gates: " << ToString(hidden_gates.scalar_type())
       << ", cx: " << ToString(cx.scalar_type());
+  TT_RET_CHECK(input_gates.dim() == 2, error::kInvalidArgument)
+      << "expected argument #1 'input_gates' to be 2D, got "
+      << input_gates.dim() << "D";
   TT_RET_CHECK(input_gates.sizes() == hidden_gates.sizes(),
                error::kInvalidArgument)
       << "expected size of argument #1 'input_gates' to match size of "
          "argument #2 'hidden_gates' ("
       << ToString(hidden_gates.sizes()) << "), got "
       << ToString(input_gates.sizes());
+  TT_RET_CHECK(cx.dim() == 2, error::kInvalidArgument)
+      << "expected argument #3 'cx' to be 2D, got " << cx.dim() << "D";
   TT_RET_CHECK(input_gates.size(0) == cx.size(0), error::kInvalidArgument)
       << "expected batch size of argument #1 'input_gates' to match batch size "
          "of argument #3 'cx' ("
@@ -228,23 +239,95 @@ absl::Status ValidateThnnFusedLstmCellInputs(const at::Tensor& input_gates,
       << "expected feature size of argument #1 'input_gates' to match 4 * "
          "feature size of argument #3 'cx' ("
       << 4 * cx.size(1) << "), got " << input_gates.size(1);
+  TT_RET_CHECK(input_bias.has_value() == hidden_bias.has_value(),
+               error::kInvalidArgument)
+      << "expected 'input_bias' and 'hidden_bias' to both be provided or both "
+         "be None, got input_bias: "
+      << (input_bias.has_value() ? "Tensor" : "None")
+      << ", hidden_bias: " << (hidden_bias.has_value() ? "Tensor" : "None");
+  if (input_bias.has_value()) {
+    TT_RET_CHECK(input_bias->scalar_type() == input_gates.scalar_type() &&
+                     hidden_bias->scalar_type() == input_gates.scalar_type(),
+                 error::kInvalidArgument)
+        << "expected 'input_bias' and 'hidden_bias' to have the same dtype as "
+           "'input_gates' ("
+        << ToString(input_gates.scalar_type())
+        << "), got input_bias: " << ToString(input_bias->scalar_type())
+        << ", hidden_bias: " << ToString(hidden_bias->scalar_type());
+    TT_RET_CHECK(
+        input_bias->dim() == 1 && input_bias->size(0) == input_gates.size(1),
+        error::kInvalidArgument)
+        << "expected 'input_bias' to have shape [" << input_gates.size(1)
+        << "], got " << ToString(input_bias->sizes());
+    TT_RET_CHECK(hidden_bias->sizes() == input_bias->sizes(),
+                 error::kInvalidArgument)
+        << "expected 'hidden_bias' to have shape "
+        << ToString(input_bias->sizes()) << ", got "
+        << ToString(hidden_bias->sizes());
+  }
+  return absl::OkStatus();
+}
+
+// Validates input tensor ranks, shapes, and dtypes for fused LSTM cell
+// backward. Returns OkStatus if both grad_hy and grad_cy are absent.
+absl::Status ValidateThnnFusedLstmCellBackwardInputs(
+    const std::optional<at::Tensor>& grad_hy,
+    const std::optional<at::Tensor>& grad_cy, const at::Tensor& cx,
+    const at::Tensor& cy, const at::Tensor& workspace) {
+  if (!grad_hy.has_value() && !grad_cy.has_value()) {
+    return absl::OkStatus();
+  }
+  const c10::ScalarType dtype = workspace.scalar_type();
+  TT_RET_CHECK(c10::isFloatingType(dtype), error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(dtype);
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(workspace));
+  TT_RET_CHECK((!grad_hy.has_value() || grad_hy->scalar_type() == dtype) &&
+                   (!grad_cy.has_value() || grad_cy->scalar_type() == dtype) &&
+                   cx.scalar_type() == dtype && cy.scalar_type() == dtype,
+               error::kInvalidArgument)
+      << "expected all inputs to have the same dtype as workspace ("
+      << ToString(dtype) << "), got grad_hy: "
+      << (grad_hy.has_value() ? ToString(grad_hy->scalar_type()) : "None")
+      << ", grad_cy: "
+      << (grad_cy.has_value() ? ToString(grad_cy->scalar_type()) : "None")
+      << ", cx: " << ToString(cx.scalar_type())
+      << ", cy: " << ToString(cy.scalar_type());
+  const at::Tensor& defined_grad = grad_hy.has_value() ? *grad_hy : *grad_cy;
+  const char* defined_grad_name =
+      grad_hy.has_value() ? "argument #1 'grad_hy'" : "argument #2 'grad_cy'";
+  TT_RET_CHECK(defined_grad.dim() == 2, error::kInvalidArgument)
+      << "expected " << defined_grad_name << " to be 2D, got "
+      << defined_grad.dim() << "D";
+  const c10::IntArrayRef expected_sizes = defined_grad.sizes();
+  if (grad_hy.has_value() && grad_cy.has_value()) {
+    TT_RET_CHECK(grad_cy->sizes() == expected_sizes, error::kInvalidArgument)
+        << "expected argument #2 'grad_cy' to have shape "
+        << ToString(expected_sizes) << ", got " << ToString(grad_cy->sizes());
+  }
+  TT_RET_CHECK(cx.sizes() == expected_sizes, error::kInvalidArgument)
+      << "expected argument #3 'cx' to have shape " << ToString(expected_sizes)
+      << ", got " << ToString(cx.sizes());
+  TT_RET_CHECK(cy.sizes() == expected_sizes, error::kInvalidArgument)
+      << "expected argument #4 'cy' to have shape " << ToString(expected_sizes)
+      << ", got " << ToString(cy.sizes());
+  TT_RET_CHECK(workspace.dim() == 2 && workspace.size(0) == expected_sizes[0] &&
+                   workspace.size(1) == 4 * expected_sizes[1],
+               error::kInvalidArgument)
+      << "expected argument #5 'workspace' to have shape [" << expected_sizes[0]
+      << ", " << 4 * expected_sizes[1] << "], got "
+      << ToString(workspace.sizes());
   return absl::OkStatus();
 }
 
 template <typename ReturnType, typename Dispatch5, typename Dispatch3>
 ReturnType DispatchThnnFusedLstmCellCommon(
     const at::Tensor& input_gates, const at::Tensor& hidden_gates,
-    const at::Tensor& cx, const std::optional<at::Tensor>& input_bias,
-    const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys,
+    const at::Tensor& cx, const std::optional<at::Tensor>& s_input_bias,
+    const std::optional<at::Tensor>& s_hidden_bias, OpParamCacheKeys param_keys,
     Dispatch5&& dispatch5, Dispatch3&& dispatch3) {
-  TT_RETURN_IF_ERROR(
-      ValidateThnnFusedLstmCellInputs(input_gates, hidden_gates, cx));
-
   const int64_t batch = cx.size(0);
   const int64_t hidden = cx.size(1);
-  auto s_input_bias = SanitizeOptionalTensor(input_bias);
-  auto s_hidden_bias = SanitizeOptionalTensor(hidden_bias);
-  const bool has_bias = s_input_bias.has_value() && s_hidden_bias.has_value();
+  const bool has_bias = s_input_bias.has_value();
 
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=unsupported dtypes caught at
                         // tensor creation
@@ -316,9 +399,15 @@ absl::StatusOr<DeviceBufferRefArray<3>> ThnnFusedLstmCellImpl(
     const at::Tensor& input_gates, const at::Tensor& hidden_gates,
     const at::Tensor& cx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys) {
+  const std::optional<at::Tensor> s_input_bias =
+      SanitizeOptionalTensor(input_bias);
+  const std::optional<at::Tensor> s_hidden_bias =
+      SanitizeOptionalTensor(hidden_bias);
+  TT_RETURN_IF_ERROR(ValidateThnnFusedLstmCellInputs(
+      input_gates, hidden_gates, cx, s_input_bias, s_hidden_bias));
   return DispatchThnnFusedLstmCellCommon<
       absl::StatusOr<DeviceBufferRefArray<3>>>(
-      input_gates, hidden_gates, cx, input_bias, hidden_bias,
+      input_gates, hidden_gates, cx, s_input_bias, s_hidden_bias,
       std::move(param_keys),
       [](auto op_builder, auto inputs, auto options) {
         return DispatchOp<5, 3>(std::move(op_builder), inputs,
@@ -335,8 +424,12 @@ absl::Status ThnnFusedLstmCellOutImpl(
     const at::Tensor& cx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys,
     at::Tensor& out0, at::Tensor& out1, at::Tensor& out2) {
-  TT_RETURN_IF_ERROR(
-      ValidateThnnFusedLstmCellInputs(input_gates, hidden_gates, cx));
+  const std::optional<at::Tensor> s_input_bias =
+      SanitizeOptionalTensor(input_bias);
+  const std::optional<at::Tensor> s_hidden_bias =
+      SanitizeOptionalTensor(hidden_bias);
+  TT_RETURN_IF_ERROR(ValidateThnnFusedLstmCellInputs(
+      input_gates, hidden_gates, cx, s_input_bias, s_hidden_bias));
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out0, cx.scalar_type(), /*allow_out_dtype_cast=*/false));
   TT_RETURN_IF_ERROR(
@@ -344,7 +437,7 @@ absl::Status ThnnFusedLstmCellOutImpl(
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out2, cx.scalar_type(), /*allow_out_dtype_cast=*/false));
   return DispatchThnnFusedLstmCellCommon<absl::Status>(
-      input_gates, hidden_gates, cx, input_bias, hidden_bias,
+      input_gates, hidden_gates, cx, s_input_bias, s_hidden_bias,
       std::move(param_keys),
       [&]  // REF_CAPTURE_OK=called synchronously
       (auto op_builder, auto inputs, auto options) {
@@ -404,6 +497,11 @@ AtenThnnFusedLstmCellBackwardImpl(const std::optional<at::Tensor>& grad_hy,
         const auto sanitized_grad_cy = SanitizeOptionalTensor(grad_cy);
         const bool grad_hy_defined = sanitized_grad_hy.has_value();
         const bool grad_cy_defined = sanitized_grad_cy.has_value();
+        if (!grad_hy_defined && !grad_cy_defined) {
+          return {at::Tensor(), at::Tensor(), at::Tensor()};
+        }
+        TT_THROW_IF_ERROR(ValidateThnnFusedLstmCellBackwardInputs(
+            sanitized_grad_hy, sanitized_grad_cy, cx, cy, workspace));
         const at::Tensor grad_hy_t = grad_hy_defined ? *sanitized_grad_hy : cy;
         const at::Tensor grad_cy_t = grad_cy_defined ? *sanitized_grad_cy : cy;
         const int64_t batch = cy.size(0);

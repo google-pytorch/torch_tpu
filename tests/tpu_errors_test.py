@@ -6689,5 +6689,42 @@ class ProfilerErrorsTest(et.TpuOnlyErrorTestBase):
         sync.synchronize(c)
 
 
+class ThnnFusedRnnCellErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only(
+      "CUDA _thnn_fused_gru_cell only checks `if (input_bias->defined())` and"
+      " silently ignores `hidden_bias` when `input_bias` is None; TPU rejects"
+      " mismatched bias presence instead of silently dropping `hidden_bias`."
+  )
+  def test_thnn_fused_gru_cell_only_hidden_bias(self):
+    device = et.device()
+    ig = torch.randn(2, 12, device=device)
+    hg = torch.randn(2, 12, device=device)
+    hx = torch.randn(2, 4, device=device)
+    hb = torch.randn(12, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected 'input_bias' and 'hidden_bias' to both be provided or both be None, got input_bias: None, hidden_bias: Tensor""",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx, None, hb)
+
+  @et.why_tpu_only(
+      "CUDA _thnn_fused_lstm_cell only checks `if (input_bias->defined())` and"
+      " silently ignores `hidden_bias` when `input_bias` is None; TPU rejects"
+      " mismatched bias presence instead of silently dropping `hidden_bias`."
+  )
+  def test_thnn_fused_lstm_cell_only_hidden_bias(self):
+    device = et.device()
+    ig = torch.randn(2, 16, device=device)
+    hg = torch.randn(2, 16, device=device)
+    cx = torch.randn(2, 4, device=device)
+    hb = torch.randn(16, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected 'input_bias' and 'hidden_bias' to both be provided or both be None, got input_bias: None, hidden_bias: Tensor""",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell(ig, hg, cx, None, hb)
+
+
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)

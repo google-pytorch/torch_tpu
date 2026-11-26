@@ -229,18 +229,32 @@ absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildGruCellBackwardShlo(
 }
 
 // Validates input tensor dimensions and data types for the fused GRU cell.
-absl::Status ValidateThnnFusedGruCellInputs(const at::Tensor& input_gates,
-                                            const at::Tensor& hidden_gates,
-                                            const at::Tensor& hx) {
+absl::Status ValidateThnnFusedGruCellInputs(
+    const at::Tensor& input_gates, const at::Tensor& hidden_gates,
+    const at::Tensor& hx, const std::optional<at::Tensor>& input_bias,
+    const std::optional<at::Tensor>& hidden_bias) {
   TT_RET_CHECK(c10::isFloatingType(input_gates.scalar_type()),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(input_gates.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(input_gates));
+  TT_RET_CHECK(input_gates.scalar_type() == hidden_gates.scalar_type() &&
+                   input_gates.scalar_type() == hx.scalar_type(),
+               error::kInvalidArgument)
+      << "expected all inputs to have the same dtype, got input_gates: "
+      << ToString(input_gates.scalar_type())
+      << ", hidden_gates: " << ToString(hidden_gates.scalar_type())
+      << ", hx: " << ToString(hx.scalar_type());
+  TT_RET_CHECK(input_gates.dim() == 2, error::kInvalidArgument)
+      << "expected argument #1 'input_gates' to be 2D, got "
+      << input_gates.dim() << "D";
   TT_RET_CHECK(input_gates.sizes() == hidden_gates.sizes(),
                error::kInvalidArgument)
       << "expected size of argument #1 'input_gates' to match size of "
          "argument #2 'hidden_gates' ("
       << ToString(hidden_gates.sizes()) << "), got "
       << ToString(input_gates.sizes());
+  TT_RET_CHECK(hx.dim() == 2, error::kInvalidArgument)
+      << "expected argument #3 'hx' to be 2D, got " << hx.dim() << "D";
   TT_RET_CHECK(input_gates.size(0) == hx.size(0), error::kInvalidArgument)
       << "expected batch size of argument #1 'input_gates' to match batch size "
          "of argument #3 'hx' ("
@@ -249,23 +263,69 @@ absl::Status ValidateThnnFusedGruCellInputs(const at::Tensor& input_gates,
       << "expected feature size of argument #1 'input_gates' to match 3 * "
          "feature size of argument #3 'hx' ("
       << 3 * hx.size(1) << "), got " << input_gates.size(1);
+  TT_RET_CHECK(input_bias.has_value() == hidden_bias.has_value(),
+               error::kInvalidArgument)
+      << "expected 'input_bias' and 'hidden_bias' to both be provided or both "
+         "be None, got input_bias: "
+      << (input_bias.has_value() ? "Tensor" : "None")
+      << ", hidden_bias: " << (hidden_bias.has_value() ? "Tensor" : "None");
+  if (input_bias.has_value()) {
+    TT_RET_CHECK(input_bias->scalar_type() == input_gates.scalar_type() &&
+                     hidden_bias->scalar_type() == input_gates.scalar_type(),
+                 error::kInvalidArgument)
+        << "expected 'input_bias' and 'hidden_bias' to have the same dtype as "
+           "'input_gates' ("
+        << ToString(input_gates.scalar_type())
+        << "), got input_bias: " << ToString(input_bias->scalar_type())
+        << ", hidden_bias: " << ToString(hidden_bias->scalar_type());
+    TT_RET_CHECK(
+        input_bias->dim() == 1 && input_bias->size(0) == input_gates.size(1),
+        error::kInvalidArgument)
+        << "expected 'input_bias' to have shape [" << input_gates.size(1)
+        << "], got " << ToString(input_bias->sizes());
+    TT_RET_CHECK(hidden_bias->sizes() == input_bias->sizes(),
+                 error::kInvalidArgument)
+        << "expected 'hidden_bias' to have shape "
+        << ToString(input_bias->sizes()) << ", got "
+        << ToString(hidden_bias->sizes());
+  }
+  return absl::OkStatus();
+}
+
+// Validates input tensor ranks, shapes, and dtypes for fused GRU cell backward.
+absl::Status ValidateThnnFusedGruCellBackwardInputs(
+    const at::Tensor& grad_hy, const at::Tensor& workspace) {
+  TT_RET_CHECK(c10::isFloatingType(grad_hy.scalar_type()),
+               error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(grad_hy.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(grad_hy));
+  TT_RET_CHECK(workspace.scalar_type() == grad_hy.scalar_type(),
+               error::kInvalidArgument)
+      << "expected argument #2 'workspace' to have the same dtype as argument "
+         "#1 'grad_hy' ("
+      << ToString(grad_hy.scalar_type()) << "), got "
+      << ToString(workspace.scalar_type());
+  TT_RET_CHECK(grad_hy.dim() == 2, error::kInvalidArgument)
+      << "expected argument #1 'grad_hy' to be 2D, got " << grad_hy.dim()
+      << "D";
+  TT_RET_CHECK(workspace.dim() == 2 && workspace.size(0) == grad_hy.size(0) &&
+                   workspace.size(1) == 5 * grad_hy.size(1),
+               error::kInvalidArgument)
+      << "expected argument #2 'workspace' to have shape [" << grad_hy.size(0)
+      << ", " << 5 * grad_hy.size(1) << "], got "
+      << ToString(workspace.sizes());
   return absl::OkStatus();
 }
 
 template <typename ReturnType, typename Dispatch5, typename Dispatch3>
 ReturnType DispatchThnnFusedGruCellCommon(
     const at::Tensor& input_gates, const at::Tensor& hidden_gates,
-    const at::Tensor& hx, const std::optional<at::Tensor>& input_bias,
-    const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys,
+    const at::Tensor& hx, const std::optional<at::Tensor>& s_input_bias,
+    const std::optional<at::Tensor>& s_hidden_bias, OpParamCacheKeys param_keys,
     Dispatch5&& dispatch5, Dispatch3&& dispatch3) {
-  TT_RETURN_IF_ERROR(
-      ValidateThnnFusedGruCellInputs(input_gates, hidden_gates, hx));
-
   const int64_t batch = hx.size(0);
   const int64_t hidden = hx.size(1);
-  auto s_input_bias = SanitizeOptionalTensor(input_bias);
-  auto s_hidden_bias = SanitizeOptionalTensor(hidden_bias);
-  const bool has_bias = s_input_bias.has_value() && s_hidden_bias.has_value();
+  const bool has_bias = s_input_bias.has_value();
 
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=unsupported dtypes caught at
                         // tensor creation
@@ -333,9 +393,15 @@ absl::StatusOr<DeviceBufferRefArray<2>> ThnnFusedGruCellImpl(
     const at::Tensor& input_gates, const at::Tensor& hidden_gates,
     const at::Tensor& hx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys) {
+  const std::optional<at::Tensor> s_input_bias =
+      SanitizeOptionalTensor(input_bias);
+  const std::optional<at::Tensor> s_hidden_bias =
+      SanitizeOptionalTensor(hidden_bias);
+  TT_RETURN_IF_ERROR(ValidateThnnFusedGruCellInputs(
+      input_gates, hidden_gates, hx, s_input_bias, s_hidden_bias));
   return DispatchThnnFusedGruCellCommon<
       absl::StatusOr<DeviceBufferRefArray<2>>>(
-      input_gates, hidden_gates, hx, input_bias, hidden_bias,
+      input_gates, hidden_gates, hx, s_input_bias, s_hidden_bias,
       std::move(param_keys),
       [](auto op_builder, auto inputs, auto options) {
         return DispatchOp<5, 2>(std::move(op_builder), inputs,
@@ -352,14 +418,18 @@ absl::Status ThnnFusedGruCellOutImpl(
     const at::Tensor& hx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys,
     at::Tensor& out0, at::Tensor& out1) {
-  TT_RETURN_IF_ERROR(
-      ValidateThnnFusedGruCellInputs(input_gates, hidden_gates, hx));
+  const std::optional<at::Tensor> s_input_bias =
+      SanitizeOptionalTensor(input_bias);
+  const std::optional<at::Tensor> s_hidden_bias =
+      SanitizeOptionalTensor(hidden_bias);
+  TT_RETURN_IF_ERROR(ValidateThnnFusedGruCellInputs(
+      input_gates, hidden_gates, hx, s_input_bias, s_hidden_bias));
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out0, hx.scalar_type(), /*allow_out_dtype_cast=*/false));
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out1, hx.scalar_type(), /*allow_out_dtype_cast=*/false));
   return DispatchThnnFusedGruCellCommon<absl::Status>(
-      input_gates, hidden_gates, hx, input_bias, hidden_bias,
+      input_gates, hidden_gates, hx, s_input_bias, s_hidden_bias,
       std::move(param_keys),
       [&]  // REF_CAPTURE_OK=called synchronously
       (auto op_builder, auto inputs, auto options) {
@@ -411,6 +481,8 @@ AtenThnnFusedGruCellBackward(const at::Tensor& grad_hy,
   TT_KERNEL(
       OpName::kThnnFusedGruCellBackward, param_keys,
       (grad_hy, workspace, has_bias), {
+        TT_THROW_IF_ERROR(
+            ValidateThnnFusedGruCellBackwardInputs(grad_hy, workspace));
         const int64_t batch = grad_hy.size(0);
         const int64_t hidden = grad_hy.size(1);
         TT_ASSIGN_OR_THROW(const auto out_dtype,
