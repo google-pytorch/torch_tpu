@@ -3665,16 +3665,15 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
       return per_step_copy
 
     x_spec = jax.ShapeDtypeStruct((grid * 8, 128), jnp.float32)
-    options = verifier.VerificationOptions(solver_timeout_seconds=float("inf"))
     leak_rep = verifier.verify(
-        make_per_step_copy(leak=True), (x_spec,), mode=STATIC, options=options
+        make_per_step_copy(leak=True), (x_spec,), mode=STATIC
     )
     self.assertNotEmpty(
         leak_rep.findings_by_category(Category.SEMAPHORE_NONZERO_EXIT),
         msg=leak_rep.summary(),
     )
     race_rep = verifier.verify(
-        make_per_step_copy(leak=False), (x_spec,), mode=STATIC, options=options
+        make_per_step_copy(leak=False), (x_spec,), mode=STATIC
     )
     self.assertNotEmpty(
         race_rep.findings_by_category(Category.DATA_RACE),
@@ -4423,12 +4422,8 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
           ),
       )(x)
 
-    options = verifier.VerificationOptions(solver_timeout_seconds=float("inf"))
     dl_rep = verifier.verify(
-        step0_wait_before_signal_deadlock,
-        (x_spec,),
-        mode=STATIC,
-        options=options,
+        step0_wait_before_signal_deadlock, (x_spec,), mode=STATIC
     )
     self.assertFalse(dl_rep.passed, msg=dl_rep.summary())
     self.assertNotEmpty(
@@ -4437,10 +4432,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     )
 
     zs_rep = verifier.verify(
-        zero_signal_wait_on_truncated_grid,
-        (x_spec,),
-        mode=STATIC,
-        options=options,
+        zero_signal_wait_on_truncated_grid, (x_spec,), mode=STATIC
     )
     self.assertFalse(zs_rep.passed, msg=zs_rep.summary())
     self.assertNotEmpty(
@@ -4449,10 +4441,7 @@ class KernelVerifierTest(seed_test_utils.RepeatableTest):
     )
 
     pr_rep = verifier.verify(
-        prefix_race_with_tail_wait_on_truncated_grid,
-        (x_spec,),
-        mode=STATIC,
-        options=options,
+        prefix_race_with_tail_wait_on_truncated_grid, (x_spec,), mode=STATIC
     )
     self.assertFalse(pr_rep.passed, msg=pr_rep.summary())
     self.assertNotEmpty(

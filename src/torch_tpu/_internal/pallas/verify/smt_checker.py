@@ -1091,7 +1091,7 @@ def _check_races(
     all_candidates: Sequence[tuple[_Access, _Access]] | None = None,
     skip_parallel_buckets: AbstractSet[tuple[str, str]] = frozenset(),
 ) -> tuple[list[findings.VerificationFinding], bool]:
-  """Checks feasibility, then every race candidate under an assumption.
+  """Checks feasibility, then checks race candidates across unresolved buckets.
 
   Returns:
     The findings, and whether CP-SAT found a schedule of the unrelaxed model in
@@ -1189,8 +1189,10 @@ def _check_races(
   )
   total_candidates = len(candidate_list)
   candidates = candidate_list[:_MAX_RACE_CANDIDATES]
-  cand_entries: list[_RaceCandidate] = []
-  bucket_lits: dict[tuple[Any, ...], list[cp_model.IntVar]] = {}
+  buckets: dict[
+      tuple[Any, ...],
+      list[tuple[_Access, _Access, bool, str, findings.FindingCategory]],
+  ] = {}
   for a, b in candidates:
     exact_overlap = a.region.definitely_intersects(b.region)
     buf_name = _buffer_str(a.buffer)
@@ -1220,89 +1222,146 @@ def _check_races(
         if exact_overlap
         else ("approx", buf_name)
     )
-    lit = enc.new_bool_var()
-    enc.not_after(a.start, b.end, lit)
-    enc.not_after(b.start, a.end, lit)
-    cand_entries.append(
-        _RaceCandidate(
-            first=a,
-            second=b,
-            exact_overlap=exact_overlap,
-            buf_name=buf_name,
-            category=category,
-            bucket_key=bucket_key,
-            lit=lit,
-        )
+    buckets.setdefault(bucket_key, []).append(
+        (a, b, exact_overlap, buf_name, category)
     )
-    bucket_lits.setdefault(bucket_key, []).append(lit)
 
-  while True:
-    active = [
-        entry
-        for entry in cand_entries
-        if entry.bucket_key not in resolved_buckets
-    ]
-    if not active:
-      break
-    any_race = enc.new_bool_var()
-    enc.model.add_bool_or(
-        [entry.lit for entry in active] + [any_race.negated()]
+  def _record_bucket_hit(
+      a: _Access,
+      b: _Access,
+      exact_overlap: bool,
+      buf_name: str,
+      initial_category: findings.FindingCategory,
+      times: Mapping[str, int],
+  ) -> None:
+    if not exact_overlap:
+      approx_buffers.append(buf_name)
+      return
+    final_category = _refine_race_category(
+        a, b, initial_category, model, sched, times
     )
-    enc.model.clear_assumptions()
-    enc.model.add_assumption(any_race)
-    status = _solve(solver, enc.model, timeout)
-    if status == cp_model.INFEASIBLE:
-      break
-    if status == cp_model.MODEL_INVALID:
-      model_invalid = True
-      unchecked_candidates = len(active)
-      unchecked_buffers = len({entry.bucket_key for entry in active})
-      break
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-      timeouts += 1
-      unchecked_candidates = len(active)
-      unchecked_buffers = len({entry.bucket_key for entry in active})
-      break
-    times = {k: solver.value(v) for k, v in enc.vars.items()}
-    for entry in active:
-      if entry.bucket_key in resolved_buckets or not solver.value(entry.lit):
-        continue
-      resolved_buckets.add(entry.bucket_key)
-      for other_lit in bucket_lits[entry.bucket_key]:
-        enc.model.add(other_lit == 0)
-      if not entry.exact_overlap:
-        approx_buffers.append(entry.buf_name)
-        continue
-      a, b = entry.first, entry.second
-      final_category = _refine_race_category(
-          a, b, entry.category, model, sched, times
+    horizon = max(times[a.end.key], times[b.end.key])
+    hazard = "WAW" if a.is_write and b.is_write else "RAW/WAR"
+    severity = (
+        findings.Severity.WARNING
+        if (relaxed_schedule or a.speculative or b.speculative)
+        else findings.Severity.ERROR
+    )
+    msg = (
+        f"{hazard} race on {buf_name} (dev"
+        f" {a.buffer.device_id}) between `{a.detail}` and `{b.detail}`"
+    )
+    if relaxed_schedule:
+      msg += (
+          " (truncated synchronization waits were relaxed, so schedule"
+          " ordering is an over-approximation)"
       )
-      horizon = max(times[a.end.key], times[b.end.key])
-      hazard = "WAW" if a.is_write and b.is_write else "RAW/WAR"
-      severity = (
-          findings.Severity.WARNING
-          if (relaxed_schedule or a.speculative or b.speculative)
-          else findings.Severity.ERROR
-      )
-      msg = (
-          f"{hazard} race on {entry.buf_name} (dev"
-          f" {a.buffer.device_id}) between `{a.detail}` and `{b.detail}`"
-      )
-      if relaxed_schedule:
-        msg += (
-            " (truncated synchronization waits were relaxed, so schedule"
-            " ordering is an over-approximation)"
+    detected.append(
+        _finding(
+            final_category,
+            msg,
+            op_name,
+            severity=severity,
+            source_location=a.source_location or b.source_location,
+            counterexample=_counterexample(sched, times, horizon),
         )
-      detected.append(
-          _finding(
-              final_category,
-              msg,
-              op_name,
-              severity=severity,
-              source_location=a.source_location or b.source_location,
-              counterexample=_counterexample(sched, times, horizon),
-          )
-      )
+    )
+
+  # First probe the earliest candidate of each bucket with unconditional
+  # inequalities on a cloned model: without half-reified literals, CP-SAT
+  # presolve decides difference-logic feasibility directly and avoids encoding
+  # hundreds of candidate pairs when the earliest pair already races.
+  remaining_by_bucket: dict[
+      tuple[Any, ...],
+      list[tuple[_Access, _Access, bool, str, findings.FindingCategory]],
+  ] = {}
+  bucket_items = list(buckets.items())
+  for idx, (bucket_key, group) in enumerate(bucket_items):
+    a0, b0, exact0, buf0, cat0 = group[0]
+    a0_start = enc.var(a0.start)
+    a0_end = enc.var(a0.end)
+    b0_start = enc.var(b0.start)
+    b0_end = enc.var(b0.end)
+    probe = enc.model.clone()
+    probe.add(a0_start <= b0_end)
+    probe.add(b0_start <= a0_end)
+    probe_status = _solve(solver, probe, timeout)
+    if probe_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+      resolved_buckets.add(bucket_key)
+      times = {k: solver.value(v) for k, v in enc.vars.items()}
+      _record_bucket_hit(a0, b0, exact0, buf0, cat0, times)
+      continue
+    if probe_status == cp_model.INFEASIBLE:
+      if len(group) > 1:
+        remaining_by_bucket[bucket_key] = group[1:]
+      continue
+    tail_count = sum(len(g) for _, g in bucket_items[idx:])
+    prev_count = sum(len(g) for g in remaining_by_bucket.values())
+    unchecked_candidates = prev_count + tail_count
+    unchecked_buffers = len(remaining_by_bucket) + (len(bucket_items) - idx)
+    if probe_status == cp_model.MODEL_INVALID:
+      model_invalid = True
+    else:
+      timeouts += 1
+    break
+
+  if not model_invalid and not timeouts and remaining_by_bucket:
+    cand_entries: list[_RaceCandidate] = []
+    bucket_lits: dict[tuple[Any, ...], list[cp_model.IntVar]] = {}
+    for bucket_key, group in remaining_by_bucket.items():
+      for a, b, exact_overlap, buf_name, category in group:
+        lit = enc.new_bool_var()
+        enc.not_after(a.start, b.end, lit)
+        enc.not_after(b.start, a.end, lit)
+        cand_entries.append(
+            _RaceCandidate(
+                first=a,
+                second=b,
+                exact_overlap=exact_overlap,
+                buf_name=buf_name,
+                category=category,
+                bucket_key=bucket_key,
+                lit=lit,
+            )
+        )
+        bucket_lits.setdefault(bucket_key, []).append(lit)
+    enc.model.add_bool_or([entry.lit for entry in cand_entries])
+    while True:
+      active = [
+          entry
+          for entry in cand_entries
+          if entry.bucket_key not in resolved_buckets
+      ]
+      if not active:
+        break
+      status = _solve(solver, enc.model, timeout)
+      if status == cp_model.INFEASIBLE:
+        break
+      if status == cp_model.MODEL_INVALID:
+        model_invalid = True
+        unchecked_candidates = len(active)
+        unchecked_buffers = len({entry.bucket_key for entry in active})
+        break
+      if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        timeouts += 1
+        unchecked_candidates = len(active)
+        unchecked_buffers = len({entry.bucket_key for entry in active})
+        break
+      times = {k: solver.value(v) for k, v in enc.vars.items()}
+      for entry in active:
+        if entry.bucket_key in resolved_buckets or not solver.value(entry.lit):
+          continue
+        resolved_buckets.add(entry.bucket_key)
+        for other_lit in bucket_lits[entry.bucket_key]:
+          enc.model.add(other_lit == 0)
+        _record_bucket_hit(
+            entry.first,
+            entry.second,
+            entry.exact_overlap,
+            entry.buf_name,
+            entry.category,
+            times,
+        )
   if total_candidates > _MAX_RACE_CANDIDATES:
     detected.append(
         _finding(
