@@ -48,8 +48,20 @@
 
 namespace torch_tpu {
 
+namespace {
+
+absl::Status ValidateNotComplex(const at::Tensor& self) {
+  TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
+      << "expected the input dtype not to be complex, got "
+      << ToString(self.scalar_type());
+  return absl::OkStatus();
+}
+
+}  // namespace
+
 absl::StatusOr<DeviceBufferRef> DispatchUnaryMinMax(
     const at::Tensor& self, MinMaxOp op, std::optional<OpName> op_name) {
+  TT_RETURN_IF_ERROR(ValidateNotComplex(self));
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(self));
   Dimensions out_dims = {};  // Scalar out shape.
 
@@ -99,6 +111,17 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
     at::Tensor& indices) {
   ABSL_VLOG(3) << "[AtenMinMaxDim] start";
 
+  TT_RET_CHECK(IsPrivateUse1Device(self), error::kInvalidArgument)
+      << "expected input tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << self.device();
+  TT_RET_CHECK(IsPrivateUse1Device(value), error::kInvalidArgument)
+      << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << value.device();
+  TT_RET_CHECK(IsPrivateUse1Device(indices), error::kInvalidArgument)
+      << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << indices.device();
+  TT_RETURN_IF_ERROR(ValidateNotComplex(self));
+
   TT_RETURN_IF_ERROR(ValidateOutDtype(value, self.scalar_type(),
                                       /*allow_out_dtype_cast=*/false));
   TT_RETURN_IF_ERROR(ValidateOutDtype(indices, at::kLong,
@@ -141,6 +164,7 @@ absl::Status UnaryMinMax(const at::Tensor& self, MinMaxOp op, at::Tensor& out) {
   TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
       << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << out.device();
+  TT_RETURN_IF_ERROR(ValidateNotComplex(self));
 
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, self.scalar_type(), /*allow_out_dtype_cast=*/true));
