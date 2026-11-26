@@ -28,7 +28,7 @@ torch_tpu_cc_library(
     srcs = ["col2im_aten_kernels.cc"],
     hdrs = ["col2im_aten_kernels.h"],
     deps = [
-        "//csrc/common:cache_key",
+        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -42,6 +42,7 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",

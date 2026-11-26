@@ -2082,8 +2082,6 @@ class TestOps(op_testing.OpInfoTestBase):
         # CUDA does not support integral or boolean dtypes for col2im, and
         # TorchTPU does not yet support complex128.
         exclude_dtypes=(torch.complex128, torch.bool) + INTEGRAL_DTYPES,
-        # col2im.out is not registered on the TorchTPU backend.
-        check_out_variant=False,
     )
 
   def test_complex(self):

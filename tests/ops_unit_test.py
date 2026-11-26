@@ -4977,37 +4977,196 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
-  def test_im2col_errors(self):
-    """Tests im2col with invalid inputs that trigger error messages."""
-    tpu_device = torch.device("tpu")
-
-    # Test invalid input dimensions (e.g. 2D tensor)
-    # C++ check: input.dim() == 4 (after unsqueeze if 3D)
-    x_2d = torch.randn(2, 2).to(tpu_device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expected input to have 3 or 4 dimensions"
-    ):
-      torch.ops.aten.im2col(
-          x_2d,
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="basic_2x2",
+          shape=(3, 4, 4),
           kernel_size=(2, 2),
           dilation=(1, 1),
           padding=(0, 0),
           stride=(1, 1),
+      ),
+      dict(
+          testcase_name="dilated_padded_strided",
+          shape=(2, 7, 6),
+          kernel_size=(2, 3),
+          dilation=(2, 1),
+          padding=(1, 2),
+          stride=(2, 1),
+      ),
+  )
+  def test_im2col_unbatched_3d(
+      self, shape, kernel_size, dilation, padding, stride
+  ):
+    input_val = torch.randn(shape, dtype=torch.float32)
+
+    def test_fn(device):
+      return torch.nn.functional.unfold(
+          input_val.to(device),
+          kernel_size=kernel_size,
+          dilation=dilation,
+          padding=padding,
+          stride=stride,
       )
 
-    # Test non-positive output shape
-    # kernel_size > input_size without padding
-    x_small = torch.randn(1, 1, 2, 2).to(tpu_device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expected output shape to be positive"
-    ):
-      torch.ops.aten.im2col(
-          x_small,
-          kernel_size=(3, 3),
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="basic_2x2",
+          input_shape=(12, 9),
+          output_size=(4, 4),
+          kernel_size=(2, 2),
           dilation=(1, 1),
           padding=(0, 0),
           stride=(1, 1),
+      ),
+      dict(
+          testcase_name="dilated_padded_strided",
+          input_shape=(12, 32),
+          output_size=(7, 6),
+          kernel_size=(2, 3),
+          dilation=(2, 1),
+          padding=(1, 2),
+          stride=(2, 1),
+      ),
+      dict(
+          testcase_name="non_divisible_output_size",
+          input_shape=(8, 4),
+          output_size=(5, 5),
+          kernel_size=(2, 2),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(2, 2),
+      ),
+  )
+  def test_col2im_unbatched_2d(
+      self, input_shape, output_size, kernel_size, dilation, padding, stride
+  ):
+    input_val = torch.randn(input_shape, dtype=torch.float32)
+
+    def test_fn(device):
+      return torch.nn.functional.fold(
+          input_val.to(device),
+          output_size=output_size,
+          kernel_size=kernel_size,
+          dilation=dilation,
+          padding=padding,
+          stride=stride,
       )
+
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=1.8e-2, atol=3.4e-2)
+
+  def test_im2col_zero_batch(self):
+    input_val = torch.empty((0, 2, 4, 4), dtype=torch.float32)
+
+    def test_fn(device):
+      return torch.ops.aten.im2col(
+          input_val.to(device), (2, 2), (1, 1), (0, 0), (1, 1)
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_col2im_zero_batch(self):
+    input_val = torch.empty((0, 8, 9), dtype=torch.float32)
+
+    def test_fn(device):
+      return torch.ops.aten.col2im(
+          input_val.to(device), (4, 4), (2, 2), (1, 1), (0, 0), (1, 1)
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="batched_empty_out",
+          input_shape=(2, 2, 4, 4),
+          out_shape=(0,),
+      ),
+      dict(
+          testcase_name="batched_wrong_shape_out",
+          input_shape=(2, 2, 4, 4),
+          out_shape=(3, 5),
+      ),
+      dict(
+          testcase_name="batched_matching_shape_out",
+          input_shape=(2, 2, 4, 4),
+          out_shape=(2, 8, 9),
+      ),
+      dict(
+          testcase_name="unbatched_empty_out",
+          input_shape=(2, 4, 4),
+          out_shape=(0,),
+      ),
+      dict(
+          testcase_name="zero_batch_out",
+          input_shape=(0, 2, 4, 4),
+          out_shape=(0,),
+      ),
+  )
+  def test_im2col_out(self, input_shape, out_shape):
+    input_cpu = torch.randn(input_shape, dtype=torch.float32)
+    out_cpu = torch.empty(out_shape, dtype=torch.float32)
+    expected = torch.ops.aten.im2col.out(
+        input_cpu, (2, 2), (1, 1), (0, 0), (1, 1), out=out_cpu
+    )
+
+    input_tpu = input_cpu.to("tpu")
+    out_tpu = torch.empty(out_shape, dtype=torch.float32, device="tpu")
+    result = torch.ops.aten.im2col.out(
+        input_tpu, (2, 2), (1, 1), (0, 0), (1, 1), out=out_tpu
+    )
+    self.assertIs(result, out_tpu)
+    self.assertEqual(out_tpu.shape, expected.shape)
+    self.assert_close(golden_result=expected, torch_tpu_result=out_tpu.cpu())
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="batched_empty_out",
+          input_shape=(2, 8, 9),
+          out_shape=(0,),
+      ),
+      dict(
+          testcase_name="batched_wrong_shape_out",
+          input_shape=(2, 8, 9),
+          out_shape=(3, 5),
+      ),
+      dict(
+          testcase_name="batched_matching_shape_out",
+          input_shape=(2, 8, 9),
+          out_shape=(2, 2, 4, 4),
+      ),
+      dict(
+          testcase_name="unbatched_empty_out",
+          input_shape=(8, 9),
+          out_shape=(0,),
+      ),
+      dict(
+          testcase_name="zero_batch_out",
+          input_shape=(0, 8, 9),
+          out_shape=(0,),
+      ),
+  )
+  def test_col2im_out(self, input_shape, out_shape):
+    input_cpu = torch.randn(input_shape, dtype=torch.float32)
+    out_cpu = torch.empty(out_shape, dtype=torch.float32)
+    expected = torch.ops.aten.col2im.out(
+        input_cpu, (4, 4), (2, 2), (1, 1), (0, 0), (1, 1), out=out_cpu
+    )
+
+    input_tpu = input_cpu.to("tpu")
+    out_tpu = torch.empty(out_shape, dtype=torch.float32, device="tpu")
+    result = torch.ops.aten.col2im.out(
+        input_tpu, (4, 4), (2, 2), (1, 1), (0, 0), (1, 1), out=out_tpu
+    )
+    self.assertIs(result, out_tpu)
+    self.assertEqual(out_tpu.shape, expected.shape)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=1.8e-2,
+        atol=3.4e-2,
+    )
 
   def test_conj_view_inplace(self):
     def test(device):

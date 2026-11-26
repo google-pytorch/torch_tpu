@@ -6315,23 +6315,46 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten.col2im(img, (5, 5), (2, 2), (1, 1), (0, 0), (1, 1, 1))
 
-  def test_col2im_input_must_be_3d(self):
-    img = torch.randn(1, 4, 16, 1, device=et.device())
+  @parameterized.named_parameters(
+      dict(testcase_name="1d", shape=(4,)),
+      dict(testcase_name="4d", shape=(1, 4, 16, 1)),
+  )
+  def test_col2im_input_invalid_rank(self, shape):
+    img = torch.randn(shape, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""col2im(): expected input to have 3 dimensions (batch, channels, length), got 4""",
-        gpu="""Expected 2D or 3D (batch mode) tensor for input with possibly 0 batch size and non-zero dimensions for input, but got: [1, 4, 16, 1]""",
+        tpu=f"""col2im(): expected input to have 2 or 3 dimensions, got {len(shape)}""",
+        gpu=f"""Expected 2D or 3D (batch mode) tensor for input with possibly 0 batch size and non-zero dimensions for input, but got: {list(shape)}""",
     ):
       torch.ops.aten.col2im(img, (5, 5), (2, 2), (1, 1), (0, 0), (1, 1))
 
-  def test_col2im_kernel_size_must_be_positive(self):
+  @parameterized.named_parameters(
+      dict(testcase_name="2d_zero_channels", shape=(0, 16)),
+      dict(testcase_name="2d_zero_length", shape=(4, 0)),
+      dict(testcase_name="3d_zero_channels", shape=(1, 0, 16)),
+      dict(testcase_name="3d_zero_length", shape=(1, 4, 0)),
+  )
+  def test_col2im_zero_non_batch_dim(self, shape):
+    img = torch.empty(shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""col2im(): expected non-batch input dimensions to be > 0, got shape {list(shape)}""",
+        gpu=f"""Expected 2D or 3D (batch mode) tensor for input with possibly 0 batch size and non-zero dimensions for input, but got: {list(shape)}""",
+    ):
+      torch.ops.aten.col2im(img, (5, 5), (2, 2), (1, 1), (0, 0), (1, 1))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="zero", kernel_size=(0, 2)),
+      dict(testcase_name="both_negative", kernel_size=(-2, -2)),
+  )
+  def test_col2im_kernel_size_must_be_positive(self, kernel_size):
     img = torch.randn(1, 4, 16, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""col2im(): expected kernel size to be positive, got 0""",
-        gpu="""kernel size should be greater than zero, but got kernel_height: 0 kernel_width: 2""",
+        tpu=f"""col2im(): expected all kernel_size elements to be positive, got {list(kernel_size)}""",
+        gpu=f"""kernel size should be greater than zero, but got kernel_height: {kernel_size[0]} kernel_width: {kernel_size[1]}""",
     ):
-      torch.ops.aten.col2im(img, (5, 5), (0, 2), (1, 1), (0, 0), (1, 1))
+      torch.ops.aten.col2im(img, (5, 5), kernel_size, (1, 1), (0, 0), (1, 1))
 
   def test_col2im_channels_divisibility(self):
     img = torch.randn(1, 5, 15, device=et.device())
@@ -6342,34 +6365,91 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten.col2im(img, (5, 5), (2, 2), (1, 1), (0, 0), (1, 1))
 
-  def test_col2im_invalid_stride(self):
+  @parameterized.named_parameters(
+      dict(testcase_name="zero", stride=(0, 1)),
+      dict(testcase_name="negative", stride=(1, -1)),
+  )
+  def test_col2im_invalid_stride(self, stride):
     img = torch.randn(1, 4, 16, device=et.device())
-
-    output_size = (5, 5)
-    kernel_size = (2, 2)
-    dilation = (1, 1)
-    padding = (0, 0)
-
-    # Check 0 stride.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""col2im(): expected all stride elements to be positive, got [0, 1]""",
-        gpu="""stride should be greater than zero, but got stride_height: 0 stride_width: 1""",
+        tpu=f"""col2im(): expected all stride elements to be positive, got {list(stride)}""",
+        gpu=f"""stride should be greater than zero, but got stride_height: {stride[0]} stride_width: {stride[1]}""",
     ):
-      stride = (0, 1)
-      torch.ops.aten.col2im(
-          img, output_size, kernel_size, dilation, padding, stride
-      )
+      torch.ops.aten.col2im(img, (5, 5), (2, 2), (1, 1), (0, 0), stride)
 
-    # Check negative stride.
+  @parameterized.named_parameters(
+      dict(testcase_name="zero", dilation=(0, 1)),
+      dict(testcase_name="negative", dilation=(1, -1)),
+  )
+  def test_col2im_invalid_dilation(self, dilation):
+    img = torch.randn(1, 4, 16, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""col2im(): expected all stride elements to be positive, got [1, -1]""",
-        gpu="""stride should be greater than zero, but got stride_height: 1 stride_width: -1""",
+        tpu=f"""col2im(): expected all dilation elements to be positive, got {list(dilation)}""",
+        gpu=f"""dilation should be greater than zero, but got dilation_height: {dilation[0]} dilation_width: {dilation[1]}""",
     ):
-      stride = (1, -1)
+      torch.ops.aten.col2im(img, (5, 5), (2, 2), dilation, (0, 0), (1, 1))
+
+  def test_col2im_invalid_padding(self):
+    img = torch.randn(1, 4, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""col2im(): expected all padding elements to be >= 0, got [-1, 0]""",
+        gpu="""padding should be non-negative, but got pad_height: -1 pad_width: 0""",
+    ):
+      torch.ops.aten.col2im(img, (5, 5), (2, 2), (1, 1), (-1, 0), (1, 1))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="zero",
+          output_size=(0, 4),
+          padding=(1, 1),
+          input_shape=(1, 4, 5),
+      ),
+      dict(
+          testcase_name="negative",
+          output_size=(-1, 4),
+          padding=(2, 1),
+          input_shape=(1, 4, 10),
+      ),
+  )
+  def test_col2im_invalid_output_size(self, output_size, padding, input_shape):
+    img = torch.randn(input_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""col2im(): expected all output_size elements to be positive, got {list(output_size)}""",
+        gpu=f"""Expected output spatial size to be positive, but got: output_size=({output_size[0]}, {output_size[1]}).""",
+    ):
+      torch.ops.aten.col2im(img, output_size, (2, 2), (1, 1), padding, (1, 1))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="negative_numerator_stride2",
+          input_shape=(1, 9, 1),
+          output_size=(2, 2),
+          kernel_size=(3, 3),
+          stride=(2, 2),
+          tpu_msg="""col2im(): expected calculated col size to be positive, got [0, 0]""",
+          gpu_msg="""Given output_size=(2, 2), kernel_size=(3, 3), dilation=(1, 1), padding=(0, 0), stride=(2, 2), expected size of input's dimension 2 to match the calculated number of sliding blocks 0 * 0 = 0, but got input.size(2)=1.""",
+      ),
+      dict(
+          testcase_name="both_negative_col_dims",
+          input_shape=(1, 25, 4),
+          output_size=(2, 2),
+          kernel_size=(5, 5),
+          stride=(1, 1),
+          tpu_msg="""col2im(): expected calculated col size to be positive, got [-2, -2]""",
+          gpu_msg="""Given output_size=(2, 2), kernel_size=(5, 5), dilation=(1, 1), padding=(0, 0), stride=(1, 1), calculated shape of the array of sliding blocks as (-2, -2), which is too small (non-positive)""",
+      ),
+  )
+  def test_col2im_non_positive_col_size(
+      self, input_shape, output_size, kernel_size, stride, tpu_msg, gpu_msg
+  ):
+    img = torch.randn(input_shape, device=et.device())
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
       torch.ops.aten.col2im(
-          img, output_size, kernel_size, dilation, padding, stride
+          img, output_size, kernel_size, (1, 1), (0, 0), stride
       )
 
   def test_col2im_length_mismatch(self):
@@ -6378,10 +6458,216 @@ Supported combinations for non-constant padding:
     img = torch.randn(1, 4, 15, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""col2im(): expected input length to be divisible by col size (4 * 4 = 16), got 15""",
+        tpu="""col2im(): expected input length to match col size (4 * 4 = 16), got 15""",
         gpu="""Given output_size=(5, 5), kernel_size=(2, 2), dilation=(1, 1), padding=(0, 0), stride=(1, 1), expected size of input's dimension 2 to match the calculated number of sliding blocks 4 * 4 = 16, but got input.size(2)=15.""",
     ):
       torch.ops.aten.col2im(img, (5, 5), (2, 2), (1, 1), (0, 0), (1, 1))
+
+  def test_col2im_out_dtype_mismatch(self):
+    img = torch.randn(1, 4, 9, device=et.device(), dtype=torch.float32)
+    out = torch.empty(0, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""col2im(): expected the output dtype to be float32, got float64""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.ops.aten.col2im.out(
+          img, (4, 4), (2, 2), (1, 1), (0, 0), (1, 1), out=out
+      )
+
+  def test_col2im_out_device_mismatch(self):
+    img_dev = torch.randn(1, 4, 9, device=et.device(), dtype=torch.float32)
+    out_cpu = torch.empty(0, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""col2im(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out_col2im_out)""",
+    ):
+      torch.ops.aten.col2im.out(
+          img_dev, (4, 4), (2, 2), (1, 1), (0, 0), (1, 1), out=out_cpu
+      )
+
+    img_cpu = torch.randn(1, 4, 9, device="cpu", dtype=torch.float32)
+    out_dev = torch.empty(0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""col2im(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_out_col2im_out)""",
+    ):
+      torch.ops.aten.col2im.out(
+          img_cpu, (4, 4), (2, 2), (1, 1), (0, 0), (1, 1), out=out_dev
+      )
+
+  def test_im2col_kernel_size_must_be_2d(self):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected kernel_size to have 2 dimensions, got 3""",
+        gpu="""It is expected kernel_size equals to 2, but got size 3""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2, 2), (1, 1), (0, 0), (1, 1))
+
+  def test_im2col_dilation_must_be_2d(self):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected dilation to have 2 dimensions, got 3""",
+        gpu="""It is expected dilation equals to 2, but got size 3""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1, 1), (0, 0), (1, 1))
+
+  def test_im2col_padding_must_be_2d(self):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected padding to have 2 dimensions, got 3""",
+        gpu="""It is expected padding equals to 2, but got size 3""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1), (0, 0, 0), (1, 1))
+
+  def test_im2col_stride_must_be_2d(self):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected stride to have 2 dimensions, got 3""",
+        gpu="""It is expected stride equals to 2, but got size 3""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1), (0, 0), (1, 1, 1))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="zero", kernel_size=(0, 2)),
+      dict(testcase_name="both_negative", kernel_size=(-2, -2)),
+  )
+  def test_im2col_invalid_kernel_size(self, kernel_size):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""im2col(): expected all kernel_size elements to be positive, got {list(kernel_size)}""",
+        gpu=f"""kernel size should be greater than zero, but got kernel_height: {kernel_size[0]} kernel_width: {kernel_size[1]}""",
+    ):
+      torch.ops.aten.im2col(img, kernel_size, (1, 1), (0, 0), (1, 1))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="zero", dilation=(0, 1)),
+      dict(testcase_name="negative", dilation=(1, -1)),
+  )
+  def test_im2col_invalid_dilation(self, dilation):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""im2col(): expected all dilation elements to be positive, got {list(dilation)}""",
+        gpu=f"""dilation should be greater than zero, but got dilation_height: {dilation[0]} dilation_width: {dilation[1]}""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), dilation, (0, 0), (1, 1))
+
+  def test_im2col_invalid_padding(self):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected all padding elements to be >= 0, got [-1, 0]""",
+        gpu="""padding should be non-negative, but got pad_height: -1 pad_width: 0""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1), (-1, 0), (1, 1))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="zero", stride=(0, 1)),
+      dict(testcase_name="negative", stride=(1, -1)),
+  )
+  def test_im2col_invalid_stride(self, stride):
+    img = torch.randn(1, 1, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""im2col(): expected all stride elements to be positive, got {list(stride)}""",
+        gpu=f"""stride should be greater than zero, but got stride_height: {stride[0]} stride_width: {stride[1]}""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1), (0, 0), stride)
+
+  def test_im2col_input_invalid_rank(self):
+    img = torch.randn(1, 1, 4, 4, 1, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected input to have 3 or 4 dimensions, got 5""",
+        gpu="""Expected 3D or 4D (batch mode) tensor with possibly 0 batch size and other non-zero dimensions for input, but got: [1, 1, 4, 4, 1]""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1), (0, 0), (1, 1))
+
+  def test_im2col_input_2d_rejected(self):
+    img = torch.randn(4, 4, device=et.device())
+    with et.assert_raises_message(
+        IndexError if et.is_on_gpu() else RuntimeError,
+        tpu="""im2col(): expected input to have 3 or 4 dimensions, got 2""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1), (0, 0), (1, 1))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="3d_zero_channels", shape=(0, 4, 4)),
+      dict(testcase_name="3d_zero_height", shape=(1, 0, 4)),
+      dict(testcase_name="3d_zero_width", shape=(1, 4, 0)),
+      dict(testcase_name="4d_zero_channels", shape=(1, 0, 4, 4)),
+      dict(testcase_name="4d_zero_height", shape=(1, 1, 0, 4)),
+      dict(testcase_name="4d_zero_width", shape=(1, 1, 4, 0)),
+  )
+  def test_im2col_zero_non_batch_dim(self, shape):
+    img = torch.empty(shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""im2col(): expected non-batch input dimensions to be > 0, got shape {list(shape)}""",
+        gpu=f"""Expected 3D or 4D (batch mode) tensor with possibly 0 batch size and other non-zero dimensions for input, but got: {list(shape)}""",
+    ):
+      torch.ops.aten.im2col(img, (2, 2), (1, 1), (0, 0), (1, 1))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="kernel_larger_than_input_stride1",
+          stride=(1, 1),
+      ),
+      dict(
+          testcase_name="negative_numerator_stride2",
+          stride=(2, 2),
+      ),
+  )
+  def test_im2col_non_positive_output_shape(self, stride):
+    img = torch.randn(1, 1, 2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected output shape to be positive, got 0x0""",
+        gpu="""Given input with spatial size (2, 2), kernel_size=(3, 3), dilation=(1, 1), padding=(0, 0), calculated shape of the array of sliding blocks as (0, 0), but its components must be at least one.""",
+    ):
+      torch.ops.aten.im2col(img, (3, 3), (1, 1), (0, 0), stride)
+
+  def test_im2col_out_dtype_mismatch(self):
+    img = torch.randn(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(0, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected the output dtype to be float32, got float64""",
+        gpu="""expected scalar type Float but found Double""",
+    ):
+      torch.ops.aten.im2col.out(img, (2, 2), (1, 1), (0, 0), (1, 1), out=out)
+
+  def test_im2col_out_device_mismatch(self):
+    img_dev = torch.randn(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out_cpu = torch.empty(0, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out_im2col_out)""",
+    ):
+      torch.ops.aten.im2col.out(
+          img_dev, (2, 2), (1, 1), (0, 0), (1, 1), out=out_cpu
+      )
+
+    img_cpu = torch.randn(1, 1, 4, 4, device="cpu", dtype=torch.float32)
+    out_dev = torch.empty(0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_out_im2col_out)""",
+    ):
+      torch.ops.aten.im2col.out(
+          img_cpu, (2, 2), (1, 1), (0, 0), (1, 1), out=out_dev
+      )
 
   @parameterized.named_parameters(
       {"testcase_name": "ge", "op_name": "ge", "op": torch.ge},
