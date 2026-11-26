@@ -2903,6 +2903,173 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       t.unfold(0, 2, 0)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="1d", shape=(4,)),
+      dict(testcase_name="0d_scalar", shape=()),
+  )
+  def test_unfold_negative_size(self, shape):
+    """Unfold fails when size is negative."""
+    t = torch.ones(shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""size is -1 but must be >= 0""",
+        tpu="""unfold(): expected size >= 0, got -1""",
+    ):
+      t.unfold(0, -1, 1)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="zero_step", step=0),
+      dict(testcase_name="negative_step", step=-1),
+  )
+  def test_unfold_backward_invalid_step(self, step):
+    """Unfold backward fails when step is non-positive."""
+    err_type = RuntimeError if et.is_on_tpu() else ValueError
+    grad_in = torch.ones(3, 2, device=et.device())
+    with et.assert_raises_message(
+        err_type,
+        gpu=f"""step is {step} but must be > 0""",
+        tpu=f"""unfold_backward(): expected step > 0, got {step}""",
+    ):
+      torch.ops.aten.unfold_backward(grad_in, [4], 0, 2, step)
+
+  def test_unfold_backward_negative_input_size(self):
+    """Unfold backward fails when input_sizes contains a negative dimension."""
+    grad_in = torch.ones(3, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""zeros: Dimension size must be non-negative.""",
+        tpu="""unfold_backward(): expected all input_sizes to be >= 0, got [-4]""",
+    ):
+      torch.ops.aten.unfold_backward(grad_in, [-4], 0, 2, 1)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="1d", grad_shape=(3, 2), input_sizes=[4]),
+      dict(testcase_name="0d_scalar", grad_shape=(1,), input_sizes=[]),
+  )
+  def test_unfold_backward_negative_size(self, grad_shape, input_sizes):
+    """Unfold backward fails when size is negative."""
+    grad_in = torch.ones(grad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""size is -1 but must be >= 0""",
+        tpu="""unfold_backward(): expected size >= 0, got -1""",
+    ):
+      torch.ops.aten.unfold_backward(grad_in, input_sizes, 0, -1, 1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="1d",
+          grad_shape=(3, 2),
+          input_sizes=[4],
+          dim=2,
+          size=2,
+          gpu_msg="""Dimension out of range (expected to be in range of [-1, 0], but got 2)""",
+          tpu_msg="""unfold_backward(): expected dimension to be in range [-1, 0], got 2""",
+      ),
+      dict(
+          testcase_name="0d_scalar",
+          grad_shape=(1,),
+          input_sizes=[],
+          dim=1,
+          size=1,
+          gpu_msg="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+          tpu_msg="""unfold_backward(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
+      ),
+  )
+  def test_unfold_backward_dim_out_of_bounds(
+      self, grad_shape, input_sizes, dim, size, gpu_msg, tpu_msg
+  ):
+    """Unfold backward fails when dimension is out of bounds."""
+    grad_in = torch.ones(grad_shape, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu=gpu_msg,
+        tpu=tpu_msg,
+    ):
+      torch.ops.aten.unfold_backward(grad_in, input_sizes, dim, size, 1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="1d",
+          grad_shape=(1, 5),
+          input_sizes=[4],
+          size=5,
+          step=5,
+          gpu_msg="""maximum size for tensor at dimension 0 is 4 but size is 5""",
+          tpu_msg="""unfold_backward(): expected size <= dimension size (4), got 5""",
+      ),
+      dict(
+          testcase_name="0d_scalar",
+          grad_shape=(2,),
+          input_sizes=[],
+          size=2,
+          step=2,
+          gpu_msg="""maximum size for tensor at dimension 0 is 1 but size is 2""",
+          tpu_msg="""unfold_backward(): expected size <= dimension size (1), got 2""",
+      ),
+  )
+  def test_unfold_backward_size_too_large(
+      self, grad_shape, input_sizes, size, step, gpu_msg, tpu_msg
+  ):
+    """Unfold backward fails when size exceeds dimension size."""
+    grad_in = torch.ones(grad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=gpu_msg,
+        tpu=tpu_msg,
+    ):
+      torch.ops.aten.unfold_backward(grad_in, input_sizes, 0, size, step)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="1d_wrong_windows",
+          grad_shape=(3, 2),
+          input_sizes=[4],
+          size=2,
+          step=2,
+          gpu_msg="""The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+          tpu_msg="""unfold_backward(): expected grad_in shape [2, 2], got [3, 2]""",
+      ),
+      dict(
+          testcase_name="1d_wrong_rank",
+          grad_shape=(2, 2, 2),
+          input_sizes=[4],
+          size=2,
+          step=2,
+          gpu_msg="""output with shape [2, 2] doesn't match the broadcast shape [2, 2, 2]""",
+          tpu_msg="""unfold_backward(): expected grad_in shape [2, 2], got [2, 2, 2]""",
+      ),
+      dict(
+          testcase_name="0d_scalar_wrong_shape",
+          grad_shape=(2,),
+          input_sizes=[],
+          size=1,
+          step=1,
+          gpu_msg="""output with shape [1] doesn't match the broadcast shape [2]""",
+          tpu_msg="""unfold_backward(): expected grad_in shape [1], got [2]""",
+      ),
+      dict(
+          testcase_name="size_zero_wrong_shape",
+          grad_shape=(3, 2),
+          input_sizes=[4],
+          size=0,
+          step=1,
+          gpu_msg="""The size of tensor a (0) must match the size of tensor b (2) at non-singleton dimension 1""",
+          tpu_msg="""unfold_backward(): expected grad_in shape [5, 0], got [3, 2]""",
+      ),
+  )
+  def test_unfold_backward_grad_shape_mismatch(
+      self, grad_shape, input_sizes, size, step, gpu_msg, tpu_msg
+  ):
+    """Unfold backward fails when grad_in shape does not match unfolded shape."""
+    grad_in = torch.ones(grad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=gpu_msg,
+        tpu=tpu_msg,
+    ):
+      torch.ops.aten.unfold_backward(grad_in, input_sizes, 0, size, step)
+
   def test_std_out_dtype_mismatch(self):
     """Verifies that std raises RuntimeError when downcasting out tensor."""
     t = torch.ones(5, device=et.device(), dtype=torch.float32)

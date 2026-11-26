@@ -20,6 +20,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
+#include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/Optional.h"
@@ -27,6 +28,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -38,6 +40,7 @@
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -48,16 +51,13 @@ namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildUnfoldBackwardShlo(
     mlir::MlirOp grad_in, const SmallInt64Vector& input_sizes,
-    int64_t dimension, int64_t size, int64_t step) {
+    int64_t normalized_dim, int64_t size, int64_t step) {
   auto& builder = grad_in.getBuilder();
   auto& op_builder = builder.getOpBuilder();
 
-  const auto grad_in_type = GetTensorTypeOrDie(grad_in);
+  const mlir::RankedTensorType grad_in_type = GetTensorTypeOrDie(grad_in);
   const auto grad_in_shape = grad_in_type.getShape();
   const int64_t rank = input_sizes.size();
-
-  TT_ASSIGN_OR_RETURN(const int64_t normalized_dim,
-                      SafeWrapDim(dimension, rank));
 
   SmallInt64Vector permutation;
   int64_t batch = 1;
@@ -71,42 +71,50 @@ absl::StatusOr<mlir::MlirOp> BuildUnfoldBackwardShlo(
   permutation.push_back(normalized_dim);
 
   const int64_t num_windows = grad_in_shape[normalized_dim];
+  const bool is_bool = IsBooleanType(grad_in_type);
+  const mlir::Type element_type = grad_in_type.getElementType();
+  const mlir::Type compute_element_type =
+      is_bool ? static_cast<mlir::Type>(op_builder.getI32Type()) : element_type;
 
-  auto transposed_grad_in = mlir::stablehlo::Transpose(grad_in, permutation);
-  auto reshaped_grad_in =
+  mlir::MlirOp transposed_grad_in =
+      mlir::stablehlo::Transpose(grad_in, permutation);
+  mlir::MlirOp reshaped_grad_in =
       mlir::stablehlo::Reshape(transposed_grad_in, {batch, size, num_windows});
+  if (is_bool) {
+    reshaped_grad_in = mlir::stablehlo::ConvertElementType(
+        reshaped_grad_in, compute_element_type);
+  }
 
-  const auto iota = mlir::stablehlo::Iota(
+  mlir::MlirOp iota = mlir::stablehlo::Iota(
       builder, mlir::RankedTensorType::get({size}, op_builder.getI32Type()), 0);
-  const auto matrix_type =
+  const mlir::RankedTensorType matrix_type =
       mlir::RankedTensorType::get({size, size}, op_builder.getI32Type());
-  auto iota_row_reshaped = mlir::stablehlo::Reshape(iota, {size, 1});
-  auto iota_row =
+  mlir::MlirOp iota_row_reshaped = mlir::stablehlo::Reshape(iota, {size, 1});
+  mlir::MlirOp iota_row =
       mlir::stablehlo::BroadcastInDim(matrix_type, iota_row_reshaped, {0, 1});
-  auto iota_col_reshaped = mlir::stablehlo::Reshape(iota, {1, size});
-  auto iota_col =
+  mlir::MlirOp iota_col_reshaped = mlir::stablehlo::Reshape(iota, {1, size});
+  mlir::MlirOp iota_col =
       mlir::stablehlo::BroadcastInDim(matrix_type, iota_col_reshaped, {0, 1});
-  const auto identity_bool = mlir::stablehlo::Compare(
+  mlir::MlirOp identity_bool = mlir::stablehlo::Compare(
       iota_row, iota_col, mlir::stablehlo::ComparisonDirection::EQ);
-  const auto element_type = grad_in_type.getElementType();
-  const auto identity =
-      mlir::stablehlo::ConvertElementType(identity_bool, element_type);
+  mlir::MlirOp identity =
+      mlir::stablehlo::ConvertElementType(identity_bool, compute_element_type);
 
-  auto weights = mlir::stablehlo::Reshape(identity, {1, size, size});
+  mlir::MlirOp weights = mlir::stablehlo::Reshape(identity, {1, size, size});
 
   const int64_t pad_left = size - 1;
   const int64_t normalized_dim_size = input_sizes[normalized_dim];
   const int64_t pad_right = normalized_dim_size - 1 - (num_windows - 1) * step;
 
-  const auto padding_type =
+  const mlir::RankedTensorType padding_type =
       mlir::RankedTensorType::get({1, 2}, op_builder.getI64Type());
-  const auto padding_attr =
+  const mlir::DenseIntElementsAttr padding_attr =
       mlir::DenseIntElementsAttr::get(padding_type, {pad_left, pad_right});
 
-  const auto conv_output_type = mlir::RankedTensorType::get(
-      {batch, 1, normalized_dim_size}, element_type);
+  const mlir::RankedTensorType conv_output_type = mlir::RankedTensorType::get(
+      {batch, 1, normalized_dim_size}, compute_element_type);
 
-  auto conv = mlir::stablehlo::Convolution(
+  mlir::MlirOp conv = mlir::stablehlo::Convolution(
       conv_output_type, reshaped_grad_in, weights,
       mlir::stablehlo::ConvDimensionNumbersAttr::get(
           &builder.getContext(),
@@ -127,6 +135,9 @@ absl::StatusOr<mlir::MlirOp> BuildUnfoldBackwardShlo(
       /*rhs_dilation=*/op_builder.getDenseI64ArrayAttr({1}),
       /*window_reversal=*/op_builder.getDenseBoolArrayAttr({true}),
       /*precision_config=*/{});
+  if (is_bool) {
+    conv = GetNonzeroMask(conv);
+  }
 
   SmallInt64Vector reshaped_conv_shape;
   for (int i = 0; i < rank; ++i) {
@@ -136,7 +147,8 @@ absl::StatusOr<mlir::MlirOp> BuildUnfoldBackwardShlo(
   }
   reshaped_conv_shape.push_back(normalized_dim_size);
 
-  auto reshaped_conv = mlir::stablehlo::Reshape(conv, reshaped_conv_shape);
+  mlir::MlirOp reshaped_conv =
+      mlir::stablehlo::Reshape(conv, reshaped_conv_shape);
 
   SmallInt64Vector inv_permutation;
   for (int i = 0; i < normalized_dim; ++i) {
@@ -175,6 +187,8 @@ at::Tensor AtenUnfold(const at::Tensor& self, int64_t dimension, int64_t size,
 
         TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
                            SafeWrapDim(dimension, dims));
+        TT_CHECK_THROW(size >= 0, error::kInvalidArgument)
+            << "expected size >= 0, got " << size;
         TT_CHECK_THROW(size <= self_reshaped.size(normalized_dim),
                        error::kInvalidArgument)
             << "expected size <= dimension size (shape[" << dimension
@@ -216,27 +230,66 @@ at::Tensor AtenUnfoldBackward(const at::Tensor& grad_in,
   TT_KERNEL(
       OpName::kUnfoldBackward, param_keys,
       (grad_in, input_sizes, dimension, size, step), {
+        TT_CHECK_THROW(step > 0, error::kInvalidArgument)
+            << "expected step > 0, got " << step;
+        TT_CHECK_THROW(
+            absl::c_all_of(input_sizes,
+                           [](int64_t dim_size) { return dim_size >= 0; }),
+            error::kInvalidArgument)
+            << "expected all input_sizes to be >= 0, got "
+            << ToString(input_sizes);
+        TT_CHECK_THROW(size >= 0, error::kInvalidArgument)
+            << "expected size >= 0, got " << size;
+        TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
+                           SafeWrapDim(dimension, input_sizes.size()));
+
+        const int64_t max_size =
+            input_sizes.empty() ? 1 : input_sizes[normalized_dim];
+        TT_CHECK_THROW(size <= max_size, error::kInvalidArgument)
+            << "expected size <= dimension size (" << max_size << "), got "
+            << size;
+
+        Dimensions expected_grad_shape;
         if (input_sizes.empty()) {
-          // If the original input was a scalar (shape []), we are in a scalar
-          // corner case.
-          if (size == 0) {
-            // Case A: No gradient was propagated during forward pass because
-            // window size is 0. We return a constant scalar zero tensor [].
-            return AtenEfficientZeroTensor(
-                {}, grad_in.scalar_type(), /*layout_opt=*/c10::nullopt,
-                grad_in.device(), /*pin_memory_opt=*/c10::nullopt);
-          }
-          // Case B: The forward pass unsqueezed the scalar to [1] to extract
-          // windows of size > 0. grad_in has shape [1] (after autograd
-          // squeeze). To return a valid scalar gradient [], we reshape/squeeze
-          // the dummy dimension [1] -> [] using direct stablehlo::Reshape to
-          // completely avoid delegating to autograd squeeze(0) / as_strided.
+          expected_grad_shape.push_back(size);
+        } else {
+          expected_grad_shape = CopyIntVector(input_sizes);
+          TT_ASSIGN_OR_THROW(
+              expected_grad_shape[normalized_dim],
+              SafeAdd((input_sizes[normalized_dim] - size) / step, 1));
+          expected_grad_shape.push_back(size);
+        }
+        TT_CHECK_THROW(absl::c_equal(grad_in.sizes(), expected_grad_shape),
+                       error::kInvalidArgument)
+            << "expected grad_in shape " << ToString(expected_grad_shape)
+            << ", got " << ToString(grad_in.sizes());
+
+        TT_ASSIGN_OR_THROW(const mlir::ElementType elem_type,
+                           ConvertTo<mlir::ElementType>(grad_in.scalar_type()));
+
+        if (grad_in.numel() == 0) {
+          // Covers empty dimensions and size == 0 (including 0D scalars),
+          // emitting a zero tensor directly in SHLO without calling
+          // AtenEfficientZeroTensor (which triggers CompositeOpCheck).
+          auto zero_builder =
+              [out_sizes = CopyIntVector(input_sizes), elem_type](
+                  mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
+            mlir::RankedTensorType type = mlir::makeTensorType(
+                builder.getContext(), out_sizes, elem_type);
+            return MakeConstant(builder, 0.0, type);
+          };
+          return ApplyNullaryOp(std::move(zero_builder), grad_in.scalar_type(),
+                                input_sizes, std::move(param_keys));
+        }
+
+        if (input_sizes.empty()) {
+          // The forward pass unsqueezed the scalar to [1] to extract windows of
+          // size 1. Reshape [1] -> [] directly to avoid delegating to
+          // squeeze(0) / as_strided.
           auto squeeze_builder =
               [](mlir::MlirOp grad_in) -> absl::StatusOr<mlir::MlirOp> {
             return mlir::stablehlo::Reshape(grad_in, {});
           };
-          TT_ASSIGN_OR_THROW(const auto elem_type, ConvertTo<mlir::ElementType>(
-                                                       grad_in.scalar_type()));
           TT_ASSIGN_OR_THROW(
               DeviceBufferRef result,
               DispatchOp<1>(std::move(squeeze_builder), {grad_in},
@@ -246,22 +299,13 @@ at::Tensor AtenUnfoldBackward(const at::Tensor& grad_in,
           return MakeTensor(std::move(result));
         }
 
-        if (grad_in.numel() == 0) {
-          return AtenEfficientZeroTensor(
-              input_sizes, grad_in.scalar_type(), /*layout_opt=*/c10::nullopt,
-              grad_in.device(), /*pin_memory_opt=*/c10::nullopt);
-        }
-
         Dimensions out_dims = CopyIntVector(input_sizes);
 
-        auto op_builder = [input_sizes = CopyIntVector(input_sizes), dimension,
-                           size, step](mlir::MlirOp grad_in) {
-          return BuildUnfoldBackwardShlo(grad_in, input_sizes, dimension, size,
-                                         step);
+        auto op_builder = [input_sizes = CopyIntVector(input_sizes),
+                           normalized_dim, size, step](mlir::MlirOp grad_in) {
+          return BuildUnfoldBackwardShlo(grad_in, input_sizes, normalized_dim,
+                                         size, step);
         };
-
-        TT_ASSIGN_OR_THROW(const auto elem_type,
-                           ConvertTo<mlir::ElementType>(grad_in.scalar_type()));
 
         TT_ASSIGN_OR_THROW(
             DeviceBufferRef result,

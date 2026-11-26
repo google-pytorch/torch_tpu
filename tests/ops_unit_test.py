@@ -30453,6 +30453,97 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="overlapping_1d_all_true",
+          grad_data=[[True, True], [True, True], [True, True]],
+          input_sizes=[4],
+          dim=0,
+          size=2,
+          step=1,
+      ),
+      dict(
+          testcase_name="overlapping_1d_mixed",
+          grad_data=[[False, True], [True, False], [False, False]],
+          input_sizes=[4],
+          dim=0,
+          size=2,
+          step=1,
+      ),
+      dict(
+          testcase_name="non_overlapping_1d",
+          grad_data=[[True, False], [False, True]],
+          input_sizes=[6],
+          dim=0,
+          size=2,
+          step=3,
+      ),
+      dict(
+          testcase_name="overlapping_2d_neg_dim",
+          grad_data=[
+              [[True, False], [False, True], [True, True]],
+              [[False, False], [False, False], [False, True]],
+          ],
+          input_sizes=[2, 4],
+          dim=-1,
+          size=2,
+          step=1,
+      ),
+      dict(
+          testcase_name="scalar_true",
+          grad_data=[True],
+          input_sizes=[],
+          dim=0,
+          size=1,
+          step=1,
+      ),
+      dict(
+          testcase_name="scalar_false",
+          grad_data=[False],
+          input_sizes=[],
+          dim=0,
+          size=1,
+          step=1,
+      ),
+      dict(
+          testcase_name="scalar_size_zero",
+          grad_data=[],
+          input_sizes=[],
+          dim=0,
+          size=0,
+          step=1,
+      ),
+      dict(
+          testcase_name="empty_batch_dim",
+          grad_data=torch.empty((0, 3, 2), dtype=torch.bool),
+          input_sizes=[0, 4],
+          dim=1,
+          size=2,
+          step=1,
+      ),
+      dict(
+          testcase_name="size_zero_1d",
+          grad_data=torch.empty((5, 0), dtype=torch.bool),
+          input_sizes=[4],
+          dim=0,
+          size=0,
+          step=1,
+      ),
+  )
+  def test_unfold_backward_bool(self, grad_data, input_sizes, dim, size, step):
+    grad_cpu = (
+        grad_data
+        if isinstance(grad_data, torch.Tensor)
+        else torch.tensor(grad_data, dtype=torch.bool)
+    )
+
+    def test_fn(device):
+      return torch.ops.aten.unfold_backward(
+          grad_cpu.to(device), input_sizes, dim, size, step
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
 
 if __name__ == "__main__":
   absltest.main()
