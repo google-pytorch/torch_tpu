@@ -16,8 +16,10 @@
 
 import bisect
 import collections
-from collections.abc import Iterable, MutableSet, Sequence, Set
+from collections.abc import Iterable, MutableSequence, MutableSet, Sequence, Set
+import dataclasses
 import graphlib
+import itertools
 from typing import Any, TypeAlias
 
 import torch
@@ -36,6 +38,13 @@ _PartitionedVertex: TypeAlias = int
 # `(graph_index, node)` for an unpartitioned vertex in the run-order graph.
 _UnpartitionedVertex: TypeAlias = tuple[int, fx.Node]
 _Vertex: TypeAlias = _PartitionedVertex | _UnpartitionedVertex
+# Maps each node of one graph to `(read_order, user)` for every user that reads
+# it, in node order.
+_ReadOrders: TypeAlias = dict[fx.Node, list[tuple[int, fx.Node]]]
+# The read order of one member's first outside read, per graph.
+_OutputOrders: TypeAlias = tuple[int, ...]
+# Maps `(graph_index, node)` to the `graphs[0]` node that `node` is paired with.
+_PairedNodes: TypeAlias = dict[tuple[int, fx.Node], fx.Node]
 
 
 def is_partitionable(node: fx.Node) -> bool:
@@ -189,46 +198,194 @@ def _matching_users(
       yield tuple(graph_users[0] for graph_users in users_per_graph)
 
 
-def _outputs_match(
-    members: Sequence[_NodePerGraph],
-    node_positions_in_graph: Sequence[dict[fx.Node, int]],
-    index_per_graph: Sequence[dict[fx.Node, int]],
+@dataclasses.dataclass
+class _SubmoduleState:
+  """Incremental submodule validity state for one partition.
+
+  Attributes:
+    partition_id: ID of the partition.
+    partition_maps: Maps each partitioned node, per graph, to its partition ID.
+    node_positions_in_graph: Maps each node, per graph, to its position.
+    read_orders_per_graph: The `_build_read_orders` result of each graph.
+    members: Member tuples in node order, which is the same on every graph.
+    paired_nodes: Pairs every member, and every node that a member reads from
+      outside the partition, with a node of `graphs[0]`.
+    output_orders: The `_OutputOrders` of every member that the submodule
+      returns, sorted. Every graph returns those members in this order.
+    first_read_index: Maps `(graph_index, node)` to how many of the first reads
+      of `node` are known to be by members.
+  """
+
+  partition_id: int
+  partition_maps: Sequence[_PartitionMap]
+  node_positions_in_graph: Sequence[dict[fx.Node, int]]
+  read_orders_per_graph: Sequence[_ReadOrders]
+  members: list[_NodePerGraph] = dataclasses.field(default_factory=list)
+  paired_nodes: _PairedNodes = dataclasses.field(default_factory=dict)
+  output_orders: list[_OutputOrders] = dataclasses.field(default_factory=list)
+  first_read_index: dict[tuple[int, fx.Node], int] = dataclasses.field(
+      default_factory=dict
+  )
+
+
+def _build_read_orders(graph: fx.Graph) -> _ReadOrders:
+  """Numbers every read in `graph` in the order `split_module` visits them.
+
+  `split_module` makes each submodule return every member that a node outside
+  the partition reads, in the order of each member's first outside read. It
+  visits users in node order and the inputs of each user in argument order, so
+  numbering reads the same way turns comparing first outside reads into
+  comparing integers.
+  """
+  read_orders: _ReadOrders = collections.defaultdict(list)
+  next_read_order = itertools.count()
+  for user in graph.nodes:
+    for input_node in dict.fromkeys(_input_nodes(user)):
+      read_orders[input_node].append((next(next_read_order), user))
+  return read_orders
+
+
+def _insertion_index(
+    state: _SubmoduleState, graph_index: int, node: fx.Node
+) -> int:
+  """Returns where `node` belongs among the members of `graphs[graph_index]`."""
+  node_positions = state.node_positions_in_graph[graph_index]
+  return bisect.bisect_left(
+      state.members,
+      node_positions[node],
+      key=lambda member: node_positions[member[graph_index]],
+  )
+
+
+def _pair_nodes(
+    state: _SubmoduleState, candidate: _NodePerGraph
+) -> tuple[set[_NodePerGraph], _PairedNodes] | None:
+  """Pairs `candidate` and each of its inputs across graphs.
+
+  The nodes of `candidate` are paired with each other, and so are the nodes
+  that they read in the same argument position. As long as no node is paired
+  with two different nodes, every graph wires the members to each other, and
+  to the inputs of the submodule, in the same way.
+
+  Returns:
+    The members that `candidate` reads and the pairs to add to
+    `state.paired_nodes`, or `None` if a node is already paired differently.
+  """
+  new_paired_nodes: _PairedNodes = {}
+  read_members: set[_NodePerGraph] = set()
+  for nodes in (
+      candidate,
+      *zip(*(_input_nodes(node) for node in candidate), strict=True),
+  ):
+    keys = list(enumerate(nodes))
+    first_graph_nodes = [
+        new_paired_nodes.get(key, state.paired_nodes.get(key)) for key in keys
+    ]
+    if all(node is None for node in first_graph_nodes):
+      new_paired_nodes.update(dict.fromkeys(keys, nodes[0]))
+    elif any(node is not nodes[0] for node in first_graph_nodes):
+      return None
+    elif state.partition_maps[0].get(nodes[0]) == state.partition_id:
+      read_members.add(nodes)
+  return read_members, new_paired_nodes
+
+
+def _outside_read_orders(
+    state: _SubmoduleState,
+    member: _NodePerGraph,
+    joining: _NodePerGraph | None = None,
+) -> _OutputOrders:
+  """Returns the read order of `member`'s first outside read on each graph.
+
+  Reads by `joining`, which is about to join the partition, do not count.
+  Graphs on which no node outside the partition reads `member` are left out.
+  """
+  orders: list[int] = []
+  for graph_index, node in enumerate(member):
+    partition_map = state.partition_maps[graph_index]
+    joining_node = None if joining is None else joining[graph_index]
+    reads = state.read_orders_per_graph[graph_index].get(node, [])
+    # Members never leave the partition, so their reads are skipped for good,
+    # even if `joining` ends up rejected.
+    index = state.first_read_index.get((graph_index, node), 0)
+    while (
+        index < len(reads)
+        and partition_map.get(reads[index][1]) == state.partition_id
+    ):
+      index += 1
+    state.first_read_index[(graph_index, node)] = index
+    for read_index in range(index, len(reads)):
+      order, user = reads[read_index]
+      if (
+          user is not joining_node
+          and partition_map.get(user) != state.partition_id
+      ):
+        orders.append(order)
+        break
+  return tuple(orders)
+
+
+def _replace_sorted(
+    values: MutableSequence[_OutputOrders],
+    old: Iterable[_OutputOrders],
+    new: Iterable[_OutputOrders],
+) -> None:
+  """Removes `old` from the sorted `values` and inserts `new`."""
+  for value in old:
+    values.pop(bisect.bisect_left(values, value))
+  for value in new:
+    bisect.insort(values, value)
+
+
+def _update_outputs(
+    state: _SubmoduleState,
+    candidate: _NodePerGraph,
+    read_members: Set[_NodePerGraph],
 ) -> bool:
-  """Returns whether the submodules for `members` have the same outputs.
+  """Updates submodule outputs if every graph still returns the same members.
 
   `split_module` makes each submodule return every member that a node outside
   the partition reads, in the order of each member's first outside read.
   Nothing makes those outside nodes match between graphs, so one graph might
   read an extra member, or read two members in the opposite order.
+
+  Adding `candidate` changes this only for `candidate` and for `read_members`,
+  the members it reads.
   """
-  outputs_per_graph: list[list[int]] = []
-  for graph_index, index_of in enumerate(index_per_graph):
-    node_positions = node_positions_in_graph[graph_index]
-    first_outside_reads: list[tuple[tuple[int, int], int]] = []
-    for member_index, member in enumerate(members):
-      node = member[graph_index]
-      reads = [
-          (node_positions[user], _input_nodes(user).index(node))
-          for user in node.users
-          if user not in index_of
-      ]
-      if reads:
-        first_outside_reads.append((min(reads), member_index))
-    outputs_per_graph.append(
-        [member_index for _, member_index in sorted(first_outside_reads)]
-    )
-  return all(outputs == outputs_per_graph[0] for outputs in outputs_per_graph)
+  # Until it joins, `candidate` reads `read_members` from outside the
+  # partition, so the submodule returns all of them.
+  old_orders = [_outside_read_orders(state, member) for member in read_members]
+  orders_after_joining = [
+      _outside_read_orders(state, member, candidate)
+      for member in (candidate, *read_members)
+  ]
+  # Some graphs would return a member that the others do not.
+  if any(0 < len(orders) < len(candidate) for orders in orders_after_joining):
+    return False
+  new_orders = [orders for orders in orders_after_joining if orders]
+  output_orders = state.output_orders
+  _replace_sorted(output_orders, old_orders, new_orders)
+  for orders in new_orders:
+    index = bisect.bisect_left(output_orders, orders)
+    # `output_orders` is in the read order of `graphs[0]`, so every other graph
+    # must read `orders` and its neighbors in that order too.
+    neighbors = output_orders[max(index - 1, 0) : index + 2]
+    if any(
+        list(graph_orders) != sorted(graph_orders)
+        for graph_orders in zip(*neighbors, strict=True)
+    ):
+      # Undo, so that the rejected `candidate` leaves the outputs unchanged.
+      _replace_sorted(output_orders, new_orders, old_orders)
+      return False
+  return True
 
 
-def _is_valid_partition(
-    members: Sequence[_NodePerGraph],
-    node_positions_in_graph: Sequence[dict[fx.Node, int]],
-) -> bool:
-  """Returns whether `split_module` builds identical submodules for `members`.
+def _try_add_member(state: _SubmoduleState, candidate: _NodePerGraph) -> bool:
+  """Adds `candidate` if `split_module` still builds identical submodules.
 
-  Each tuple in `members` must already pass `_nodes_match`, and `members` must
-  be in the node order of `graphs[0]`. Growth reaches each member through one
-  input or user, so this checks that all graphs agree on:
+  `candidate` must already pass `_nodes_match`. Growth reaches each member
+  through one input or user, so this incrementally checks that all graphs
+  agree on:
 
   *   Node order, since `split_module` copies nodes in graph order. If `sin(x)`
       and `cos(y)` both feed `add(sin, cos)` but run in opposite orders, the
@@ -238,34 +395,28 @@ def _is_valid_partition(
       `sin + cos * add` and `cos + sin * add`.
   *   Inputs from outside, numbered by first read. `add(x, x)` reads one
       submodule input, while `add(x, y)` reads two.
-  *   Outputs, which `_outputs_match` checks.
+  *   Outputs, which `_update_outputs` checks.
+
+  Only the inputs and users of `candidate` can change these, so the other
+  members are not checked again.
   """
-  # TODO(b/553332536): Re-checking the whole partition for each candidate makes
-  # growth quadratic. Only the new member's edges can change the submodule, so
-  # check just those.
-  index_per_graph: list[dict[fx.Node, int]] = []
-  reads_per_graph: list[list[tuple[bool, int]]] = []
-  for graph_index, node_positions in enumerate(node_positions_in_graph):
-    nodes = [member[graph_index] for member in members]
-    order = [node_positions[node] for node in nodes]
-    if order != sorted(order):
-      return False
-    index_of = {node: member_index for member_index, node in enumerate(nodes)}
-    first_read: dict[fx.Node, int] = {}
-    reads: list[tuple[bool, int]] = []
-    for node in nodes:
-      for input_node in _input_nodes(node):
-        if input_node in index_of:
-          reads.append((True, index_of[input_node]))
-        else:
-          reads.append(
-              (False, first_read.setdefault(input_node, len(first_read)))
-          )
-    index_per_graph.append(index_of)
-    reads_per_graph.append(reads)
-  if any(reads != reads_per_graph[0] for reads in reads_per_graph):
+  # Members are in node order on every graph, so `candidate` keeps them in
+  # order only if it belongs at the same index on every graph.
+  insert_indices = {
+      _insertion_index(state, graph_index, node)
+      for graph_index, node in enumerate(candidate)
+  }
+  if len(insert_indices) > 1:
     return False
-  return _outputs_match(members, node_positions_in_graph, index_per_graph)
+  pairing = _pair_nodes(state, candidate)
+  if pairing is None:
+    return False
+  read_members, new_paired_nodes = pairing
+  if not _update_outputs(state, candidate, read_members):
+    return False
+  state.members.insert(insert_indices.pop(), candidate)
+  state.paired_nodes.update(new_paired_nodes)
+  return True
 
 
 def _partition_order(
@@ -393,6 +544,7 @@ def _grow_partitions(
       {node: position for position, node in enumerate(graph.nodes)}
       for graph in graphs
   ]
+  read_orders_per_graph = [_build_read_orders(graph) for graph in graphs]
   # `anchor_maps[i]` maps each anchor node of `graphs[i]` to its index in
   # `anchors`.
   anchor_maps: list[dict[fx.Node, int]] = [{} for _ in graphs]
@@ -417,7 +569,13 @@ def _grow_partitions(
         for partition_map, node in zip(partition_maps, anchor, strict=True)
     ):
       continue
-    if not _is_valid_partition([anchor], node_positions_in_graph):
+    state = _SubmoduleState(
+        partition_id=partition_id,
+        partition_maps=partition_maps,
+        node_positions_in_graph=node_positions_in_graph,
+        read_orders_per_graph=read_orders_per_graph,
+    )
+    if not _try_add_member(state, anchor):
       continue
     # Check reachability before assigning `partition_id` so paths between
     # `anchor`'s nodes are not collapsed into self-loops.
@@ -446,7 +604,7 @@ def _grow_partitions(
         ancestors,
         forward=False,
     )
-    partitions[partition_id] = [anchor]
+    partitions[partition_id] = state.members
     queue: collections.deque[_NodePerGraph] = collections.deque([anchor])
     while queue:
       current = queue.popleft()
@@ -473,14 +631,7 @@ def _grow_partitions(
             partition_maps, descendants, ancestors, candidate
         ):
           continue
-        first_graph_positions = node_positions_in_graph[0]
-        members = list(partitions[partition_id])
-        bisect.insort(
-            members,
-            candidate,
-            key=lambda member: first_graph_positions[member[0]],
-        )
-        if not _is_valid_partition(members, node_positions_in_graph):
+        if not _try_add_member(state, candidate):
           continue
         for partition_map, node in zip(partition_maps, candidate, strict=True):
           partition_map[node] = partition_id
@@ -500,7 +651,6 @@ def _grow_partitions(
             ancestors,
             forward=False,
         )
-        partitions[partition_id] = members
         queue.append(candidate)
   return partition_maps, partitions
 
