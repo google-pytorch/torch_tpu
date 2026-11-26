@@ -24,10 +24,7 @@
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 load("//shims/py_rules:py_library.bzl", "py_library")
-load(
-    "//shims/py_rules:pytype.bzl",
-    pytype_strict_test = "pytype_strict_contrib_test",
-)
+load("//shims/py_rules:py_test.bzl", "py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -195,12 +192,13 @@ py_library(
     type_checking = True,
 )
 
-pytype_strict_test(
+py_test(
     name = "inputs_test",
     srcs = ["inputs_test.py"],
     tags = [
         "nosan",  # PyTorch/SLEEF have data races under in-process multi-threading.
     ],
+    type_checking = True,
     deps = [
         ":core_inputs",
         ":types",
