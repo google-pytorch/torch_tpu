@@ -827,6 +827,14 @@ mlir::MlirOp GetNonzeroMask(mlir::MlirOp input) {
     return input;
   }
 
+  // Decompose complex into real/imag so complex64 inherits the f32 bitcast
+  // subnormal handling below.
+  if (IsComplexType(input_type)) {
+    mlir::MlirOp real_nonzero = GetNonzeroMask(mlir::stablehlo::Real(input));
+    mlir::MlirOp imag_nonzero = GetNonzeroMask(mlir::stablehlo::Imag(input));
+    return mlir::stablehlo::Or(real_nonzero, imag_nonzero);
+  }
+
   // Test the bits instead: the float comparator would flush subnormals to
   // zero. Clearing the sign bit keeps -0.0 zero.
   if (input_type.getElementType().isF32()) {

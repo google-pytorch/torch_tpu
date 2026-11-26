@@ -30,8 +30,6 @@
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
-#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -53,7 +51,6 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -449,9 +446,12 @@ absl::StatusOr<mlir::MlirOp> MakeConstantLike(mlir::MlirOp input,
 
 // Returns an i1 mask of the elements that are not zero.
 //
+// Complex inputs are nonzero iff either the real or imaginary part is nonzero
+// (delegated recursively so complex64 inherits the f32 subnormal handling).
+//
 // For f32 the test is done on the bit pattern (sign bit cleared, so -0.0 stays
 // zero) because TPU float comparators flush subnormals to zero, unlike CPU and
-// CUDA. Every other type uses a plain float compare, which is already correct:
+// CUDA. Every other type uses a plain compare, which is already correct:
 // TPU widens f16 to f32 on entry, and f16 subnormals are normal f32 values.
 //
 // bf16 stays divergent. Its subnormals are f32 subnormals too, so that same

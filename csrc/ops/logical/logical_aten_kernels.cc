@@ -30,7 +30,6 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/unary_aten_kernels.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -41,14 +40,6 @@ namespace {
 
 namespace stablehlo = mlir::stablehlo;
 
-inline absl::StatusOr<mlir::MlirOp> CastToBooleanIfNeeded(mlir::MlirOp op) {
-  const mlir::RankedTensorType tensor_type = GetTensorTypeOrDie(op);
-  if (!IsBooleanType(tensor_type)) {
-    return stablehlo::ConvertElementType(op, mlir::ElementType::PRED);
-  }
-  return op;
-}
-
 struct BroadcastedOperands {
   mlir::MlirOp self;
   mlir::MlirOp other;
@@ -56,8 +47,8 @@ struct BroadcastedOperands {
 
 absl::StatusOr<BroadcastedOperands> BroadcastLogicalOperands(
     mlir::MlirOp self, mlir::MlirOp other) {
-  TT_ASSIGN_OR_RETURN(self, CastToBooleanIfNeeded(self));
-  TT_ASSIGN_OR_RETURN(other, CastToBooleanIfNeeded(other));
+  self = GetNonzeroMask(self);
+  other = GetNonzeroMask(other);
   TT_ASSIGN_OR_RETURN((auto [self_broadcast, other_broadcast]),
                       ApplyBroadcastIfNeeded(self, other));
   return BroadcastedOperands{.self = self_broadcast, .other = other_broadcast};
@@ -82,8 +73,8 @@ absl::StatusOr<mlir::MlirOp> BuildLogicalXorShlo(mlir::MlirOp self,
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLogicalNotShlo(mlir::MlirOp self) {
-  TT_ASSIGN_OR_RETURN(self, CastToBooleanIfNeeded(self));
-  return stablehlo::Not(self);
+  mlir::MlirOp mask = GetNonzeroMask(self);
+  return stablehlo::Not(mask);
 }
 
 // This helper function for binary logical operations validates output dtype

@@ -2922,5 +2922,54 @@ TEST(InferBroadcastDimensions, RejectsMixedStaticAndBoundedDim) {
           HasSubstr("cannot mix bounded and static dimensions in broadcast")));
 }
 
+TEST(GetNonzeroMask, ComplexStaticTypesProduceVerifiedPredMask) {
+  for (mlir::ElementType elem_type :
+       {mlir::ElementType::COMPLEXF32, mlir::ElementType::COMPLEXF64}) {
+    OpBuilderUtilsBuilder op_builder_utils_builder;
+    mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+    mlir::func::FunctionBuilder fb(mb, "main");
+    mlir::Type tensor_type =
+        mlir::makeTensorType(fb.getContext(), {2, 3}, elem_type);
+    mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+
+    mlir::MlirOp mask = GetNonzeroMask(arg);
+    mlir::func::Return(fb, mask);
+    mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+        << DebugString(module.get());
+    const mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask);
+    EXPECT_TRUE(IsBooleanType(mask_type));
+    EXPECT_THAT(mask_type.getShape(), ElementsAre(2, 3));
+    EXPECT_TRUE(mask.getValue().getDefiningOp<mlir::stablehlo::OrOp>())
+        << DebugString(module.get());
+  }
+}
+
+TEST(GetNonzeroMask, ComplexBoundedDynamicPreservesBounds) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+  mlir::Type c64_type = mlir::ComplexType::get(op_builder.getF32Type());
+  mlir::MlirOp base =
+      mlir::func::Argument(fb, mlir::RankedTensorType::get({8, 3}, c64_type));
+  mlir::MlirOp size = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
+  mlir::MlirOp bounded =
+      mlir::stablehlo::SetDimensionSize(base, size, /*dim=*/0);
+
+  mlir::MlirOp mask = GetNonzeroMask(bounded);
+  mlir::func::Return(fb, mask);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  const mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask);
+  EXPECT_TRUE(IsBooleanType(mask_type));
+  EXPECT_THAT(GetStaticShape(mask), ElementsAre(8, 3));
+  EXPECT_THAT(GetBoundedDims(mask), ElementsAre(0));
+}
+
 }  // namespace
 }  // namespace torch_tpu
