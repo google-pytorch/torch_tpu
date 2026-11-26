@@ -22,11 +22,17 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
+#include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -56,18 +62,17 @@ absl::StatusOr<mlir::MlirOp> BuildHardtanhBackwardShlo(mlir::MlirOp grad_output,
                                                        mlir::MlirOp self,
                                                        mlir::MlirOp min_val,
                                                        mlir::MlirOp max_val) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp min_val_bcast,
-                      BroadcastIfNeeded(min_val, self));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp max_val_bcast,
-                      BroadcastIfNeeded(max_val, self));
+  TT_ASSIGN_OR_RETURN(
+      (auto [grad_output_bcast, self_bcast, min_val_bcast, max_val_bcast]),
+      ApplyBroadcastIfNeeded(grad_output, self, min_val, max_val));
 
-  mlir::MlirOp gt_min = mlir::stablehlo::Compare(
-      self, min_val_bcast, mlir::stablehlo::ComparisonDirection::GT);
-  mlir::MlirOp lt_max = mlir::stablehlo::Compare(
-      self, max_val_bcast, mlir::stablehlo::ComparisonDirection::LT);
-  mlir::MlirOp in_range = mlir::stablehlo::And(gt_min, lt_max);
-  mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
-  return mlir::stablehlo::Select(in_range, grad_output, zero);
+  mlir::MlirOp le_min = mlir::stablehlo::Compare(
+      self_bcast, min_val_bcast, mlir::stablehlo::ComparisonDirection::LE);
+  mlir::MlirOp ge_max = mlir::stablehlo::Compare(
+      self_bcast, max_val_bcast, mlir::stablehlo::ComparisonDirection::GE);
+  mlir::MlirOp out_of_range = mlir::stablehlo::Or(le_min, ge_max);
+  mlir::MlirOp zero = MakeConstantLike(grad_output_bcast, 0.0);
+  return mlir::stablehlo::Select(out_of_range, zero, grad_output_bcast);
 }
 
 absl::Status ValidateHardtanhInputs(const at::Tensor& self) {
@@ -215,8 +220,7 @@ absl::Status AtenHardtanhOutImpl(const at::Tensor& self,
       });
 }
 
-absl::Status ValidateHardtanhBackwardInputs(const at::Tensor& self) {
-  auto scalar_type = self.scalar_type();
+absl::Status ValidateHardtanhBackwardDtype(const at::ScalarType scalar_type) {
   TT_RET_CHECK(c10::isFloatingType(scalar_type), error::kInvalidArgument)
       << "expected the input dtype to be floating point, got "
       << ToString(scalar_type);
@@ -230,14 +234,46 @@ ReturnType DispatchHardtanhBackward(const at::Tensor& grad_output,
                                     PromotedScalar& promoted_min,
                                     PromotedScalar& promoted_max,
                                     OpParamCacheKeys param_keys,
+                                    const at::Tensor* absl_nullable grad_input,
                                     DispatchFn&& dispatch_fn) {
-  TT_RETURN_IF_ERROR(ValidateHardtanhBackwardInputs(self));
-  auto scalar_type = self.scalar_type();
+  if (grad_input != nullptr) {
+    TT_RET_CHECK(IsPrivateUse1Device(*grad_input), error::kInvalidArgument)
+        << "expected grad_input tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << grad_input->device();
+  }
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(grad_output));
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(self));
+  if (grad_input != nullptr) {
+    TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(*grad_input));
+  }
 
+  const at::ScalarType common_dtype = at::result_type(grad_output, self);
+  at::ScalarType output_scalar_type = common_dtype;
+  if (grad_input != nullptr) {
+    TT_RETURN_IF_ERROR(ValidateOutDtype(*grad_input, common_dtype,
+                                        /*allow_out_dtype_cast=*/true));
+    output_scalar_type = grad_input->scalar_type();
+  }
+  TT_RETURN_IF_ERROR(ValidateHardtanhBackwardDtype(output_scalar_type));
+
+  TT_ASSIGN_OR_RETURN(Dimensions out_dims,
+                      InferSize(grad_output.sizes(), self.sizes()));
+  if (grad_input != nullptr &&
+      (grad_input->is_alias_of(grad_output) || grad_input->is_alias_of(self))) {
+    TT_RET_CHECK(absl::MakeConstSpan(grad_input->sizes()) == out_dims,
+                 error::kInvalidArgument)
+        << "output with shape " << ToString(grad_input->sizes())
+        << " doesn't match the broadcast shape of the tensor being operated on "
+           "in-place, which has shape "
+        << ToString(out_dims);
+  }
+
+  const at::ScalarType comp_scalar_type =
+      InferComputationDtype(output_scalar_type);
   TT_ASSIGN_OR_RETURN(at::Tensor min_tensor,
-                      promoted_min.GetTensor(scalar_type));
+                      promoted_min.GetTensor(comp_scalar_type));
   TT_ASSIGN_OR_RETURN(at::Tensor max_tensor,
-                      promoted_max.GetTensor(scalar_type));
+                      promoted_max.GetTensor(comp_scalar_type));
 
   auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
@@ -245,14 +281,16 @@ ReturnType DispatchHardtanhBackward(const at::Tensor& grad_output,
     return BuildHardtanhBackwardShlo(grad_output_op, self_op, min_op, max_op);
   };
 
-  TT_ASSIGN_OR_RETURN(const auto output_dtype,
-                      ConvertTo<mlir::ElementType>(scalar_type));
-  Dimensions out_dims = CopyIntVector(self.sizes());
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(output_scalar_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      ConvertTo<mlir::ElementType>(comp_scalar_type));
 
   return dispatch_fn(
       op_builder, OpInputs<4>{grad_output, self, min_tensor, max_tensor},
       DispatchOpOptions<1>{.out_dtype = output_dtype,
                            .out_dims = std::move(out_dims),
+                           .computation_dtype = computation_dtype,
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
@@ -262,6 +300,7 @@ absl::StatusOr<DeviceBufferRef> AtenHardtanhBackwardImpl(
     OpParamCacheKeys param_keys) {
   return DispatchHardtanhBackward<absl::StatusOr<DeviceBufferRef>>(
       grad_output, self, promoted_min, promoted_max, std::move(param_keys),
+      /*grad_input=*/nullptr,
       [](auto&& op_builder, const OpInputs<4>& inputs,
          DispatchOpOptions<1> options) {
         return DispatchOp<4>(op_builder, inputs, std::move(options));
@@ -276,6 +315,7 @@ absl::Status AtenHardtanhBackwardOutImpl(const at::Tensor& grad_output,
                                          at::Tensor& grad_input) {
   return DispatchHardtanhBackward<absl::Status>(
       grad_output, self, promoted_min, promoted_max, std::move(param_keys),
+      &grad_input,
       [&grad_input](auto&& op_builder, const OpInputs<4>& inputs,
                     DispatchOpOptions<1> options) {
         return DispatchOpOut<4>(op_builder, inputs, grad_input,

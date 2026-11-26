@@ -11617,6 +11617,146 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.nn.functional.hardtanh(t, min_val=-2, max_val=-1)
 
+  def test_hardtanh_backward_shape_mismatch(self):
+    grad_out = torch.ones((2, 4), device=et.device(), dtype=torch.float32)
+    x = torch.zeros((3,), device=et.device(), dtype=torch.float32)
+    out = torch.empty((2, 4), device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.hardtanh_backward(grad_out, x, -1.0, 1.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          grad_out, x, -1.0, 1.0, grad_input=out
+      )
+
+  def test_hardtanh_backward_mixed_unsupported_dtypes(self):
+    c64 = torch.ones(2, device=et.device(), dtype=torch.complex64)
+    f32 = torch.ones(2, device=et.device(), dtype=torch.float32)
+    i32 = torch.ones(2, device=et.device(), dtype=torch.int32)
+    fp8 = torch.zeros(2, device=et.device(), dtype=torch.float8_e4m3fn)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): expected the input dtype to be floating point, got complex64""",
+        gpu=""""hardtanh_backward_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.ops.aten.hardtanh_backward(c64, f32, -1.0, 1.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): expected the input dtype to be floating point, got complex64""",
+        gpu=""""hardtanh_backward_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          f32, f32, -1.0, 1.0, grad_input=c64
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): result type complex64 can't be cast to the desired output type float32""",
+        gpu="""result type ComplexFloat can't be cast to the desired output type Float""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          c64, f32, -1.0, 1.0, grad_input=f32
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): expected the input dtype to be floating point, got int32""",
+        gpu=""""hardtanh_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          i32, i32, -1.0, 1.0, grad_input=i32
+      )
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""hardtanh_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""hardtanh_backward_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten.hardtanh_backward(fp8, fp8, -1.0, 1.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): not implemented for float8_e4m3fn""",
+        gpu="""Promotion for Float8 Types is not supported, attempted to promote Float and Float8_e4m3fn""",
+    ):
+      torch.ops.aten.hardtanh_backward(f32, fp8, -1.0, 1.0)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""hardtanh_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""hardtanh_backward_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          f32, f32, -1.0, 1.0, grad_input=fp8
+      )
+
+  def test_hardtanh_backward_grad_input_errors(self):
+    f32 = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    bf16 = torch.zeros((2, 3), device=et.device(), dtype=torch.bfloat16)
+    i32_out = torch.empty((2, 3), device=et.device(), dtype=torch.int32)
+    bool_out = torch.empty((2, 3), device=et.device(), dtype=torch.bool)
+    cpu_out = torch.empty((2, 3), device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): expected grad_input tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grad_output is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_grad_input_hardtanh_backward_out)""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          f32, f32, -1.0, 1.0, grad_input=cpu_out
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          f32, f32, -1.0, 1.0, grad_input=i32_out
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): result type float32 can't be cast to the desired output type bool""",
+        gpu="""result type Float can't be cast to the desired output type Bool""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          f32, bf16, -1.0, 1.0, grad_input=bool_out
+      )
+
+    small_x = torch.zeros((1, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          f32, small_x, -1.0, 1.0, grad_input=small_x
+      )
+    self.assertEqual(small_x.shape, (1, 3))
+
+    small_grad = torch.ones((1, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""hardtanh_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.hardtanh_backward.grad_input(
+          small_grad, f32, -1.0, 1.0, grad_input=small_grad
+      )
+    self.assertEqual(small_grad.shape, (1, 3))
+
   def test_prelu_kernel_unsupported_self_dtype(self):
     self_tensor = torch.ones(2, 3, device=et.device(), dtype=torch.int32)
     weight = torch.ones(3, device=et.device(), dtype=torch.float32)
