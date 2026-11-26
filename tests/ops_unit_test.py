@@ -8304,21 +8304,260 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ("b_2d_left", a_3d, b_left, True),
         ("b_2d_right", a_3d, b_right, False),
         ("b_1d_vec", a_3d, b_vec, True),
+        ("b_singleton_left", a_3d, b_left.unsqueeze(0), True),
+        ("b_singleton_right", a_3d, b_right.unsqueeze(0), False),
         ("a_2d_left", a_single, b_batched_left, True),
         ("a_2d_right", a_single, b_batched_right, False),
         ("a_singleton_left", a_single.unsqueeze(0), b_batched_left, True),
         ("a_singleton_right", a_single.unsqueeze(0), b_batched_right, False),
+        (
+            "mutual_4d_left",
+            a_3d.unsqueeze(1),
+            b_batched_left.unsqueeze(0),
+            True,
+        ),
+        (
+            "mutual_4d_right",
+            a_3d.unsqueeze(1),
+            b_batched_right.unsqueeze(0),
+            False,
+        ),
     ]
     for name, a_in, b_in, left in cases:
       for use_out in (False, True):
         with self.subTest(case=name, use_out=use_out):
           self.assert_close_tpu_vs_cpu(
-              lambda device, a=a_in, b=b_in, l=left, o=use_out: run_solve_ex(
-                  device, a, b, left=l, use_out=o
+              lambda device, a=a_in, b=b_in, left_side=left, use_out_arg=use_out: run_solve_ex(
+                  device, a, b, left=left_side, use_out=use_out_arg
               ),
               rtol=1e-4,
               atol=1e-4,
           )
+      with self.subTest(case=name, api="linalg.solve"):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a_in, b=b_in, left_side=left: torch.linalg.solve(
+                a.to(device), b.to(device), left=left_side
+            ),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+
+    # Verify out aliasing b or a when batch broadcasting resizes out.
+    with self.subTest(case="out_aliases_b_broadcast"):
+      expected_res, expected_info = torch.linalg.solve_ex(
+          a_3d, b_left.unsqueeze(0)
+      )
+      a_tpu = a_3d.to("tpu")
+      b_tpu = b_left.unsqueeze(0).to("tpu").clone()
+      info_tpu = torch.empty(0, dtype=torch.int32, device="tpu")
+      res_tpu, info_out = torch.linalg.solve_ex(
+          a_tpu, b_tpu, out=(b_tpu, info_tpu)
+      )
+      self.assertEqual(res_tpu.shape, expected_res.shape)
+      utils.assert_close(res_tpu.cpu(), expected_res, rtol=1e-4, atol=1e-4)
+      utils.assert_close(info_out.cpu(), expected_info)
+
+    with self.subTest(case="out_aliases_a_broadcast"):
+      expected_res, expected_info = torch.linalg.solve_ex(
+          a_single.unsqueeze(0), b_batched_left
+      )
+      a_tpu = a_single.unsqueeze(0).to("tpu").clone()
+      b_tpu = b_batched_left.to("tpu")
+      info_tpu = torch.empty(0, dtype=torch.int32, device="tpu")
+      res_tpu, info_out = torch.linalg.solve_ex(
+          a_tpu, b_tpu, out=(a_tpu, info_tpu)
+      )
+      self.assertEqual(res_tpu.shape, expected_res.shape)
+      utils.assert_close(res_tpu.cpu(), expected_res, rtol=1e-4, atol=1e-4)
+      utils.assert_close(info_out.cpu(), expected_info)
+
+    with self.subTest(case="info_aliases_b_storage"):
+      expected_res, expected_info = torch.linalg.solve_ex(a_3d, b_batched_left)
+      a_tpu = a_3d.to("tpu")
+      b_tpu = b_batched_left.to("tpu").clone()
+      res_tpu = torch.empty(0, dtype=torch.float32, device="tpu")
+      info_view = b_tpu.view(torch.int32)[:, 0, 0]
+      res_out, info_out = torch.linalg.solve_ex(
+          a_tpu, b_tpu, out=(res_tpu, info_view)
+      )
+      utils.assert_close(res_out.cpu(), expected_res, rtol=1e-4, atol=1e-4)
+      utils.assert_close(info_out.cpu(), expected_info)
+
+    # Verify non-contiguous out with vector RHS broadcast.
+    with self.subTest(case="non_contiguous_out_vector_rhs"):
+
+      def run_noncontig_vec_out(device):
+        a_dev = a_3d.to(device)
+        b_dev = b_vec.to(device)
+        out_buf = torch.empty((3, 2), dtype=torch.float32, device=device).t()
+        info = torch.empty(0, dtype=torch.int32, device=device)
+        return torch.linalg.solve_ex(a_dev, b_dev, out=(out_buf, info))
+
+      self.assert_close_tpu_vs_cpu(run_noncontig_vec_out, rtol=1e-4, atol=1e-4)
+
+  def test_linalg_lu_solve_batch_broadcast(self):
+    # Non-symmetric, non-identity invertible matrices (batch 0 has zero [0, 0]
+    # to exercise pivoting, and batches are distinct).
+    a_single = torch.tensor(
+        [[0.0, 2.0, 1.0], [3.0, -1.0, 2.0], [1.0, 4.0, -1.0]],
+        dtype=torch.float32,
+    )
+    a_other = torch.tensor(
+        [[2.0, 1.0, 1.0], [4.0, -6.0, 0.0], [-2.0, 7.0, 2.0]],
+        dtype=torch.float32,
+    )
+    a_3d = torch.stack([a_single, a_other])
+    lu_2d, piv_2d = torch.linalg.lu_factor(a_single)
+    lu_3d, piv_3d = torch.linalg.lu_factor(a_3d)
+    lu_1_3d, piv_1_3d = torch.linalg.lu_factor(a_single.unsqueeze(0))
+    lu_4d, piv_4d = torch.linalg.lu_factor(a_3d.unsqueeze(1))
+
+    b_left = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4)
+    b_right = torch.arange(1, 13, dtype=torch.float32).reshape(4, 3)
+    b_batched_left = torch.arange(1, 25, dtype=torch.float32).reshape(2, 3, 4)
+    b_batched_right = torch.arange(1, 25, dtype=torch.float32).reshape(2, 4, 3)
+    b_4d_left = torch.arange(1, 73, dtype=torch.float32).reshape(3, 2, 3, 4)
+    b_4d_right = torch.arange(1, 73, dtype=torch.float32).reshape(3, 2, 4, 3)
+
+    def run_lu_solve(device, lu_t, piv_t, b_t, *, left, adjoint, use_out):
+      if use_out:
+        out = torch.empty(0, dtype=b_t.dtype, device=device)
+        return torch.linalg.lu_solve(
+            lu_t.to(device),
+            piv_t.to(device),
+            b_t.to(device),
+            left=left,
+            adjoint=adjoint,
+            out=out,
+        )
+      return torch.linalg.lu_solve(
+          lu_t.to(device),
+          piv_t.to(device),
+          b_t.to(device),
+          left=left,
+          adjoint=adjoint,
+      )
+
+    cases = [
+        ("lu_2d_b_3d", lu_2d, piv_2d, b_batched_left, b_batched_right),
+        ("lu_3d_b_2d", lu_3d, piv_3d, b_left, b_right),
+        (
+            "lu_singleton_b_3d",
+            lu_1_3d,
+            piv_1_3d,
+            b_batched_left,
+            b_batched_right,
+        ),
+        (
+            "lu_3d_b_singleton",
+            lu_3d,
+            piv_3d,
+            b_left.unsqueeze(0),
+            b_right.unsqueeze(0),
+        ),
+        (
+            "mutual_4d",
+            lu_4d,
+            piv_4d,
+            b_batched_left.unsqueeze(0),
+            b_batched_right.unsqueeze(0),
+        ),
+        ("lu_2d_b_4d", lu_2d, piv_2d, b_4d_left, b_4d_right),
+    ]
+
+    for name, lu_in, piv_in, b_left_case, b_right_case in cases:
+      for left in (True, False):
+        b_in = b_left_case if left else b_right_case
+        for adjoint in (False, True):
+          for use_out in (False, True):
+            with self.subTest(
+                case=name, left=left, adjoint=adjoint, use_out=use_out
+            ):
+              self.assert_close_tpu_vs_cpu(
+                  lambda device, lu_t=lu_in, piv_t=piv_in, b_t=b_in, left_side=left, adj=adjoint, use_out_arg=use_out: run_lu_solve(
+                      device,
+                      lu_t,
+                      piv_t,
+                      b_t,
+                      left=left_side,
+                      adjoint=adj,
+                      use_out=use_out_arg,
+                  ),
+                  rtol=1e-4,
+                  atol=1e-4,
+              )
+
+    # Complex64 with adjoint=True to exercise conjugate transpose under broadcast.
+    a_c = a_single.to(torch.complex64) + 1j * a_other.to(torch.complex64)
+    lu_c, piv_c = torch.linalg.lu_factor(a_c)
+    b_c_left = b_batched_left.to(torch.complex64) - 0.5j * b_batched_left.to(
+        torch.complex64
+    )
+    b_c_right = b_c_left.transpose(-2, -1).contiguous()
+    for left in (True, False):
+      b_c = b_c_left if left else b_c_right
+      with self.subTest(case="complex64_adjoint_bcast", left=left):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, b_t=b_c, left_side=left: torch.linalg.lu_solve(
+                lu_c.to(device),
+                piv_c.to(device),
+                b_t.to(device),
+                left=left_side,
+                adjoint=True,
+            ),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+
+    # Zero-element batch broadcasting (both non-out and out variants).
+    empty_cases = [
+        ("lu_empty_batch", (0, 3, 3), (0, 3), (1, 3, 4), (0, 3, 4)),
+        ("b_empty_batch", (1, 3, 3), (1, 3), (0, 3, 4), (0, 3, 4)),
+        ("b_empty_cols", (2, 3, 3), (2, 3), (1, 3, 0), (2, 3, 0)),
+    ]
+    for name, lu_shape, piv_shape, b_shape, expected_shape in empty_cases:
+      with self.subTest(case=name):
+        lu_empty = torch.empty(lu_shape, dtype=torch.float32, device="tpu")
+        pivots_empty = torch.empty(piv_shape, dtype=torch.int32, device="tpu")
+        b_empty = torch.empty(b_shape, dtype=torch.float32, device="tpu")
+        res = torch.linalg.lu_solve(lu_empty, pivots_empty, b_empty)
+        self.assertEqual(res.shape, expected_shape)
+        out_empty = torch.empty(0, dtype=torch.float32, device="tpu")
+        res_out = torch.linalg.lu_solve(
+            lu_empty, pivots_empty, b_empty, out=out_empty
+        )
+        self.assertIs(res_out, out_empty)
+        self.assertEqual(res_out.shape, expected_shape)
+
+    # out aliasing b (broadcast resize or transposed view) or lu under broadcast.
+    with self.subTest(case="out_aliases_b_broadcast"):
+      expected = torch.linalg.lu_solve(lu_3d, piv_3d, b_left.unsqueeze(0))
+      b_tpu = b_left.unsqueeze(0).to("tpu").clone()
+      res_tpu = torch.linalg.lu_solve(
+          lu_3d.to("tpu"), piv_3d.to("tpu"), b_tpu, out=b_tpu
+      )
+      self.assertEqual(res_tpu.shape, expected.shape)
+      utils.assert_close(res_tpu.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+    with self.subTest(case="out_aliases_b_transposed_view"):
+      b_square = torch.arange(1, 10, dtype=torch.float32).reshape(3, 3)
+      expected = torch.linalg.lu_solve(lu_2d, piv_2d, b_square)
+      b_tpu = b_square.to("tpu").clone()
+      out_view = b_tpu.t()
+      res_tpu = torch.linalg.lu_solve(
+          lu_2d.to("tpu"), piv_2d.to("tpu"), b_tpu, out=out_view
+      )
+      self.assertIs(res_tpu, out_view)
+      utils.assert_close(res_tpu.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+    with self.subTest(case="out_aliases_lu_broadcast"):
+      expected = torch.linalg.lu_solve(lu_1_3d, piv_1_3d, b_batched_left)
+      lu_tpu = lu_1_3d.to("tpu").clone()
+      res_tpu = torch.linalg.lu_solve(
+          lu_tpu, piv_1_3d.to("tpu"), b_batched_left.to("tpu"), out=lu_tpu
+      )
+      self.assertEqual(res_tpu.shape, expected.shape)
+      utils.assert_close(res_tpu.cpu(), expected, rtol=1e-4, atol=1e-4)
 
   def test_fill_tensor(self):
     self.assert_close_tpu_vs_cpu(

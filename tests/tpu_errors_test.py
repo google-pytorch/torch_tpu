@@ -1075,22 +1075,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.aten._add_relu_.Tensor(t, s, alpha=1j)
 
-  # CPU kernel runs successfully, broadcasting the inputs.
-  @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
-  def test_lu_solve_rank_mismatch(self):
-    lu = torch.ones(4, 4, device=et.device())
-    pivots = torch.ones(4, device=et.device(), dtype=torch.int32)
-    b = torch.ones(4, 4, 4, device=et.device())
-
-    # Call the out overload of linalg.lu_solve() op.
-    out = torch.empty(4, 4, 4, device=et.device())
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""linalg_lu_solve(): expected b to have the same number of dimensions as lu (2), got 3""",
-    ):
-      torch.linalg.lu_solve(lu, pivots, b, out=out)
-
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_index_multiple_bool_indices(self):
     inp = torch.ones(2, 2, device=et.device())
