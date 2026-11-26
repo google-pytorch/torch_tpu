@@ -12990,6 +12990,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(foreach_add_inside_fn)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="out_of_place", inplace=False),
+      dict(testcase_name="inplace", inplace=True),
+  )
+  def test_foreach_sub_int64_min_alpha(self, inplace: bool):
+    def fn(device):
+      self_list = [torch.tensor([10, -5], dtype=torch.int64, device=device)]
+      other_list = [torch.tensor([0, 2], dtype=torch.int64, device=device)]
+      alpha = -(2**63)
+      if inplace:
+        torch._foreach_sub_(self_list, other_list, alpha=alpha)
+        return self_list
+      return torch._foreach_sub(self_list, other_list, alpha=alpha)
+
+    self.assert_close_tpu_vs_cpu(fn)
+
   def test_foreach_div_with_zero_scalar(self):
     """Tests _foreach_div with a zero scalar."""
 
