@@ -777,6 +777,19 @@ absl::Status BitwiseShiftScalarHelper(const at::Tensor& self,
                      {.op_param_cache_keys = OpParamCacheKeys::Empty()});
 }
 
+// Returns an empty tensor of type `dtype` to hold the result of a binary op on
+// `self` and `other`. It is allocated on the device of the TPU operand, since
+// the other operand may be a 0-D CPU tensor (see `MoveCpuScalarsToTpu`).
+absl::StatusOr<at::Tensor> MakeEmptyBinaryOpOut(const at::Tensor& self,
+                                                const at::Tensor& other,
+                                                const at::ScalarType dtype) {
+  TT_ASSIGN_OR_RETURN(const Dimensions output_dims,
+                      InferSize(self.sizes(), other.sizes()));
+  return MakeEmptyTensor(
+      output_dims, dtype,
+      IsPrivateUse1Device(self) ? self.device() : other.device());
+}
+
 absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
                           MaybePromotedScalar promoted_alpha,
                           at::ScalarType promoted_scalar_type, at::Tensor& out,
@@ -1707,10 +1720,11 @@ at::Tensor AtenLshiftScalar(const at::Tensor& self, const at::Scalar& other) {
 
 at::Tensor AtenLshiftTensor(const at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kLshiftTensor, _, (self, other), {
-    at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    // Validate the dtypes before allocating `out`, which checks the shapes.
+    TT_THROW_IF_ERROR(ValidateBitwiseShiftInputs(self, other));
     TT_ASSIGN_OR_THROW(
         at::Tensor out,
-        MakeEmptyTensor(self.sizes(), promoted_scalar_type, self.device()));
+        MakeEmptyBinaryOpOut(self, other, at::result_type(self, other)));
     TT_THROW_IF_ERROR(BitwiseLeftShiftTensor(self, other, out));
     return out;
   });
@@ -1951,10 +1965,11 @@ at::Tensor AtenRshiftScalar(const at::Tensor& self, const at::Scalar& other) {
 
 at::Tensor AtenRshiftTensor(const at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kRshiftTensor, _, (self, other), {
-    at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    // Validate the dtypes before allocating `out`, which checks the shapes.
+    TT_THROW_IF_ERROR(ValidateBitwiseShiftInputs(self, other));
     TT_ASSIGN_OR_THROW(
         at::Tensor out,
-        MakeEmptyTensor(self.sizes(), promoted_scalar_type, self.device()));
+        MakeEmptyBinaryOpOut(self, other, at::result_type(self, other)));
     TT_THROW_IF_ERROR(BitwiseRightShiftTensor(self, other, out));
     return out;
   });
@@ -1968,11 +1983,8 @@ at::Tensor AtenRsubTensor(const at::Tensor& self, const at::Tensor& other,
     TT_THROW_IF_ERROR(ValidateSubInputs(other, self));
 
     const at::ScalarType promoted_scalar_type = at::result_type(other, self);
-    TT_ASSIGN_OR_THROW(const Dimensions output_dims,
-                       InferSize(other.sizes(), self.sizes()));
-    TT_ASSIGN_OR_THROW(
-        at::Tensor out,
-        MakeEmptyTensor(output_dims, promoted_scalar_type, self.device()));
+    TT_ASSIGN_OR_THROW(at::Tensor out,
+                       MakeEmptyBinaryOpOut(other, self, promoted_scalar_type));
 
     TT_THROW_IF_ERROR(SubHelperOut(other, self, std::move(promoted_alpha),
                                    promoted_scalar_type, out, param_keys));

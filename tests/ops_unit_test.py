@@ -2749,6 +2749,99 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         allow_failure=True,
     )
 
+  @parameterized.product(
+      op_fn=[
+          torch.ops.aten.__lshift__.Tensor,
+          torch.ops.aten.__rshift__.Tensor,
+      ],
+      other_data=[[1, 2, 3], 2, []],
+      other_dtype=[torch.int32, torch.int64],
+  )
+  def test__shift__Tensor_cpu_scalar_self(self, op_fn, other_data, other_dtype):
+    """Tests __lshift__.Tensor and __rshift__.Tensor with a 0-D CPU self."""
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op_fn(
+            torch.tensor(64),
+            torch.tensor(other_data, dtype=other_dtype, device=device),
+        )
+    )
+
+  @parameterized.product(
+      op_fn=[
+          torch.ops.aten.__ilshift__.Tensor,
+          torch.ops.aten.__irshift__.Tensor,
+          torch.ops.aten.__lshift__.Tensor,
+          torch.ops.aten.__rshift__.Tensor,
+      ],
+      self_dtype=[torch.int32, torch.int64],
+  )
+  def test__shift__Tensor_cpu_scalar_other(self, op_fn, self_dtype):
+    """Tests the bitwise shift Tensor ops with a 0-D CPU other."""
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op_fn(
+            torch.tensor([64, 32, 16], dtype=self_dtype, device=device),
+            torch.tensor(2),
+        )
+    )
+
+  @parameterized.product(
+      alpha=[1, 2],
+      other_dtype=[torch.int32, torch.float32],
+  )
+  def test_rsub_cpu_scalar_self(self, alpha, other_dtype):
+    """Tests rsub.Tensor with a 0-D CPU self."""
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.rsub(
+            torch.tensor(10.5),
+            torch.tensor([1, 2, 3], dtype=other_dtype, device=device),
+            alpha=alpha,
+        )
+    )
+
+  @parameterized.parameters(1, 2)
+  def test_rsub_cpu_scalar_other(self, alpha):
+    """Tests rsub.Tensor with a 0-D CPU other."""
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.rsub(
+            torch.tensor([1.0, 2.0, 3.0], device=device),
+            torch.tensor(10.5),
+            alpha=alpha,
+        )
+    )
+
+  @parameterized.parameters(
+      (torch.ops.aten.__lshift__.Tensor_out, 64, [1, 2, 3]),
+      (torch.ops.aten.__rshift__.Tensor_out, 64, [1, 2, 3]),
+      (torch.ops.aten.rsub.Tensor_out, 10.5, [1.0, 2.0, 3.0]),
+  )
+  def test_rsub_and_shift_Tensor_out_cpu_scalar_self(
+      self, op_fn, self_value, other_data
+  ):
+    """Tests the out= variants of rsub and the shifts with a 0-D CPU self."""
+
+    def compute(device):
+      other = torch.tensor(other_data, device=device)
+      out = torch.empty_like(other)
+      op_fn(torch.tensor(self_value), other, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(
+      torch.ops.aten.__lshift__.Tensor,
+      torch.ops.aten.__rshift__.Tensor,
+  )
+  def test__shift__Tensor_broadcast_self(self, op_fn):
+    """Tests __lshift__.Tensor and __rshift__.Tensor when self broadcasts."""
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op_fn(
+            torch.tensor([[8, 16, 32]], dtype=torch.int32, device=device),
+            torch.tensor(
+                [[1, 2, 3], [2, 1, 0]], dtype=torch.int32, device=device
+            ),
+        )
+    )
+
   def test_empty_tensor_empty_index_in_take(self):
     """Tests that torch.take() works when the input tensor and index are both empty."""
     self.assert_close_tpu_vs_cpu(

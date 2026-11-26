@@ -14753,6 +14753,81 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       x >> y  # pylint: disable=pointless-statement
 
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "rsub_cpu_self",
+          "op_fn": torch.rsub,
+          "op_name": "rsub",
+          "dtype": torch.float32,
+          "cpu_first": True,
+      },
+      {
+          "testcase_name": "rsub_alpha_cpu_self",
+          "op_fn": lambda a, b: torch.rsub(a, b, alpha=2),
+          "op_name": "rsub",
+          "dtype": torch.float32,
+          "cpu_first": True,
+      },
+      {
+          "testcase_name": "rsub_cpu_other",
+          "op_fn": torch.rsub,
+          "op_name": "rsub",
+          "dtype": torch.float32,
+          "cpu_first": False,
+      },
+      {
+          "testcase_name": "rsub_alpha_cpu_other",
+          "op_fn": lambda a, b: torch.rsub(a, b, alpha=2),
+          "op_name": "rsub",
+          "dtype": torch.float32,
+          "cpu_first": False,
+      },
+      {
+          "testcase_name": "lshift_cpu_self",
+          "op_fn": torch.ops.aten.__lshift__.Tensor,
+          "op_name": "__lshift__",
+          "dtype": torch.int64,
+          "cpu_first": True,
+      },
+      {
+          "testcase_name": "lshift_cpu_other",
+          "op_fn": torch.ops.aten.__lshift__.Tensor,
+          "op_name": "__lshift__",
+          "dtype": torch.int64,
+          "cpu_first": False,
+      },
+      {
+          "testcase_name": "rshift_cpu_self",
+          "op_fn": torch.ops.aten.__rshift__.Tensor,
+          "op_name": "__rshift__",
+          "dtype": torch.int64,
+          "cpu_first": True,
+      },
+      {
+          "testcase_name": "rshift_cpu_other",
+          "op_fn": torch.ops.aten.__rshift__.Tensor,
+          "op_name": "__rshift__",
+          "dtype": torch.int64,
+          "cpu_first": False,
+      },
+  )
+  def test_rsub_and_shift_non_scalar_cpu_operand(
+      self, op_fn, op_name, dtype, cpu_first
+  ):
+    cpu_tensor = torch.tensor([8], dtype=dtype)
+    device_tensor = torch.tensor([1, 2, 3], dtype=dtype, device=et.device())
+    first, second = (
+        (cpu_tensor, device_tensor)
+        if cpu_first
+        else (device_tensor, cpu_tensor)
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      op_fn(first, second)
+
   def test_put_index_dtype_mismatch(self):
     self_t = torch.ones(5, device=et.device())
     index = torch.tensor([1.0], device=et.device())
