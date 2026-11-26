@@ -22789,6 +22789,106 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       tpu_res = test_fn(torch.device("tpu"))
       self.assertEqual(cpu_res, tpu_res.cpu())
 
+  @parameterized.named_parameters(
+      ("fmax_float32", torch.fmax, True, torch.float32),
+      ("fmax_bfloat16", torch.fmax, True, torch.bfloat16),
+      ("fmax_float16", torch.fmax, True, torch.float16),
+      ("fmax_float64", torch.fmax, True, torch.float64),
+      ("fmin_float32", torch.fmin, False, torch.float32),
+      ("fmin_bfloat16", torch.fmin, False, torch.bfloat16),
+      ("fmin_float16", torch.fmin, False, torch.float16),
+      ("fmin_float64", torch.fmin, False, torch.float64),
+  )
+  def test_fmax_fmin_signed_zero_and_nan(self, op, is_max, dtype):
+    """Tests fmax/fmin signed zero tie-breaking and NaN propagation (IEEE 754)."""
+    values = [
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        float("inf"),
+        -float("inf"),
+        float("nan"),
+        -float("nan"),
+    ]
+    lhs_vals = [v1 for v1, _ in itertools.product(values, repeat=2)]
+    rhs_vals = [v2 for _, v2 in itertools.product(values, repeat=2)]
+
+    def expected_pair(a: float, b: float) -> float:
+      if math.isnan(a):
+        return b
+      if math.isnan(b):
+        return a
+      if a == 0.0 and b == 0.0:
+        if is_max:
+          return (
+              0.0
+              if (math.copysign(1.0, a) > 0 or math.copysign(1.0, b) > 0)
+              else -0.0
+          )
+        return (
+            -0.0
+            if (math.copysign(1.0, a) < 0 or math.copysign(1.0, b) < 0)
+            else 0.0
+        )
+      return a if (a > b if is_max else a < b) else b
+
+    expected_cpu = torch.tensor(
+        [expected_pair(a, b) for a, b in zip(lhs_vals, rhs_vals)], dtype=dtype
+    )
+    lhs_tpu = torch.tensor(lhs_vals, dtype=dtype, device="tpu")
+    rhs_tpu = torch.tensor(rhs_vals, dtype=dtype, device="tpu")
+    tpu_res = op(lhs_tpu, rhs_tpu).cpu()
+
+    self.assertEqual(tpu_res, expected_cpu)
+    non_nan = ~torch.isnan(expected_cpu)
+    # XLA TPU software float64 emulation does not preserve -0.0 signbits.
+    if dtype != torch.float64:
+      self.assertEqual(
+          torch.signbit(tpu_res)[non_nan], torch.signbit(expected_cpu)[non_nan]
+      )
+
+    out_tpu = torch.empty_like(lhs_tpu)
+    op(lhs_tpu, rhs_tpu, out=out_tpu)
+    out_tpu_cpu = out_tpu.cpu()
+    self.assertEqual(out_tpu_cpu, expected_cpu)
+    if dtype != torch.float64:
+      self.assertEqual(
+          torch.signbit(out_tpu_cpu)[non_nan],
+          torch.signbit(expected_cpu)[non_nan],
+      )
+
+  @parameterized.named_parameters(
+      ("fmax_f32_to_bf16", torch.fmax, True, torch.float32, torch.bfloat16),
+      ("fmin_f32_to_bf16", torch.fmin, False, torch.float32, torch.bfloat16),
+      ("fmax_i32_to_f32", torch.fmax, True, torch.int32, torch.float32),
+      ("fmin_i32_to_f32", torch.fmin, False, torch.int32, torch.float32),
+      ("fmax_f16_to_f32", torch.fmax, True, torch.float16, torch.float32),
+      ("fmin_f16_to_f32", torch.fmin, False, torch.float16, torch.float32),
+  )
+  def test_fmax_fmin_out_castable_dtype(self, op, is_max, in_dtype, out_dtype):
+    """Tests fmax.out and fmin.out with castable out tensor dtypes."""
+    if in_dtype.is_floating_point:
+      lhs_cpu = torch.tensor([0.0, -0.0, 2.5, float("nan")], dtype=in_dtype)
+      rhs_cpu = torch.tensor([-0.0, 0.0, -1.5, 3.0], dtype=in_dtype)
+      expected = torch.tensor(
+          [0.0, 0.0, 2.5, 3.0] if is_max else [-0.0, -0.0, -1.5, 3.0],
+          dtype=out_dtype,
+      )
+    else:
+      lhs_cpu = torch.tensor([-3, 0, 5, 10], dtype=in_dtype)
+      rhs_cpu = torch.tensor([2, -1, 5, -4], dtype=in_dtype)
+      expected = torch.empty(lhs_cpu.shape, dtype=out_dtype)
+      op(lhs_cpu, rhs_cpu, out=expected)
+
+    out_tpu = torch.empty(lhs_cpu.shape, dtype=out_dtype, device="tpu")
+    op(lhs_cpu.to("tpu"), rhs_cpu.to("tpu"), out=out_tpu)
+    out_tpu_cpu = out_tpu.cpu()
+
+    self.assertEqual(out_tpu_cpu, expected)
+    if out_dtype.is_floating_point:
+      self.assertEqual(torch.signbit(out_tpu_cpu), torch.signbit(expected))
+
   def test_fmod_float_zero_division(self):
     # Return NaN for floating point division by zero on both CPU and TPU
     def test_fn(device):
