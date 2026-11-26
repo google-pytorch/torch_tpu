@@ -55,6 +55,14 @@ class _ExpectedHandshakeClaim:
   end: int
   fingerprint: str
 
+  def overlaps(self, other: "_ExpectedHandshakeClaim") -> bool:
+    """Returns whether the claims have a collective in common.
+
+    Args:
+      other: A claim on the same process group.
+    """
+    return self.start < other.end and other.start < self.end
+
 
 def _claims(
     request: CollectiveHandshakeRequest,
@@ -180,6 +188,14 @@ class _ProcessGroupClaim:
   state: _ProcessGroupState
   claim: _ExpectedHandshakeClaim
 
+  def overlaps(self, other: "_ProcessGroupClaim") -> bool:
+    """Returns whether the claims have a collective in common."""
+    return self.state is other.state and self.claim.overlaps(other.claim)
+
+  def ranks_without_response(self) -> Collection[int]:
+    """Returns the ranks without a response for a claimed collective."""
+    return self.state.ranks_without_response_before(self.claim.end)
+
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class _RequestWithProcessGroupClaims:
@@ -252,6 +268,210 @@ class _PendingRequests:
     del self._request_of_rank[request.rank]
     for process_group_claim in request.process_group_claims:
       process_group_claim.state.remove_claimant(request.rank)
+
+
+class _RejectedClusterPart:
+  """A part of a cluster whose requests are rejected.
+
+  A *rejected cluster part* is a set of rejected requests connected by overlaps.
+  It is a part of a cluster (see the module docstring) and not the whole
+  cluster, because other requests of the cluster may not have been submitted
+  yet. The class keeps the claims of the rejected requests, not the requests.
+
+  A rejected cluster part is *open* if some rank of a process group claimed in
+  it has no response for one of the claimed collectives.
+
+  A rejected cluster part is *closed* if it is not open.
+
+  A *previous part* of a rejected cluster part is the rejected cluster part of
+  the previous rejected request of one of its ranks, if that rank was not
+  settled (see `_RejectionHistory`) when it was rejected again.
+
+  The *chain of previous parts* of a rejected cluster part consists of its
+  previous parts, their previous parts, and so on.
+  """
+
+  def __init__(
+      self,
+      process_group_claims: Collection[_ProcessGroupClaim],
+      previous_parts: Collection["_RejectedClusterPart"],
+  ) -> None:
+    """Initializes the instance.
+
+    Args:
+      process_group_claims: The claims of a rejected request.
+      previous_parts: The previous parts of this one.
+    """
+    self._process_group_claims = list(process_group_claims)
+    self._previous_parts = list(previous_parts)
+
+  @property
+  def process_group_claims(self) -> Sequence[_ProcessGroupClaim]:
+    """The claims of the rejected requests of the rejected cluster part."""
+    return tuple(self._process_group_claims)
+
+  @property
+  def previous_parts(self) -> Sequence["_RejectedClusterPart"]:
+    """The previous parts of this one."""
+    return tuple(self._previous_parts)
+
+  def overlaps(
+      self, process_group_claims: Collection[_ProcessGroupClaim]
+  ) -> bool:
+    """Returns whether one of `process_group_claims` overlaps this part."""
+    for process_group_claim in process_group_claims:
+      for own in self._process_group_claims:
+        if process_group_claim.overlaps(own):
+          return True
+    return False
+
+  def ranks_without_response(self) -> Collection[int]:
+    """Returns the ranks that keep the rejected cluster part open."""
+    ranks: set[int] = set()
+    for process_group_claim in self._process_group_claims:
+      ranks.update(process_group_claim.ranks_without_response())
+    return ranks
+
+  def absorb(self, other: "_RejectedClusterPart") -> None:
+    """Adds the claims and the previous parts of `other` to this part."""
+    self._process_group_claims.extend(other.process_group_claims)
+    self._previous_parts.extend(other.previous_parts)
+
+  def replace_previous_part(
+      self, old: "_RejectedClusterPart", new: "_RejectedClusterPart"
+  ) -> None:
+    """Makes `new` a previous part wherever `old` is one."""
+    self._previous_parts = [
+        new if previous_part is old else previous_part
+        for previous_part in self._previous_parts
+    ]
+
+  def keep_previous_parts(
+      self, kept: Collection["_RejectedClusterPart"]
+  ) -> None:
+    """Removes the previous parts that are not in `kept`."""
+    self._previous_parts = [
+        previous_part
+        for previous_part in self._previous_parts
+        if previous_part in kept
+    ]
+
+
+class _RejectionHistory:
+  """The rejected cluster parts that can keep a rank from being settled.
+
+  The *lagging ranks* of a rank are the ranks that keep one of these rejected
+  cluster parts open:
+  * the rejected cluster part of its last rejected request
+  * the rejected cluster parts in the chain of previous parts of that rejected
+    cluster part
+
+  A rank is *settled* if it has no lagging ranks.
+  """
+
+  def __init__(self) -> None:
+    """Initializes the instance."""
+    # The rejected cluster parts that may keep a rank from being settled.
+    self._rejected_parts: list[_RejectedClusterPart] = []
+    # The rejected cluster part of the last rejected request of each rank.
+    # Without an entry, the rank is settled.
+    self._last_rejected_part_per_rank: dict[int, _RejectedClusterPart] = {}
+
+  def record_rejection(self, request: _RequestWithProcessGroupClaims) -> None:
+    """Records that `request` was rejected.
+
+    The claims of the request become a new rejected cluster part. If the rank of
+    the request is not settled, the last rejected cluster part of the rank
+    becomes a previous part of the new one. The rejected cluster parts that the
+    request overlaps are merged into the new one.
+
+    This has to be called before `advance_rank` of `request`, so that whether
+    the rank is settled is decided without the response to `request`. The
+    order only changes responses for requests that break the contract of
+    `CollectiveHandshakeConsensus.submit`.
+    """
+    rank = request.rank
+    previous_parts = (
+        []
+        if self.is_settled(rank)
+        else [self._last_rejected_part_per_rank[rank]]
+    )
+    rejected_part = _RejectedClusterPart(
+        request.process_group_claims, previous_parts
+    )
+    overlapped = [
+        other
+        for other in self._rejected_parts
+        if other.overlaps(request.process_group_claims)
+    ]
+    self._rejected_parts.append(rejected_part)
+    self._last_rejected_part_per_rank[rank] = rejected_part
+    for other in overlapped:
+      self._merge(rejected_part, other)
+
+  def is_settled(self, rank: int) -> bool:
+    """Returns whether `rank` is settled."""
+    return not self.lagging_ranks(rank)
+
+  def lagging_ranks(self, rank: int) -> Collection[int]:
+    """Returns the ranks that keep `rank` from being settled."""
+    rejected_part = self._last_rejected_part_per_rank.get(rank)
+    if rejected_part is None:
+      return set()
+    return self._lagging_ranks_of_rejected_part(rejected_part)
+
+  def forget_rejected_parts_without_lagging_ranks(self) -> None:
+    """Forgets the rejected cluster parts that keep no rank from being settled.
+
+    These are the closed rejected cluster parts whose chain of previous parts is
+    closed as well. A closed rejected cluster part stays closed for requests
+    that keep the contract of `CollectiveHandshakeConsensus.submit`.
+    """
+    self._rejected_parts = [
+        rejected_part
+        for rejected_part in self._rejected_parts
+        if self._lagging_ranks_of_rejected_part(rejected_part)
+    ]
+    for rejected_part in self._rejected_parts:
+      rejected_part.keep_previous_parts(self._rejected_parts)
+    self._last_rejected_part_per_rank = {
+        rank: rejected_part
+        for rank, rejected_part in self._last_rejected_part_per_rank.items()
+        if rejected_part in self._rejected_parts
+    }
+
+  def _merge(
+      self, rejected_part: _RejectedClusterPart, other: _RejectedClusterPart
+  ) -> None:
+    """Moves the content of `other` into `rejected_part`, which replaces it."""
+    rejected_part.absorb(other)
+    self._rejected_parts.remove(other)
+    for member in self._rejected_parts:
+      member.replace_previous_part(other, rejected_part)
+    for rank, last_part in self._last_rejected_part_per_rank.items():
+      if last_part is other:
+        self._last_rejected_part_per_rank[rank] = rejected_part
+
+  def _lagging_ranks_of_rejected_part(
+      self, rejected_part: _RejectedClusterPart
+  ) -> Collection[int]:
+    """Returns the ranks that keep `rejected_part` or its chain open.
+
+    Args:
+      rejected_part: A rejected cluster part. Its chain is its chain of previous
+        parts.
+    """
+    lagging_ranks: set[int] = set()
+    visited: set[_RejectedClusterPart] = set()
+    stack = [rejected_part]
+    while stack:
+      member = stack.pop()
+      if member in visited:
+        continue
+      visited.add(member)
+      stack.extend(member.previous_parts)
+      lagging_ranks.update(member.ranks_without_response())
+    return lagging_ranks
 
 
 def _mismatch_rule_applies(request: _RequestWithProcessGroupClaims) -> bool:

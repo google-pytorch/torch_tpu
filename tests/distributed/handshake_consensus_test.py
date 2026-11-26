@@ -34,6 +34,7 @@ ProcessGroupId = process_group_utils.ProcessGroupId
 _Claim = handshake_consensus._ExpectedHandshakeClaim
 _ProcessGroupState = handshake_consensus._ProcessGroupState
 _ProcessGroupClaim = handshake_consensus._ProcessGroupClaim
+_RejectionHistory = handshake_consensus._RejectionHistory
 _RequestWithProcessGroupClaims = (
     handshake_consensus._RequestWithProcessGroupClaims
 )
@@ -352,6 +353,189 @@ class MismatchRuleTest(seed_test_utils.RepeatableTest):
     self.state.remove_claimant(0)
 
     self.assertFalse(self.applies(1, _Claim(0, 1, "b")))
+
+
+class RejectionHistoryTest(seed_test_utils.RepeatableTest):
+  """Tests for which ranks are settled after rejections."""
+
+  def request(
+      self, rank: int, claims: Mapping[_ProcessGroupState, _Claim]
+  ) -> _RequestWithProcessGroupClaims:
+    """Returns a request of `rank`.
+
+    Args:
+      rank: The rank of the request.
+      claims: The claim of the request on every process group it claims, by the
+        state of the process group.
+    """
+    request = _request(
+        rank, {state.process_group: claim for state, claim in claims.items()}
+    )
+    process_group_claims = [
+        _ProcessGroupClaim(state, claim) for state, claim in claims.items()
+    ]
+    return _RequestWithProcessGroupClaims(request, process_group_claims)
+
+  def reject(
+      self,
+      history: _RejectionHistory,
+      state: _ProcessGroupState,
+      rank: int,
+      start: int,
+      end: int,
+  ) -> None:
+    """Rejects a request of `rank` for collectives `[start, end)` of `state`."""
+    claim = _Claim(start, end, "fingerprint")
+    history.record_rejection(self.request(rank, {state: claim}))
+    state.advance_rank(rank, end)
+
+  def test_rank_is_settled_once_all_ranks_have_a_response(self) -> None:
+    history = _RejectionHistory()
+    state = _ProcessGroupState(ProcessGroupId([0, 1, 2]))
+    self.assertTrue(history.is_settled(0))
+
+    self.reject(history, state, rank=0, start=0, end=1)
+    self.assertFalse(history.is_settled(0))
+    self.assertCountEqual(history.lagging_ranks(0), [1, 2])
+    self.assertTrue(history.is_settled(1))
+
+    state.advance_rank(1, 1)
+    self.assertCountEqual(history.lagging_ranks(0), [2])
+
+    state.advance_rank(2, 1)
+    self.assertTrue(history.is_settled(0))
+
+  def test_overlapping_rejections_form_one_rejected_part(self) -> None:
+    history = _RejectionHistory()
+    state = _ProcessGroupState(ProcessGroupId([0, 1]))
+
+    self.reject(history, state, rank=0, start=0, end=1)
+    self.reject(history, state, rank=1, start=0, end=2)
+
+    # Rank 1 has a response for the collective of rank 0, but rank 0 has none
+    # for the second collective of rank 1, which is in the same rejected
+    # cluster part.
+    self.assertCountEqual(history.lagging_ranks(0), [0])
+    self.assertCountEqual(history.lagging_ranks(1), [0])
+
+  def test_rank_rejected_before_it_is_settled_gets_a_previous_part(
+      self,
+  ) -> None:
+    history = _RejectionHistory()
+    first = _ProcessGroupState(ProcessGroupId([0, 1]))
+    second = _ProcessGroupState(ProcessGroupId([0, 2]))
+
+    self.reject(history, first, rank=0, start=0, end=1)
+    self.reject(history, second, rank=0, start=0, end=1)
+    self.assertCountEqual(history.lagging_ranks(0), [1, 2])
+
+    # The rejected cluster part of the last rejection is closed, its previous
+    # part is not.
+    second.advance_rank(2, 1)
+    self.assertCountEqual(history.lagging_ranks(0), [1])
+
+    first.advance_rank(1, 1)
+    self.assertTrue(history.is_settled(0))
+
+  def test_forgetting_closed_rejected_parts_keeps_the_open_ones(self) -> None:
+    history = _RejectionHistory()
+    closed = _ProcessGroupState(ProcessGroupId([0, 1]))
+    still_open = _ProcessGroupState(ProcessGroupId([2, 3]))
+    self.reject(history, closed, rank=0, start=0, end=1)
+    self.reject(history, still_open, rank=2, start=0, end=1)
+    closed.advance_rank(1, 1)
+
+    history.forget_rejected_parts_without_lagging_ranks()
+
+    self.assertTrue(history.is_settled(0))
+    self.assertCountEqual(history.lagging_ranks(2), [3])
+
+  def test_merged_rejected_part_keeps_the_claims_of_both(self) -> None:
+    history = _RejectionHistory()
+    state = _ProcessGroupState(ProcessGroupId([0, 1, 2]))
+
+    self.reject(history, state, rank=0, start=0, end=2)
+    self.reject(history, state, rank=1, start=0, end=1)
+    state.advance_rank(2, 1)
+
+    # Every rank has a response for the collective of rank 1, but ranks 1 and 2
+    # have none for the second collective of rank 0, which is in the same
+    # rejected cluster part.
+    self.assertCountEqual(history.lagging_ranks(1), [1, 2])
+
+  def test_merged_rejected_part_keeps_the_previous_parts_of_both(
+      self,
+  ) -> None:
+    history = _RejectionHistory()
+    first = _ProcessGroupState(ProcessGroupId([0, 1]))
+    second = _ProcessGroupState(ProcessGroupId([0, 2]))
+
+    self.reject(history, first, rank=0, start=0, end=1)
+    self.reject(history, second, rank=0, start=0, end=1)
+    # Rank 2 joins the second rejected cluster part of rank 0, which has the
+    # first one as a previous part.
+    self.reject(history, second, rank=2, start=0, end=1)
+
+    self.assertCountEqual(history.lagging_ranks(2), [1])
+
+  def test_rejected_part_stays_a_previous_part_when_it_is_merged(self) -> None:
+    history = _RejectionHistory()
+    first = _ProcessGroupState(ProcessGroupId([0, 1]))
+    second = _ProcessGroupState(ProcessGroupId([0, 2]))
+
+    self.reject(history, first, rank=0, start=0, end=1)
+    self.reject(history, second, rank=0, start=0, end=1)
+    # Rank 1 adds a collective that rank 0 has no response for to the first
+    # rejected cluster part, which is a previous part of the second one.
+    self.reject(history, first, rank=1, start=0, end=2)
+    second.advance_rank(2, 1)
+
+    self.assertCountEqual(history.lagging_ranks(0), [0])
+
+  def test_lagging_ranks_follow_the_chain_of_previous_parts(self) -> None:
+    history = _RejectionHistory()
+    states = [
+        _ProcessGroupState(ProcessGroupId([0, other])) for other in (1, 2, 3)
+    ]
+
+    for state in states:
+      self.reject(history, state, rank=0, start=0, end=1)
+    states[1].advance_rank(2, 1)
+    states[2].advance_rank(3, 1)
+
+    self.assertCountEqual(history.lagging_ranks(0), [1])
+
+  def test_forgetting_keeps_closed_rejected_parts_with_an_open_previous_part(
+      self,
+  ) -> None:
+    history = _RejectionHistory()
+    first = _ProcessGroupState(ProcessGroupId([0, 1]))
+    second = _ProcessGroupState(ProcessGroupId([0, 2]))
+    self.reject(history, first, rank=0, start=0, end=1)
+    self.reject(history, second, rank=0, start=0, end=1)
+    second.advance_rank(2, 1)
+
+    history.forget_rejected_parts_without_lagging_ranks()
+
+    self.assertCountEqual(history.lagging_ranks(0), [1])
+
+  def test_rejection_overlapping_two_rejected_parts_merges_them(self) -> None:
+    history = _RejectionHistory()
+    first = _ProcessGroupState(ProcessGroupId([0, 2]))
+    second = _ProcessGroupState(ProcessGroupId([1, 2]))
+    self.reject(history, first, rank=0, start=0, end=2)
+    self.reject(history, second, rank=1, start=0, end=1)
+
+    # The request of rank 2 claims a collective of both rejected cluster parts.
+    claim = _Claim(0, 1, "fingerprint")
+    history.record_rejection(self.request(2, {first: claim, second: claim}))
+    first.advance_rank(2, 1)
+    second.advance_rank(2, 1)
+
+    # Rank 2 has no response for the second collective of rank 0, which is now
+    # in the rejected cluster part of rank 1 as well.
+    self.assertCountEqual(history.lagging_ranks(0), [2])
+    self.assertCountEqual(history.lagging_ranks(1), [2])
 
 
 if __name__ == "__main__":
