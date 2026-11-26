@@ -145,6 +145,10 @@ class MultiProcContinuousTest(
       super()._spawn_processes(world_size)
 
   @classmethod
+  def _get_device_type(cls) -> str:
+    return object.__new__(cls).device_type
+
+  @classmethod
   def _init_pg(cls, rank: int, world_size: int, rdvz_file: str | None) -> None:
     # Upstream PyTorch passes `rdvz_file` for file-based rendezvous, but we
     # rely on MASTER_ADDR/MASTER_PORT (env://) injected by `_spawn_processes`
@@ -157,7 +161,7 @@ class MultiProcContinuousTest(
         nproc_per_node=world_size,
     )
     dist.init_process_group(
-        backend=cls.backend_str(),
+        backend=cls.backend_str(cls._get_device_type()),
         pg_options=cls.opts(),
         timeout=cls.timeout,
     )
@@ -260,24 +264,25 @@ class TpuMultiProcContinuousTest(MultiProcContinuousTest):
   Subclasses must set `world_size`.
   """
 
-  @classmethod
-  def device_type(cls) -> str:
+  @property
+  def device_type(self) -> str:
     return "tpu"
 
   @classmethod
-  def backend_str(cls) -> str:
+  def backend_str(cls, device: str | None = None) -> str:
+    del device
     return "tpu_dist"
 
   @classmethod
   def _prepare_launch_env(cls, world_size: int) -> None:
-    if cls.device_type() == "tpu":
+    if cls._get_device_type() == "tpu":
       distributed_utils.set_launch_env(nproc_per_node=world_size)
     else:
       super()._prepare_launch_env(world_size)
 
   @classmethod
   def _fence_between_tests(cls) -> None:
-    if cls.device_type() != "tpu":
+    if cls._get_device_type() != "tpu":
       super()._fence_between_tests()
       return
     # On `tpu_dist`, `dist.barrier()` executes an `allreduce` on a 1-element
@@ -301,12 +306,13 @@ class GlooMultiProcContinuousTest(MultiProcContinuousTest):
   # initial gloo full-mesh rendezvous or teardown barriers.
   timeout = datetime.timedelta(minutes=30)
 
-  @classmethod
-  def device_type(cls) -> str:
+  @property
+  def device_type(self) -> str:
     return "cpu"
 
   @classmethod
-  def backend_str(cls) -> str:
+  def backend_str(cls, device: str | None = None) -> str:
+    del device
     return "gloo"
 
   @classmethod

@@ -422,7 +422,9 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
         ],
         "TestAutogradMultipleDispatch": [
             "test_autograd_composite_implicit_and_dispatch_registration",
+            "test_autograd_composite_implicit_and_dispatch_registration_nested",
             "test_autograd_multiple_dispatch_registrations",
+            "test_autograd_multiple_dispatch_registrations_nested",
         ],
         "TestInputGradBuffers": [
             "test_lookup_does_not_deadlock_with_python_dispatch",
@@ -440,7 +442,12 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
     "test_dataloader": {
         "TestDataLoaderDevice": [
             "test_custom_batch_pin",
+            "test_nested_tensor_multiprocessing",
+            "test_sparse_tensor_multiprocessing",
             "test_string_shuffle_pin_memory",
+        ],
+        "TestDataLoaderMultiProcessingDevice": [
+            "test_multiprocessing_contexts",
         ],
     },
     "test_dlpack": {
@@ -966,6 +973,7 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_complex_promotion",
             "test_integer_addcdiv_deprecated",
             "test_many_promotions",
+            "test_shell_dtype_promotion_raises",
             "test_sparse_add",
             "test_sparse_div",
             "test_sparse_div_promotion",

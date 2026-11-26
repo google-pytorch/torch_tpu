@@ -196,18 +196,23 @@ class DistributedSingleTraceTrainerTest(
   world_size = _WORLD_SIZE
 
   @classmethod
-  def device_type(cls) -> str:
+  def _resolved_device_type(cls) -> str:
     multiprocessing.parse_absl_flags()
     return _DEVICE.value
 
+  @property
+  def device_type(self) -> str:
+    return self._resolved_device_type()
+
   @classmethod
-  def backend_str(cls) -> str:
-    return "tpu_dist" if cls.device_type() == "tpu" else "gloo"
+  def backend_str(cls, device: str | None = None) -> str:
+    resolved_device = cls._resolved_device_type() if device is None else device
+    return "tpu_dist" if resolved_device == "tpu" else "gloo"
 
   @classmethod
   def _run_test_given_id(cls, test_id: str, **kwargs: Any) -> None:
     test_id = test_id.split()[0]
-    if cls.device_type() == "tpu":
+    if cls._resolved_device_type() == "tpu":
       super()._run_test_given_id(test_id, **kwargs)
       return
 
@@ -235,7 +240,7 @@ class DistributedSingleTraceTrainerTest(
   def test_simple_fsdp_matches_eager(
       self, optimizer_name: str, mode: str
   ) -> None:
-    device = self.device_type()
+    device = self.device_type
     tolerances = _TOLERANCES[device]
     ref_losses, ref_params = _eager_reference(optimizer_name, device, mode)
 
@@ -270,7 +275,7 @@ class DistributedSingleTraceTrainerTest(
       )
 
   def test_simple_fsdp_grads_without_optimizer(self) -> None:
-    device = self.device_type()
+    device = self.device_type
     tolerances = _TOLERANCES[device]
     ref_model = _build_fsdp_mlp(device, with_unused=True)
     inputs, targets = _make_batch(0, device)
@@ -298,7 +303,7 @@ class DistributedSingleTraceTrainerTest(
       )
 
   def test_dtensor_buffer(self) -> None:
-    device = self.device_type()
+    device = self.device_type
     tolerances = _TOLERANCES[device]
     torch.manual_seed(1234)
     with torch.device(device):
@@ -314,7 +319,7 @@ class DistributedSingleTraceTrainerTest(
     self.assertEqual(buffers["scale"].placements, (dtensor.Replicate(),))
 
   def test_muon_rejects_sharded_params(self) -> None:
-    device = self.device_type()
+    device = self.device_type
     with self.assertRaises(  # ASSERT_RAISES_OK=Validates expected error.
         NotImplementedError
     ) as cm:
@@ -330,7 +335,7 @@ class DistributedSingleTraceTrainerTest(
     )
 
   def test_rejects_buffer_only_subclass_model(self) -> None:
-    device = self.device_type()
+    device = self.device_type
     with torch.device(device):
       model = _BufferOnly(_mesh(device))
     trainer = single_trace_trainer.SingleTraceTrainer(

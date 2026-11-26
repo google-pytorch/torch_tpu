@@ -1441,9 +1441,6 @@ at::Tensor& AtenEqScalarOut(const at::Tensor& self, const at::Scalar& other,
                             at::Tensor& out) {
   PromotedScalar promoted_other = PromoteScalar(other);
   TT_KERNEL(OpName::kEqScalarOut, _, (self, promoted_other, out), {
-    TT_CHECK_THROW(self.scalar_type() != at::kFloat4_e2m1fn_x2,
-                   error::kInvalidArgument)
-        << "scalar comparison is not supported for float4_e2m1fn_x2";
     TT_THROW_IF_ERROR(AtenComparisonScalarOutHelper(
         self, promoted_other, out, stablehlo::ComparisonDirection::EQ));
     return out;
@@ -1788,9 +1785,6 @@ at::Tensor& AtenNeScalarOut(const at::Tensor& self, const at::Scalar& other,
                             at::Tensor& out) {
   PromotedScalar promoted_other = PromoteScalar(other);
   TT_KERNEL(OpName::kNeScalarOut, _, (self, promoted_other, out), {
-    TT_CHECK_THROW(self.scalar_type() != at::kFloat4_e2m1fn_x2,
-                   error::kInvalidArgument)
-        << "scalar comparison is not supported for float4_e2m1fn_x2";
     TT_THROW_IF_ERROR(AtenComparisonScalarOutHelper(
         self, promoted_other, out, stablehlo::ComparisonDirection::NE));
     return out;
