@@ -1051,6 +1051,7 @@ torch_tpu_py_test(
         REQUIRES_V5_MULTI_DEVICE,
         "noasan",  # TODO(b/555734615): fix the test in asan mode.
         "notsan",  # TODO(b/555734615): fix the time-out in tsan mode.
+        "nozapfhahn",  # TODO(b/590733396): OOM at the 28g limit in coverage builds.
     ],
     deps = [
         ":continuous_test_utils",
