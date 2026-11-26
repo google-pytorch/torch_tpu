@@ -75,7 +75,8 @@ CompactionRanks ComputePrefixRanks(const kiln::Tile live_flags,
 }
 
 kiln::Tile CompactTile(kiln::Tile control, const int distance_shift,
-                       const kiln::Tile lane, const kiln::Tile sublane) {
+                       const kiln::Tile lane, const kiln::Tile sublane,
+                       const absl::Span<kiln::Tile* const> payloads) {
   ABSL_CHECK(  // CRASH_OK=compile-time kernel construction bug
       distance_shift >= 0 && distance_shift + kTileShift <= 32)
       << "The 10-bit distance field must fit in 32 bits. This is a TorchTPU "
@@ -91,6 +92,12 @@ kiln::Tile CompactTile(kiln::Tile control, const int distance_shift,
                    : Select(keep, control.Rotate(kSublanes - stride, 0), 0);
     const kiln::Tile arriving = (src_control & bit) != 0;
     const kiln::Tile leaving = (control & bit) != 0;
+    for (kiln::Tile* payload : payloads) {
+      const kiln::Tile src = lane_stage
+                                 ? ShiftLanesLeft(*payload, stride, keep)
+                                 : payload->Rotate(kSublanes - stride, 0);
+      *payload = Select(arriving, src, *payload);
+    }
     control = Select(arriving, src_control & ~bit, Select(leaving, 0, control));
   }
   return control;

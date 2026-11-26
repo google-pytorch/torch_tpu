@@ -824,7 +824,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
-        "--test_categories=-foreach,-nonzero,-searchsorted",
+        "--test_categories=-foreach,-nonzero,-searchsorted,-unique",
     ] + if_oss(
         # Reduce samples to avoid timeouts in OSS.
         [_OSS_SAMPLE_LIMIT],
@@ -962,6 +962,44 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "unique_ops_test",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_categories=unique",
+        # No sample limit, so @also_run_static checks that a dynamic kernel
+        # served test_unique, which sets its own sample limit.
+    ],
+    data = _GPU_GOLDENS_DATA,
+    main = "ops_test.py",
+    # Skip this in OSS presubmit when it's overloaded.
+    nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 1,  # This test has only 1 test case.
+    tags = [
+        "noasan",  # This test times out in asan mode.
+        "nomsan",  # This test times out in msan mode.
+        "notsan",  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OSS_GOLDEN_TAGS,
     deps = [
