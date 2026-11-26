@@ -4795,6 +4795,90 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       t.masked_scatter_(mask, source)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="empty_source_out_of_place",
+          self_shape=(4,),
+          mask_values=[True, False, False, False],
+          source_numel=0,
+          expected_mask_true_count=1,
+          in_place=False,
+      ),
+      dict(
+          testcase_name="empty_source_in_place",
+          self_shape=(4,),
+          mask_values=[True, False, True, False],
+          source_numel=0,
+          expected_mask_true_count=2,
+          in_place=True,
+      ),
+      dict(
+          testcase_name="gather_path_out_of_place",
+          self_shape=(4,),
+          mask_values=[True, True, True, True],
+          source_numel=2,
+          expected_mask_true_count=4,
+          in_place=False,
+      ),
+      dict(
+          testcase_name="gather_path_in_place",
+          self_shape=(4,),
+          mask_values=[True, True, True, True],
+          source_numel=2,
+          expected_mask_true_count=4,
+          in_place=True,
+      ),
+      dict(
+          testcase_name="dot_general_path_out_of_place",
+          self_shape=(2, 128),
+          mask_values=[[True], [True]],
+          source_numel=128,
+          expected_mask_true_count=256,
+          in_place=False,
+      ),
+      dict(
+          testcase_name="dot_general_path_in_place",
+          self_shape=(2, 128),
+          mask_values=[[True], [True]],
+          source_numel=128,
+          expected_mask_true_count=256,
+          in_place=True,
+      ),
+      dict(
+          testcase_name="scalar_broadcast_mask",
+          self_shape=(2, 3),
+          mask_values=True,
+          source_numel=5,
+          expected_mask_true_count=6,
+          in_place=False,
+      ),
+  )
+  def test_masked_scatter_insufficient_source_elements(
+      self,
+      self_shape,
+      mask_values,
+      source_numel,
+      expected_mask_true_count,
+      in_place,
+  ):
+    self.synchronize_tensors_in_tear_down = False  # CUDA device-side assert triggers an unrecoverable error state on GPU, preventing synchronization.
+    device = et.device()
+    t = torch.zeros(self_shape, device=device, dtype=torch.float32)
+    mask = torch.tensor(mask_values, device=device, dtype=torch.bool)
+    source = torch.arange(source_numel, device=device, dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""masked_scatter_(): expected source to have at least {expected_mask_true_count} elements for the number of True values in mask, got {source_numel}""",
+        gpu=re.compile(
+            r"CUDA error: device-side assert triggered.*", re.DOTALL
+        ),
+    ):
+      if in_place:
+        t.masked_scatter_(mask, source)
+      else:
+        torch.masked_scatter(t, mask, source)
+
   def test_arange_zero_step(self):
     with et.assert_raises_message(
         RuntimeError,

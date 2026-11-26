@@ -26409,6 +26409,71 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertIn("tensor<131072x1xf32>", mlir_text)
     self.assertNotIn("tensor<2048x64xf32>", mlir_text)
 
+  def test_masked_scatter_source_size_validation_with_debug_checks(self):
+    # With DEFER_NEVER_AND_LAUNCH_BLOCKING (which enables debug checks when
+    # TORCH_TPU_ENABLE_DEBUG_CHECKS is unset), exact-size sources and empty
+    # sources with all-False masks must succeed, while torch.compile must still
+    # trace without triggering a host sync.
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    ):
+      # Empty source with all-False mask succeeds (gather and DotGeneral).
+      for self_shape, mask_shape in (((4,), (4,)), ((2, 128), (2, 1))):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, s=self_shape, m=mask_shape: torch.masked_scatter(
+                torch.ones(s, dtype=torch.float32, device=device),
+                torch.zeros(m, dtype=torch.bool, device=device),
+                torch.empty(0, dtype=torch.float32, device=device),
+            )
+        )
+
+      # Exact boundary: source.numel() == mask.sum() < self.numel() on both
+      # gather (row_size < 128) and DotGeneral (row_size >= 128) paths, plus
+      # a non-contiguous broadcast mask.
+      self.assert_close_tpu_vs_cpu(
+          lambda device: torch.masked_scatter(
+              torch.zeros(4, dtype=torch.float32, device=device),
+              torch.tensor(
+                  [True, False, True, False], dtype=torch.bool, device=device
+              ),
+              torch.tensor([10.0, 20.0], dtype=torch.float32, device=device),
+          )
+      )
+      dot_src = torch.arange(128, dtype=torch.float32) + 1.0
+      self.assert_close_tpu_vs_cpu(
+          lambda device: torch.masked_scatter(
+              torch.zeros(2, 128, dtype=torch.float32, device=device),
+              torch.tensor([[True], [False]], dtype=torch.bool, device=device),
+              to(dot_src, device=device),
+          )
+      )
+      non_contig_mask = torch.tensor(
+          [[True, False], [False, True], [True, False]], dtype=torch.bool
+      ).t()  # shape (2, 3), non-contiguous
+      self.assert_close_tpu_vs_cpu(
+          lambda device: torch.masked_scatter(
+              torch.zeros(2, 2, 3, dtype=torch.float32, device=device),
+              to(non_contig_mask, device=device),
+              torch.arange(6, dtype=torch.float32, device=device) + 1.0,
+          )
+      )
+
+      # torch.compile must trace cleanly without a host sync even when debug
+      # checks are enabled and source.numel() < self.numel().
+      def compiled_scatter(x, m, s):
+        return x.masked_scatter(m, s)
+
+      x_cpu = torch.zeros(2, 128, dtype=torch.float32)
+      m_cpu = torch.tensor([[True], [False]], dtype=torch.bool)
+      s_cpu = torch.arange(128, dtype=torch.float32) + 1.0
+      compiled_fn = torch.compile(compiled_scatter, backend="tpu")
+      actual = compiled_fn(
+          x_cpu.to("tpu"), m_cpu.to("tpu"), s_cpu.to("tpu")
+      ).cpu()
+      utils.assert_close(
+          actual=actual, expected=compiled_scatter(x_cpu, m_cpu, s_cpu)
+      )
+
   def test_slice_scatter(self):
     # Fast-path 1: Full replacement (step == 1 && slice_len == total_len)
     t = torch.randn(4, 8)

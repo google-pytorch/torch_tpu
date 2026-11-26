@@ -23,19 +23,27 @@
 
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/utils.h"
+#include "csrc/common/warnings.h"
+#include "csrc/eager/device_buffer.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/ops/copy_from/copy_common.h"
+#include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/nonzero/nonzero.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -305,6 +313,78 @@ at::Tensor NarrowBroadcastTrailingDims(const at::Tensor& mask) {
   return narrowed;
 }
 
+// Validates that `source` has at least as many elements as the number of `True`
+// entries in `mask` after broadcasting to `self.sizes()`.
+//
+// Counting `True` entries requires a device-to-host sync, so the check only
+// runs when debug checks are enabled (and never during FX graph compilation or
+// deferred tracing), and is skipped whenever `source.numel() >= self.numel()`
+// statically guarantees sufficiency.
+absl::Status ValidateSourceSize(const at::Tensor& self,
+                                const at::Tensor& narrowed_mask,
+                                const at::Tensor& source) {
+  const int64_t self_numel = self.numel();
+  const int64_t source_numel = source.numel();
+  if (self_numel == 0 || source_numel >= self_numel) {
+    return absl::OkStatus();
+  }
+
+  // Skip synchronous device-to-host transfer during compilation/tracing or
+  // manual-sync deferral.
+  const EagerMode mode = GetEagerMode();
+  if (mode == EagerMode::kInternalCompileFxGraph ||
+      mode == EagerMode::kInternalDeferAll) {
+    return absl::OkStatus();
+  }
+
+  if (!GetEnableDebugChecks()) {
+    TT_WARN_ONCE(
+        WarningCategory::kCorrectness,
+        "Unlike PyTorch on CUDA or CPU, TorchTPU doesn't by default check "
+        "that source has enough elements for the True entries in mask in "
+        "masked_scatter_(). Set the TORCH_TPU_ENABLE_DEBUG_CHECKS environment "
+        "variable to \"1\" to enable this check, which incurs a performance "
+        "penalty.");
+    return absl::OkStatus();
+  }
+
+  // If any operand is on a non-TPU or mismatched device, let DispatchOpOut
+  // report the standard device error rather than failing inside the check.
+  if (!IsPrivateUse1Device(self) || !IsPrivateUse1Device(narrowed_mask) ||
+      !IsPrivateUse1Device(source) || self.device() != narrowed_mask.device() ||
+      self.device() != source.device()) {
+    return absl::OkStatus();
+  }
+
+  auto count_builder =
+      [](mlir::MlirOp mask_op) -> absl::StatusOr<mlir::MlirOp> {
+    return BuildNonzeroGetOutputSizeShlo(mlir::ElementType::I64, mask_op);
+  };
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef count_buf,
+      DispatchOp<1>(std::move(count_builder), narrowed_mask,
+                    {.op_name = OpName::kNonzeroSize,
+                     .out_dtype = mlir::ElementType::I64,
+                     .out_dims = Dimensions(),
+                     .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+
+  int64_t narrowed_true_count = 0;
+  TT_RETURN_IF_ERROR(
+      CopyDeviceBufferRefToCpuPtr(count_buf, &narrowed_true_count,
+                                  GetTransferSyncMode(/*non_blocking=*/false)));
+
+  // `self_numel > 0` and `narrowed_mask` is expandable to `self`, so every
+  // element of `narrowed_mask` is broadcast `self_numel /
+  // narrowed_mask.numel()` times.
+  const int64_t broadcast_factor = self_numel / narrowed_mask.numel();
+  const int64_t mask_true_count = narrowed_true_count * broadcast_factor;
+  TT_RET_CHECK(source_numel >= mask_true_count, error::kInvalidArgument)
+      << "expected source to have at least " << mask_true_count
+      << " elements for the number of True values in mask, got "
+      << source_numel;
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 at::Tensor& AtenMaskedScatter_(at::Tensor& self, const at::Tensor& mask,
@@ -338,6 +418,9 @@ at::Tensor& AtenMaskedScatter_(at::Tensor& self, const at::Tensor& mask,
         << " elements because masked_scatter_ uses int32 source offsets, got "
         << self.numel();
 
+    const at::Tensor narrowed_mask = NarrowBroadcastTrailingDims(mask);
+    TT_THROW_IF_ERROR(ValidateSourceSize(self, narrowed_mask, source));
+
     TT_ASSIGN_OR_THROW(auto param_keys, *OpParamCacheKeysBuilder());
     Dimensions out_dims = CopyIntVector(self.sizes());
 
@@ -348,8 +431,7 @@ at::Tensor& AtenMaskedScatter_(at::Tensor& self, const at::Tensor& mask,
     };
 
     TT_THROW_IF_ERROR(DispatchOpOut<3>(
-        std::move(shlo_builder),
-        {self, NarrowBroadcastTrailingDims(mask), source}, self,
+        std::move(shlo_builder), {self, narrowed_mask, source}, self,
         {.out_dtype = self_dtype,
          .out_dims = out_dims,
          .op_param_cache_keys = std::move(param_keys)}));
