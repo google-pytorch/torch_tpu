@@ -2141,13 +2141,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Dynamic compilation is TPU-only.")
   def test_get_dynamic_pad_module_empty_shapes(self):
-    expected = re.compile(
-        r".*get_dynamic_pad_module\(\): dynamic_pad_module requires at least"
-        r" one shape\..*"
-    )
     with et.assert_raises_message(
         RuntimeError,
-        tpu=expected,
+        tpu="""get_dynamic_pad_module(): failed to build MLIR module: expected at least one shape, got 0""",
     ):
       tpu_torch_compile.get_dynamic_pad_module([], [])
 
@@ -2157,7 +2153,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test_get_default_layout_0d_fp4(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""get_default_layout(): tensors of float4_e2m1fn_x2 dtype must be at least 1D""",
+        tpu="""get_default_layout(): expected tensors of float4_e2m1fn_x2 dtype to have at least 1 dimension, got 0""",
     ):
       tpu_torch_compile.get_default_layout(torch.float4_e2m1fn_x2, [])
 
@@ -6341,6 +6337,26 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
       )
 
+  # TODO: Skip empty @main splices for identity score_mod so behavior matches
+  # GPU, then remove this test and mark stablehlo_splice.cc ERROR_COV_INFEASIBLE.
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_identity_score_mod_computes_nothing(self):
+    q, k, v = self._inputs(1024)
+    block_mask = self._causal_mask()
+    block_mask.mask_mod = flex_attention.noop_mask
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): @main computes nothing; skip the splice instead""",
+    ):
+      out, _ = tpu_flex_attention.flex_attention_fwd(
+          q,
+          k,
+          v,
+          block_mask,
+          score_mod=lambda score, b, h, q_idx, kv_idx: score,
+      )
+      out.cpu()
+
   def _bwd_dkv(self, **overrides):
     """Calls the dK / dV op directly with valid arguments except `overrides`."""
     shape = (1, 1, 256, 128)
@@ -6687,6 +6703,193 @@ class ProfilerErrorsTest(et.TpuOnlyErrorTestBase):
             (16, 16), device="tpu"
         )
         sync.synchronize(c)
+
+
+class InternalApiTpuErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests TPU-only error handling for internal compile, dynamism, and profiler APIs."""
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_mark_dynamic_non_tpu_tensor(self):
+    x = torch.ones(2)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mark_dynamic(): expected tensor to be on TPU, got CPU""",
+    ):
+      dynamism.mark_dynamic(x, 0, 2, 4)
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_get_dynamism_info_non_tpu_tensor(self):
+    x = torch.ones(2)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_dynamism_info(): expected tensor to be on TPU, got CPU""",
+    ):
+      dynamism.get_dynamism_info(x)
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_get_or_compile_pad_module_empty_shapes(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_or_compile_pad_module(): expected at least one shape, got 0""",
+    ):
+      tpu_torch_compile.get_or_compile_pad_module([], [])
+
+  @et.why_tpu_only("tpu_torch_compile.placeholder is a TPU-only compile API.")
+  def test_placeholder_0d_fp4(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""placeholder(): failed to create placeholder tensor: expected tensors of float4_e2m1fn_x2 dtype to have at least 1 dimension, got 0""",
+    ):
+      tpu_torch_compile.placeholder([], torch.float4_e2m1fn_x2, False)
+
+  @et.why_tpu_only("tpu_torch_compile.build_mlir is a TPU-only compile API.")
+  def test_build_mlir_empty_results(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): no result tensors provided""",
+    ):
+      tpu_torch_compile.build_mlir([], [])
+
+  @et.why_tpu_only("tpu_torch_compile.build_mlir is a TPU-only compile API.")
+  def test_build_mlir_deferred_argument(self):
+    x = tpu_torch_compile.placeholder([2], torch.float32, False)
+    with execution_mode.set_eager_mode(
+        EagerMode._INTERNAL_COMPILE_FX_GRAPH  # pylint: disable=protected-access
+    ):
+      y = x + 1
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""build_mlir(): argument tensor has deferred ops: shape=[2], strides=[1], numel=2, dtype=float32, device=tpu:0, is_contiguous=1, is_cpu=0, is_cuda=0, is_meta=0, has_storage=1, storage_offset=0""",
+      ):
+        tpu_torch_compile.build_mlir([y], [y])
+
+  @et.why_tpu_only("tpu_torch_compile.build_mlir is a TPU-only compile API.")
+  def test_build_mlir_materializing_result(self):
+    x = torch.ones(2, device=et.device())
+    _ = x.cpu()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): result tensor is already materializing: shape=[2], strides=[1], numel=2, dtype=float32, device=tpu:0, is_contiguous=1, is_cpu=0, is_cuda=0, is_meta=0, has_storage=1, storage_offset=0""",
+    ):
+      tpu_torch_compile.build_mlir([x], [x])
+
+  @et.why_tpu_only("tpu_torch_compile.make_constant_tensor is a TPU-only API.")
+  def test_make_constant_tensor_non_cpu(self):
+    x = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""make_constant_tensor(): expected CPU tensor, got TPU""",
+    ):
+      tpu_torch_compile.make_constant_tensor(x)
+
+  @et.why_tpu_only(
+      "tpu_torch_compile.assign_constant_tensor is a TPU-only API."
+  )
+  def test_assign_constant_tensor_non_cpu_src(self):
+    src = torch.ones(2, device=et.device())
+    dst = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""assign_constant_tensor(): expected cpu_src_tensor to be on CPU, got TPU""",
+    ):
+      tpu_torch_compile.assign_constant_tensor(src, dst)
+
+  @et.why_tpu_only(
+      "tpu_torch_compile.assign_constant_tensor is a TPU-only API."
+  )
+  def test_assign_constant_tensor_shape_mismatch(self):
+    src = torch.ones(2)
+    dst = torch.ones(3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""assign_constant_tensor(): expected cpu_src_tensor and tpu_dst_tensor to have the same shape, got [2] vs [3]""",
+    ):
+      tpu_torch_compile.assign_constant_tensor(src, dst)
+
+  @et.why_tpu_only(
+      "tpu_torch_compile.assign_constant_tensor is a TPU-only API."
+  )
+  def test_assign_constant_tensor_dtype_mismatch(self):
+    src = torch.ones(2, dtype=torch.float32)
+    dst = torch.ones(2, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""assign_constant_tensor(): expected cpu_src_tensor and tpu_dst_tensor to have the same dtype, got float32 vs int32""",
+    ):
+      tpu_torch_compile.assign_constant_tensor(src, dst)
+
+  @et.why_tpu_only("tpu_torch_compile.force_strides is a TPU-only API.")
+  def test_force_strides_rank_mismatch(self):
+    x = torch.ones(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""force_strides(): expected target strides to have the same number of dimensions as the tensor, got 1 vs 2""",
+    ):
+      tpu_torch_compile.force_strides(x, [1], 0)
+
+  @et.why_tpu_only("tpu_torch_compile.force_strides is a TPU-only API.")
+  def test_force_strides_negative_offset(self):
+    x = torch.ones(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""force_strides(): expected target_storage_offset to be >= 0, got -1""",
+    ):
+      tpu_torch_compile.force_strides(x, [3, 1], -1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="non_int_tracer_level",
+          custom_config="host_tracer_level:abc",
+          expected_msg=(
+              "expected the value of parameter host_tracer_level to be an"
+              " integer, got 'abc'"
+          ),
+      ),
+      dict(
+          testcase_name="invalid_escape_sequence",
+          custom_config='foo:"\\a"',
+          expected_msg=(
+              r"invalid escape sequence: \a (only \\ and \" are supported)"
+          ),
+      ),
+      dict(
+          testcase_name="trailing_backslash",
+          custom_config='foo:"abc\\"',
+          expected_msg="trailing backslash in string",
+      ),
+      dict(
+          testcase_name="invalid_advanced_option",
+          custom_config="foo:bar",
+          expected_msg=(
+              "expected the advanced option 'foo' to be a quoted string,"
+              " Boolean (true/false), or integer, got 'bar'"
+          ),
+      ),
+      dict(
+          testcase_name="non_ascii_config",
+          custom_config="foo:ü",
+          expected_msg=(
+              "expected custom_config to contain only ASCII characters, got"
+              " 'foo:ü' where 'ü' is not ASCII"
+          ),
+      ),
+  )
+  @et.why_tpu_only("TPU Kineto profiler plugin only runs for TPU activity.")
+  def test_tpu_profiler_plugin_invalid_custom_config(
+      self, custom_config, expected_msg
+  ):
+    config = torch.profiler._ExperimentalConfig(  # pylint: disable=protected-access
+        custom_profiler_config=custom_config
+    )
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      with torch.profiler.profile(
+          activities=[
+              torch.profiler.ProfilerActivity.CPU,
+              torch.profiler.ProfilerActivity.TPU,  # pytype: disable=attribute-error
+          ],
+          experimental_config=config,
+      ):
+        pass
 
 
 if __name__ == "__main__":
