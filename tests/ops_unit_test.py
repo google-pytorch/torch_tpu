@@ -12990,6 +12990,119 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(foreach_add_inside_fn)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="out_of_place", inplace=False),
+      dict(testcase_name="inplace", inplace=True),
+  )
+  def test_foreach_sub_int64_min_alpha(self, inplace: bool):
+    def fn(device):
+      self_list = [torch.tensor([10, -5], dtype=torch.int64, device=device)]
+      other_list = [torch.tensor([0, 2], dtype=torch.int64, device=device)]
+      alpha = -(2**63)
+      if inplace:
+        torch._foreach_sub_(self_list, other_list, alpha=alpha)
+        return self_list
+      return torch._foreach_sub(self_list, other_list, alpha=alpha)
+
+    self.assert_close_tpu_vs_cpu(fn)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="maximum", op=torch._foreach_maximum),
+      dict(testcase_name="minimum", op=torch._foreach_minimum),
+      dict(testcase_name="clamp_min", op=torch._foreach_clamp_min),
+      dict(testcase_name="clamp_max", op=torch._foreach_clamp_max),
+  )
+  def test_foreach_extrema_list_type_promotion_and_broadcast(self, op):
+    def fn(device):
+      int_t = torch.tensor([1, 5], dtype=torch.int32, device=device)
+      flt_t = torch.tensor([2.5, 3.5], dtype=torch.float32, device=device)
+      bf16_t = torch.tensor([1.0, 5.0], dtype=torch.bfloat16, device=device)
+      lhs_bcast = torch.tensor(
+          [[1.0], [5.0]], dtype=torch.float32, device=device
+      )
+      rhs_bcast = torch.tensor(
+          [[2.0, 3.0, 4.0]], dtype=torch.float32, device=device
+      )
+      b1 = torch.tensor([True, False], dtype=torch.bool, device=device)
+      b2 = torch.tensor([False, False], dtype=torch.bool, device=device)
+      return op(
+          [int_t, bf16_t, lhs_bcast, b1],
+          [flt_t, flt_t, rhs_bcast, b2],
+      )
+
+    self.assert_close_tpu_vs_cpu(fn)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="maximum_scalar",
+          op=torch._foreach_maximum_,
+          is_scalar_list=False,
+      ),
+      dict(
+          testcase_name="maximum_scalarlist",
+          op=torch._foreach_maximum_,
+          is_scalar_list=True,
+      ),
+      dict(
+          testcase_name="minimum_scalar",
+          op=torch._foreach_minimum_,
+          is_scalar_list=False,
+      ),
+      dict(
+          testcase_name="minimum_scalarlist",
+          op=torch._foreach_minimum_,
+          is_scalar_list=True,
+      ),
+      dict(
+          testcase_name="clamp_min_scalar",
+          op=torch._foreach_clamp_min_,
+          is_scalar_list=False,
+      ),
+      dict(
+          testcase_name="clamp_min_scalarlist",
+          op=torch._foreach_clamp_min_,
+          is_scalar_list=True,
+      ),
+      dict(
+          testcase_name="clamp_max_scalar",
+          op=torch._foreach_clamp_max_,
+          is_scalar_list=False,
+      ),
+      dict(
+          testcase_name="clamp_max_scalarlist",
+          op=torch._foreach_clamp_max_,
+          is_scalar_list=True,
+      ),
+  )
+  def test_foreach_extrema_inplace_scalar_dtypes(
+      self, op, is_scalar_list: bool
+  ):
+    def fn(device):
+      t_i16 = torch.tensor([1, 5], dtype=torch.int16, device=device)
+      t_bf16 = torch.tensor([1.0, 5.0], dtype=torch.bfloat16, device=device)
+      if is_scalar_list:
+        op([t_i16], [2])
+        op([t_bf16], [2.5])
+      else:
+        op([t_i16], 2)
+        op([t_bf16], 2.5)
+      return [t_i16, t_bf16]
+
+    self.assert_close_tpu_vs_cpu(fn)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="clamp_min_scalar", op=torch._foreach_clamp_min),
+      dict(testcase_name="clamp_max_scalar", op=torch._foreach_clamp_max),
+      dict(testcase_name="maximum_scalar", op=torch._foreach_maximum),
+      dict(testcase_name="minimum_scalar", op=torch._foreach_minimum),
+  )
+  def test_foreach_extrema_scalar_preserves_bf16_dtype(self, op):
+    def fn(device):
+      t_bf16 = torch.tensor([1.0, 5.0], dtype=torch.bfloat16, device=device)
+      return op([t_bf16], 2.5)
+
+    self.assert_close_tpu_vs_cpu(fn)
+
   def test_foreach_div_with_zero_scalar(self):
     """Tests _foreach_div with a zero scalar."""
 
