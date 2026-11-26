@@ -12954,6 +12954,319 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scatter_src_1d_idx_on_2d_self",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_mismatched_src_rank",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_3d_idx_on_1d_self",
+          fn=lambda d: torch.scatter(
+              torch.arange(4, dtype=torch.float32, device=d),
+              0,
+              torch.empty(2, 0, 4, dtype=torch.int64, device=d),
+              torch.empty(0, dtype=torch.float32, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_empty_float_index",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.float32, device=d),
+              torch.ones(2, 3, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_0d_self",
+          fn=lambda d: torch.scatter(
+              torch.tensor(3.5, device=d),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_empty_self",
+          fn=lambda d: torch.scatter(
+              torch.empty(0, 3, dtype=torch.float32, device=d),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_value",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              5.0,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_legacy_add",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="add",
+          ),
+      ),
+      dict(
+          testcase_name="scatter_value_reduce_mul",
+          fn=lambda d: torch.ops.aten.scatter.value_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              5.0,
+              reduce="multiply",
+          ),
+      ),
+      dict(
+          testcase_name="scatter_add",
+          fn=lambda d: torch.scatter_add(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_sum_include_self_false",
+          fn=lambda d: torch.scatter_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="sum",
+              include_self=False,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_prod_include_self_false",
+          fn=lambda d: torch.scatter_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="prod",
+              include_self=False,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_mean_include_self_false",
+          fn=lambda d: torch.scatter_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="mean",
+              include_self=False,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_amax_include_self_false",
+          fn=lambda d: torch.scatter_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="amax",
+              include_self=False,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_amin_include_self_false",
+          fn=lambda d: torch.scatter_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="amin",
+              include_self=False,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_sum_include_self_true",
+          fn=lambda d: torch.scatter_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="sum",
+              include_self=True,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_inplace",
+          fn=lambda d: torch.arange(6, dtype=torch.float32, device=d)
+          .view(2, 3)
+          .scatter_(
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_add_inplace",
+          fn=lambda d: torch.arange(6, dtype=torch.float32, device=d)
+          .view(2, 3)
+          .scatter_add_(
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_inplace_include_self_false",
+          fn=lambda d: torch.arange(6, dtype=torch.float32, device=d)
+          .view(2, 3)
+          .scatter_reduce_(
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(2, 3, device=d),
+              reduce="sum",
+              include_self=False,
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_out_resize",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+              out=torch.empty(0, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_value_out_resize",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              5.0,
+              out=torch.empty(0, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_legacy_out_resize",
+          fn=lambda d: torch.ops.aten.scatter.reduce_out(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+              reduce="add",
+              out=torch.empty(0, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_value_reduce_out_resize",
+          fn=lambda d: torch.ops.aten.scatter.value_reduce_out(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              5.0,
+              reduce="add",
+              out=torch.empty(0, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_add_out_resize",
+          fn=lambda d: torch.scatter_add(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+              out=torch.empty(0, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_reduce_out_resize_include_self_false",
+          fn=lambda d: torch.scatter_reduce(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+              reduce="mean",
+              include_self=False,
+              out=torch.empty(0, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_out_empty_self_resize",
+          fn=lambda d: torch.scatter(
+              torch.empty(0, 3, dtype=torch.float32, device=d),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+              out=torch.empty(2, 2, device=d),
+          ),
+      ),
+      dict(
+          testcase_name="scatter_src_out_transposed",
+          fn=lambda d: torch.scatter(
+              torch.arange(6, dtype=torch.float32, device=d).view(2, 3),
+              0,
+              torch.empty(0, dtype=torch.int64, device=d),
+              torch.ones(5, device=d),
+              out=torch.zeros(3, 2, device=d).t(),
+          ),
+      ),
+  )
+  def test_scatter_empty_index(self, fn):
+    self.assert_close_tpu_vs_cpu(fn)
+
+  def test_scatter_empty_index_out_slice_view_and_self_alias(self):
+    def run_slice_view(device: torch.device) -> torch.Tensor:
+      base = torch.full((4, 3), -1.0, device=device)
+      self_t = torch.arange(6, dtype=torch.float32, device=device).view(2, 3)
+      empty_idx = torch.empty(0, dtype=torch.int64, device=device)
+      src = torch.ones(5, device=device)
+      torch.scatter(self_t, 0, empty_idx, src, out=base[1:3])
+      return base
+
+    def run_self_same(device: torch.device) -> torch.Tensor:
+      self_t = torch.arange(6, dtype=torch.float32, device=device).view(2, 3)
+      empty_idx = torch.empty(0, dtype=torch.int64, device=device)
+      src = torch.ones(5, device=device)
+      return torch.scatter(self_t, 0, empty_idx, src, out=self_t)
+
+    self.assert_close_tpu_vs_cpu(run_slice_view)
+    self.assert_close_tpu_vs_cpu(run_self_same)
+
+  def test_scatter_empty_index_compiled(self):
+    def fn(x, idx, src):
+      a = torch.scatter(x, 0, idx, src)
+      b = torch.scatter_reduce(x, 0, idx, src, reduce="sum", include_self=False)
+      return a, b
+
+    x_cpu = torch.arange(6, dtype=torch.float32).view(2, 3)
+    idx_cpu = torch.empty(0, dtype=torch.int64)
+    src_cpu = torch.ones(5, dtype=torch.float32)
+    expected = fn(x_cpu, idx_cpu, src_cpu)
+
+    compiled = torch.compile(fn, backend="tpu")
+    actual = compiled(x_cpu.to("tpu"), idx_cpu.to("tpu"), src_cpu.to("tpu"))
+    for act, exp in zip(actual, expected):
+      utils.assert_close(actual=act.cpu(), expected=exp)
+
   def test_foreach_add_different_dtypes_with_alpha(self):
     """Tests _foreach_add with different dtypes and an alpha parameter."""
 

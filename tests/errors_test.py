@@ -13699,6 +13699,290 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.scatter(self_t, 0, index, src)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scatter",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src),
+          tpu_msg="""scatter(): Expected self.dtype to be equal to src.dtype""",
+      ),
+      dict(
+          testcase_name="scatter_inplace",
+          op=lambda s, idx, src, out: s.scatter_(0, idx, src),
+          tpu_msg="""scatter(): Expected self.dtype to be equal to src.dtype""",
+      ),
+      dict(
+          testcase_name="scatter_out",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          tpu_msg="""scatter(): expected self and src to have the same dtype, got int32 and float32""",
+      ),
+      dict(
+          testcase_name="scatter_reduce_legacy_out",
+          op=lambda s, idx, src, out: torch.ops.aten.scatter.reduce_out(
+              s, 0, idx, src, reduce="add", out=out
+          ),
+          tpu_msg="""scatter(): expected self and src to have the same dtype, got int32 and float32""",
+      ),
+      dict(
+          testcase_name="scatter_add",
+          op=lambda s, idx, src, out: torch.scatter_add(s, 0, idx, src),
+          tpu_msg="""scatter(): Expected self.dtype to be equal to src.dtype""",
+      ),
+      dict(
+          testcase_name="scatter_add_inplace",
+          op=lambda s, idx, src, out: s.scatter_add_(0, idx, src),
+          tpu_msg="""scatter(): Expected self.dtype to be equal to src.dtype""",
+      ),
+      dict(
+          testcase_name="scatter_add_out",
+          op=lambda s, idx, src, out: torch.scatter_add(
+              s, 0, idx, src, out=out
+          ),
+          tpu_msg="""scatter_add(): expected self and src to have the same dtype, got int32 and float32""",
+      ),
+      dict(
+          testcase_name="scatter_reduce",
+          op=lambda s, idx, src, out: torch.scatter_reduce(
+              s, 0, idx, src, reduce="sum"
+          ),
+          tpu_msg="""scatter(): Expected self.dtype to be equal to src.dtype""",
+      ),
+      dict(
+          testcase_name="scatter_reduce_inplace",
+          op=lambda s, idx, src, out: s.scatter_reduce_(
+              0, idx, src, reduce="sum"
+          ),
+          tpu_msg="""scatter(): Expected self.dtype to be equal to src.dtype""",
+      ),
+      dict(
+          testcase_name="scatter_reduce_out",
+          op=lambda s, idx, src, out: torch.scatter_reduce(
+              s, 0, idx, src, reduce="sum", out=out
+          ),
+          tpu_msg="""scatter_reduce(): expected self and src to have the same dtype, got int32 and float32""",
+      ),
+  )
+  def test_scatter_src_dtype_mismatch(self, op, tpu_msg):
+    self_t = torch.zeros(2, 3, device=et.device(), dtype=torch.int32)
+    index = torch.zeros(1, 3, device=et.device(), dtype=torch.int64)
+    src = torch.full((2, 3), 1.5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 3, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu="""scatter(): Expected self.dtype to be equal to src.dtype""",
+    ):
+      op(self_t, index, src, out)
+
+  def test_scatter_out_empty_index_src_dtype_mismatch(self):
+    self_t = torch.zeros(2, 3, device=et.device(), dtype=torch.int32)
+    index = torch.empty(0, device=et.device(), dtype=torch.int64)
+    src = torch.full((2, 3), 1.5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 3, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter(): expected self and src to have the same dtype, got int32 and float32""",
+        gpu="""scatter(): Expected self.dtype to be equal to src.dtype""",
+    ):
+      torch.scatter(self_t, 0, index, src, out=out)
+
+  def test_scatter_out_empty_index_invalid_dim(self):
+    self_t = torch.ones(2, 3, device=et.device())
+    index = torch.empty(0, device=et.device(), dtype=torch.int64)
+    src = torch.ones(2, 3, device=et.device())
+    out = torch.empty(2, 3, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""scatter(): expected dimension to be in range [-2, 1], got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 5)""",
+    ):
+      torch.scatter(self_t, 5, index, src, out=out)
+
+  def test_scatter_out_empty_index_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    index = torch.empty(0, device=et.device(), dtype=torch.int64)
+    src = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 3, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+    ):
+      torch.scatter(self_t, 0, index, src, out=out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scatter_src_out",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_src_out_empty_index",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          empty_index=True,
+      ),
+      dict(
+          testcase_name="scatter_value_out",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, 1.0, out=out),
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_reduce_legacy_out",
+          op=lambda s, idx, src, out: torch.ops.aten.scatter.reduce_out(
+              s, 0, idx, src, reduce="add", out=out
+          ),
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_value_reduce_out",
+          op=lambda s, idx, src, out: torch.ops.aten.scatter.value_reduce_out(
+              s, 0, idx, 1.0, reduce="add", out=out
+          ),
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_add_out",
+          op=lambda s, idx, src, out: torch.scatter_add(
+              s, 0, idx, src, out=out
+          ),
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_reduce_out",
+          op=lambda s, idx, src, out: torch.scatter_reduce(
+              s, 0, idx, src, reduce="sum", out=out
+          ),
+          empty_index=False,
+      ),
+  )
+  def test_scatter_out_internal_memory_overlap(self, op, empty_index):
+    self_t = torch.ones(2, 3, device=et.device())
+    index = (
+        torch.empty(0, device=et.device(), dtype=torch.int64)
+        if empty_index
+        else torch.zeros(1, 3, device=et.device(), dtype=torch.int64)
+    )
+    src = torch.ones(2, 3, device=et.device())
+    out = torch.empty(1, 3, device=et.device()).expand(2, 3)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      op(self_t, index, src, out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scatter_src_out_full",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          partial=False,
+      ),
+      dict(
+          testcase_name="scatter_src_out_partial",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          partial=True,
+      ),
+      dict(
+          testcase_name="scatter_value_out_full",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, 1, out=out),
+          partial=False,
+      ),
+      dict(
+          testcase_name="scatter_add_out_full",
+          op=lambda s, idx, src, out: torch.scatter_add(
+              s, 0, idx, src, out=out
+          ),
+          partial=False,
+      ),
+      dict(
+          testcase_name="scatter_reduce_out_full",
+          op=lambda s, idx, src, out: torch.scatter_reduce(
+              s, 0, idx, src, reduce="sum", out=out
+          ),
+          partial=False,
+      ),
+  )
+  def test_scatter_out_index_memory_overlap(self, op, partial):
+    self_t = torch.ones(2, 3, device=et.device(), dtype=torch.int64)
+    src = torch.ones(2, 3, device=et.device(), dtype=torch.int64)
+    if partial:
+      base = torch.zeros(4, 3, device=et.device(), dtype=torch.int64)
+      index = base[:2]
+      out = base[1:3]
+    else:
+      index = torch.zeros(2, 3, device=et.device(), dtype=torch.int64)
+      out = index
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      op(self_t, index, src, out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scatter_src_out_full",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          partial=False,
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_src_out_partial",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          partial=True,
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_src_out_empty_index",
+          op=lambda s, idx, src, out: torch.scatter(s, 0, idx, src, out=out),
+          partial=False,
+          empty_index=True,
+      ),
+      dict(
+          testcase_name="scatter_reduce_legacy_out_full",
+          op=lambda s, idx, src, out: torch.ops.aten.scatter.reduce_out(
+              s, 0, idx, src, reduce="add", out=out
+          ),
+          partial=False,
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_add_out_full",
+          op=lambda s, idx, src, out: torch.scatter_add(
+              s, 0, idx, src, out=out
+          ),
+          partial=False,
+          empty_index=False,
+      ),
+      dict(
+          testcase_name="scatter_reduce_out_full",
+          op=lambda s, idx, src, out: torch.scatter_reduce(
+              s, 0, idx, src, reduce="sum", out=out
+          ),
+          partial=False,
+          empty_index=False,
+      ),
+  )
+  def test_scatter_out_src_memory_overlap(self, op, partial, empty_index):
+    self_t = torch.ones(2, 3, device=et.device())
+    index = (
+        torch.empty(0, device=et.device(), dtype=torch.int64)
+        if empty_index
+        else torch.zeros(1, 3, device=et.device(), dtype=torch.int64)
+    )
+    if partial:
+      base = torch.ones(4, 3, device=et.device())
+      src = base[:2]
+      out = base[1:3]
+    else:
+      src = torch.ones(2, 3, device=et.device())
+      out = src
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+        gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      op(self_t, index, src, out)
+
   def test_softmax_backward_data_shape_mismatch(self):
     grad_output = torch.ones(5, 5, device=et.device())
     output = torch.ones(5, device=et.device())
