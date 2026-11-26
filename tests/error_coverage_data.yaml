@@ -161,12 +161,12 @@ csrc/ops/hardswish/hardswish_aten_kernels.cc: {remaining: 0, total: 4, infeasibl
 csrc/ops/hardtanh/hardtanh_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/histc/histc_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 0}
 csrc/ops/im2col/im2col_aten_kernels.cc: {remaining: 7, total: 7, infeasible: 0}
-csrc/ops/index/index_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 4}
+csrc/ops/index/index_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 4}
 csrc/ops/index_fill/index_fill_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
-csrc/ops/index_put/index_put_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
+csrc/ops/index_put/index_put_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/index_reduce/index_reduce_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/ops/index_select/index_select_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
-csrc/ops/index_utils.cc: {remaining: 0, total: 12, infeasible: 1}
+csrc/ops/index_utils.cc: {remaining: 0, total: 13, infeasible: 1}
 csrc/ops/int_mm/int_mm_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 0}
 csrc/ops/jagged/jagged_aten_kernels.cc: {remaining: 0, total: 16, infeasible: 2}
 csrc/ops/layer_norm/layer_norm.cc: {remaining: 0, total: 1, infeasible: 1}

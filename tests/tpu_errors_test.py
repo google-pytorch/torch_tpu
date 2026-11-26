@@ -1091,20 +1091,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.linalg.lu_solve(lu, pivots, b, out=out)
 
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
-  def test_index_multiple_bool_indices(self):
-    inp = torch.ones(2, 2, device=et.device())
-    indices = [
-        torch.tensor([True, False], device=et.device()),
-        torch.tensor([False, True], device=et.device()),
-    ]
-
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""index(): indexing with more than one bool tensor is not yet supported""",
-    ):
-      torch.ops.aten.index(inp, indices)
-
   @et.why_tpu_only("TODO: support sparse_grad in gather() on TPU.")
   def test_gather_with_sparse_grad(self):
     inp = torch.ones(2, 3, 4, device=et.device())
