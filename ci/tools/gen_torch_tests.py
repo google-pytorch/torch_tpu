@@ -108,6 +108,7 @@ def torch_test_target(test_module: str) -> str:
   num_shards = torch_test_module_utils.TEST_MODULE_SHARDS.get(test_module)
   shard_count = f"    shard_count = {num_shards},\n" if num_shards else ""
 
+  # LINT.IfChange(torch_test_module_format)
   return (
       "torch_tpu_torch_test(\n"
       f'    name = "{name}",\n'
@@ -116,6 +117,7 @@ def torch_test_target(test_module: str) -> str:
       f'    torch_test_module = "{test_module}",\n'
       ")"
   )
+  # LINT.ThenChange(../../bazel/pytorch_test_repo.bzl:torch_test_module_format)
 
 
 def write_to_build_file(
