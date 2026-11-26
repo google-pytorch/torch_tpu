@@ -7666,6 +7666,71 @@ Supported combinations for non-constant padding:
     ):
       torch.polar(absv, angle.to(torch.int32), out=out)
 
+  @parameterized.named_parameters(
+      (
+          "complex_f64_f32",
+          torch.complex,
+          "complex",
+          torch.float64,
+          torch.float32,
+          "float64",
+          "float32",
+          "Double",
+          "Float",
+      ),
+      (
+          "complex_f32_f64",
+          torch.complex,
+          "complex",
+          torch.float32,
+          torch.float64,
+          "float32",
+          "float64",
+          "Float",
+          "Double",
+      ),
+      (
+          "polar_f64_f32",
+          torch.polar,
+          "polar",
+          torch.float64,
+          torch.float32,
+          "float64",
+          "float32",
+          "Double",
+          "Float",
+      ),
+      (
+          "polar_f32_f64",
+          torch.polar,
+          "polar",
+          torch.float32,
+          torch.float64,
+          "float32",
+          "float64",
+          "Float",
+          "Double",
+      ),
+  )
+  def test_complex_polar_mismatched_dtypes(
+      self, op, op_name, dtype1, dtype2, tpu_d1, tpu_d2, gpu_d1, gpu_d2
+  ):
+    a = torch.tensor([1.0, 2.0], device=et.device(), dtype=dtype1)
+    b = torch.tensor([3.0, 4.0], device=et.device(), dtype=dtype2)
+    out = torch.empty(2, device=et.device(), dtype=torch.complex128)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected both arguments to have the same dtype, got {tpu_d1} and {tpu_d2}""",
+        gpu=f"""Expected object of scalar type {gpu_d1} but got scalar type {gpu_d2} for second argument""",
+    ):
+      op(a, b)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected both arguments to have the same dtype, got {tpu_d1} and {tpu_d2}""",
+        gpu=f"""Expected object of scalar type {gpu_d1} but got scalar type {gpu_d2} for second argument""",
+    ):
+      op(a, b, out=out)
+
   def test_polygamma_negative_n(self):
     t = torch.tensor([1.0, 2.0], device=et.device())
     with et.assert_raises_message(
@@ -17554,6 +17619,200 @@ Note: this function is intended to be used with the output produced by torch.lin
             gpu="""value cannot be converted to type float without overflow""",
         ):
           torch.add(a, b, alpha=1e40)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="sub_tensor",
+          op=torch.sub,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name=None,
+      ),
+      dict(
+          testcase_name="sub_out",
+          op=torch.sub,
+          is_scalar=False,
+          use_out=True,
+          tpu_op_name="sub",
+      ),
+      dict(
+          testcase_name="sub_scalar",
+          op=torch.sub,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name=None,
+      ),
+      dict(
+          testcase_name="rsub_tensor",
+          op=torch.rsub,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="rsub",
+      ),
+      dict(
+          testcase_name="rsub_scalar",
+          op=torch.rsub,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name=None,
+      ),
+  )
+  def test_sub_rsub_alpha_dtype_mismatch(
+      self, op, is_scalar, use_out, tpu_op_name
+  ):
+    a_i32 = torch.ones(2, dtype=torch.int32, device=et.device())
+    b_i32 = (
+        1 if is_scalar else torch.ones(2, dtype=torch.int32, device=et.device())
+    )
+    out_i32 = (
+        torch.empty(2, dtype=torch.int32, device=et.device())
+        if use_out
+        else None
+    )
+    gpu_float_msg = """For integral input tensors, argument alpha must not be a floating point number."""
+    tpu_float_msg = (
+        f"""{tpu_op_name}(): for integral input tensors, argument alpha must not be a floating point number"""
+        if tpu_op_name is not None
+        else gpu_float_msg
+    )
+    for alpha in (1.5, 1.0):
+      with self.subTest(alpha=alpha):
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=tpu_float_msg,
+            gpu=gpu_float_msg,
+        ):
+          if out_i32 is not None:
+            op(a_i32, b_i32, alpha=alpha, out=out_i32)
+          else:
+            op(a_i32, b_i32, alpha=alpha)
+
+    gpu_bool_msg = """Boolean alpha only supported for Boolean results."""
+    tpu_bool_msg = (
+        f"""{tpu_op_name}(): boolean alpha only supported for boolean results"""
+        if tpu_op_name is not None
+        else gpu_bool_msg
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_bool_msg,
+        gpu=gpu_bool_msg,
+    ):
+      if out_i32 is not None:
+        op(a_i32, b_i32, alpha=True, out=out_i32)
+      else:
+        op(a_i32, b_i32, alpha=True)
+
+    a_f32 = torch.ones(2, dtype=torch.float32, device=et.device())
+    b_f32 = (
+        1.0
+        if is_scalar
+        else torch.ones(2, dtype=torch.float32, device=et.device())
+    )
+    out_f32 = (
+        torch.empty(2, dtype=torch.float32, device=et.device())
+        if use_out
+        else None
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_bool_msg,
+        gpu=gpu_bool_msg,
+    ):
+      if out_f32 is not None:
+        op(a_f32, b_f32, alpha=True, out=out_f32)
+      else:
+        op(a_f32, b_f32, alpha=True)
+
+    gpu_complex_msg = """For non-complex input tensors, argument alpha must not be a complex number."""
+    tpu_complex_msg = (
+        f"""{tpu_op_name}(): for non-complex input tensors, argument alpha must not be a complex number"""
+        if tpu_op_name is not None
+        else gpu_complex_msg
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_complex_msg,
+        gpu=gpu_complex_msg,
+    ):
+      if out_f32 is not None:
+        op(a_f32, b_f32, alpha=1 + 2j, out=out_f32)
+      else:
+        op(a_f32, b_f32, alpha=1 + 2j)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="sub_tensor",
+          op=torch.sub,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="sub",
+      ),
+      dict(
+          testcase_name="sub_out",
+          op=torch.sub,
+          is_scalar=False,
+          use_out=True,
+          tpu_op_name="sub",
+      ),
+      dict(
+          testcase_name="sub_scalar",
+          op=torch.sub,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="sub",
+      ),
+      dict(
+          testcase_name="rsub_tensor",
+          op=torch.rsub,
+          is_scalar=False,
+          use_out=False,
+          tpu_op_name="rsub",
+      ),
+      dict(
+          testcase_name="rsub_scalar",
+          op=torch.rsub,
+          is_scalar=True,
+          use_out=False,
+          tpu_op_name="sub",
+      ),
+  )
+  def test_sub_rsub_alpha_overflow(self, op, is_scalar, use_out, tpu_op_name):
+    a_i8 = torch.ones(2, dtype=torch.int8, device=et.device())
+    b_i8 = (
+        1 if is_scalar else torch.ones(2, dtype=torch.int8, device=et.device())
+    )
+    out_i8 = (
+        torch.empty(2, dtype=torch.int8, device=et.device())
+        if use_out
+        else None
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op_name}(): value cannot be converted to type int8 without overflow""",
+        gpu="""value cannot be converted to type int8_t without overflow""",
+    ):
+      if out_i8 is not None:
+        op(a_i8, b_i8, alpha=1000, out=out_i8)
+      else:
+        op(a_i8, b_i8, alpha=1000)
+
+    for dtype in (torch.float32, torch.float16, torch.bfloat16):
+      with self.subTest(dtype=dtype):
+        a = torch.ones(2, dtype=dtype, device=et.device())
+        b = 1.0 if is_scalar else torch.ones(2, dtype=dtype, device=et.device())
+        out = (
+            torch.empty(2, dtype=dtype, device=et.device()) if use_out else None
+        )
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""{tpu_op_name}(): value cannot be converted to type float32 without overflow""",
+            gpu="""value cannot be converted to type float without overflow""",
+        ):
+          if out is not None:
+            op(a, b, alpha=1e40, out=out)
+          else:
+            op(a, b, alpha=1e40)
 
   def test_add_out_non_0d_cpu_tensor(self):
     out = torch.empty(0, dtype=torch.float32, device=et.device())
