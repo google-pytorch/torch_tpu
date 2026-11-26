@@ -819,6 +819,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLinalgSolveTriangular>(m, AtenLinalgSolveTriangular);
   ImplStable<OpName::kLinalgSolveTriangularOut>(m,
                                                 AtenLinalgSolveTriangularOut);
+  ImplStable<OpName::kLinalgSvd>(m, AtenLinalgSvd);
   ImplStable<OpName::kLinalgSvdU>(m, AtenLinalgSvdU);
   ImplStable<OpName::kLinalgVectorNormOut>(m, AtenLinalgVectorNormOut);
   ImplStable<OpName::kLinear>(m, AtenLinear);

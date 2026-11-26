@@ -521,6 +521,7 @@ enum class OpName {
   kLinalgSolveExOut,
   kLinalgSolveTriangular,
   kLinalgSolveTriangularOut,
+  kLinalgSvd,
   kLinalgSvdU,
   kLinalgVectorNormOut,
   kLinear,
@@ -1911,6 +1912,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "linalg_solve_triangular";
     case OpName::kLinalgSolveTriangularOut:
       return "linalg_solve_triangular.out";
+    case OpName::kLinalgSvd:
+      return "_linalg_svd";
     case OpName::kLinalgSvdU:
       return "_linalg_svd.U";
     case OpName::kLinalgVectorNormOut:

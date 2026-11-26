@@ -18582,28 +18582,271 @@ Note: this function is intended to be used with the output produced by torch.lin
       torch.cumsum(scalar, dim=-2, out=out)
 
   @parameterized.named_parameters(
-      ("u_mismatch", "u"),
-      ("s_mismatch", "s"),
-      ("vh_mismatch", "vh"),
+      dict(
+          testcase_name="u_mismatch",
+          input_dtype=torch.float64,
+          u_dtype=torch.float32,
+          s_dtype=torch.float64,
+          vh_dtype=torch.float64,
+          compute_uv=True,
+          tpu_msg=(
+              "linalg_svd(): expected the output dtype to be float64,"
+              " got float32"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype double, but got float instead"
+          ),
+      ),
+      dict(
+          testcase_name="s_mismatch",
+          input_dtype=torch.float64,
+          u_dtype=torch.float64,
+          s_dtype=torch.float32,
+          vh_dtype=torch.float64,
+          compute_uv=True,
+          tpu_msg=(
+              "linalg_svd(): expected the output dtype to be float64,"
+              " got float32"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype double, but got float instead"
+          ),
+      ),
+      dict(
+          testcase_name="vh_mismatch",
+          input_dtype=torch.float64,
+          u_dtype=torch.float64,
+          s_dtype=torch.float64,
+          vh_dtype=torch.float32,
+          compute_uv=True,
+          tpu_msg=(
+              "linalg_svd(): expected the output dtype to be float64,"
+              " got float32"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype double, but got float instead"
+          ),
+      ),
+      dict(
+          testcase_name="complex64_s_mismatch",
+          input_dtype=torch.complex64,
+          u_dtype=torch.complex64,
+          s_dtype=torch.complex64,
+          vh_dtype=torch.complex64,
+          compute_uv=True,
+          tpu_msg=(
+              "linalg_svd(): expected the output dtype to be float32,"
+              " got complex64"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype float,"
+              " but got c10::complex<float> instead"
+          ),
+      ),
+      dict(
+          testcase_name="compute_uv_false_u_mismatch",
+          input_dtype=torch.float64,
+          u_dtype=torch.float32,
+          s_dtype=torch.float64,
+          vh_dtype=torch.float64,
+          compute_uv=False,
+          tpu_msg=(
+              "linalg_svd(): expected the output dtype to be float64,"
+              " got float32"
+          ),
+          gpu_msg=(
+              "Expected out tensor to have dtype double, but got float instead"
+          ),
+      ),
   )
-  def test_linalg_svd_out_dtype_mismatch(self, mismatch_arg):
-    u_dtype = torch.float32 if mismatch_arg == "u" else torch.float64
-    s_dtype = torch.float32 if mismatch_arg == "s" else torch.float64
-    vh_dtype = torch.float32 if mismatch_arg == "vh" else torch.float64
-
+  def test_linalg_svd_out_dtype_mismatch(
+      self,
+      input_dtype,
+      u_dtype,
+      s_dtype,
+      vh_dtype,
+      compute_uv,
+      tpu_msg,
+      gpu_msg,
+  ):
     u = torch.empty(5, 3, device=et.device(), dtype=u_dtype)
     s = torch.empty(3, device=et.device(), dtype=s_dtype)
     vh = torch.empty(3, 3, device=et.device(), dtype=vh_dtype)
+    t = torch.randn(5, 3, device=et.device(), dtype=input_dtype)
 
-    t = torch.randn(5, 3, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      torch.ops.aten._linalg_svd.U(
+          t,
+          full_matrices=False,
+          compute_uv=compute_uv,
+          U=u,
+          S=s,
+          Vh=vh,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="u_on_cpu",
+          shape=(3, 3),
+          self_on_cpu=False,
+          u_on_cpu=True,
+          tpu_msg=(
+              "linalg_svd(): expected input and output tensors to be on the"
+              " same tpu device, got tpu:0, cpu, tpu:0, and tpu:0"
+          ),
+          gpu_msg=(
+              "Expected all tensors to be on the same device, but got S is on"
+              " cuda:0, different from other tensors on cpu (when checking"
+              " argument in method wrapper_CUDA__linalg_svd_out_U)"
+          ),
+      ),
+      dict(
+          testcase_name="self_on_cpu",
+          shape=(3, 3),
+          self_on_cpu=True,
+          u_on_cpu=False,
+          tpu_msg=(
+              "linalg_svd(): expected input and output tensors to be on the"
+              " same tpu device, got cpu, tpu:0, tpu:0, and tpu:0"
+          ),
+          gpu_msg=(
+              "Expected all tensors to be on the same device, but got A is on"
+              " cpu, different from other tensors on cuda:0 (when checking"
+              " argument in method wrapper_CUDA__linalg_svd_out_U)"
+          ),
+      ),
+      dict(
+          testcase_name="empty_u_on_cpu",
+          shape=(0, 3),
+          self_on_cpu=False,
+          u_on_cpu=True,
+          tpu_msg=(
+              "linalg_svd(): expected input and output tensors to be on the"
+              " same tpu device, got tpu:0, cpu, tpu:0, and tpu:0"
+          ),
+          gpu_msg=(
+              "Expected all tensors to be on the same device, but got S is on"
+              " cuda:0, different from other tensors on cpu (when checking"
+              " argument in method wrapper_CUDA__linalg_svd_out_U)"
+          ),
+      ),
+  )
+  def test_linalg_svd_invalid_device(
+      self, shape, self_on_cpu, u_on_cpu, tpu_msg, gpu_msg
+  ):
+    self_device = "cpu" if self_on_cpu else et.device()
+    u_device = "cpu" if u_on_cpu else et.device()
+    a = torch.empty(shape, device=self_device, dtype=torch.float32)
+    u = torch.empty(0, device=u_device, dtype=torch.float32)
+    s = torch.empty(0, device=et.device(), dtype=torch.float32)
+    vh = torch.empty(0, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      torch.linalg.svd(a, out=(u, s, vh))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="0d", shape=()),
+      dict(testcase_name="1d", shape=(4,)),
+  )
+  def test_linalg_svd_rank_too_low(self, shape):
+    a = torch.ones(shape, device=et.device(), dtype=torch.float32)
+    u = torch.empty(0, device=et.device(), dtype=torch.float32)
+    s = torch.empty(0, device=et.device(), dtype=torch.float32)
+    vh = torch.empty(0, device=et.device(), dtype=torch.float32)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=re.compile(
-            r".*expected out tensor to have dtype.*", re.IGNORECASE | re.DOTALL
-        ),
+        tpu=f"""linalg_svd(): expected input to have at least 2 dimensions, got {len(shape)}""",
+        gpu="""linalg.svd: The input tensor A must have at least 2 dimensions.""",
     ):
-      torch.linalg.svd(t, full_matrices=False, out=(u, s, vh))
+      torch.linalg.svd(a, out=(u, s, vh))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int64_out_f64",
+          shape=(3, 3),
+          input_dtype=torch.int64,
+          out_dtype=torch.float64,
+      ),
+      dict(
+          testcase_name="int32_out_int32",
+          shape=(3, 3),
+          input_dtype=torch.int32,
+          out_dtype=torch.int32,
+      ),
+      dict(
+          testcase_name="bool_empty",
+          shape=(0, 3),
+          input_dtype=torch.bool,
+          out_dtype=torch.bool,
+      ),
+  )
+  def test_linalg_svd_non_floating_input_dtype(
+      self, shape, input_dtype, out_dtype
+  ):
+    a = torch.zeros(shape, device=et.device(), dtype=input_dtype)
+    u = torch.empty(0, device=et.device(), dtype=out_dtype)
+    s = torch.empty(0, device=et.device(), dtype=out_dtype)
+    vh = torch.empty(0, device=et.device(), dtype=out_dtype)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""linalg_svd(): expected input tensor to have floating point or complex dtype, got {_get_short_dtype_str(input_dtype)}""",
+        gpu=f"""linalg.svd: Expected a floating point or complex tensor as input. Got {_get_torch_dtype_str(input_dtype)}""",
+    ):
+      torch.linalg.svd(a, out=(u, s, vh))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float16",
+          dtype=torch.float16,
+          gpu_dtype="Half",
+      ),
+      dict(
+          testcase_name="bfloat16",
+          dtype=torch.bfloat16,
+          gpu_dtype="BFloat16",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          gpu_dtype="Float8_e4m3fn",
+      ),
+  )
+  def test_linalg_svd_unsupported_low_precision_dtype(self, dtype, gpu_dtype):
+    a = torch.zeros(3, 3, device=et.device(), dtype=dtype)
+    u = torch.empty(0, device=et.device(), dtype=dtype)
+    s = torch.empty(0, device=et.device(), dtype=dtype)
+    vh = torch.empty(0, device=et.device(), dtype=dtype)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""linalg_svd(): expected input dtype to be float32, float64, complex64, or complex128, got {_get_short_dtype_str(dtype)}""",
+        gpu=f""""svd_cuda_gesvdjBatched" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.linalg.svd(a, out=(u, s, vh))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="invalid_out", shape=(3, 3), driver="invalid"),
+      dict(testcase_name="empty_str_out", shape=(3, 3), driver=""),
+      dict(
+          testcase_name="invalid_empty_tensor_out",
+          shape=(0, 3),
+          driver="invalid",
+      ),
+  )
+  def test_linalg_svd_unknown_driver(self, shape, driver):
+    a = torch.empty(shape, device=et.device(), dtype=torch.float32)
+    u = torch.empty(0, device=et.device(), dtype=torch.float32)
+    s = torch.empty(0, device=et.device(), dtype=torch.float32)
+    vh = torch.empty(0, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""linalg_svd(): expected driver to be one of 'gesvd', 'gesvdj', or 'gesvda', got '{driver}'""",
+        gpu=f"""torch.linalg.svd: unknown svd driver {driver}. Expected one of gesvd, gesvdj, or gesvda.""",
+    ):
+      torch.linalg.svd(a, driver=driver, out=(u, s, vh))
 
   def test_min_unary_invalid_output_device(self):
     tensor = torch.ones(5, device=et.device(), dtype=torch.float32)

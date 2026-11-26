@@ -38,12 +38,14 @@ namespace torch_tpu {
 //   full_matrices: If true, computes full U (..., M, M) and Vh (..., N, N).
 //     If false, computes reduced U (..., M, K) and Vh (..., K, N) where K =
 //     min(M, N).
-//   compute_uv: If true, computes (U, S, Vh). If false, computes only s,
-//     returning empty U and Vh.
+//   compute_uv: If true, computes (U, S, Vh). If false, computes only S,
+//     returning 1D empty (0,) tensors for U and Vh.
 //   driver: Name of the driver to use (only "gesvd" is supported).
-//   u: Output tensor for left singular vectors U.
-//   s: Output tensor for singular values S.
-//   vh: Output tensor for right singular vectors Vh.
+std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLinalgSvd(
+    const at::Tensor& self, bool full_matrices, bool compute_uv,
+    std::optional<std::string_view> driver);
+
+// Out overload of `AtenLinalgSvd`, writing results into `u`, `s`, and `vh`.
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgSvdU(
     const at::Tensor& self, bool full_matrices, bool compute_uv,
     std::optional<std::string_view> driver, at::Tensor& u, at::Tensor& s,

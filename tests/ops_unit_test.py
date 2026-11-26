@@ -14504,6 +14504,400 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_svdvals_out)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="2d_f32_reduced",
+          shape=(3, 4),
+          dtype=torch.float32,
+          full_matrices=False,
+      ),
+      dict(
+          testcase_name="2d_f32_full",
+          shape=(3, 4),
+          dtype=torch.float32,
+          full_matrices=True,
+      ),
+      dict(
+          testcase_name="3d_f32_reduced",
+          shape=(2, 3, 4),
+          dtype=torch.float32,
+          full_matrices=False,
+      ),
+      dict(
+          testcase_name="3d_f32_full",
+          shape=(2, 3, 4),
+          dtype=torch.float32,
+          full_matrices=True,
+      ),
+      dict(
+          testcase_name="3d_f64_reduced",
+          shape=(2, 3, 4),
+          dtype=torch.float64,
+          full_matrices=False,
+      ),
+      dict(
+          testcase_name="3d_c64_reduced",
+          shape=(2, 3, 4),
+          dtype=torch.complex64,
+          full_matrices=False,
+      ),
+      dict(
+          testcase_name="3d_c128_reduced",
+          shape=(2, 3, 4),
+          dtype=torch.complex128,
+          full_matrices=False,
+      ),
+      dict(
+          testcase_name="empty_3d_f32_full",
+          shape=(2, 0, 3),
+          dtype=torch.float32,
+          full_matrices=True,
+      ),
+  )
+  def test_linalg_svd_compute_uv_false_shapes(
+      self, shape, dtype, full_matrices
+  ):
+    x_cpu = torch.randn(shape, dtype=dtype)
+    if dtype == torch.complex128:
+      u_ref, s_ref, vh_ref = torch.ops.aten._linalg_svd(
+          x_cpu.to(torch.complex64),
+          full_matrices=full_matrices,
+          compute_uv=False,
+      )
+      u_ref = u_ref.to(torch.complex128)
+      s_ref = s_ref.to(torch.float64)
+      vh_ref = vh_ref.to(torch.complex128)
+    else:
+      u_ref, s_ref, vh_ref = torch.ops.aten._linalg_svd(
+          x_cpu, full_matrices=full_matrices, compute_uv=False
+      )
+
+    x_tpu = x_cpu.to("tpu")
+    u_func, s_func, vh_func = torch.ops.aten._linalg_svd(
+        x_tpu, full_matrices=full_matrices, compute_uv=False
+    )
+    self.assertEqual(u_func.shape, (0,))
+    self.assertEqual(vh_func.shape, (0,))
+    self.assertEqual(u_func.dtype, dtype)
+    self.assertEqual(vh_func.dtype, dtype)
+    self.assertEqual(u_func.shape, u_ref.shape)
+    self.assertEqual(vh_func.shape, vh_ref.shape)
+    tolerances = {
+        torch.float32: (1.1e-02, 1.8e-02),
+        torch.complex64: (2.3e-02, 1.2e-02),
+        torch.complex128: (2.3e-02, 1.2e-02),
+    }
+    rtol, atol = tolerances.get(dtype, (None, None))
+    self.assert_close(
+        golden_result=s_ref,
+        torch_tpu_result=s_func.to("cpu"),
+        rtol=rtol,
+        atol=atol,
+    )
+
+    # Pre-allocated non-empty U/Vh must also be resized to (0,) for .U out.
+    s_dtype = torch.empty(0, dtype=dtype).real.dtype
+    u_out = torch.empty(shape[:-1] + (shape[-2],), dtype=dtype, device="tpu")
+    s_out = torch.empty(s_ref.shape, dtype=s_dtype, device="tpu")
+    vh_out = torch.empty(
+        shape[:-2] + (shape[-1], shape[-1]), dtype=dtype, device="tpu"
+    )
+    torch.ops.aten._linalg_svd.U(
+        x_tpu,
+        full_matrices=full_matrices,
+        compute_uv=False,
+        U=u_out,
+        S=s_out,
+        Vh=vh_out,
+    )
+    self.assertEqual(u_out.shape, (0,))
+    self.assertEqual(vh_out.shape, (0,))
+    self.assert_close(
+        golden_result=s_ref,
+        torch_tpu_result=s_out.to("cpu"),
+        rtol=rtol,
+        atol=atol,
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="u_aliases_a_reduced_f32",
+          shape=(4, 2),
+          dtype=torch.float32,
+          full_matrices=False,
+          compute_uv=True,
+          alias_target="u",
+          noncontig_input=False,
+      ),
+      dict(
+          testcase_name="u_aliases_a_full_f32",
+          shape=(4, 2),
+          dtype=torch.float32,
+          full_matrices=True,
+          compute_uv=True,
+          alias_target="u",
+          noncontig_input=False,
+      ),
+      dict(
+          testcase_name="u_aliases_a_full_f64",
+          shape=(4, 2),
+          dtype=torch.float64,
+          full_matrices=True,
+          compute_uv=True,
+          alias_target="u",
+          noncontig_input=False,
+      ),
+      dict(
+          testcase_name="u_aliases_a_reduced_c128",
+          shape=(4, 2),
+          dtype=torch.complex128,
+          full_matrices=False,
+          compute_uv=True,
+          alias_target="u",
+          noncontig_input=False,
+      ),
+      dict(
+          testcase_name="s_aliases_a_f32",
+          shape=(4, 2),
+          dtype=torch.float32,
+          full_matrices=False,
+          compute_uv=True,
+          alias_target="s",
+          noncontig_input=False,
+      ),
+      dict(
+          testcase_name="vh_aliases_a_f32",
+          shape=(4, 2),
+          dtype=torch.float32,
+          full_matrices=False,
+          compute_uv=True,
+          alias_target="vh",
+          noncontig_input=False,
+      ),
+      dict(
+          testcase_name="u_aliases_noncontig_a_f32",
+          shape=(4, 2),
+          dtype=torch.float32,
+          full_matrices=False,
+          compute_uv=True,
+          alias_target="u",
+          noncontig_input=True,
+      ),
+      dict(
+          testcase_name="u_aliases_a_compute_uv_false_f32",
+          shape=(3, 4),
+          dtype=torch.float32,
+          full_matrices=False,
+          compute_uv=False,
+          alias_target="u",
+          noncontig_input=False,
+      ),
+  )
+  def test_linalg_svd_out_aliasing(
+      self,
+      shape,
+      dtype,
+      full_matrices,
+      compute_uv,
+      alias_target,
+      noncontig_input,
+  ):
+    base_cpu = torch.randn(shape, dtype=dtype)
+    if dtype == torch.complex128:
+      s_ref = torch.linalg.svdvals(base_cpu.to(torch.complex64)).to(
+          torch.float64
+      )
+    else:
+      s_ref = torch.linalg.svdvals(base_cpu)
+
+    if noncontig_input:
+      buf = torch.zeros(shape[0], shape[1] * 2, dtype=dtype, device="tpu")
+      buf[:, ::2] = base_cpu.to("tpu")
+      a_tpu = buf[:, ::2]
+    else:
+      a_tpu = base_cpu.to("tpu")
+
+    s_dtype = torch.empty(0, dtype=dtype).real.dtype
+    u = (
+        a_tpu
+        if alias_target == "u"
+        else torch.empty(0, dtype=dtype, device="tpu")
+    )
+    s = (
+        a_tpu
+        if alias_target == "s"
+        else torch.empty(0, dtype=s_dtype, device="tpu")
+    )
+    vh = (
+        a_tpu
+        if alias_target == "vh"
+        else torch.empty(0, dtype=dtype, device="tpu")
+    )
+
+    torch.ops.aten._linalg_svd.U(
+        a_tpu,
+        full_matrices=full_matrices,
+        compute_uv=compute_uv,
+        U=u,
+        S=s,
+        Vh=vh,
+    )
+
+    tolerances = {
+        torch.float32: (1.1e-02, 1.8e-02),
+        torch.complex128: (2.3e-02, 1.2e-02),
+    }
+    rtol, atol = tolerances.get(dtype, (None, None))
+    self.assert_close(
+        golden_result=s_ref,
+        torch_tpu_result=s.to("cpu"),
+        rtol=rtol,
+        atol=atol,
+    )
+    if compute_uv:
+      k = min(shape[-2], shape[-1])
+      u_cpu = u.to("cpu")[..., :k]
+      s_cpu = s.to("cpu")
+      vh_cpu = vh.to("cpu")[..., :k, :]
+      reconstructed = (u_cpu * s_cpu.to(dtype).unsqueeze(-2)) @ vh_cpu
+      self.assert_close(
+          golden_result=base_cpu,
+          torch_tpu_result=reconstructed,
+          rtol=rtol,
+          atol=atol,
+      )
+    else:
+      self.assertEqual(u.shape, (0,))
+      self.assertEqual(vh.shape, (0,))
+
+  def test_linalg_svd_out_aliasing_empty_input(self):
+    a_tpu = torch.empty(0, 3, dtype=torch.float32, device="tpu")
+    u = torch.empty(0, dtype=torch.float32, device="tpu")
+    s = torch.empty(0, dtype=torch.float32, device="tpu")
+    torch.linalg.svd(a_tpu, full_matrices=True, out=(u, s, a_tpu))
+    self.assertEqual(u.shape, (0, 0))
+    self.assertEqual(s.shape, (0,))
+    self.assert_close(
+        golden_result=torch.eye(3, dtype=torch.float32),
+        torch_tpu_result=a_tpu.to("cpu"),
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float32_slice",
+          dtype=torch.float32,
+          rtol=1.1e-02,
+          atol=1.8e-02,
+      ),
+      dict(
+          testcase_name="complex128_slice",
+          dtype=torch.complex128,
+          rtol=2.3e-02,
+          atol=1.2e-02,
+      ),
+  )
+  def test_linalg_svd_out_noncontiguous(self, dtype, rtol, atol):
+    if (
+        dtype == torch.complex128
+        and oss_utils.is_oss()
+        and (ver := utils.libtpu_version()) is not None
+        and ver < (0, 0, 52)
+    ):
+      self.skipTest(
+          "complex128 strided dynamic_update_slice corrupts values on TPU v5e"
+          " with libtpu < 0.0.52"
+      )
+    base_cpu = torch.randn(4, 2, dtype=dtype)
+    s_dtype = torch.float64 if dtype == torch.complex128 else dtype
+    out_buf = torch.zeros(4, 4, dtype=dtype, device="tpu")
+    u_slice = out_buf[:, ::2]
+    s_out = torch.empty(2, dtype=s_dtype, device="tpu")
+    vh_out = torch.empty(2, 2, dtype=dtype, device="tpu")
+    expected_stride = u_slice.stride()
+
+    torch.linalg.svd(
+        base_cpu.to("tpu"), full_matrices=False, out=(u_slice, s_out, vh_out)
+    )
+    self.assertEqual(u_slice.stride(), expected_stride)
+    self.assert_close(
+        golden_result=torch.zeros(4, 2, dtype=dtype),
+        torch_tpu_result=out_buf[:, 1::2].to("cpu"),
+    )
+    reconstructed = (
+        u_slice.to("cpu") * s_out.to("cpu").to(dtype).unsqueeze(-2)
+    ) @ vh_out.to("cpu")
+    self.assert_close(
+        golden_result=base_cpu,
+        torch_tpu_result=reconstructed,
+        rtol=rtol,
+        atol=atol,
+    )
+
+  def test_linalg_svd_out_complex128_transposed_full_storage(self):
+    base_cpu = torch.randn(4, 2, dtype=torch.complex128)
+    buf = torch.empty(2, 4, dtype=torch.complex128, device="tpu")
+    u_out = buf.mT
+    s_out = torch.empty(2, dtype=torch.float64, device="tpu")
+    vh_out = torch.empty(2, 2, dtype=torch.complex128, device="tpu")
+    expected_stride = u_out.stride()
+
+    torch.linalg.svd(
+        base_cpu.to("tpu"), full_matrices=False, out=(u_out, s_out, vh_out)
+    )
+    self.assertEqual(u_out.stride(), expected_stride)
+    u_cpu = u_out.to("cpu")
+    self.assert_close(
+        golden_result=u_cpu.mT,
+        torch_tpu_result=buf.to("cpu"),
+    )
+    reconstructed = (
+        u_cpu * s_out.to("cpu").to(torch.complex128).unsqueeze(-2)
+    ) @ vh_out.to("cpu")
+    self.assert_close(
+        golden_result=base_cpu,
+        torch_tpu_result=reconstructed,
+        rtol=2.3e-02,
+        atol=1.2e-02,
+    )
+
+  def test_linalg_svd_driver_gesvd(self):
+    x_cpu = torch.randn(4, 3, dtype=torch.float32)
+    s_ref = torch.linalg.svdvals(x_cpu)
+    _, s_func, _ = torch.linalg.svd(x_cpu.to("tpu"), driver="gesvd")
+    self.assert_close(
+        golden_result=s_ref,
+        torch_tpu_result=s_func.to("cpu"),
+        rtol=1.1e-02,
+        atol=1.8e-02,
+    )
+
+    u = torch.empty(0, dtype=torch.float32, device="tpu")
+    s_out = torch.empty(0, dtype=torch.float32, device="tpu")
+    vh = torch.empty(0, dtype=torch.float32, device="tpu")
+    torch.linalg.svd(x_cpu.to("tpu"), driver="gesvd", out=(u, s_out, vh))
+    self.assert_close(
+        golden_result=s_ref,
+        torch_tpu_result=s_out.to("cpu"),
+        rtol=1.1e-02,
+        atol=1.8e-02,
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="float16", dtype=torch.float16),
+      dict(testcase_name="bfloat16", dtype=torch.bfloat16),
+  )
+  def test_linalg_svd_empty_low_precision_float(self, dtype):
+    x_tpu = torch.empty(0, 3, dtype=dtype, device="tpu")
+    u, s, vh = torch.linalg.svd(x_tpu, full_matrices=True)
+    self.assertEqual(u.shape, (0, 0))
+    self.assertEqual(s.shape, (0,))
+    self.assertEqual(u.dtype, dtype)
+    self.assertEqual(s.dtype, dtype)
+    self.assert_close(
+        golden_result=torch.eye(3, dtype=dtype),
+        torch_tpu_result=vh.to("cpu"),
+    )
+
   def test_geqrf_out(self):
     input_tensor = torch.randn(8, 4)
     a = torch.empty(8, 4)

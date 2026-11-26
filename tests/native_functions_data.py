@@ -406,6 +406,10 @@ REGISTRATION_OVERRIDES = frozenset([
     # This is a PrivateUse1 specific op that communicates shallow-copyability.
     # If it is missing, parameter tieing falls back to untied copies.
     '_has_compatible_shallow_copy_type',
+    # _linalg_svd is registered directly on TPU so functional calls allocate
+    # C-contiguous outputs instead of going through TORCH_META_FUNC(_linalg_svd)
+    # which pre-allocates Fortran-strided complex128 outputs.
+    '_linalg_svd',
     '_masked_softmax.out',
     '_masked_softmax_backward.out',
     '_scaled_dot_product_cudnn_attention',
