@@ -330,16 +330,6 @@ class HandshakeConsensusSubmitTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(self.submit(0, 0, 1))
     self.assertEqual(self.submit(1, 0, 1), {0: True, 1: True})
 
-  def test_request_on_a_second_process_group_is_refused(self) -> None:
-    # TODO: b/553328238 - Remove once more than one process group is supported.
-    self.submit(0, 0, 1)
-
-    with self.assertRaisesRegex(NotImplementedError, "more than one process"):
-      self.consensus.submit(_make_request(1, participating_ranks=[1, 2]))
-
-    # The refused request is ignored.
-    self.assertEqual(self.submit(1, 0, 1), {0: True, 1: True})
-
 
 class HandshakeConsensusProcessGroupStateTest(seed_test_utils.RepeatableTest):
   """Unit tests for `handshake_consensus._ProcessGroupState` error handling."""

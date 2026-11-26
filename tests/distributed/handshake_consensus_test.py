@@ -75,7 +75,13 @@ def _handshake_successes(
 
 
 class _ConsensusTestCase(seed_test_utils.RepeatableTest):
-  """Base class of the tests that submit the requests of valid programs."""
+  """Base class of the tests that submit the requests of valid programs.
+
+  The tests draw their program with one column per rank. A box is a compiled
+  graph, with its fingerprint on top and its collectives inside. A rank runs
+  its graphs from top to bottom. `0_1[2]` is collective 2 of the process group
+  of ranks 0 and 1, which the tests call `group_0_1`.
+  """
 
   def setUp(self) -> None:
     super().setUp()
@@ -160,6 +166,146 @@ class FusedProgramsTest(_ConsensusTestCase):
     self.assertEmpty(self.submit(2, {group_0_1_2: second}))
     self.assertEqual(self.submit(0, {group_0_1_2: second}), everyone)
 
+  def test_spmd_program_with_tensor_and_data_parallel_groups(self) -> None:
+    # Every graph runs an all-reduce on the tensor parallel group of its rank,
+    # `group_0_1` or `group_2_3`, and one on the data parallel group of its
+    # rank, `group_0_2` or `group_1_3`.
+    #
+    #    rank 0      rank 1      rank 2      rank 3
+    #  +"a"-----+  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[0] |  | 0_1[0] |  | 2_3[0] |  | 2_3[0] |
+    #  | 0_2[0] |  | 1_3[0] |  | 0_2[0] |  | 1_3[0] |
+    #  +--------+  +--------+  +--------+  +--------+
+    #  +"a"-----+  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[1] |  | 0_1[1] |  | 2_3[1] |  | 2_3[1] |
+    #  | 0_2[1] |  | 1_3[1] |  | 0_2[1] |  | 1_3[1] |
+    #  +--------+  +--------+  +--------+  +--------+
+    #  +"a"-----+  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[2] |  | 0_1[2] |  | 2_3[2] |  | 2_3[2] |
+    #  | 0_2[2] |  | 1_3[2] |  | 0_2[2] |  | 1_3[2] |
+    #  +--------+  +--------+  +--------+  +--------+
+    group_0_1 = ProcessGroupId([0, 1])
+    group_2_3 = ProcessGroupId([2, 3])
+    group_0_2 = ProcessGroupId([0, 2])
+    group_1_3 = ProcessGroupId([1, 3])
+    for step in range(3):
+      claim = _Claim(step, step + 1, "a")
+      self.assertEmpty(self.submit(0, {group_0_1: claim, group_0_2: claim}))
+      self.assertEmpty(self.submit(1, {group_0_1: claim, group_1_3: claim}))
+      self.assertEmpty(self.submit(2, {group_2_3: claim, group_0_2: claim}))
+      self.assertEqual(
+          self.submit(3, {group_2_3: claim, group_1_3: claim}),
+          {0: True, 1: True, 2: True, 3: True},
+      )
+
+  def test_spmd_program_with_groups_changing_between_graphs(self) -> None:
+    # Graphs on the tensor parallel groups, `group_0_1` and `group_2_3`,
+    # alternate with graphs on the data parallel groups, `group_0_2` and
+    # `group_1_3`.
+    #
+    #    rank 0      rank 1      rank 2      rank 3
+    #  +"a"-----+  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[0] |  | 0_1[0] |  | 2_3[0] |  | 2_3[0] |
+    #  +--------+  +--------+  +--------+  +--------+
+    #  +"a"-----+  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_2[0] |  | 1_3[0] |  | 0_2[0] |  | 1_3[0] |
+    #  +--------+  +--------+  +--------+  +--------+
+    #  +"a"-----+  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[1] |  | 0_1[1] |  | 2_3[1] |  | 2_3[1] |
+    #  +--------+  +--------+  +--------+  +--------+
+    #  +"a"-----+  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_2[1] |  | 1_3[1] |  | 0_2[1] |  | 1_3[1] |
+    #  +--------+  +--------+  +--------+  +--------+
+    group_0_1 = ProcessGroupId([0, 1])
+    group_2_3 = ProcessGroupId([2, 3])
+    group_0_2 = ProcessGroupId([0, 2])
+    group_1_3 = ProcessGroupId([1, 3])
+    for step in range(2):
+      claim = _Claim(step, step + 1, "a")
+      self.assertEmpty(self.submit(0, {group_0_1: claim}))
+      self.assertEqual(self.submit(1, {group_0_1: claim}), {0: True, 1: True})
+      self.assertEmpty(self.submit(2, {group_2_3: claim}))
+      self.assertEqual(self.submit(3, {group_2_3: claim}), {2: True, 3: True})
+
+      self.assertEmpty(self.submit(0, {group_0_2: claim}))
+      self.assertEmpty(self.submit(1, {group_1_3: claim}))
+      self.assertEqual(self.submit(2, {group_0_2: claim}), {0: True, 2: True})
+      self.assertEqual(self.submit(3, {group_1_3: claim}), {1: True, 3: True})
+
+  def test_spmd_program_with_the_global_group_and_subgroups(self) -> None:
+    #      rank 0          rank 1          rank 2          rank 3
+    #  +"a"---------+  +"a"---------+  +"a"---------+  +"a"---------+
+    #  | 0_1_2_3[0] |  | 0_1_2_3[0] |  | 0_1_2_3[0] |  | 0_1_2_3[0] |
+    #  | 0_1[0]     |  | 0_1[0]     |  | 2_3[0]     |  | 2_3[0]     |
+    #  +------------+  +------------+  +------------+  +------------+
+    #  +"a"---------+  +"a"---------+  +"a"---------+  +"a"---------+
+    #  | 0_1_2_3[1] |  | 0_1_2_3[1] |  | 0_1_2_3[1] |  | 0_1_2_3[1] |
+    #  | 0_1[1]     |  | 0_1[1]     |  | 2_3[1]     |  | 2_3[1]     |
+    #  +------------+  +------------+  +------------+  +------------+
+    group_0_1_2_3 = ProcessGroupId([0, 1, 2, 3])
+    group_0_1 = ProcessGroupId([0, 1])
+    group_2_3 = ProcessGroupId([2, 3])
+    for step in range(2):
+      claim = _Claim(step, step + 1, "a")
+      self.assertEmpty(self.submit(0, {group_0_1_2_3: claim, group_0_1: claim}))
+      self.assertEmpty(self.submit(1, {group_0_1_2_3: claim, group_0_1: claim}))
+      self.assertEmpty(self.submit(2, {group_0_1_2_3: claim, group_2_3: claim}))
+      self.assertEqual(
+          self.submit(3, {group_0_1_2_3: claim, group_2_3: claim}),
+          {0: True, 1: True, 2: True, 3: True},
+      )
+
+  def test_disjoint_sets_of_ranks_are_answered_independently(self) -> None:
+    # Ranks 0-1 and ranks 2-3 run unrelated programs with different graph
+    # boundaries and fingerprints.
+    #
+    #    rank 0      rank 1      rank 2      rank 3
+    #  +"left"--+  +"left"--+  +"right"-+  +"right"-+
+    #  | 0_1[0] |  | 0_1[0] |  | 2_3[0] |  | 2_3[0] |
+    #  +--------+  +--------+  | 2_3[1] |  | 2_3[1] |
+    #  +"left"--+  +"left"--+  | 2_3[2] |  | 2_3[2] |
+    #  | 0_1[1] |  | 0_1[1] |  +--------+  +--------+
+    #  +--------+  +--------+
+    group_0_1 = ProcessGroupId([0, 1])
+    group_2_3 = ProcessGroupId([2, 3])
+    right_claim = _Claim(0, 3, "right")
+    self.assertEmpty(self.submit(2, {group_2_3: right_claim}))
+
+    # Ranks 0-1 get their responses while rank 3 has not submitted anything.
+    first_claim = _Claim(0, 1, "left")
+    self.assertEmpty(self.submit(0, {group_0_1: first_claim}))
+    self.assertEqual(
+        self.submit(1, {group_0_1: first_claim}), {0: True, 1: True}
+    )
+    second_claim = _Claim(1, 2, "left")
+    self.assertEmpty(self.submit(0, {group_0_1: second_claim}))
+    self.assertEqual(
+        self.submit(1, {group_0_1: second_claim}), {0: True, 1: True}
+    )
+
+    self.assertEqual(
+        self.submit(3, {group_2_3: right_claim}), {2: True, 3: True}
+    )
+
+  def test_rank_busy_with_another_group_is_waited_for(self) -> None:
+    # Rank 0 waits for rank 1, which first runs a graph with rank 2. Waiting
+    # is not a cycle.
+    #
+    #    rank 0      rank 1      rank 2
+    #  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[0] |  | 1_2[0] |  | 1_2[0] |
+    #  +--------+  +--------+  +--------+
+    #              +"a"-----+
+    #              | 0_1[0] |
+    #              +--------+
+    group_1_2 = ProcessGroupId([1, 2])
+    group_0_1 = ProcessGroupId([0, 1])
+    claim = _Claim(0, 1, "a")
+    self.assertEmpty(self.submit(0, {group_0_1: claim}))
+    self.assertEmpty(self.submit(1, {group_1_2: claim}))
+    self.assertEqual(self.submit(2, {group_1_2: claim}), {1: True, 2: True})
+    self.assertEqual(self.submit(1, {group_0_1: claim}), {0: True, 1: True})
+
 
 class RejectedProgramsTest(_ConsensusTestCase):
   """Programs with requests that must be rejected."""
@@ -173,6 +319,25 @@ class RejectedProgramsTest(_ConsensusTestCase):
         {0: False, 1: False, 2: False},
     )
 
+  def test_mismatch_on_one_of_the_process_groups_of_a_graph(self) -> None:
+    # The graph of rank 0 matches rank 1 on `group_0_1` and mismatches rank 2
+    # on `group_0_2`.
+    #
+    #    rank 0      rank 1      rank 2
+    #  +"a"-----+  +"a"-----+  +"b"-----+
+    #  | 0_1[0] |  | 0_1[0] |  | 0_2[0] |
+    #  | 0_2[0] |  +--------+  +--------+
+    #  +--------+
+    group_0_1 = ProcessGroupId([0, 1])
+    group_0_2 = ProcessGroupId([0, 2])
+    claim = _Claim(0, 1, "a")
+    self.assertEmpty(self.submit(0, {group_0_1: claim, group_0_2: claim}))
+    self.assertEmpty(self.submit(1, {group_0_1: claim}))
+    self.assertEqual(
+        self.submit(2, {group_0_2: _Claim(0, 1, "b")}),
+        {0: False, 1: False, 2: False},
+    )
+
   def test_mismatch_is_answered_without_waiting_for_all_ranks(self) -> None:
     group_0_1_2 = ProcessGroupId([0, 1, 2])
     self.assertEmpty(self.submit(0, {group_0_1_2: _Claim(0, 1, "a")}))
@@ -182,6 +347,21 @@ class RejectedProgramsTest(_ConsensusTestCase):
     self.assertEqual(
         self.submit(2, {group_0_1_2: _Claim(0, 1, "a")}), {2: False}
     )
+
+  def test_rejected_requests_are_forgotten_once_all_ranks_have_a_response(
+      self,
+  ) -> None:
+    group_0_1 = ProcessGroupId([0, 1])
+    self.assertEmpty(self.submit(0, {group_0_1: _Claim(0, 1, "a")}))
+    self.assertEqual(
+        self.submit(1, {group_0_1: _Claim(0, 1, "b")}), {0: False, 1: False}
+    )
+
+    # The rejections can no longer keep a rank from being settled. The history
+    # must not keep them, or it would grow with every rejected request.
+    # pylint: disable=protected-access
+    self.assertEmpty(self.consensus._rejections._rejected_parts)
+    # pylint: enable=protected-access
 
   def test_graph_split_on_one_rank_then_matching_graphs(self) -> None:
     group_0_1_2 = ProcessGroupId([0, 1, 2])
@@ -205,6 +385,52 @@ class RejectedProgramsTest(_ConsensusTestCase):
         self.submit(0, {group_0_1_2: _Claim(2, 3, "a")}),
         {0: True, 1: True, 2: True},
     )
+
+  def test_mismatch_does_not_affect_a_later_graph_of_a_subgroup(self) -> None:
+    #     rank 0        rank 1        rank 2
+    #  +"a"-------+  +"b"-------+  +"a"-------+
+    #  | 0_1_2[0] |  | 0_1_2[0] |  | 0_1_2[0] |
+    #  +----------+  +----------+  +----------+
+    #  +"a"-------+  +"a"-------+
+    #  | 0_1[0]   |  | 0_1[0]   |
+    #  +----------+  +----------+
+    group_0_1_2 = ProcessGroupId([0, 1, 2])
+    group_0_1 = ProcessGroupId([0, 1])
+    self.assertEmpty(self.submit(0, {group_0_1_2: _Claim(0, 1, "a")}))
+    self.assertEqual(
+        self.submit(1, {group_0_1_2: _Claim(0, 1, "b")}), {0: False, 1: False}
+    )
+
+    # Ranks 0 and 1 submit their next graph while rank 2 has not submitted the
+    # mismatching one yet. It is accepted once rank 2 has its response.
+    self.assertEmpty(self.submit(0, {group_0_1: _Claim(0, 1, "a")}))
+    self.assertEmpty(self.submit(1, {group_0_1: _Claim(0, 1, "a")}))
+    self.assertEqual(
+        self.submit(2, {group_0_1_2: _Claim(0, 1, "a")}),
+        {0: True, 1: True, 2: False},
+    )
+
+  def test_requests_on_a_cycle_get_no_response_yet(self) -> None:
+    # TODO: b/553328238 - Expect rejections once such requests are rejected.
+    #
+    # Fusing the graphs that run `0_1[0]` and `1_2[0]` would deadlock, because
+    # rank 2 runs `0_2[0]` before the fused executable and rank 0 runs it
+    # after. The requests are not accepted.
+    #
+    #    rank 0      rank 1      rank 2
+    #  +"a"-----+  +"a"-----+  +"a"-----+
+    #  | 0_1[0] |  | 0_1[0] |  | 0_2[0] |
+    #  +--------+  | 1_2[0] |  +--------+
+    #  +"a"-----+  +--------+  +"a"-----+
+    #  | 0_2[0] |              | 1_2[0] |
+    #  +--------+              +--------+
+    group_0_1 = ProcessGroupId([0, 1])
+    group_0_2 = ProcessGroupId([0, 2])
+    group_1_2 = ProcessGroupId([1, 2])
+    claim = _Claim(0, 1, "a")
+    self.assertEmpty(self.submit(0, {group_0_1: claim}))
+    self.assertEmpty(self.submit(1, {group_0_1: claim, group_1_2: claim}))
+    self.assertEmpty(self.submit(2, {group_0_2: claim}))
 
 
 class ContractViolationsTest(seed_test_utils.RepeatableTest):
@@ -259,6 +485,42 @@ class ContractViolationsTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(self.submit(0, _Claim(0, 2, "a")))
     # Rank 1 will never claim collectives 0 and 1.
     self.assertEqual(self.submit(1, _Claim(6, 7, "a")), {0: False, 1: False})
+
+  def test_rank_is_not_settled_by_the_response_to_its_own_rejection(
+      self,
+  ) -> None:
+    group_0_1 = ProcessGroupId([0, 1])
+    group_0_2 = ProcessGroupId([0, 2])
+    group_1_3 = ProcessGroupId([1, 3])
+
+    def submit(
+        rank: int, process_group: ProcessGroupId, claim: _Claim
+    ) -> Mapping[int, bool]:
+      request = _request(rank, {process_group: claim})
+      return _handshake_successes(self.consensus.submit(request))
+
+    # Ranks 0 and 1 are rejected on `group_0_1`, then ranks 0 and 2 on
+    # `group_0_2` while rank 0 is not settled.
+    submit(0, group_0_1, _Claim(0, 1, "a"))
+    submit(1, group_0_1, _Claim(0, 2, "a"))
+    submit(0, group_0_2, _Claim(0, 1, "a"))
+    submit(2, group_0_2, _Claim(0, 1, "b"))
+    # The response to this request gives rank 0 the response that it was missing
+    # on `group_0_1`. Rank 0 was not settled when it was rejected, so the
+    # rejected cluster part on `group_0_1` keeps the one on `group_0_2` as a
+    # previous part.
+    self.assertEqual(submit(0, group_0_1, _Claim(1, 3, "a")), {0: False})
+    # Rank 2 breaks the contract. It claims collective 0 of `group_0_2` again,
+    # and a collective that rank 0 has no response for.
+    self.assertEqual(submit(2, group_0_2, _Claim(0, 2, "a")), {2: False})
+    self.assertEqual(submit(1, group_0_1, _Claim(2, 3, "a")), {1: False})
+
+    # Rank 1 is not settled while rank 0 has no response on `group_0_2`.
+    self.assertEmpty(submit(1, group_1_3, _Claim(0, 1, "a")))
+    self.assertEmpty(submit(3, group_1_3, _Claim(0, 1, "a")))
+    self.assertEqual(
+        submit(0, group_0_2, _Claim(1, 2, "a")), {0: False, 1: True, 3: True}
+    )
 
 
 class ProcessGroupStateTest(seed_test_utils.RepeatableTest):

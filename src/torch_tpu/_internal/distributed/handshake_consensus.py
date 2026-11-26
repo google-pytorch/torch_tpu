@@ -19,7 +19,9 @@ group. `_ExpectedHandshakeClaim` defines what a request claims.
 
 A *cluster* is a set of requests connected by overlaps. If all requests keep the
 contract of `CollectiveHandshakeConsensus.submit`, the requests of a cluster all
-get the same response.
+get the same response. The consensus never holds a whole cluster. It tracks a
+cluster through its parts, which are the pending cluster parts
+(`_PendingClusterPart`) and the rejected cluster parts (`_RejectedClusterPart`).
 
 A cluster *precedes* another cluster if some rank submits a request of the
 first cluster before a request of the second one. A cluster that contains two
@@ -226,6 +228,42 @@ class _RequestWithProcessGroupClaims:
       )
 
 
+@dataclasses.dataclass(frozen=True)
+class _PendingClusterPart:
+  """A part of a cluster whose requests are pending.
+
+  A *pending cluster part* is a set of pending requests that are connected by
+  overlaps with other pending requests. It is a part of a cluster (see the
+  module docstring) and not the whole cluster, because other requests of the
+  cluster may already have a response or may not have been submitted yet.
+
+  A pending cluster part is only valid until the next response, which changes
+  the pending requests and what the states of their process groups report.
+
+  Attributes:
+    requests: The requests of the pending cluster part.
+  """
+
+  requests: Sequence[_RequestWithProcessGroupClaims]
+
+  @property
+  def ranks(self) -> Sequence[int]:
+    """The ranks of the requests."""
+    return [request.rank for request in self.requests]
+
+  def missing_ranks(self) -> Collection[int]:
+    """Returns the ranks that still have to claim one of its process groups."""
+    missing_ranks: set[int] = set()
+    for request in self.requests:
+      for process_group_claim in request.process_group_claims:
+        missing_ranks.update(process_group_claim.state.ranks_without_claim())
+    return missing_ranks
+
+  def is_complete(self) -> bool:
+    """Returns whether no rank still has to claim one of its process groups."""
+    return not self.missing_ranks()
+
+
 class _PendingRequests:
   """The requests without a response.
 
@@ -268,6 +306,33 @@ class _PendingRequests:
     del self._request_of_rank[request.rank]
     for process_group_claim in request.process_group_claims:
       process_group_claim.state.remove_claimant(request.rank)
+
+  def pending_parts(self) -> Sequence[_PendingClusterPart]:
+    """Returns the pending cluster parts that the pending requests form.
+
+    Pending requests that claim the same process group claim the same
+    collectives of it, so they overlap.
+    """
+    pending_parts = []
+    visited: set[int] = set()
+    for first in self._request_of_rank.values():
+      if first.rank in visited:
+        continue
+      requests = []
+      stack = [first]
+      while stack:
+        request = stack.pop()
+        if request.rank in visited:
+          continue
+        visited.add(request.rank)
+        requests.append(request)
+        for process_group_claim in request.process_group_claims:
+          stack.extend(
+              self._request_of_rank[rank]
+              for rank in process_group_claim.state.claimants
+          )
+      pending_parts.append(_PendingClusterPart(tuple(requests)))
+    return pending_parts
 
 
 class _RejectedClusterPart:
@@ -427,6 +492,9 @@ class _RejectionHistory:
     closed as well. A closed rejected cluster part stays closed for requests
     that keep the contract of `CollectiveHandshakeConsensus.submit`.
     """
+    # TODO: b/553328238 - This is suboptimal. The cost is quadratic in the
+    # number of rejected cluster parts that are kept. Follow-up changes will
+    # look into reducing it.
     self._rejected_parts = [
         rejected_part
         for rejected_part in self._rejected_parts
@@ -497,20 +565,25 @@ def _mismatch_rule_applies(request: _RequestWithProcessGroupClaims) -> bool:
   )
 
 
-def _agreement_rule_applies(request: _RequestWithProcessGroupClaims) -> bool:
-  """Returns whether R2 Agreement applies to `request`.
+def _agreement_rule_applies(
+    pending_part: _PendingClusterPart, rejections: _RejectionHistory
+) -> bool:
+  """Returns whether R2 Agreement applies to `pending_part`.
 
-  R2 Agreement: accept a pending request R if, for any process group PG that R
-  claims and any rank r of PG, rank r has a pending request that claims PG (the
-  pending requests that claim PG claim the same collectives of PG with the same
-  fingerprint, or R1 would have rejected them).
+  R2 Agreement: accept the requests of a pending cluster part K if both of
+  these hold:
+  * for any request R in K, any process group PG that R claims, and any rank r
+    of PG, rank r has a request in K that claims PG (the requests in K that
+    claim PG claim the same collectives of PG with the same fingerprint, or R1
+    would have rejected them)
+  * every rank of K is settled, as defined in `_RejectionHistory`
 
   Args:
-    request: A pending request.
+    pending_part: A pending cluster part.
+    rejections: The history of the rejected requests.
   """
-  return not any(
-      process_group_claim.state.ranks_without_claim()
-      for process_group_claim in request.process_group_claims
+  return pending_part.is_complete() and all(
+      rejections.is_settled(rank) for rank in pending_part.ranks
   )
 
 
@@ -522,7 +595,9 @@ class CollectiveHandshakeConsensus:
   * R1 Mismatch rejects requests (see `_mismatch_rule_applies`)
   * R2 Agreement accepts requests (see `_agreement_rule_applies`)
 
-  For now, all requests have to claim collectives of the same process group.
+  TODO: b/553328238 - Reject the requests that R2 can never apply to. For now,
+  they stay without a response. This happens to the requests of a cluster that
+  is on a cycle of the precedes relation.
 
   Guarantee: if all requests keep the contract of `submit`, the requests of a
   cluster are accepted if and only if they all have the same fingerprint and
@@ -544,6 +619,7 @@ class CollectiveHandshakeConsensus:
     # The state of every process group ever claimed.
     self._states: dict[ProcessGroupId, _ProcessGroupState] = {}
     self._pending = _PendingRequests()
+    self._rejections = _RejectionHistory()
 
   def submit(
       self, request: CollectiveHandshakeRequest
@@ -569,9 +645,6 @@ class CollectiveHandshakeConsensus:
         does not continue the previous request of its rank on a process group,
         or if its rank is not a member of a process group it claims. The
         request is then ignored.
-      NotImplementedError: If the requests so far, this one included, claim
-        collectives of more than one process group. The request is then
-        ignored.
     """
     self._validate(request)
     request_with_claims = self._with_process_group_claims(request)
@@ -584,6 +657,8 @@ class CollectiveHandshakeConsensus:
     else:
       self._pending.add_request_and_claimant(request_with_claims)
     responses.update(self._apply_rules())
+    # Keeps the history from growing with every rejected request.
+    self._rejections.forget_rejected_parts_without_lagging_ranks()
     return responses
 
   def _validate(self, request: CollectiveHandshakeRequest) -> None:
@@ -613,21 +688,9 @@ class CollectiveHandshakeConsensus:
     """Returns `request` together with its claims.
 
     The state of a process group is created when the group is first claimed.
-
-    Raises:
-      NotImplementedError: If the requests so far, `request` included, claim
-        collectives of more than one process group.
     """
-    claims = _claims(request)
-    # TODO: b/553328238 - Support requests on more than one process group. R1
-    # and R2 only give the guarantee of the class while all requests claim
-    # collectives of the same process group.
-    if len(self._states.keys() | claims.keys()) > 1:
-      raise NotImplementedError(
-          "Requests on more than one process group are not supported yet."
-      )
     process_group_claims = []
-    for process_group, claim in claims.items():
+    for process_group, claim in _claims(request).items():
       state = self._states.get(process_group)
       if state is None:
         state = self._states[process_group] = _ProcessGroupState(process_group)
@@ -641,13 +704,14 @@ class CollectiveHandshakeConsensus:
       The responses to the requests that are no longer pending, by rank.
     """
     responses: dict[int, CollectiveHandshakeResponse] = {}
-    # The rules are applied in a loop, because a rejection moves its rank past
-    # collectives that other pending requests claim, which makes R1 apply to
-    # them.
+    # The rules are applied in a loop, because a response can make a rule apply
+    # to other pending requests:
+    # * a rejection moves its rank past collectives that they claim (R1)
+    # * any response can settle the ranks that they wait for (R2)
     while True:
       # `or` is evaluated lazily, so only the first rule that applies gives
       # responses in this iteration. R2 can be tried at any point. It never
-      # applies to a request that R1 applies to.
+      # applies to a pending cluster part with a request that R1 applies to.
       new_responses = (
           self._apply_mismatch_rule() or self._apply_agreement_rule()
       )
@@ -674,19 +738,20 @@ class CollectiveHandshakeConsensus:
     return responses
 
   def _apply_agreement_rule(self) -> dict[int, CollectiveHandshakeResponse]:
-    """Applies R2 Agreement to the pending requests.
+    """Applies R2 Agreement to the pending cluster parts.
 
     Returns:
       The responses to the accepted requests, by rank.
     """
     in_agreement = [
-        request
-        for request in self._pending.requests()
-        if _agreement_rule_applies(request)
+        pending_part
+        for pending_part in self._pending.pending_parts()
+        if _agreement_rule_applies(pending_part, self._rejections)
     ]
     responses: dict[int, CollectiveHandshakeResponse] = {}
-    for request in in_agreement:
-      responses[request.rank] = self._accept(request)
+    for pending_part in in_agreement:
+      for request in pending_part.requests:
+        responses[request.rank] = self._accept(request)
     return responses
 
   def _accept(
@@ -703,5 +768,6 @@ class CollectiveHandshakeConsensus:
     """Rejects `request`, pending or not, and returns its response."""
     if self._pending.has_request_of(request.rank):
       self._pending.remove_request_and_claimant(request)
+    self._rejections.record_rejection(request)
     request.advance_rank()
     return CollectiveHandshakeResponse(success=False)
