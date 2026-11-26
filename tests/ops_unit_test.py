@@ -29416,6 +29416,122 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     self.assertEqual(out.dtype, torch.float16)
     utils.assert_close(actual=out.cpu(), expected=expected)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="fp16_eager",
+          low_dtype=torch.float16,
+          use_compiled=False,
+      ),
+      dict(
+          testcase_name="fp16_compiled",
+          low_dtype=torch.float16,
+          use_compiled=True,
+      ),
+      dict(
+          testcase_name="bf16_eager",
+          low_dtype=torch.bfloat16,
+          use_compiled=False,
+      ),
+      dict(
+          testcase_name="bf16_compiled",
+          low_dtype=torch.bfloat16,
+          use_compiled=True,
+      ),
+  )
+  def test_alpha_opmath_mixed_dtype_large_alpha(self, low_dtype, use_compiled):
+    alpha = 100000.0
+
+    def mixed_variants(x_f32, y_low):
+      add_out = torch.empty_like(x_f32)
+      torch.add(x_f32, y_low, alpha=alpha, out=add_out)
+      sub_out = torch.empty_like(x_f32)
+      torch.sub(x_f32, y_low, alpha=alpha, out=sub_out)
+      relu_out = torch.empty_like(x_f32)
+      torch.ops.aten._add_relu.out(x_f32, y_low, alpha=alpha, out=relu_out)
+      return (
+          torch.add(x_f32, y_low, alpha=alpha),
+          add_out,
+          torch.sub(x_f32, y_low, alpha=alpha),
+          sub_out,
+          torch.rsub(y_low, x_f32, alpha=alpha),
+          torch.ops.aten._add_relu.Tensor(x_f32, y_low, alpha=alpha),
+          relu_out,
+      )
+
+    def same_low_variants(x_low, y_low):
+      sub_out = torch.empty_like(x_low)
+      torch.sub(x_low, y_low, alpha=alpha, out=sub_out)
+      relu_out = torch.empty_like(x_low)
+      torch.ops.aten._add_relu.out(x_low, y_low, alpha=alpha, out=relu_out)
+      return (
+          torch.sub(x_low, y_low, alpha=alpha),
+          sub_out,
+          torch.rsub(y_low, x_low, alpha=alpha),
+          torch.ops.aten._add_relu.Tensor(x_low, y_low, alpha=alpha),
+          relu_out,
+          torch.ops.aten._add_relu.Scalar(x_low, 1e-4, alpha=alpha),
+      )
+
+    mixed_fn = (
+        torch.compile(
+            mixed_variants, backend="tpu", fullgraph=True, dynamic=False
+        )
+        if use_compiled
+        else mixed_variants
+    )
+    same_low_fn = (
+        torch.compile(
+            same_low_variants, backend="tpu", fullgraph=True, dynamic=False
+        )
+        if use_compiled
+        else same_low_variants
+    )
+
+    x_f32 = torch.tensor([1.0, 2.0], dtype=torch.float32)
+    x_low = torch.tensor([1.0, 2.0], dtype=low_dtype)
+    y_low = torch.tensor([1e-4, 2e-4], dtype=low_dtype)
+
+    expected_add_f32 = x_f32 + alpha * y_low.float()
+    expected_sub_f32 = x_f32 - alpha * y_low.float()
+    expected_relu_f32 = torch.relu(expected_add_f32)
+    mixed_expected = (
+        expected_add_f32,
+        expected_add_f32,
+        expected_sub_f32,
+        expected_sub_f32,
+        expected_sub_f32,
+        expected_relu_f32,
+        expected_relu_f32,
+    )
+    for actual, expected in zip(
+        mixed_fn(x_f32.to("tpu"), y_low.to("tpu")), mixed_expected, strict=True
+    ):
+      self.assertEqual(actual.dtype, torch.float32)
+      utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+    expected_sub_low = (x_low.float() - alpha * y_low.float()).to(low_dtype)
+    expected_relu_low = torch.relu(x_low.float() + alpha * y_low.float()).to(
+        low_dtype
+    )
+    expected_relu_scalar_low = torch.relu(
+        x_low.float() + alpha * torch.tensor(1e-4, dtype=low_dtype).float()
+    ).to(low_dtype)
+    same_low_expected = (
+        expected_sub_low,
+        expected_sub_low,
+        expected_sub_low,
+        expected_relu_low,
+        expected_relu_low,
+        expected_relu_scalar_low,
+    )
+    for actual, expected in zip(
+        same_low_fn(x_low.to("tpu"), y_low.to("tpu")),
+        same_low_expected,
+        strict=True,
+    ):
+      self.assertEqual(actual.dtype, low_dtype)
+      utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
   def test_addmm_bool_scalars_on_float(self):
     b = torch.ones(2, 2, dtype=torch.float32)
     m1 = torch.full((2, 2), 2.0, dtype=torch.float32)
