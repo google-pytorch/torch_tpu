@@ -126,7 +126,9 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
 
 absl::StatusOr<std::optional<DeviceBufferRef>> GetBufferImpl(
     const at::Tensor& tensor, std::optional<DonateBase> donate_base) {
-  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=checked by dispatcher/caller before
+                 // GetBufferImpl
+      tensor.defined(), error::kInvalidArgument)
       << "tensor is undefined";
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
   TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
@@ -337,7 +339,9 @@ absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
 }
 
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
-  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=checked by dispatcher/caller before
+                 // GetBufferImpl
+      tensor.defined(), error::kInvalidArgument)
       << "tensor is undefined";
 
   TT_RET_CHECK(tensor.device().type() == GetPrivateUse1DeviceType(),
@@ -345,7 +349,9 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
       << "expected tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << tensor.device();
 
-  TT_RET_CHECK(tensor.storage().data_ptr(), error::kPythonNotImplementedError)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=FakeTensor __torch_dispatch__
+                 // intercepts ops before reaching C++
+      tensor.storage().data_ptr(), error::kPythonNotImplementedError)
       << "tensor is on the custom PrivateUse1 device. But its storage data_ptr "
          "is null. This is usually caused by FakeTensor being run on TPU ops. "
          "And it is not supported";
@@ -485,7 +491,8 @@ class TpuAllocator final : public c10::DeviceAllocator {
     // Check that the size_t does not overflow an int64_t.
     // This function is only ever called from PyTorch so safe to throw an
     // exception on failure.
-    TT_CHECK_THROW(
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PyTorch checks size overflow before
+                     // TpuAllocator::allocate
         nbytes <= static_cast<size_t>(std::numeric_limits<int64_t>::max()),
         error::kResourceExhausted)
         << "allocation size " << nbytes
@@ -506,7 +513,9 @@ class TpuAllocator final : public c10::DeviceAllocator {
 
   void copy_data(void* dest, const void* src,
                  std::size_t count) const override {
-    TT_CHECK_THROW(false, error::kPythonNotImplementedError)
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=unreachable; TorchTPU overrides
+                     // copy_from instead of using Allocator::copy_data
+        false, error::kPythonNotImplementedError)
         << "TpuAllocator::copy_data is not implemented and should not be "
            "called directly for this conceptual allocator type.";
   }

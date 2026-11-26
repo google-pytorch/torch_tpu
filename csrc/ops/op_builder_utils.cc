@@ -51,6 +51,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/ops/python_context.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallVectorExtras.h"
@@ -64,6 +65,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
@@ -96,6 +98,131 @@ namespace {
 template <typename T>
 std::complex<T> ToStdComplex(const c10::complex<T>& complex_value) {
   return std::complex<T>(complex_value.real(), complex_value.imag());
+}
+
+[[nodiscard]] std::string_view FormatElementTypeForError(
+    const mlir::ElementType element_type) {
+  switch (element_type) {
+    // Elements with an at::ScalarType mapping in dtype.cc.
+    // Deliberately no default case so new mlir::ElementType values are checked
+    // at compile time.
+    case mlir::ElementType::PRED:
+    case mlir::ElementType::I2:
+    case mlir::ElementType::I4:
+    case mlir::ElementType::I8:
+    case mlir::ElementType::I16:
+    case mlir::ElementType::I32:
+    case mlir::ElementType::I64:
+    case mlir::ElementType::UI2:
+    case mlir::ElementType::UI4:
+    case mlir::ElementType::UI8:
+    case mlir::ElementType::UI16:
+    case mlir::ElementType::UI32:
+    case mlir::ElementType::UI64:
+    case mlir::ElementType::BF16:
+    case mlir::ElementType::F16:
+    case mlir::ElementType::F32:
+    case mlir::ElementType::F64:
+    case mlir::ElementType::F4E2M1FN:
+    case mlir::ElementType::F8E4M3:
+    case mlir::ElementType::F8E4M3FN:
+    case mlir::ElementType::F8E4M3FNUZ:
+    case mlir::ElementType::F8E5M2:
+    case mlir::ElementType::F8E5M2FNUZ:
+    case mlir::ElementType::F8E8M0FNU:
+    case mlir::ElementType::COMPLEXF32:
+    case mlir::ElementType::COMPLEXF64:
+      return ToString(element_type);
+    // These types have no at::ScalarType mapping in dtype.cc.
+    case mlir::ElementType::F6E2M3FN:
+    case mlir::ElementType::F6E3M2FN:
+    case mlir::ElementType::F8E3M4:
+    case mlir::ElementType::F8E4M3B11FNUZ:
+    case mlir::ElementType::F8E5M3FNU:
+      return ToShortString(element_type);
+  }
+}
+
+[[nodiscard]] std::string FormatElementTypeForError(
+    const mlir::Type element_type) {
+  if (absl::StatusOr<mlir::ElementType> converted_element_type =
+          ConvertTo<mlir::ElementType>(element_type);
+      converted_element_type.ok()) {
+    return std::string(FormatElementTypeForError(*converted_element_type));
+  }
+  return ToString(element_type);
+}
+
+[[nodiscard]] std::string FormatShapeForError(
+    const llvm::ArrayRef<int64_t> shape) {
+  return absl::StrCat("[",
+                      absl::StrJoin(shape, ", ",
+                                    [](std::string* out, const int64_t dim) {
+                                      if (mlir::ShapedType::isDynamic(dim)) {
+                                        absl::StrAppend(out, "dyn");
+                                      } else {
+                                        absl::StrAppend(out, dim);
+                                      }
+                                    }),
+                      "]");
+}
+
+[[nodiscard]] std::string FormatTensorForError(
+    const mlir::RankedTensorType type, const stablehlo::Dimensions& dims) {
+  return absl::StrCat("a ", FormatElementTypeForError(type.getElementType()),
+                      " tensor with shape ", ToString(GetStaticShape(dims)));
+}
+
+// Returns a formatted error if any trailing dimension has incompatible static
+// sizes across `shapes` (ignoring dynamic and size-1 dimensions), or
+// std::nullopt when no static dimension mismatch is found.
+[[nodiscard]] std::optional<std::string> FindBroadcastMismatch(
+    const absl::Span<const llvm::ArrayRef<int64_t>> shapes,
+    const std::string_view shapes_desc, const size_t max_rank) {
+  for (size_t trailing = 1; trailing <= max_rank; ++trailing) {
+    int64_t expected_size = 1;
+    for (const llvm::ArrayRef<int64_t> shape : shapes) {
+      if (trailing > shape.size()) continue;
+      const int64_t dim_size = shape[shape.size() - trailing];
+      if (mlir::ShapedType::isDynamic(dim_size) || dim_size == 1) continue;
+      if (expected_size == 1) {
+        expected_size = dim_size;
+      } else if (dim_size != expected_size) {
+        return absl::StrCat("failed to broadcast tensors with shapes ",
+                            shapes_desc, ": incompatible sizes ", expected_size,
+                            " and ", dim_size, " at trailing dimension -",
+                            trailing);
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+// Formats a broadcast failure message for `ops`, preferring an explicit static
+// shape mismatch and otherwise falling back to `diag_message`.
+[[nodiscard]] std::string FormatBroadcastFailure(
+    const absl::Span<const mlir::MlirOp> ops,
+    const std::string_view diag_message) {
+  std::vector<llvm::ArrayRef<int64_t>> shapes;
+  size_t max_rank = 0;
+  for (const mlir::MlirOp& op : ops) {
+    if (auto ranked_type =
+            mlir::dyn_cast<mlir::RankedTensorType>(op.getType())) {
+      shapes.push_back(ranked_type.getShape());
+      max_rank = std::max(max_rank, ranked_type.getShape().size());
+    }
+  }
+  if (shapes.size() == ops.size() && max_rank > 0) {
+    const std::string shapes_desc =
+        SequenceToReadableStr(absl::MakeConstSpan(shapes), FormatShapeForError);
+    if (std::optional<std::string> mismatch =
+            FindBroadcastMismatch(shapes, shapes_desc, max_rank)) {
+      return *std::move(mismatch);
+    }
+  }
+  return absl::StrCat(
+      "failed to broadcast tensors: ",
+      diag_message.empty() ? "no MLIR diagnostic was reported" : diag_message);
 }
 
 // Given a potential filename, extract the filename without extension and path.
@@ -500,8 +627,9 @@ std::string DebugString(mlir::Operation* absl_nonnull op,
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module) {
   std::string bytecode_str;
   llvm::raw_string_ostream os(bytecode_str);
-  TT_RET_CHECK(mlir::succeeded(mlir::writeBytecodeToFile(module, os)),
-               error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=In-memory bytecode serialization on a
+                 // valid MLIR module cannot fail
+      mlir::succeeded(mlir::writeBytecodeToFile(module, os)), error::kInternal)
       << "Failed to serialize MLIR module to bytecode.";
   return bytecode_str;
 }
@@ -574,7 +702,8 @@ absl::StatusOr<mlir::DenseElementsAttr> GetVerifiedMinFiniteValue(
   mlir::FloatType dtype_float =
       mlir::dyn_cast<mlir::FloatType>(constant_tensor_type.getElementType());
   TT_RET_CHECK(dtype_float, error::kInvalidArgument)
-      << "Input type is not float type.";
+      << "expected floating-point input dtype, got "
+      << FormatElementTypeForError(constant_tensor_type.getElementType());
 
   mlir::APFloat min_finite_value = mlir::APFloat::getLargest(
       dtype_float.getFloatSemantics(), /*negative=*/true);
@@ -673,8 +802,11 @@ double GetMinFiniteDouble(mlir::Type element_type) {
 absl::StatusOr<mlir::MlirOp> MakeZeroSizedTensor(
     mlir::MlirBuilder& builder, mlir::Type element_type,
     mlir::ArrayRef<int64_t> shape) {
-  TT_RET_CHECK(absl::c_linear_search(shape, 0), error::kInvalidArgument)
-      << "Shape must contain at least one dimension of size 0 to be "
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pass {0} or shapes with
+                 // output_num_elements == 0
+      absl::c_linear_search(shape, 0), error::kInvalidArgument)
+      << "Shape must contain at least one dimension "
+         "of size 0 to be "
          "zero-sized.";
   auto& ctx = builder.getContext();
   auto tensor_type = mlir::makeTensorType(ctx, shape, element_type);
@@ -685,8 +817,11 @@ absl::StatusOr<mlir::MlirOp> MakeZeroSizedTensor(
 absl::StatusOr<mlir::MlirOp> MakeZeroSizedTensor(
     mlir::MlirBuilder& builder, mlir::ElementType element_type,
     mlir::ArrayRef<int64_t> shape) {
-  TT_RET_CHECK(absl::c_linear_search(shape, 0), error::kInvalidArgument)
-      << "Shape must contain at least one dimension of size 0 to be "
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pass {0} or shapes with
+                 // output_num_elements == 0
+      absl::c_linear_search(shape, 0), error::kInvalidArgument)
+      << "Shape must contain at least one dimension "
+         "of size 0 to be "
          "zero-sized.";
   auto& ctx = builder.getContext();
   auto tensor_type = mlir::makeTensorType(ctx, shape, element_type);
@@ -785,8 +920,8 @@ absl::StatusOr<mlir::DenseElementsAttr> MakeConstantAttr(
       break;
   }
   return TT_ERROR(error::kInvalidArgument)
-         << "unsupported at::Scalar type "
-         << static_cast<int>(scalar_value_type);
+         << "unsupported scalar constant dtype "
+         << FormatElementTypeForError(element_type);
 }
 
 }  // namespace
@@ -952,9 +1087,10 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
     TT_RET_CHECK(GetStaticShape(*result_dims) == result_shape,
                  error::kPythonNotImplementedError)
         << "expected the convolution result shape inferred at the upper bounds "
-           "of the lhs operand of type "
-        << mlir::debugString(lhs_type) << " and the rhs operand of type "
-        << mlir::debugString(rhs_type) << " to be "
+           "of the lhs operand of "
+        << FormatTensorForError(lhs_type, lhs_dims)
+        << " and the rhs operand of "
+        << FormatTensorForError(rhs_type, rhs_dims) << " to be "
         << ToString(GetStaticShape(*result_dims)) << ", got "
         << ToString(result_shape) << kSupportedBounds;
   }
@@ -997,7 +1133,13 @@ absl::StatusOr<stablehlo::Dimensions> InferBroadcastDimensions(
         << " and " << dim_b.size;
     TT_RET_CHECK(dim_a.boundOp.has_value() == dim_b.boundOp.has_value(),
                  error::kInvalidArgument)
-        << "cannot mix bounded and static dimensions in broadcast";
+        << "cannot mix bounded and static dimensions in broadcast at output "
+           "dimension "
+        << res_idx << ": lhs dimension " << (lhs_dims.size() - i) << " is "
+        << (dim_a.boundOp.has_value() ? "bounded" : "static") << " (size "
+        << dim_a.size << ") and rhs dimension " << (rhs_dims.size() - i)
+        << " is " << (dim_b.boundOp.has_value() ? "bounded" : "static")
+        << " (size " << dim_b.size << ")";
     result[res_idx] = dim_a;
   }
   return result;
@@ -1028,16 +1170,17 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     return input;
   }
   TT_RET_CHECK(input_shape.size() <= shape.size(), error::kInvalidArgument)
-      << "Input shape cannot be larger than output shape.";
+      << "expected input rank <= target rank (" << shape.size() << "), got "
+      << input_shape.size();
   size_t rank_diff = shape.size() - input_shape.size();
   Dimensions bcast_dims;
   bcast_dims.reserve(input_shape.size());
   for (size_t i = 0; i < input_shape.size(); ++i) {
     TT_RET_CHECK(input_shape[i] == 1 || input_shape[i] == shape[i + rank_diff],
                  error::kInvalidArgument)
-        << "Cannot broadcast input shape: "
-        << ToString(absl::MakeSpan(input_shape))
-        << " to target shape: " << ToString(shape);
+        << "cannot broadcast input shape "
+        << ToString(absl::MakeSpan(input_shape)) << " to target shape "
+        << ToString(shape);
     bcast_dims.push_back(i + rank_diff);
   }
   mlir::RankedTensorType output_type = input_type.clone(AsArrayRef(shape));
@@ -1057,8 +1200,9 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     broadcasted_value_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
         input.getBuilder().getOpBuilder(), input.getValue(), shape);
   }
-  TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers validate shapes before
+                 // BroadcastIfNeeded
+      mlir::succeeded(broadcasted_value_or_fail), error::kInvalidArgument)
       << "failed to broadcast tensor: " << ConsumeMlirDiagnostics(diag_handler);
   return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
 }
@@ -1101,14 +1245,24 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
 
   mlir::SmallVector<mlir::Value> values = llvm::map_to_vector(
       ops, [](const mlir::MlirOp& op) { return op.getValue(); });
-  mlir::BaseScopedDiagnosticHandler diag_handler(values[0].getContext());
+  std::string diag_message;
+  mlir::ScopedDiagnosticHandler diag_handler(
+      values[0].getContext(),
+      [&](mlir::Diagnostic& diag) {  // REF_CAPTURE_OK=called synchronously
+        if (diag.getSeverity() != mlir::DiagnosticSeverity::Error) {
+          return mlir::failure();
+        }
+        if (diag_message.empty()) {
+          diag_message = AdaptExternalErrorMessage(diag.str());
+        }
+        return mlir::success();
+      });
   mlir::MlirOp first_op = ops[0];
   auto broadcasted_values_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
       first_op.getBuilder().getOpBuilder(), values);
   TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
                error::kInvalidArgument)
-      << "failed to broadcast tensors: "
-      << ConsumeMlirDiagnostics(diag_handler);
+      << FormatBroadcastFailure(ops, diag_message);
   mlir::SmallVector<mlir::Value> broadcasted_values =
       std::move(*broadcasted_values_or_fail);
   std::vector<mlir::MlirOp> result;
@@ -1131,7 +1285,9 @@ absl::StatusOr<mlir::MlirOp> Broadcast(mlir::MlirOp input,
   const int64_t input_rank = input_type.getRank();
   const int64_t output_rank = output_dims.size();
 
-  TT_RET_CHECK(input_rank <= output_rank, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers validate input_rank <=
+                 // output_rank before calling Broadcast
+      input_rank <= output_rank, error::kInvalidArgument)
       << "input rank " << input_rank << " must not be more than output rank "
       << output_rank << " for broadcast of input "
       << mlir::debugString(input_type) << " to output shape "
@@ -1449,14 +1605,20 @@ absl::Status BuildReduceBody(mlir::RegionBuilder& rb, mlir::Type element_type,
           element_type, rb.getRegion(), rb.getOpBuilder());
       break;
     case c10d::ReduceOp::AVG:
-      return TT_ERROR(error::kInvalidArgument)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=allreduce.cc converts AVG to SUM
+                        // before calling BuildReduceBody
+                 error::kInvalidArgument)
              << "BuildReduceBody: 'avg' reduction should be handled using "
                 "'sum'";
     case c10d::ReduceOp::PREMUL_SUM:
-      return TT_ERROR(error::kInvalidArgument)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=ProcessGroupTpu rejects
+                        // PREMUL_SUM before BuildReduceBody
+                 error::kInvalidArgument)
              << "BuildReduceBody: 'premul_sum' reduction is not supported";
     case c10d::ReduceOp::UNUSED:
-      return TT_ERROR(error::kInvalidArgument)
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=ProcessGroupTpu rejects UNUSED
+                        // before BuildReduceBody
+                 error::kInvalidArgument)
              << "BuildReduceBody: 'unused' is not a valid reduction type";
       // default case not needed, since the switch is exhaustive.
   }
@@ -1777,7 +1939,9 @@ absl::StatusOr<mlir::MlirOp> PromoteFloatDtype(
     return op;
   }
   if (!min_type.isFloat()) {
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=All callers pass default F32
+                      // min_precision
+               error::kInvalidArgument)
            << "min_precision must be a float type, got "
            << mlir::debugString(min_type);
   }
@@ -1944,13 +2108,20 @@ absl::Status HandleExpandReshape(
         output_dyn_bound =
             op_dims[inputIdx].size;  // Bound is directly transferred
       } else {
+        const std::string_view reason =
+            non_one_output_dims.empty()
+                ? " maps only to unit output dimensions "
+                : " splits into multiple non-unit output dimensions ";
+        const absl::Span<const int64_t> ambiguous_dims =
+            non_one_output_dims.empty()
+                ? absl::MakeConstSpan(outputGroup)
+                : absl::MakeConstSpan(non_one_output_dims);
         return TT_ERROR(error::kInvalidArgument)
-               << "unflatten ambiguous as input bound dim " << inputIdx
-               << " expands to multiple non one output dims "
-               << absl::StrJoin(non_one_output_dims, ",")
-               << " for reassociation "
-               << ShapeTransitionToString(static_shape_before,
-                                          static_shape_after);
+               << "cannot infer which output dimension should be bounded "
+                  "dynamic when reshaping from "
+               << ToString(static_shape_before) << " to "
+               << ToString(static_shape_after) << ": bounded input dimension "
+               << inputIdx << reason << ToString(ambiguous_dims);
       }
     }
     ABSL_CHECK(  // CRASH_OK=should not happen, would imply a bug in the code

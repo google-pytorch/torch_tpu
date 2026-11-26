@@ -387,7 +387,9 @@ absl::StatusOr<kiln::Kernel> CreateKernel(const FlashAttnConfig& config,
   if (normalized_tiling.kt % normalized_tiling.kc != 0 ||
       (normalized_tiling.kc != normalized_tiling.kt &&
        normalized_tiling.kc % kLanes != 0)) {
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=CreateTiling always chooses kc
+                      // equal to kt or a multiple of 128 dividing kt
+               error::kInvalidArgument)
            << "KV compute tile size must equal the KV tile size or be a "
               "multiple of 128 that divides it.";
   }
