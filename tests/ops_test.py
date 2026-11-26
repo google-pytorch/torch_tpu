@@ -3051,11 +3051,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "index_reduce",
         variant_test_name="amax",
-        # CUDA does not support complex or bool dtypes for index_reduce, while
-        # TorchTPU lacks upfront dtype validation and only supports 0D/1D inputs
-        # in BuildScatterShlo.
-        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,),
-        exclude_inplace_dtypes=COMPLEX_DTYPES + (torch.bool,),
+        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
         skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
     )
 
@@ -3063,11 +3059,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "index_reduce",
         variant_test_name="amin",
-        # CUDA does not support complex or bool dtypes for index_reduce, while
-        # TorchTPU lacks upfront dtype validation and only supports 0D/1D inputs
-        # in BuildScatterShlo.
-        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,),
-        exclude_inplace_dtypes=COMPLEX_DTYPES + (torch.bool,),
+        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
         skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
     )
 
@@ -3075,11 +3067,11 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "index_reduce",
         variant_test_name="mean",
-        # CUDA does not support complex or bool dtypes for index_reduce, while
-        # TorchTPU lacks upfront dtype validation and only supports 0D/1D inputs
-        # in BuildScatterShlo.
-        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,),
-        exclude_inplace_dtypes=COMPLEX_DTYPES + (torch.bool,),
+        # TODO(b/589910660): Eager CUDA rejects complex64 (TorchTPU matches
+        # eager); compiled CUDA/Inductor widens via decomposition.
+        exclude_dtypes=_if_tpu_vs_gpu_compiled(COMPLEX_DTYPES, ()),
+        exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(COMPLEX_DTYPES, ()),
+        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
         skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
     )
 
@@ -3087,11 +3079,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "index_reduce",
         variant_test_name="prod",
-        # CUDA does not support complex or bool dtypes for index_reduce, while
-        # TorchTPU lacks upfront dtype validation and only supports 0D/1D inputs
-        # in BuildScatterShlo.
-        exclude_dtypes=COMPLEX_DTYPES + (torch.bool,),
-        exclude_inplace_dtypes=COMPLEX_DTYPES + (torch.bool,),
+        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
         skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
     )
 

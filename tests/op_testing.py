@@ -390,7 +390,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "baddbmm.dtype",
     "bitwise_not",
     "bmm.dtype",
-    "index_reduce",
     "lerp",
     "mm.dtype",
     "sparse_coo_mul",

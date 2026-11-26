@@ -25,11 +25,12 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/index_utils.h"
@@ -43,6 +44,25 @@
 
 namespace torch_tpu {
 namespace {
+
+// Matches upstream PyTorch CUDA's `AT_DISPATCH_ALL_TYPES_AND2(Half, BFloat16)`
+// dtype support for `index_reduce`.
+[[nodiscard]] bool IsSupportedIndexReduceDtype(const at::ScalarType dtype) {
+  switch (dtype) {
+    case at::ScalarType::Byte:
+    case at::ScalarType::Char:
+    case at::ScalarType::Short:
+    case at::ScalarType::Int:
+    case at::ScalarType::Long:
+    case at::ScalarType::Half:
+    case at::ScalarType::BFloat16:
+    case at::ScalarType::Float:
+    case at::ScalarType::Double:
+      return true;
+    default:
+      return false;
+  }
+}
 
 absl::StatusOr<ScatterOp> GetReduceOp(const std::string_view reduce) {
   if (reduce == "prod") {
@@ -67,13 +87,24 @@ absl::Status IndexReduce(const at::Tensor& self, int64_t dim,
   TT_ASSIGN_OR_RETURN(dim,
                       ValidateIndexInputsAndGetDim(self, dim, index, source));
   TT_ASSIGN_OR_RETURN(ScatterOp reduce_op, GetReduceOp(reduce));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RET_CHECK(self.scalar_type() == source.scalar_type(),
+               error::kInvalidArgument)
+      << "expected self and source to have the same dtype, got "
+      << ToString(self.scalar_type()) << " and "
+      << ToString(source.scalar_type());
+  TT_RET_CHECK(IsSupportedIndexReduceDtype(self.scalar_type()),
+               error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(self.scalar_type());
   ScatterIncludeSelf include_self_enum =
       include_self ? ScatterIncludeSelf::kYes : ScatterIncludeSelf::kNo;
 
-  at::ScalarType promoted_scalar_type =
-      c10::promoteTypes(self.scalar_type(), out.scalar_type());
+  // Accumulate in the native dtype rather than promoting bfloat16/float16 to
+  // float32, matching upstream PyTorch CUDA (`Indexing.cu`) and CPU
+  // (`TensorAdvancedIndexing.cpp`).
   TT_ASSIGN_OR_RETURN(const auto computation_dtype,
-                      ConvertTo<mlir::ElementType>(promoted_scalar_type));
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
 
   auto index_reduce_op_builder =
       [dim, reduce_op, include_self_enum,
@@ -83,13 +114,11 @@ absl::Status IndexReduce(const at::Tensor& self, int64_t dim,
                                 computation_dtype, include_self_enum);
       };
 
-  TT_ASSIGN_OR_RETURN(const auto output_dtype,
-                      ConvertTo<mlir::ElementType>(out.scalar_type()));
   Dimensions output_dims = CopyIntVector(self.sizes());
 
   return DispatchOpOut<3>(std::move(index_reduce_op_builder),
                           {self, index, source}, out,
-                          {.out_dtype = output_dtype,
+                          {.out_dtype = computation_dtype,
                            .out_dims = output_dims,
                            .op_param_cache_keys = std::move(param_keys)});
 }

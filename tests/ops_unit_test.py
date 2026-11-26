@@ -12895,6 +12895,151 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_ones_exclude_self",
+          dtype=torch.bfloat16,
+          values=(1.0,) * 300,
+          include_self=False,
+      ),
+      dict(
+          testcase_name="bf16_alternating_exclude_self",
+          dtype=torch.bfloat16,
+          values=(2.0, 0.0) * 150,
+          include_self=False,
+      ),
+      dict(
+          testcase_name="bf16_constant_include_self",
+          dtype=torch.bfloat16,
+          values=(1.5,) * 300,
+          include_self=True,
+      ),
+      dict(
+          testcase_name="f16_ones_exclude_self",
+          dtype=torch.float16,
+          values=(1.0,) * 3000,
+          include_self=False,
+      ),
+      dict(
+          testcase_name="f16_alternating_exclude_self",
+          dtype=torch.float16,
+          values=(2.0, 0.0) * 1500,
+          include_self=False,
+      ),
+      dict(
+          testcase_name="f16_constant_include_self",
+          dtype=torch.float16,
+          values=(1.5,) * 3000,
+          include_self=True,
+      ),
+  )
+  def test_index_reduce_low_precision_mean_matches_cpu(
+      self,
+      dtype: torch.dtype,
+      values: Sequence[float],
+      include_self: bool,
+  ) -> None:
+    """Tests that `mean` saturates in the native dtype like CPU and CUDA.
+
+    The element counts (300 for bfloat16, 3000 for float16) exceed the largest
+    integer count each dtype can represent exactly (256 and 2048), so the result
+    differs from one accumulated in float32.
+    """
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_t = torch.zeros((2,), dtype=dtype, device=device)
+      index = torch.zeros((len(values),), dtype=torch.int64, device=device)
+      source = torch.tensor(values, dtype=dtype, device=device)
+      return torch.index_reduce(
+          self_t, 0, index, source, "mean", include_self=include_self
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="f16_intermediate_overflow",
+          dtype=torch.float16,
+          values=(200.0, 200.0, 2.0, 0.01),
+          include_self=False,
+      ),
+      dict(
+          testcase_name="bf16_repeated_mul",
+          dtype=torch.bfloat16,
+          values=(1.01,) * 20,
+          include_self=False,
+      ),
+      dict(
+          testcase_name="f16_repeated_mul_include_self",
+          dtype=torch.float16,
+          values=(1.01,) * 20,
+          include_self=True,
+      ),
+  )
+  def test_index_reduce_low_precision_prod_matches_cpu(
+      self,
+      dtype: torch.dtype,
+      values: Sequence[float],
+      include_self: bool,
+  ) -> None:
+    """Tests that `prod` overflows in the native dtype like CPU and CUDA.
+
+    For example, (200.0, 200.0, 2.0, 0.01) overflows float16 after the first
+    two factors, where a float32 intermediate would stay finite.
+    """
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_t = torch.ones((2,), dtype=dtype, device=device)
+      index = torch.zeros((len(values),), dtype=torch.int64, device=device)
+      source = torch.tensor(values, dtype=dtype, device=device)
+      return torch.index_reduce(
+          self_t, 0, index, source, "prod", include_self=include_self
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_amax_exclude_self",
+          dtype=torch.bfloat16,
+          reduce="amax",
+          include_self=False,
+      ),
+      dict(
+          testcase_name="bf16_amin_include_self",
+          dtype=torch.bfloat16,
+          reduce="amin",
+          include_self=True,
+      ),
+      dict(
+          testcase_name="f16_amax_include_self",
+          dtype=torch.float16,
+          reduce="amax",
+          include_self=True,
+      ),
+      dict(
+          testcase_name="f16_amin_exclude_self",
+          dtype=torch.float16,
+          reduce="amin",
+          include_self=False,
+      ),
+  )
+  def test_index_reduce_low_precision_minmax_matches_cpu(
+      self,
+      dtype: torch.dtype,
+      reduce: str,
+      include_self: bool,
+  ) -> None:
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_t = torch.tensor([1.0, 2.0], dtype=dtype, device=device)
+      index = torch.tensor([0, 0], dtype=torch.int64, device=device)
+      source = torch.tensor([-3.5, 4.25], dtype=dtype, device=device)
+      return torch.index_reduce(
+          self_t, 0, index, source, reduce, include_self=include_self
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_gather_and_scatter_add_multidim_broadcast_index_lowers_to_dot_general(
       self,
   ):

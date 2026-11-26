@@ -35,6 +35,7 @@ Tests that don't belong in this file:
 """
 
 from collections.abc import Callable, Mapping, Sequence
+import itertools
 import re
 from typing import Any
 import unittest
@@ -23601,6 +23602,133 @@ class OpsErrorCoverageTest(et.ErrorTestBase):
         gpu="""addmv input tensors must have the same dtype, but got Float, Float, and Bool""",
     ):
       torch.ops.aten.addmv.out(t, mat, vec, out=out)
+
+
+class IndexReduceErrorTest(et.ErrorTestBase):
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name=f"{tpu_dtype}_include_self_{include_self}",
+          dtype=dtype,
+          tpu_dtype=tpu_dtype,
+          gpu_dtype=gpu_dtype,
+          include_self=include_self,
+      )
+      for (dtype, tpu_dtype, gpu_dtype), include_self in itertools.product(
+          (
+              (torch.bool, "bool", "Bool"),
+              (torch.complex64, "complex64", "ComplexFloat"),
+              (torch.complex128, "complex128", "ComplexDouble"),
+              (torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+              (torch.float8_e5m2, "float8_e5m2", "Float8_e5m2"),
+              (torch.uint16, "uint16", "UInt16"),
+              (torch.uint32, "uint32", "UInt32"),
+              (torch.uint64, "uint64", "UInt64"),
+          ),
+          (True, False),
+      )
+  )
+  def test_index_reduce_unsupported_dtype(
+      self,
+      dtype: torch.dtype,
+      tpu_dtype: str,
+      gpu_dtype: str,
+      include_self: bool,
+  ):
+    # The dtype check doesn't depend on `reduce`, so one mode is enough.
+    self_t = torch.zeros(2, device=et.device()).to(dtype)
+    index = torch.tensor([0, 1], dtype=torch.int64, device=et.device())
+    source = torch.ones(2, device=et.device()).to(dtype)
+    out = torch.empty(2, device=et.device()).to(dtype)
+    gpu_kernel = (
+        "index_reduce"
+        if include_self
+        else "index_reduce_func_cuda_exclude_input_init"
+    )
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""index_reduce(): not implemented for {tpu_dtype}""",
+        gpu=f""""{gpu_kernel}" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.index_reduce(
+          self_t, 0, index, source, "prod", include_self=include_self
+      )
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""index_reduce(): not implemented for {tpu_dtype}""",
+        gpu=f""""{gpu_kernel}" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.index_reduce(
+          self_t, 0, index, source, "prod", include_self=include_self, out=out
+      )
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""index_reduce(): not implemented for {tpu_dtype}""",
+        gpu=f""""{gpu_kernel}" not implemented for '{gpu_dtype}'""",
+    ):
+      self_t.index_reduce_(0, index, source, "prod", include_self=include_self)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float64_out",
+          out_dtype=torch.float64,
+          tpu_out_dtype="float64",
+          gpu_out_dtype="double",
+      ),
+      dict(
+          testcase_name="complex64_out",
+          out_dtype=torch.complex64,
+          tpu_out_dtype="complex64",
+          gpu_out_dtype="c10::complex<float>",
+      ),
+  )
+  def test_index_reduce_out_dtype_mismatch(
+      self,
+      out_dtype: torch.dtype,
+      tpu_out_dtype: str,
+      gpu_out_dtype: str,
+  ):
+    self_t = torch.zeros(2, dtype=torch.float32, device=et.device())
+    index = torch.tensor([0, 1], dtype=torch.int64, device=et.device())
+    source = torch.ones(2, dtype=torch.float32, device=et.device())
+    out = torch.empty(2, dtype=out_dtype, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""index_reduce(): expected the output dtype to be float32, got {tpu_out_dtype}""",
+        gpu=f"""Expected out tensor to have dtype float, but got {gpu_out_dtype} instead""",
+    ):
+      torch.index_reduce(self_t, 0, index, source, "prod", out=out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float64_source",
+          source_dtype=torch.float64,
+          tpu_source_dtype="float64",
+          gpu_source_dtype="Double",
+      ),
+      dict(
+          testcase_name="complex64_source",
+          source_dtype=torch.complex64,
+          tpu_source_dtype="complex64",
+          gpu_source_dtype="ComplexFloat",
+      ),
+  )
+  def test_index_reduce_source_dtype_mismatch(
+      self,
+      source_dtype: torch.dtype,
+      tpu_source_dtype: str,
+      gpu_source_dtype: str,
+  ):
+    self_t = torch.zeros(2, dtype=torch.float32, device=et.device())
+    index = torch.tensor([0, 1], dtype=torch.int64, device=et.device())
+    source = torch.ones(2, dtype=source_dtype, device=et.device())
+    out = torch.empty(2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""index_reduce(): expected self and source to have the same dtype, got float32 and {tpu_source_dtype}""",
+        gpu=f"""index_reduce_(): self (Float) and source ({gpu_source_dtype}) must have the same scalar type""",
+    ):
+      torch.index_reduce(self_t, 0, index, source, "prod", out=out)
 
 
 if __name__ == "__main__":
