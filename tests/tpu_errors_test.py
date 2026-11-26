@@ -5533,6 +5533,48 @@ module {
           copy_sizes_major_dim=[4],
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="excess_windows",
+          grad_shape=(5, 2),
+          input_sizes=[4],
+          size=2,
+          step=1,
+          tpu_msg="""unfold_backward(): expected grad_in shape [3, 2], got [5, 2]""",
+      ),
+      dict(
+          testcase_name="size_too_large_overlapping",
+          grad_shape=(1, 5),
+          input_sizes=[4],
+          size=5,
+          step=1,
+          tpu_msg="""unfold_backward(): expected size <= dimension size (4), got 5""",
+      ),
+      dict(
+          testcase_name="num_windows_int64_overflow",
+          grad_shape=(1, 0),
+          input_sizes=[2**63 - 1],
+          size=0,
+          step=1,
+          tpu_msg="""unfold_backward(): sum of 9223372036854775807 and 1 overflows as int64""",
+      ),
+  )
+  @et.why_tpu_only(
+      "CUDA's overlapping unfold_backward kernel (step < size) does not"
+      " validate canonical unfolded grad_in shape or size <= max_size,"
+      " whereas TorchTPU validates them before lowering to StableHLO."
+  )
+  def test_unfold_backward_overlapping_validation(
+      self, grad_shape, input_sizes, size, step, tpu_msg
+  ):
+    """Unfold backward rejects invalid overlapping shapes/sizes cleanly."""
+    grad_in = torch.ones(grad_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+    ):
+      torch.ops.aten.unfold_backward(grad_in, input_sizes, 0, size, step)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
