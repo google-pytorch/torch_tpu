@@ -12268,6 +12268,202 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         out_byte, torch.tensor(1, dtype=torch.uint8, device=device)
     )
 
+  @parameterized.named_parameters(
+      ("all_complex64", torch.all, torch.complex64),
+      ("all_complex128", torch.all, torch.complex128),
+      ("any_complex64", torch.any, torch.complex64),
+      ("any_complex128", torch.any, torch.complex128),
+  )
+  def test_all_any_complex(self, op, dtype):
+    # Pure imaginary (0 + 1j), zero (0 + 0j, -0 - 0j), NaN real/imag, Inf,
+    # 0D scalars, empty tensors, single/multi-dim reductions, keepdim, and out.
+    cases_1d = [
+        [0.0 + 0.0j, 0.0 + 1.0j],
+        [1.0 + 0.0j, 0.0 + 1.0j],
+        [0.0 + 0.0j, -0.0 - 0.0j],
+        [complex(float("nan"), 0.0), 1.0 + 0.0j],
+        [complex(0.0, float("nan")), 0.0 + 0.0j],
+        [complex(0.0, float("nan")), 1.0 + 0.0j],
+        [complex(float("inf"), 0.0), complex(0.0, float("-inf"))],
+        [],
+    ]
+    for values in cases_1d:
+      self.assert_close_tpu_vs_cpu(
+          lambda device, v=values: op(
+              torch.tensor(v, dtype=dtype, device=device)
+          )
+      )
+
+    for scalar in [
+        0.0 + 0.0j,
+        0.0 + 1.0j,
+        complex(float("nan"), 0.0),
+        complex(0.0, float("nan")),
+    ]:
+      self.assert_close_tpu_vs_cpu(
+          lambda device, s=scalar: op(
+              torch.tensor(s, dtype=dtype, device=device)
+          )
+      )
+
+    # 2D tensor covering pure-imaginary, zero, NaN-imag, and real-only lanes.
+    matrix = [
+        [0.0 + 0.0j, 0.0 + 1.0j, 1.0 + 0.0j],
+        [0.0 + 1.0j, complex(0.0, float("nan")), 0.0 + 0.0j],
+    ]
+    for dim in [0, 1, -1, (0, 1), ()]:
+      for keepdim in [False, True]:
+        self.assert_close_tpu_vs_cpu(
+            lambda device, d=dim, kd=keepdim: op(
+                torch.tensor(matrix, dtype=dtype, device=device),
+                dim=d,
+                keepdim=kd,
+            )
+        )
+
+    # Empty non-1D tensor with full and dim reductions.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op(torch.empty((2, 0), dtype=dtype, device=device))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op(
+            torch.empty((2, 0), dtype=dtype, device=device), dim=1, keepdim=True
+        )
+    )
+
+    # Out variants (bool matches CPU/CUDA; uint8 matches CUDA — PyTorch CPU's
+    # get_allany_iter casts complex to uint8 before reducing, dropping imag).
+    def run_full_bool_out(device):
+      x = torch.tensor(matrix, dtype=dtype, device=device)
+      out = torch.empty((), dtype=torch.bool, device=device)
+      op(x, out=out)
+      return out
+
+    def run_dim_bool_out(device):
+      x = torch.tensor(matrix, dtype=dtype, device=device)
+      out = torch.empty(0, dtype=torch.bool, device=device)
+      op(x, dim=0, keepdim=True, out=out)
+      return out
+
+    def run_dims_bool_out(device):
+      x = torch.tensor(matrix, dtype=dtype, device=device)
+      out = torch.empty(0, dtype=torch.bool, device=device)
+      op(x, dim=(0, 1), keepdim=True, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(run_full_bool_out)
+    self.assert_close_tpu_vs_cpu(run_dim_bool_out)
+    self.assert_close_tpu_vs_cpu(run_dims_bool_out)
+
+    x_cpu = torch.tensor(matrix, dtype=dtype)
+    x_tpu = x_cpu.to(torch.device("tpu"))
+    out_full_u8 = torch.empty((), dtype=torch.uint8, device="tpu")
+    op(x_tpu, out=out_full_u8)
+    self.assertEqual(out_full_u8.dtype, torch.uint8)
+    self.assert_close(
+        golden_result=op(x_cpu).to(torch.uint8),
+        torch_tpu_result=out_full_u8.cpu(),
+    )
+
+    out_dim_u8 = torch.empty(0, dtype=torch.uint8, device="tpu")
+    op(x_tpu, dim=0, keepdim=True, out=out_dim_u8)
+    self.assertEqual(out_dim_u8.dtype, torch.uint8)
+    self.assert_close(
+        golden_result=op(x_cpu, dim=0, keepdim=True).to(torch.uint8),
+        torch_tpu_result=out_dim_u8.cpu(),
+    )
+
+  @parameterized.named_parameters(
+      ("all_float32", torch.all, torch.float32),
+      ("any_float32", torch.any, torch.float32),
+      ("all_complex64", torch.all, torch.complex64),
+      ("any_complex64", torch.any, torch.complex64),
+  )
+  def test_all_any_subnormal(self, op, dtype):
+    # TPU float comparators flush f32 subnormals to zero, unlike CPU and CUDA.
+    subnormal = torch.finfo(torch.float32).smallest_normal / 2
+    if dtype == torch.complex64:
+      values = [
+          complex(0.0, subnormal),
+          complex(subnormal, 0.0),
+          complex(0.0, -subnormal),
+      ]
+      zero_and_subnormal = [0.0 + 0.0j, complex(0.0, subnormal)]
+    else:
+      values = [subnormal, -subnormal]
+      zero_and_subnormal = [0.0, subnormal]
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op(torch.tensor(values, dtype=dtype, device=device))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: op(
+            torch.tensor(zero_and_subnormal, dtype=dtype, device=device)
+        )
+    )
+
+  @parameterized.named_parameters(
+      ("complex64", torch.complex64, torch.float32),
+      ("complex128", torch.complex128, torch.float64),
+  )
+  def test_logical_complex_edge_values(self, dtype, real_dtype):
+    """Tests logical_not/and/or/xor on complex inputs with zero real part."""
+    reals = [0.0, -0.0, 0.0, 1.0, 0.0, 0.0, float("nan"), 0.0, 0.0]
+    imags = [
+        0.0,
+        -0.0,
+        1.0,
+        0.0,
+        -2.5,
+        float("nan"),
+        0.0,
+        float("inf"),
+        float("-inf"),
+    ]
+    w_reals = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    w_imags = [0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+    if dtype == torch.complex64:
+      subnormal = torch.finfo(torch.float32).smallest_normal / 2
+      reals.extend([0.0, subnormal, -0.0])
+      imags.extend([subnormal, 0.0, -subnormal])
+      w_reals.extend([1.0, 0.0, 0.0])
+      w_imags.extend([0.0, 1.0, 0.0])
+
+    z_cpu = torch.complex(
+        torch.tensor(reals, dtype=real_dtype),
+        torch.tensor(imags, dtype=real_dtype),
+    )
+    w_cpu = torch.complex(
+        torch.tensor(w_reals, dtype=real_dtype),
+        torch.tensor(w_imags, dtype=real_dtype),
+    )
+
+    self.assert_close_tpu_vs_cpu(lambda d: torch.logical_not(z_cpu.to(d)))
+    self.assert_close_tpu_vs_cpu(
+        lambda d: torch.logical_and(z_cpu.to(d), w_cpu.to(d))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda d: torch.logical_or(z_cpu.to(d), w_cpu.to(d))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda d: torch.logical_xor(z_cpu.to(d), w_cpu.to(d))
+    )
+    # Mixed complex + real operands and explicit bool out= tensor.
+    real_cpu = torch.tensor(w_reals, dtype=real_dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda d: torch.logical_and(z_cpu.to(d), real_cpu.to(d))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda d: torch.logical_or(real_cpu.to(d), z_cpu.to(d))
+    )
+
+    def _logical_not_out(device):
+      out = torch.empty(z_cpu.shape, dtype=torch.bool, device=device)
+      torch.logical_not(z_cpu.to(device), out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(_logical_not_out)
+
   def test_multinomial_output_properties(self):
     device = torch.device("tpu")
 
