@@ -23,10 +23,12 @@
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -618,6 +620,28 @@ absl::Status ValidateCdistBackwardInputs(const at::Tensor& grad,
   return absl::OkStatus();
 }
 
+// Returns zeros with the shape, dtype and device of `like`. The zeros are
+// lowered here rather than obtained from another ATen kernel, which
+// CompositeOpCheck does not allow.
+absl::StatusOr<at::Tensor> MakeZerosLike(const at::Tensor& like,
+                                         OpParamCacheKeys param_keys) {
+  if (like.numel() == 0) {
+    return MakeEmptyTensor(like.sizes(), like.scalar_type(), like.device());
+  }
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType dtype,
+                      ConvertTo<mlir::ElementType>(like.scalar_type()));
+  auto op_builder = [](mlir::MlirOp like_op) -> absl::StatusOr<mlir::MlirOp> {
+    return MakeConstantLike(like_op, 0.0);
+  };
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef result_buf,
+      DispatchOp<1>(std::move(op_builder), {like},
+                    {.out_dtype = dtype,
+                     .out_dims = CopyIntVector(like.sizes()),
+                     .op_param_cache_keys = std::move(param_keys)}));
+  return MakeTensor(std::move(result_buf));
+}
+
 }  // namespace
 
 at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
@@ -699,30 +723,28 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
     TT_ASSIGN_OR_THROW(Dimensions common_batch_shape,
                        InferSize(batch_tensor1, batch_tensor2));
 
+    // Like PyTorch, return zeros shaped like `x1` (and not like its broadcast
+    // shape) when there are no distances to differentiate.
+    if (r1 == 0 || r2 == 0 || c == 0 ||
+        absl::c_linear_search(common_batch_shape, 0)) {
+      TT_ASSIGN_OR_THROW(at::Tensor out,
+                         MakeZerosLike(x1, std::move(param_keys)));
+      return out;
+    }
+
     Dimensions out_shape(common_batch_shape);
     out_shape.insert(out_shape.end(), {r1, c});
 
-    for (int64_t dim : out_shape) {
-      if (dim == 0) {
-        TT_ASSIGN_OR_THROW(
-            at::Tensor out,
-            MakeEmptyTensor(out_shape, x1.scalar_type(), x1.device()));
-        return out;
-      }
-    }
-
-    if (r2 > 0) {
-      TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
-      TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
-      TT_CHECK_THROW(x1.scalar_type() == x2.scalar_type() &&
-                         x1.scalar_type() == grad.scalar_type() &&
-                         x1.scalar_type() == cdist.scalar_type(),
-                     error::kInvalidArgument)
-          << "expected grad, x1, x2, and cdist to have the same dtype, got "
-          << ToString(grad.scalar_type()) << ", " << ToString(x1.scalar_type())
-          << ", " << ToString(x2.scalar_type()) << ", and "
-          << ToString(cdist.scalar_type());
-    }
+    TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
+    TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
+    TT_CHECK_THROW(x1.scalar_type() == x2.scalar_type() &&
+                       x1.scalar_type() == grad.scalar_type() &&
+                       x1.scalar_type() == cdist.scalar_type(),
+                   error::kInvalidArgument)
+        << "expected grad, x1, x2, and cdist to have the same dtype, got "
+        << ToString(grad.scalar_type()) << ", " << ToString(x1.scalar_type())
+        << ", " << ToString(x2.scalar_type()) << ", and "
+        << ToString(cdist.scalar_type());
 
     auto op_builder = [p, common_batch_shape, r1, r2,
                        c](FixedSizeSpan<mlir::MlirOp, 4> inputs)
@@ -796,11 +818,11 @@ at::Tensor AtenPdistBackward(const at::Tensor& grad, const at::Tensor& self,
     const int64_t m = self.size(1);
     Dimensions output_shape = {n, m};
 
-    // Handle empty inputs
+    // With fewer than two rows there are no pairs, so the gradient is all
+    // zeros (and empty if `self` is).
     if (n <= 1 || m == 0) {
-      TT_ASSIGN_OR_THROW(
-          at::Tensor out,
-          MakeEmptyTensor(output_shape, self.scalar_type(), self.device()));
+      TT_ASSIGN_OR_THROW(at::Tensor out,
+                         MakeZerosLike(self, std::move(param_keys)));
       return out;
     }
 

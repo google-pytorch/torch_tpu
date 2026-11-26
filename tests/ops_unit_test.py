@@ -21748,6 +21748,39 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  @parameterized.parameters(
+      ((4, 5), (0, 3, 5)),  # Empty batch after broadcasting.
+      ((4, 5), (3, 0, 5)),  # No rows in x2.
+      ((0, 5), (3, 2, 5)),  # No rows in x1.
+      ((2, 4, 0), (2, 3, 0)),  # No columns.
+  )
+  def test_cdist_backward_empty_shapes(self, x1_shape, x2_shape):
+    x1_cpu = torch.ones(x1_shape)
+    x2_cpu = torch.ones(x2_shape)
+    cdist_shape = torch.broadcast_shapes(x1_shape[:-2], x2_shape[:-2]) + (
+        x1_shape[-2],
+        x2_shape[-2],
+    )
+    cdist_cpu = torch.zeros(cdist_shape)
+
+    def test_fn(device):
+      cdist = cdist_cpu.to(device)
+      return torch.ops.aten._cdist_backward(
+          cdist, x1_cpu.to(device), x2_cpu.to(device), 2.0, cdist
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_pdist_backward_single_row(self):
+    x_cpu = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+
+    def test_fn(device):
+      x = x_cpu.to(device).requires_grad_(True)
+      torch.nn.functional.pdist(x).sum().backward()
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_pdist_with_different_p_values(self):
     p_values = [0.0, 1.0, 2.0, float("inf")]
     x = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
