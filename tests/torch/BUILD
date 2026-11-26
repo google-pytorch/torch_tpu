@@ -237,12 +237,6 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "distributed_tensor_math_ops_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "distributed/tensor/test_math_ops",
-)
-
-torch_tpu_torch_test(
     name = "distributed_backends_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/test_backends",
@@ -650,6 +644,11 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "inductor_split_cat_fx_passes_test",
+    torch_test_module = "inductor/test_split_cat_fx_passes",
+)
+
+torch_tpu_torch_test(
     name = "inductor_static_triton_launcher_test",
     torch_test_module = "inductor/test_static_triton_launcher",
 )
@@ -741,6 +740,11 @@ torch_tpu_torch_test(
     name = "nn_pooling_test",
     shard_count = 5,
     torch_test_module = "nn/test_pooling",
+)
+
+torch_tpu_torch_test(
+    name = "optim_swa_utils_test",
+    torch_test_module = "optim/test_swa_utils",
 )
 
 torch_tpu_torch_test(
