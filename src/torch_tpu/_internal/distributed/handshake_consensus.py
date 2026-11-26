@@ -29,8 +29,9 @@ requests of one rank precedes itself, which happens when ranks cut the same
 collectives into graphs differently.
 """
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Hashable, Mapping, Sequence
 import dataclasses
+from typing import TypeVar
 
 from torch_tpu._internal.distributed import handshake_messages
 from torch_tpu._internal.distributed import process_group_utils
@@ -38,6 +39,8 @@ from torch_tpu._internal.distributed import process_group_utils
 CollectiveHandshakeRequest = handshake_messages.CollectiveHandshakeRequest
 CollectiveHandshakeResponse = handshake_messages.CollectiveHandshakeResponse
 ProcessGroupId = process_group_utils.ProcessGroupId
+
+_NodeT = TypeVar("_NodeT", bound=Hashable)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -228,7 +231,11 @@ class _RequestWithProcessGroupClaims:
       )
 
 
-@dataclasses.dataclass(frozen=True)
+# `eq=False` makes pending cluster parts compare and hash by identity. R3 uses
+# them as dictionary keys and as set members. Identity is enough, because
+# `_PendingRequests.pending_parts` creates every pending cluster part once per
+# call.
+@dataclasses.dataclass(frozen=True, eq=False)
 class _PendingClusterPart:
   """A part of a cluster whose requests are pending.
 
@@ -542,6 +549,32 @@ class _RejectionHistory:
     return lagging_ranks
 
 
+def _nodes_on_cycles(
+    successors: Mapping[_NodeT, Collection[_NodeT]],
+) -> Collection[_NodeT]:
+  """Returns the nodes that reach themselves.
+
+  Args:
+    successors: The successors of every node of the graph. Every successor must
+      be a key.
+
+  Returns:
+    The nodes that are on a cycle, self-loops included.
+  """
+  on_cycles = []
+  for node in successors:
+    reached: set[_NodeT] = set()
+    stack = list(successors[node])
+    while stack:
+      successor = stack.pop()
+      if successor not in reached:
+        reached.add(successor)
+        stack.extend(successors[successor])
+    if node in reached:
+      on_cycles.append(node)
+  return on_cycles
+
+
 def _mismatch_rule_applies(request: _RequestWithProcessGroupClaims) -> bool:
   """Returns whether R1 Mismatch applies to `request`.
 
@@ -587,17 +620,96 @@ def _agreement_rule_applies(
   )
 
 
+def _awaited_pending_parts(
+    pending_part: _PendingClusterPart,
+    pending_part_of_rank: Mapping[int, _PendingClusterPart],
+    rejections: _RejectionHistory,
+) -> Collection[_PendingClusterPart]:
+  """Returns the pending cluster parts that `pending_part` waits for.
+
+  A pending cluster part *waits for* a rank r if one of these holds:
+  1. r still has to claim one of the process groups of the pending cluster part
+  2. r is a lagging rank (see `_RejectionHistory`) of a rank r' of the pending
+     cluster part
+  3. r is a lagging rank of a rank r' that the pending cluster part waits for
+     and that has no pending request
+
+  A pending cluster part *waits for* a pending cluster part, which can be
+  itself, if it waits for a rank whose pending request is in that pending
+  cluster part.
+
+  Args:
+    pending_part: The pending cluster part that waits.
+    pending_part_of_rank: The pending cluster part of every rank with a pending
+      request.
+    rejections: The history of the rejected requests.
+
+  Returns:
+    The awaited pending cluster parts.
+  """
+  # Point 1.
+  awaited_ranks = set(pending_part.missing_ranks())
+  # Point 2.
+  for rank in pending_part.ranks:
+    awaited_ranks.update(rejections.lagging_ranks(rank))
+  awaited_pending_parts: set[_PendingClusterPart] = set()
+  visited: set[int] = set()
+  stack = list(awaited_ranks)
+  while stack:
+    rank = stack.pop()
+    if rank in visited:
+      continue
+    visited.add(rank)
+    if rank in pending_part_of_rank:
+      awaited_pending_parts.add(pending_part_of_rank[rank])
+    else:
+      # Point 3.
+      stack.extend(rejections.lagging_ranks(rank))
+  return awaited_pending_parts
+
+
+def _deadlock_rule_applies_to(
+    pending_parts: Sequence[_PendingClusterPart], rejections: _RejectionHistory
+) -> Collection[_PendingClusterPart]:
+  """Returns the pending cluster parts that R3 Deadlock applies to.
+
+  R3 Deadlock: reject the requests of the pending cluster parts that are
+  deadlocked.
+
+  A pending cluster part is *deadlocked* if it waits for itself, directly or
+  through other pending cluster parts. `_awaited_pending_parts` defines which
+  pending cluster parts a pending cluster part waits for. R2 can never apply to
+  a deadlocked pending cluster part, so we need this rule.
+
+  Args:
+    pending_parts: All pending cluster parts.
+    rejections: The history of the rejected requests.
+
+  Returns:
+    The deadlocked pending cluster parts.
+  """
+  pending_part_of_rank = {
+      rank: pending_part
+      for pending_part in pending_parts
+      for rank in pending_part.ranks
+  }
+  awaited_pending_parts = {
+      pending_part: _awaited_pending_parts(
+          pending_part, pending_part_of_rank, rejections
+      )
+      for pending_part in pending_parts
+  }
+  return _nodes_on_cycles(awaited_pending_parts)
+
+
 class CollectiveHandshakeConsensus:
   """Decides which compiled graphs of a distributed program are fused.
 
-  The responses are computed as the requests arrive, by applying two rules
+  The responses are computed as the requests arrive, by applying three rules
   until no other rules apply:
   * R1 Mismatch rejects requests (see `_mismatch_rule_applies`)
   * R2 Agreement accepts requests (see `_agreement_rule_applies`)
-
-  TODO: b/553328238 - Reject the requests that R2 can never apply to. For now,
-  they stay without a response. This happens to the requests of a cluster that
-  is on a cycle of the precedes relation.
+  * R3 Deadlock rejects requests (see `_deadlock_rule_applies_to`)
 
   Guarantee: if all requests keep the contract of `submit`, the requests of a
   cluster are accepted if and only if they all have the same fingerprint and
@@ -708,12 +820,20 @@ class CollectiveHandshakeConsensus:
     # to other pending requests:
     # * a rejection moves its rank past collectives that they claim (R1)
     # * any response can settle the ranks that they wait for (R2)
+    # * any response can leave them waiting for each other (R3)
     while True:
       # `or` is evaluated lazily, so only the first rule that applies gives
-      # responses in this iteration. R2 can be tried at any point. It never
-      # applies to a pending cluster part with a request that R1 applies to.
+      # responses in this iteration. The order of the rules:
+      # * R1 is tried before R3. A pending cluster part that waits for a request
+      #   that R1 rejects is not deadlocked, so R3 must only see the requests
+      #   that R1 leaves pending. This only changes responses for requests that
+      #   break the contract of `submit`.
+      # * R2 can be tried at any point. It never applies to a pending cluster
+      #   part that R1 or R3 applies to.
       new_responses = (
-          self._apply_mismatch_rule() or self._apply_agreement_rule()
+          self._apply_mismatch_rule()
+          or self._apply_agreement_rule()
+          or self._apply_deadlock_rule()
       )
       if not new_responses:
         # No rule applies in this iteration, so nothing changes before the
@@ -752,6 +872,21 @@ class CollectiveHandshakeConsensus:
     for pending_part in in_agreement:
       for request in pending_part.requests:
         responses[request.rank] = self._accept(request)
+    return responses
+
+  def _apply_deadlock_rule(self) -> dict[int, CollectiveHandshakeResponse]:
+    """Applies R3 Deadlock to the pending cluster parts.
+
+    Returns:
+      The responses to the rejected requests, by rank.
+    """
+    deadlocked = _deadlock_rule_applies_to(
+        self._pending.pending_parts(), self._rejections
+    )
+    responses: dict[int, CollectiveHandshakeResponse] = {}
+    for pending_part in deadlocked:
+      for request in pending_part.requests:
+        responses[request.rank] = self._reject(request)
     return responses
 
   def _accept(
