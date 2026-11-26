@@ -371,6 +371,18 @@ mlir::MlirOp ApplyScatterMeanCount(
   mlir::MlirOp div_res = mlir::stablehlo::Div(sum_result, total_count);
   mlir::MlirOp zero_bcast =
       mlir::stablehlo::BroadcastInDim(total_count_type, zero, {});
+  if (computation_type.isInteger()) {
+    // PyTorch floors an integer mean, while `Div` truncates it. For lanes that
+    // survive `is_hit` below (`total_count > 0`), the two differ (by 1) exactly
+    // when the remainder, which has the sign of the sum, is < 0.
+    mlir::MlirOp remainder = mlir::stablehlo::Rem(sum_result, total_count);
+    mlir::MlirOp has_negative_remainder = mlir::stablehlo::Compare(
+        remainder, zero_bcast, mlir::stablehlo::ComparisonDirection::LT);
+    mlir::MlirOp one_bcast =
+        mlir::stablehlo::BroadcastInDim(total_count_type, one, {});
+    mlir::MlirOp floored = mlir::stablehlo::Subtract(div_res, one_bcast);
+    div_res = mlir::stablehlo::Select(has_negative_remainder, floored, div_res);
+  }
   mlir::MlirOp is_hit = mlir::stablehlo::Compare(
       total_count, zero_bcast, mlir::stablehlo::ComparisonDirection::GT);
   return mlir::stablehlo::Select(is_hit, div_res, self);

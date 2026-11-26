@@ -857,6 +857,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "_transformer_encoder_layer_fwd": {EAGER, COMPILE},
         "erfinv": {COMPILE},
         "fft.irfft": {COMPILE_GRAD},  # buffer != nullptr CHECK in shape.h
+        "index_reduce": {COMPILE_GRAD},  # its backward calls index_select
         "index_select": ALL_MODES,
         # Allocates a zero-sized shape with no zero dimension.
         "nn.functional.adaptive_avg_pool2d": ALL_MODES,
@@ -889,6 +890,7 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Compile marks self dim bounded but not source.
         "index_add": {COMPILE, COMPILE_GRAD},
         "index_put": {COMPILE, COMPILE_GRAD},
+        "index_reduce": {COMPILE},
         "nn.functional.logsigmoid": {COMPILE_GRAD},  # inferred bound [0]
         # src does not match the bounded self slice.
         "slice_scatter": {COMPILE_GRAD},

@@ -108,11 +108,18 @@ absl::Status IndexReduce(const at::Tensor& self, int64_t dim,
 
   auto index_reduce_op_builder =
       [dim, reduce_op, include_self_enum,
-       computation_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
-        auto& [self, index, source] = inputs;
-        return BuildScatterShlo(self, dim, index, source, reduce_op,
-                                computation_dtype, include_self_enum);
-      };
+       computation_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    auto& [self, index, source] = inputs;
+    // `BuildScatterShlo` takes one index per element of `source`, while
+    // `index` has one per slice of `source` along `dim`. A 0D `source` is a
+    // single element, which the single-element `index` already matches.
+    if (GetTensorTypeOrDie(source).getRank() > 0) {
+      TT_ASSIGN_OR_RETURN(index, BroadcastIfNeeded(index, source, {dim}));
+    }
+    return BuildScatterShlo(self, dim, index, source, reduce_op,
+                            computation_dtype, include_self_enum);
+  };
 
   Dimensions output_dims = CopyIntVector(self.sizes());
 

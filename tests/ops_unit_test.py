@@ -13040,6 +13040,102 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="neg_dim_2d",
+          self_shape=(4, 3),
+          dim=-1,
+          index_values=(2, 0, 2, 2),
+          reduce="mean",
+          include_self=True,
+          dtype=torch.int32,
+      ),
+      dict(
+          testcase_name="neg_dim_3d",
+          self_shape=(2, 4, 3),
+          dim=-3,
+          index_values=(1, 1),
+          reduce="amax",
+          include_self=False,
+          dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="rank4_dim2",
+          self_shape=(2, 3, 4, 2),
+          dim=2,
+          index_values=(3, 0, 3),
+          reduce="prod",
+          include_self=True,
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="empty_index_include_self",
+          self_shape=(4, 3),
+          dim=0,
+          index_values=(),
+          reduce="mean",
+          include_self=True,
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="empty_index_exclude_self",
+          self_shape=(4, 3),
+          dim=0,
+          index_values=(),
+          reduce="amin",
+          include_self=False,
+          dtype=torch.float32,
+      ),
+  )
+  def test_index_reduce_multi_dim_matches_cpu(
+      self,
+      self_shape: tuple[int, ...],
+      dim: int,
+      index_values: tuple[int, ...],
+      reduce: str,
+      include_self: bool,
+      dtype: torch.dtype,
+  ) -> None:
+    """Tests N-D `index_reduce` edge cases not covered by `op_db`."""
+    source_shape = list(self_shape)
+    source_shape[dim] = len(index_values)
+    # Small values with zeros and negatives, so that every dtype accumulates
+    # them exactly and an integer `mean` has to round a negative quotient down.
+    self_cpu = torch.arange(math.prod(self_shape)).reshape(self_shape) % 5 - 2
+    source_cpu = (
+        torch.arange(math.prod(source_shape)).reshape(source_shape) % 7 - 3
+    )
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_t = self_cpu.to(device=device, dtype=dtype)
+      index = torch.tensor(index_values, dtype=torch.int64, device=device)
+      source = source_cpu.to(device=device, dtype=dtype)
+      return torch.index_reduce(
+          self_t, dim, index, source, reduce, include_self=include_self
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="include_self", include_self=True),
+      dict(testcase_name="exclude_self", include_self=False),
+  )
+  def test_scatter_reduce_integer_mean_rounds_down(
+      self, include_self: bool
+  ) -> None:
+    """Tests that an integer `mean` is floored rather than truncated."""
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_t = torch.tensor([-2, 4, 1], dtype=torch.int32, device=device)
+      index = torch.tensor([0, 0, 1, 1], device=device)
+      # Position 0 averages to -5 / 3 with `self` and to -3 / 2 without it.
+      src = torch.tensor([-3, 0, 2, 1], dtype=torch.int32, device=device)
+      return torch.scatter_reduce(
+          self_t, 0, index, src, "mean", include_self=include_self
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_gather_and_scatter_add_multidim_broadcast_index_lowers_to_dot_general(
       self,
   ):
