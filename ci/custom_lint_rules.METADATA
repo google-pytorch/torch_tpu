@@ -726,6 +726,47 @@ presubmit {
       "absl::string_view."
     check_delta_only: true  # Only check new/changed lines.
   }
+
+  # Prevent registering kernels into global aten (or catch-all `_`) Meta or
+  # AutogradMeta dispatch keys, which affects all PyTorch backends in the
+  # process. Exclude comment lines directly in prohibited_regexp (rather than
+  # suppression_regexp) so a comment mention cannot clear all failures in a
+  # file or chunk when suppression_regexp matches anywhere.
+  check_contents {
+    base {
+      id: "CheckNoGlobalAtenMeta"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp:
+      "(?m:^[ \\t]*(?:/\\*(?:[^*\\n]|\\*+[^*/\\n])*\\*+/[ \\t]*)*"
+      "TORCH_LIBRARY_IMPL(?:\\s|//[^\\n]*\\n)*\\("
+      "(?:\\s|//[^\\n]*\\n)*(aten|_)(?:\\s|//[^\\n]*\\n)*,"
+      "(?:\\s|//[^\\n]*\\n)*(Meta|AutogradMeta)\\b)"
+    match_multi_line: true
+    suppression_regexp:
+      # Anchor suppression to the matched call so only an explicit
+      # GLOBAL_ATEN_META_OK=<reason> on the registration suppresses it.
+      "(?m:^[ \\t]*(?:/\\*(?:[^*\\n]|\\*+[^*/\\n])*\\*+/[ \\t]*)*"
+      "TORCH_LIBRARY_IMPL(?:\\s|//[^\\n]*\\n)*\\("
+      "(?:[^\\n]*//[^\\n]*\\bGLOBAL_ATEN_META_OK=\\S[^\\n]*\\n"
+      "(?:\\s|//[^\\n]*\\n)*(?:aten|_)(?:\\s|//[^\\n]*\\n)*,"
+      "(?:\\s|//[^\\n]*\\n)*(?:Meta|AutogradMeta)\\b|"
+      "(?:\\s|//[^\\n]*\\n)*(?:aten|_)(?:\\s|//[^\\n]*\\n)*,"
+      "[^\\n]*//[^\\n]*\\bGLOBAL_ATEN_META_OK=\\S[^\\n]*\\n"
+      "(?:\\s|//[^\\n]*\\n)*(?:Meta|AutogradMeta)\\b|"
+      "(?:\\s|//[^\\n]*\\n)*(?:aten|_)(?:\\s|//[^\\n]*\\n)*,"
+      "(?:\\s|//[^\\n]*\\n)*(?:Meta|AutogradMeta)\\b"
+      "[^)]*(?:\\)[^\\n]*)?//[^\\n]*\\bGLOBAL_ATEN_META_OK=\\S))"
+    failure_message:
+      "Do not register kernels into the global `aten` (or catch-all `_`) "
+      "`Meta` or `AutogradMeta` dispatch keys; doing so affects all PyTorch "
+      "backends in the process. Use `TORCH_LIBRARY_IMPL(tpu, Meta, m)` for "
+      "custom `tpu::` ops instead. If you are filling a verified missing "
+      "upstream Meta kernel, add a `// GLOBAL_ATEN_META_OK=<reason>` comment "
+      "on the `TORCH_LIBRARY_IMPL(` line (or the `Meta`/`AutogradMeta` or "
+      "closing `)` line for multiline calls)."
+    check_delta_only: true  # Only check new/changed lines.
+  }
 }
 
 # Checks for non-test C++ source files.

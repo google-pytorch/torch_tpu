@@ -982,6 +982,11 @@ _RULE_EXAMPLES: Final[Mapping[str, _RuleExample]] = {
         bad="// Copyright " + "2026 Google LLC\n",
         op=custom_lint_metadata.FileOperation.EDIT,
     ),
+    "CheckNoGlobalAtenMeta": _RuleExample(
+        path="csrc/a.cc",
+        bad="TORCH_LIBRARY_IMPL(aten, Meta, m) {}\n",
+        good="TORCH_LIBRARY_IMPL(aten, Meta, m) {}  // GLOBAL_ATEN_META_OK=r\n",
+    ),
 }
 
 
@@ -1034,6 +1039,171 @@ def test_mock_spec(code: str, flagged: bool) -> None:
   modified = {path: set(range(1, content.count("\n") + 1))}
   violations = _check("CheckMockSpec", content, path, modified)
   assert bool(violations) == flagged
+
+
+@pytest.mark.parametrize(
+    ("code", "flagged"),
+    [
+        ("TORCH_LIBRARY_IMPL(aten, Meta, m) {}", True),
+        ("TORCH_LIBRARY_IMPL(aten, AutogradMeta, m) {}", True),
+        ("TORCH_LIBRARY_IMPL(_, Meta, m) {}", True),
+        ("TORCH_LIBRARY_IMPL(_, AutogradMeta, m) {}", True),
+        ("TORCH_LIBRARY_IMPL( aten , Meta , m ) {}", True),
+        ("TORCH_LIBRARY_IMPL(\n    aten,\n    AutogradMeta,\n    m) {}", True),
+        ("TORCH_LIBRARY_IMPL(aten,\n                   Meta, m) {}", True),
+        ("TORCH_LIBRARY_IMPL(tpu, Meta, m) {}", False),
+        ("TORCH_LIBRARY_IMPL(tpu, AutogradMeta, m) {}", False),
+        ("TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {}", False),
+        ("// TORCH_LIBRARY_IMPL(aten, Meta, m)", False),
+        ("  // (`TORCH_LIBRARY_IMPL(aten, Meta, m)`):", False),
+        ("/* TORCH_LIBRARY_IMPL(aten, Meta, m) */", False),
+        ("/*\n * TORCH_LIBRARY_IMPL(aten, Meta, m)\n */", False),
+        (" * TORCH_LIBRARY_IMPL(aten, Meta, m)", False),
+        ("/* missing meta */ TORCH_LIBRARY_IMPL(aten, Meta, m) {}", True),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(aten, Meta, m) {}"
+                "  // unlike TORCH_LIBRARY_IMPL(tpu, Meta, m)"
+            ),
+            True,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(aten, Meta, m) {}"
+                "  // not TORCH_LIBRARY_IMPL(aten, Meta, m)"
+            ),
+            True,
+        ),
+        (
+            "// unrelated comment\nTORCH_LIBRARY_IMPL(aten, Meta, m) {}",
+            True,
+        ),
+        (
+            (
+                "// see TORCH_LIBRARY_IMPL(aten, Meta, m)\n"
+                "TORCH_LIBRARY_IMPL(aten, Meta, m) {}"
+            ),
+            True,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(aten, Meta, m) {}\n"
+                "// see TORCH_LIBRARY_IMPL(aten, Meta, m)"
+            ),
+            True,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(aten, Meta, m) {}"
+                "  // GLOBAL_ATEN_META_OK=missing upstream meta"
+            ),
+            False,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(\n"
+                "    aten, Meta, m) {}  // GLOBAL_ATEN_META_OK=missing meta"
+            ),
+            False,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(  // GLOBAL_ATEN_META_OK=missing meta\n"
+                "    aten,\n"
+                "    Meta,\n"
+                "    m) {}"
+            ),
+            False,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(\n"
+                "    aten,  // GLOBAL_ATEN_META_OK=missing meta\n"
+                "    Meta,\n"
+                "    m) {}"
+            ),
+            False,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(\n"
+                "    aten,\n"
+                "    Meta,  // GLOBAL_ATEN_META_OK=missing meta\n"
+                "    m) {}"
+            ),
+            False,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(  // unrelated comment\n"
+                "    aten,\n"
+                "    Meta,\n"
+                "    m) {}"
+            ),
+            True,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(\n"
+                "    aten,\n"
+                "    Meta,\n"
+                "    m) {}  // GLOBAL_ATEN_META_OK=missing meta"
+            ),
+            False,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(aten, Meta, m) {}\n"
+                "// GLOBAL_ATEN_META_OK=unrelated next line"
+            ),
+            True,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(tpu, Meta, m) {}  //"
+                " GLOBAL_ATEN_META_OK=r\nTORCH_LIBRARY_IMPL(aten, Meta, m) {}"
+            ),
+            True,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(  // GLOBAL_ATEN_META_OK=first only\n"
+                "    aten, Meta, m) {}\n"
+                "TORCH_LIBRARY_IMPL(aten, AutogradMeta, m) {}"
+            ),
+            True,
+        ),
+        (
+            (
+                "TORCH_LIBRARY_IMPL(aten, Meta, m) {}\n"
+                "TORCH_LIBRARY_IMPL(aten, AutogradMeta, m) {}"
+                "  // GLOBAL_ATEN_META_OK=second only"
+            ),
+            True,
+        ),
+        (
+            "TORCH_LIBRARY_IMPL(aten, Meta, m) {}  // GLOBAL_ATEN_META_OK=",
+            True,
+        ),
+        (
+            "TORCH_LIBRARY_IMPL(aten, Meta, m) {}  // GLOBAL_ATEN_META_OK=   ",
+            True,
+        ),
+    ],
+)
+def test_no_global_aten_meta(code: str, flagged: bool) -> None:
+  path = "csrc/ops/foo/foo_aten_kernels.cc"
+  content = code + "\n"
+  modified = {path: set(range(1, content.count("\n") + 1))}
+  violations = _check("CheckNoGlobalAtenMeta", content, path, modified)
+  assert bool(violations) == flagged
+  # Verify whole-file/chunk suppression semantics: any flagged chunk without a
+  # real opted-out registration must not match suppression_regexp anywhere in
+  # the chunk.
+  if flagged and "second only" not in code and "first only" not in code:
+    rule = _rule("CheckNoGlobalAtenMeta")
+    assert rule.suppression_re is not None
+    assert rule.suppression_re.search(content) is None
 
 
 @pytest.mark.parametrize("rule_id", list(_RULE_EXAMPLES))
