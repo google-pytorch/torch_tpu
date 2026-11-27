@@ -94,7 +94,8 @@ int get_batch_size(absl::Span<const int64_t> shape) {
 mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
                                std::optional<double> maybe_scale,
                                int64_t head_dim, mlir::Type element_type) {
-  double scale = maybe_scale.value_or(1.0 / std::sqrt(head_dim));
+  double scale =
+      maybe_scale.value_or(head_dim == 0 ? 0.0 : 1.0 / std::sqrt(head_dim));
 
   if (element_type == nullptr) {
     element_type = builder.getOpBuilder().getF32Type();

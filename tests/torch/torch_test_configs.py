@@ -945,11 +945,8 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_dispatch_fails_no_backend",
         ],
         "TestSDPAGeneric": [
-            "test_scaled_dot_product_attention_fp16_overflow",
-            "test_sdp_math_gradcheck",
             "test_sdpa_math_broadcast_batch_dims",
             "test_sdpa_zero_output",
-            "test_sdpa_zero_qk_head_dim_matches_eager_attention",
         ],
         "TestTransformersAccelerator": [
             "test_disable_fastpath",

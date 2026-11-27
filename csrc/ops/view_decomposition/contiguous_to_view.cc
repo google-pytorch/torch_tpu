@@ -294,17 +294,19 @@ absl::StatusOr<at::Tensor> ContiguousToView(
                                  contiguous_buffer.element_type()));
   at::Tensor output_tensor = MakeTensor(std::move(empty_contiguous_base));
 
-  // Get the non-overlapping windows to write to the output tensor.
-  // If the output tensor is non-overlapping, or only has simple broadcasts,
-  // there will only be one window.
-  TT_ASSIGN_OR_RETURN(
-      std::vector<NonOverlappingWindow> non_overlapping_windows,
-      GetNonOverlappingWindows(contiguous_buffer, target_strides,
-                               target_storage_offset));
+  if (contiguous_buffer.num_elements() > 0) {
+    // Get the non-overlapping windows to write to the output tensor.
+    // If the output tensor is non-overlapping, or only has simple broadcasts,
+    // there will only be one window.
+    TT_ASSIGN_OR_RETURN(
+        std::vector<NonOverlappingWindow> non_overlapping_windows,
+        GetNonOverlappingWindows(contiguous_buffer, target_strides,
+                                 target_storage_offset));
 
-  // Write the non-overlapping windows to the output tensor.
-  TT_RETURN_IF_ERROR(WriteWindowsToTensor(output_tensor, target_strides,
-                                          std::move(non_overlapping_windows)));
+    // Write the non-overlapping windows to the output tensor.
+    TT_RETURN_IF_ERROR(WriteWindowsToTensor(
+        output_tensor, target_strides, std::move(non_overlapping_windows)));
+  }
 
   // Apply the target view to the output tensor.
   output_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
