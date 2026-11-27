@@ -35,6 +35,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -69,10 +70,39 @@ absl::StatusOr<MlirOpResults<1>> BuildLerpShlo(mlir::MlirOp self,
   end = end_bcast;
   weight = weight_bcast;
 
-  // Compute result = self + weight * (end - self)
-  auto diff_op = mlir::stablehlo::Subtract(end, self);
-  auto mul_op = mlir::stablehlo::Mul(weight, diff_op);
-  return mlir::stablehlo::Add(self, mul_op);
+  // Like PyTorch (ATen/native/Lerp.h), interpolate from `self` for small
+  // weights and from `end` otherwise. Interpolating from `self` alone loses
+  // `end` at weight 1 when `end - self` rounds to `-self`.
+  mlir::MlirOp diff = mlir::stablehlo::Subtract(end, self);
+  mlir::MlirOp weighted_diff = mlir::stablehlo::Mul(weight, diff);
+  mlir::MlirOp from_self = mlir::stablehlo::Add(self, weighted_diff);
+
+  // The weight is small if |weight| < 0.5. PyTorch compares the squared
+  // magnitude of a complex weight to avoid the square root.
+  const bool is_complex = IsComplexType(GetTensorTypeOrDie(weight));
+  mlir::MlirOp magnitude;
+  if (is_complex) {
+    mlir::MlirOp real = mlir::stablehlo::Real(weight);
+    mlir::MlirOp imag = mlir::stablehlo::Imag(weight);
+    mlir::MlirOp real_squared = mlir::stablehlo::Mul(real, real);
+    mlir::MlirOp imag_squared = mlir::stablehlo::Mul(imag, imag);
+    magnitude = mlir::stablehlo::Add(real_squared, imag_squared);
+  } else {
+    magnitude = mlir::stablehlo::Abs(weight);
+  }
+  mlir::MlirOp threshold = MakeConstantLike(magnitude, is_complex ? 0.25 : 0.5);
+  mlir::MlirOp is_weight_small = mlir::stablehlo::Compare(
+      magnitude, threshold, mlir::stablehlo::ComparisonDirection::LT);
+
+  // `MakeConstantLike` cannot make a complex constant for a bounded dynamic
+  // shape, so make a real one and convert it.
+  mlir::MlirOp real_one = MakeConstantLike(magnitude, 1.0);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp one,
+                      ComplexSafeConvertElementType(real_one, common_type));
+  mlir::MlirOp one_minus_weight = mlir::stablehlo::Subtract(one, weight);
+  mlir::MlirOp remaining_diff = mlir::stablehlo::Mul(diff, one_minus_weight);
+  mlir::MlirOp from_end = mlir::stablehlo::Subtract(end, remaining_diff);
+  return mlir::stablehlo::Select(is_weight_small, from_self, from_end);
 }
 
 NAryMlirOpBuilder<3> GetLerpTensorOutFunctional(mlir::ElementType common_type) {

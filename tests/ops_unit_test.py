@@ -5828,6 +5828,101 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     #   return y
     # self.assert_close_tpu_vs_cpu(_test_out)
 
+  @parameterized.product(
+      dtype=(torch.float32, torch.bfloat16, torch.float16, torch.complex64),
+      variant=("functional", "inplace", "out"),
+      tensor_weight=(False, True),
+  )
+  def test_lerp_matches_cpu_exactly(
+      self, dtype: torch.dtype, variant: str, tensor_weight: bool
+  ):
+    big, tiny, inf, nan = 2.0**15, 2.0**-14, math.inf, math.nan
+    # (start, end) pairs. `tiny - big` rounds to `-big` in float32, so
+    # `start + weight * (end - start)` yields 0 instead of `tiny` at weight 1.
+    pairs = [
+        (big, tiny),
+        (tiny, big),
+        (3.0, 3.0),
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (-0.0, 0.0),
+        (-0.0, 1.0),
+        (-0.0, -1.0),
+        (0.0, -0.0),
+        (-0.0, -0.0),
+        (1.0, inf),
+        (inf, 1.0),
+        (inf, inf),
+        (-inf, -inf),
+        (inf, -inf),
+        (nan, 1.0),
+        (1.0, nan),
+    ]
+    # Each weight w has exact products with w and 1 - w, so fused and unfused
+    # multiply-adds agree and the results must match bit for bit.
+    weights = [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, -0.25, -1.0, inf, nan]
+    if dtype.is_complex:
+      pairs += [(complex(big, tiny), complex(tiny, big)), (1 + 2j, 3 - 1j)]
+      weights += [0.5j, 1j, 0.25 + 0.25j, 0.5 + 0.5j]
+    start, end = torch.tensor(pairs, dtype=dtype).unbind(1)
+
+    def lerp_as_real(device: str) -> torch.Tensor:
+      results = []
+      for scalar_weight in weights:
+        result = start.to(device, copy=True)
+        weight = scalar_weight
+        if tensor_weight:
+          weight = torch.full_like(result, scalar_weight)
+        if variant == "inplace":
+          result.lerp_(end.to(device), weight)
+        else:
+          out = torch.empty_like(result) if variant == "out" else None
+          result = torch.lerp(result, end.to(device), weight, out=out)
+        results.append(result.cpu())
+      stacked = torch.stack(results)
+      return torch.view_as_real(stacked) if dtype.is_complex else stacked
+
+    expected = lerp_as_real("cpu")
+    actual = lerp_as_real("tpu")
+    utils.assert_close(actual=actual, expected=expected, rtol=0, atol=0)
+    # The sign of a NaN is unspecified, so only compare the signs of numbers.
+    self.assertEqual(
+        torch.signbit(actual) & ~actual.isnan(),
+        torch.signbit(expected) & ~expected.isnan(),
+    )
+
+  # ops_test.py skips complex64 for lerp() with bounded dynamic shapes.
+  @parameterized.product(
+      dtype=(torch.float32, torch.complex64),
+      tensor_weight=(False, True),
+  )
+  def test_lerp_bounded_dynamic_matches_cpu_exactly(
+      self, dtype: torch.dtype, tensor_weight: bool
+  ):
+    start = torch.tensor([[2.0**15, 1.0, 3.0], [2.0, -1.0, 4.0]], dtype=dtype)
+    end = torch.tensor([[2.0**-14, 5.0, 3.0], [8.0, 1.0, 0.5]], dtype=dtype)
+    # One weight for each branch of the formula.
+    for scalar_weight in (0.25, 1.0):
+      with self.subTest(weight=scalar_weight):
+        weight = scalar_weight
+        if tensor_weight:
+          weight = torch.full_like(start, scalar_weight)
+        cpu_args = (start, end, weight)
+        tpu_args = []
+        for arg in cpu_args:
+          if isinstance(arg, torch.Tensor):
+            arg = arg.to("tpu")
+            dynamism.mark_dynamic(
+                arg, dimension=1, lower_bound=2, upper_bound=15
+            )
+          tpu_args.append(arg)
+        utils.assert_close(
+            actual=torch.lerp(*tpu_args).cpu(),
+            expected=torch.lerp(*cpu_args),
+            rtol=0,
+            atol=0,
+        )
+
   def test_reshape_with_zero_numel(self):
     self.assert_close_tpu_vs_cpu(
         lambda device: torch.reshape(
