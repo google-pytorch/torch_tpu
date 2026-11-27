@@ -108,6 +108,21 @@ def _rel_pos(score, b, h, q_idx, kv_idx):
   return score + (q_idx - kv_idx).to(torch.float32) * 0.01
 
 
+def _softcap(score, b, h, q_idx, kv_idx):
+  # Tanh softcap (as in Gemma 2). TorchTPU lowers tanh(score / 2) with sign and
+  # expm1(-|score|); scores are ~N(0, 1), so they fall on both sides of the
+  # |x| = 0.007 switch in the splice's expm1.
+  del b, h, q_idx, kv_idx
+  return 2 * torch.tanh(score / 2)
+
+
+def _expm1_of_tiny_scores(score, b, h, q_idx, kv_idx):
+  # ~score, but evaluates expm1 at |x| < 1e-3, where exp(x) - 1 loses most
+  # digits: lowering expm1 as exp(x) - 1 is off by 3e-2 (f32 tolerance 2e-4).
+  del b, h, q_idx, kv_idx
+  return 1e4 * torch.expm1(score / 1e4)
+
+
 def _block_mask(mask_mod, batch, seq, kv_seq=None):
   return fa.create_block_mask(
       mask_mod, batch, 1, seq, kv_seq or seq, device="cpu", BLOCK_SIZE=_BLOCK
@@ -122,16 +137,16 @@ def _reference(q, k, v, block_mask, scale, score_mod):
   return out, lse
 
 
-def _reference_dkv(q, k, v, grad_out, block_mask, scale):
-  """dK and dV on CPU in f32: autograd through PyTorch's math_attention."""
+def _reference_grads(q, k, v, grad_out, block_mask, scale):
+  """dQ, dK and dV on CPU in f32: autograd through PyTorch's math_attention."""
   q, k, v, grad_out = (t.detach().cpu().float() for t in (q, k, v, grad_out))
-  k.requires_grad_(True)
-  v.requires_grad_(True)
+  for t in (q, k, v):
+    t.requires_grad_(True)
   out, _, _ = math_attention(
       q, k, v, _identity, block_mask.as_tuple(), scale, {}
   )
   out.backward(grad_out)
-  return k.grad, v.grad
+  return q.grad, k.grad, v.grad
 
 
 class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
@@ -254,6 +269,17 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     q, k, v = self._inputs(1, 2, 2, 1024, 128, dtype)
     self._check(q, k, v, _causal, score_mod=_alibi)
 
+  @parameterized.parameters(torch.float32, torch.bfloat16)
+  def test_softcap_score_mod(self, dtype):
+    # tanh lowers to expm1 and sign, which the splice rewrites for Mosaic.
+    q, k, v = self._inputs(1, 2, 2, 1024, 128, dtype)
+    self._check(q, k, v, _causal, score_mod=_softcap)
+
+  def test_expm1_score_mod_is_accurate_near_zero(self):
+    # The splice's expm1 uses x + x^2/2 near 0 rather than exp(x) - 1.
+    q, k, v = self._inputs(1, 2, 2, 1024, 128, torch.float32)
+    self._check(q, k, v, _causal, score_mod=_expm1_of_tiny_scores)
+
   def test_merges_mask_blocks_into_the_tile_with_a_mask_mod(self):
     block_mask = _block_mask(_causal, 1, 4 * _BLOCK)
     num_blocks, indices, tile = flex_attention._block_tables(
@@ -304,7 +330,7 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
         fa.noop_mask, 1, 1, 512, 512, device="cpu", BLOCK_SIZE=128
     )
     args_fn = (
-        flex_attention._dkv_kernel_args
+        (lambda *a: flex_attention._bwd_kernel_args(*a)[1])
         if backward
         else flex_attention.kernel_args
     )
@@ -317,46 +343,63 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     self.assertEqual(tuple(args[4:6]), tile)
     self.assertAlmostEqual(args[6], 128**-0.5)  # The default scale.
 
-  def _check_dkv(self, q, k, v, mask_mod, *, mask_batch=1):
+  def _check_grads(self, q, k, v, mask_mod, *, mask_batch=1):
     scale = q.shape[-1] ** -0.5
     block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2], k.shape[-2])
     out, lse = flex_attention.flex_attention_fwd(
         q, k, v, block_mask, scale=scale
     )
     grad_out = torch.randn_like(out)
-    dk, dv = flex_attention.flex_attention_bwd(
+    grads = flex_attention.flex_attention_bwd(
         q, k, v, out, lse, grad_out, block_mask, scale=scale
     )
-    self.assertEqual((dk.dtype, dv.dtype), (q.dtype, q.dtype))
-    ref_dk, ref_dv = _reference_dkv(q, k, v, grad_out, block_mask, scale)
-    # Measured worst case: 1.1e-4 (f32) and 5.7e-3 (bf16).
-    # TODO(b/576669251): Tighten f32 to ~2e-5 once the forward lse is refined.
-    tol = 2e-4 if q.dtype == torch.float32 else 2e-2
-    test_utils.assert_close(dk.cpu().float(), ref_dk, atol=tol, rtol=tol)
-    test_utils.assert_close(dv.cpu().float(), ref_dv, atol=tol, rtol=tol)
+    refs = _reference_grads(q, k, v, grad_out, block_mask, scale)
+    # Measured worst abs error over dQ, dK, dV: 2.5e-4 (f32), 5.7e-3 (bf16).
+    # TODO(b/576669251): Tighten f32 once the forward lse is refined.
+    tol = 5e-4 if q.dtype == torch.float32 else 2e-2
+    for name, grad, ref in zip(("dq", "dk", "dv"), grads, refs, strict=True):
+      with self.subTest(name):
+        self.assertEqual(grad.dtype, q.dtype)
+        test_utils.assert_close(grad.cpu().float(), ref, atol=tol, rtol=tol)
+    return grads
 
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16],
       mask_mod=[fa.noop_mask, _causal],
   )
-  def test_dkv_matches_reference(self, dtype, mask_mod):
+  def test_grads_match_reference(self, dtype, mask_mod):
+    # Causal: each query tile lists only the KV tiles up to the diagonal.
     q, k, v = self._inputs(1, 2, 2, 2048, 128, dtype)
-    self._check_dkv(q, k, v, mask_mod)
+    self._check_grads(q, k, v, mask_mod)
 
   @parameterized.parameters(_sliding_window, _documents, _prefix_lm)
-  def test_dkv_mask_mod(self, mask_mod):
+  def test_grads_mask_mod(self, mask_mod):
+    # The mask_mod is spliced into both backward kernels.
     q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.float32)
-    self._check_dkv(q, k, v, mask_mod)
+    self._check_grads(q, k, v, mask_mod)
 
-  def test_dkv_batched_gqa(self):
-    # dK / dV sum over the query heads of each KV head, and each batch uses
-    # its own block tables.
+  def test_grads_batched_gqa(self):
+    # dK / dV sum over the query heads of each KV head, dQ reads its query
+    # head's KV head, and each batch uses its own block tables.
     q, k, v = self._inputs(2, 4, 2, 4096, 128, torch.float32)
-    self._check_dkv(q, k, v, _first_block_or_batch_1, mask_batch=2)
+    self._check_grads(q, k, v, _first_block_or_batch_1, mask_batch=2)
 
-  def test_dkv_with_fully_masked_rows(self):
+  def test_grads_single_tile(self):
+    # The first and last KV step of a row are the same grid step.
+    q, k, v = self._inputs(1, 2, 2, _BLOCK, 128, torch.float32)
+    self._check_grads(q, k, v, _causal)
+
+  def test_grads_with_fully_masked_rows(self):
+    # 32 MiB of VMEM gives 512x512 f32 backward tiles, so query tile 0 lists
+    # no KV tile: its dQ must be 0.
     q, k, v = self._inputs(1, 1, 1, 1024, 128, torch.float32)
-    self._check_dkv(q, k, v, _block_causal_empty_first_row)
+    with mock.patch.object(
+        flex_attention._device_ops_backend,
+        "_get_vmem_capacity_bytes",
+        return_value=32 << 20,
+    ):
+      dq, _, _ = self._check_grads(q, k, v, _block_causal_empty_first_row)
+    self.assertTrue((dq[:, :, :_BLOCK] == 0).all())
 
   def test_rel_pos_score_mod(self):
     q, k, v = self._inputs(1, 2, 2, 1024, 128, torch.float32)
@@ -367,10 +410,12 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     _, k, v = self._inputs(1, 2, 2, 4096, 128, torch.float32)
     self._check(q, k, v, _causal_offset)
 
-  def test_dkv_rectangular(self):
+  def test_grads_rectangular(self):
+    # dQ: query tile 0 skips the last KV tile; dK/dV: KV tile 3 skips query
+    # tile 0.
     q, _, _ = self._inputs(1, 2, 2, 3072, 128, torch.float32)
     _, k, v = self._inputs(1, 2, 2, 4096, 128, torch.float32)
-    self._check_dkv(q, k, v, _causal_offset)
+    self._check_grads(q, k, v, _causal_offset)
 
   def test_dense_uses_flash_attention(self):
     q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.bfloat16)

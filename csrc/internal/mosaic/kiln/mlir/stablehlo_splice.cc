@@ -110,6 +110,44 @@ void DemoteF64(mlir::Operation* op) {
   }
 }
 
+// A splat constant `value` with the type of `like`.
+mlir::Value ConstantLike(mlir::ImplicitLocOpBuilder& b, double value,
+                         mlir::Value like) {
+  auto type = mlir::cast<mlir::RankedTensorType>(like.getType());
+  return mlir::stablehlo::ConstantOp::create(
+      b, mlir::DenseElementsAttr::get(
+             type, b.getFloatAttr(type.getElementType(), value)));
+}
+
+// expm1(x) from ops Mosaic supports. exp(x) - 1 cancels catastrophically near
+// 0 (relative error ~6e-8 / |x|), so for |x| < 0.007 use x + x^2/2 (relative
+// error ~x^2/6, same approach as XLA). Both are ~9e-6 at the switch.
+mlir::Value Expm1(mlir::ImplicitLocOpBuilder& b, mlir::Value x) {
+  mlir::Value x_squared = mlir::stablehlo::MulOp::create(b, x, x);
+  mlir::Value series = mlir::stablehlo::AddOp::create(
+      b, x,
+      mlir::stablehlo::MulOp::create(b, x_squared, ConstantLike(b, 0.5, x)));
+  mlir::Value exp_minus_one = mlir::stablehlo::SubtractOp::create(
+      b, mlir::stablehlo::ExpOp::create(b, x), ConstantLike(b, 1.0, x));
+  mlir::Value small = mlir::stablehlo::CompareOp::create(
+      b, mlir::stablehlo::AbsOp::create(b, x), ConstantLike(b, 0.007, x),
+      mlir::stablehlo::ComparisonDirection::LT);
+  return mlir::stablehlo::SelectOp::create(b, small, series, exp_minus_one);
+}
+
+// Float sign(x) = x > 0 ? 1 : (x < 0 ? -1 : x); returning x keeps +-0 and NaN.
+mlir::Value Sign(mlir::ImplicitLocOpBuilder& b, mlir::Value x) {
+  mlir::Value zero = ConstantLike(b, 0.0, x);
+  mlir::Value negative = mlir::stablehlo::CompareOp::create(
+      b, x, zero, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::Value positive = mlir::stablehlo::CompareOp::create(
+      b, x, zero, mlir::stablehlo::ComparisonDirection::GT);
+  mlir::Value negative_or_x = mlir::stablehlo::SelectOp::create(
+      b, negative, ConstantLike(b, -1.0, x), x);
+  return mlir::stablehlo::SelectOp::create(b, positive, ConstantLike(b, 1.0, x),
+                                           negative_or_x);
+}
+
 // Clones `op` at the insertion point. Converts that become identities after
 // f64 demotion are dropped.
 void CloneOp(mlir::ImplicitLocOpBuilder& b, mlir::Operation& op,
@@ -122,6 +160,18 @@ void CloneOp(mlir::ImplicitLocOpBuilder& b, mlir::Operation& op,
     if (out_elt ==
         mlir::cast<mlir::RankedTensorType>(in.getType()).getElementType()) {
       mapping.map(convert.getResult(), in);
+      return;
+    }
+  }
+  // Mosaic can't legalize expm1 (math.expm1) or float sign (math.copysign),
+  // which TorchTPU's tanh lowering uses; rebuild them from supported ops.
+  if (mlir::isa<mlir::stablehlo::Expm1Op, mlir::stablehlo::SignOp>(op)) {
+    mlir::Value x = mapping.lookup(op.getOperand(0));
+    if (mlir::isa<mlir::FloatType>(
+            mlir::cast<mlir::RankedTensorType>(x.getType()).getElementType())) {
+      mapping.map(op.getResult(0), mlir::isa<mlir::stablehlo::Expm1Op>(op)
+                                       ? Expm1(b, x)
+                                       : Sign(b, x));
       return;
     }
   }
