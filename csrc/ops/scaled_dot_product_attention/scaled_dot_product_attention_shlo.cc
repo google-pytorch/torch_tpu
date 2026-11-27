@@ -102,11 +102,11 @@ enum class SdpaPromotionType {
 };
 
 // Determine exactly where type promotion should happen inside the attn module.
-// For half-precision inputs (BF16/FP16), we promote only softmax and dP
-// gradient scaling to FP32 for numerical stability (matching CUDA
-// FlashAttention contract), keeping all matrix multiplications in native half
-// precision on TPU MXUs. If allow_half_precision_reduction_math is true, no
-// promotion is performed.
+// For BF16, we promote only softmax and dP gradient scaling to FP32 for
+// numerical stability (matching CUDA FlashAttention contract), keeping all
+// matrix multiplications in native BF16 on TPU MXUs. For FP16, we promote the
+// whole module to FP32 so Q @ K^T does not overflow FP16 max (65504.0). If
+// allow_half_precision_reduction_math is true, no promotion is performed.
 SdpaPromotionType GetSdpaPromotionType(
     mlir::MlirOp query, mlir::MlirOp /*key*/,
     bool allow_half_precision_reduction_math) {
@@ -115,8 +115,10 @@ SdpaPromotionType GetSdpaPromotionType(
   }
 
   const auto element_type = GetTensorTypeOrDie(query).getElementType();
-  const bool is_half_precision = element_type.isF16() || element_type.isBF16();
-  if (is_half_precision) {
+  if (element_type.isF16()) {
+    return SdpaPromotionType::kWholeModule;
+  }
+  if (element_type.isBF16()) {
     return SdpaPromotionType::kSoftmaxOnly;
   }
 
@@ -823,9 +825,14 @@ BuildScaledDotProductAttentionBackward(absl::Span<mlir::MlirOp> inputs,
 // Reduced-precision floats (F16/BF16 and narrower) execute natively in single-
 // pass MXU precision; XLA's online-softmax Mosaic lowering rejects non-DEFAULT
 // contract precision on non-F32 operands (matching CreateFlashAttnConfig).
+// When F16 is promoted to F32 via kWholeModule, delegate to
+// GetAndAddPrecisionTo so F32 matmul precision settings are respected.
 mlir::stablehlo::Precision GetSdpaDotPrecision(
-    const mlir::ElementType element_type, OpParamCacheKeys& param_keys) {
-  if (XlaEquivalentBitwidth(element_type) < 32) {
+    const mlir::ElementType element_type,
+    bool allow_half_precision_reduction_math, OpParamCacheKeys& param_keys) {
+  const bool promoted_f16_to_f32 = element_type == mlir::ElementType::F16 &&
+                                   !allow_half_precision_reduction_math;
+  if (!promoted_f16_to_f32 && XlaEquivalentBitwidth(element_type) < 32) {
     return mlir::stablehlo::Precision::DEFAULT;  // EXPLICIT_PRECISION_OK=sdpa
   }
   return GetAndAddPrecisionTo(param_keys);
@@ -845,8 +852,8 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
   Dimensions out_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
   out_dims.push_back(value.sizes().back());
   Dimensions lse_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
-  const mlir::stablehlo::Precision precision =
-      GetSdpaDotPrecision(out_dtype, param_keys);
+  const mlir::stablehlo::Precision precision = GetSdpaDotPrecision(
+      out_dtype, allow_half_precision_reduction_math, param_keys);
   auto op_builder =
       [is_causal, scale, allow_half_precision_reduction_math, precision](
           absl::Span<mlir::MlirOp> inputs,
@@ -899,8 +906,8 @@ ScaledDotProductFusedAttentionShloBackward(
   const int64_t seq_len_q = query.size(rank - 2);
   const int64_t seq_len_kv = key.size(rank - 2);
   const int64_t head_dim = query.size(rank - 1);
-  const mlir::stablehlo::Precision precision =
-      GetSdpaDotPrecision(out_dtype, param_keys);
+  const mlir::stablehlo::Precision precision = GetSdpaDotPrecision(
+      out_dtype, allow_half_precision_reduction_math, param_keys);
 
   auto op_builder =
       [rank, batch_size, is_causal, scale, num_head_q, num_head_kv, seq_len_q,
