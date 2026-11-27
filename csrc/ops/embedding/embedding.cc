@@ -135,13 +135,55 @@ absl::StatusOr<mlir::MlirOp> BuildOffset2Bag(mlir::MlirBuilder& builder,
   return mlir::stablehlo::Subtract(cumsum, one_bcst);
 }
 
+struct MinPositionsResult {
+  mlir::MlirOp safe_positions;
+  mlir::MlirOp is_empty;
+  mlir::MlirOp zeros;
+};
+
+// Scatters candidate positions into a tensor of `target_shape` via MinOp,
+// clamping empty bags (still holding INT64_MAX) to 0 so downstream gathers
+// stay in bounds.
+absl::StatusOr<MinPositionsResult> ScatterMinPositions(
+    mlir::MlirBuilder& builder, mlir::MlirOp indices, mlir::MlirOp updates,
+    mlir::ArrayRef<int64_t> target_shape,
+    mlir::stablehlo::ScatterDimensionNumbersAttr scatter_dims,
+    mlir::MlirOp max_i64_scalar, mlir::MlirOp zero_i64, mlir::Type i64_type) {
+  auto init = MakeConstant(builder, std::numeric_limits<int64_t>::max(),
+                           i64_type, target_shape);
+  auto min_body = [i64_type](mlir::RegionBuilder& rb) {
+    mlir::stablehlo::buildReduceBody<mlir::stablehlo::MinOp>(
+        i64_type, rb.getRegion(), rb.getOpBuilder());
+  };
+  auto raw_pos = mlir::stablehlo::Scatter({init}, indices, {updates}, min_body,
+                                          scatter_dims)[0];
+  TT_ASSIGN_OR_RETURN(auto max_i64_bcst,
+                      BroadcastIfNeeded(max_i64_scalar, raw_pos));
+  auto is_empty = mlir::stablehlo::Compare(
+      raw_pos, max_i64_bcst, mlir::stablehlo::ComparisonDirection::EQ);
+  TT_ASSIGN_OR_RETURN(auto zero_i64_bcst, BroadcastIfNeeded(zero_i64, raw_pos));
+  auto safe_pos = mlir::stablehlo::Select(is_empty, zero_i64_bcst, raw_pos);
+  return MinPositionsResult{safe_pos, is_empty, zero_i64_bcst};
+}
+
 // Builds the scatter operation for MAX mode, which aggregates both the
-// embedding values and indices. This implementation avoids a multi-operand
-// scatter to prevent TPU backend crashes, using a two-pass approach.
+// embedding values and vocabulary row indices. Matches PyTorch CPU/CUDA
+// (`EmbeddingBag.cu`):
+// - Padding entries are skipped.
+// - If the first non-padding element in a bag is NaN, the bag result is
+//   (NaN, indices[first_pos]).
+// - Otherwise, later NaNs are ignored and the bag result is the max of all
+//   non-NaN non-padding elements with ties broken by smallest position.
+// - `max_indices` stores vocabulary row indices `indices[pos]`, not positions.
 absl::StatusOr<MaxAggregationResult> BuildMaxAggregation(
     mlir::MlirBuilder& builder, mlir::MlirOp updates, mlir::MlirOp indices,
-    mlir::MlirOp val_init, mlir::MlirOp idx_init, mlir::Type i64_type,
-    mlir::Type val_type, mlir::MlirOp offset2bag) {
+    mlir::MlirOp val_init, mlir::MlirOp flattened_indices, int64_t padding_idx,
+    mlir::MlirOp is_padding, mlir::Type i64_type, mlir::Type val_type,
+    mlir::MlirOp offset2bag) {
+  const int64_t batch_size = GetTensorTypeOrDie(val_init).getDimSize(0);
+  const int64_t emb_dim = GetTensorTypeOrDie(val_init).getDimSize(1);
+  const int64_t num_updates = GetTensorTypeOrDie(updates).getDimSize(0);
+
   llvm::SmallVector<int64_t, 1> update_window_dims;
   for (int64_t i = 1; i < GetTensorTypeOrDie(val_init).getRank(); ++i) {
     update_window_dims.push_back(i);
@@ -150,26 +192,50 @@ absl::StatusOr<MaxAggregationResult> BuildMaxAggregation(
       &builder.getContext(), update_window_dims, /*inserted_window_dims=*/{0},
       /*input_batching_dims=*/{}, /*scatter_indices_batching_dims=*/{},
       /*scatter_dims_to_operand_dims=*/{0}, /*index_vector_dim=*/1);
+  auto scatter_dims_1d = mlir::stablehlo::ScatterDimensionNumbersAttr::get(
+      &builder.getContext(), /*update_window_dims=*/{},
+      /*inserted_window_dims=*/{0}, /*input_batching_dims=*/{},
+      /*scatter_indices_batching_dims=*/{},
+      /*scatter_dims_to_operand_dims=*/{0}, /*index_vector_dim=*/1);
 
-  // Scatter 1: MAX values
+  auto max_i64_scalar = MakeScalarConstant(
+      builder, std::numeric_limits<int64_t>::max(), i64_type);
+  auto zero_i64 = MakeScalarConstant(builder, 0, i64_type);
+
+  // Mask out NaN (and padding) entries before the MaxOp scatter so a later NaN
+  // in a bag cannot override a finite/inf first element, and padding entries
+  // cannot tie with legitimate -inf weights.
+  auto is_nan = mlir::stablehlo::Compare(
+      updates, updates, mlir::stablehlo::ComparisonDirection::NE);
+  mlir::MlirOp is_excluded = is_nan;
+  if (padding_idx >= 0) {
+    TT_ASSIGN_OR_RETURN(auto is_pad_u, Unsqueeze(is_padding, 1));
+    TT_ASSIGN_OR_RETURN(auto is_pad_b, BroadcastIfNeeded(is_pad_u, updates));
+    is_excluded = mlir::stablehlo::Or(is_pad_b, is_nan);
+  }
+  auto neg_inf_scalar = MakeScalarConstant(builder, -INFINITY, val_type);
+  TT_ASSIGN_OR_RETURN(auto neg_inf_upd_bcst,
+                      BroadcastIfNeeded(neg_inf_scalar, updates));
+  auto updates_for_max =
+      mlir::stablehlo::Select(is_excluded, neg_inf_upd_bcst, updates);
+
+  // Scatter 1: MAX values over non-padding, non-NaN entries.
   auto val_body = [val_type](mlir::RegionBuilder& rb) {
     mlir::stablehlo::buildReduceBody<mlir::stablehlo::MaxOp>(
         val_type, rb.getRegion(), rb.getOpBuilder());
   };
-  auto max_values = mlir::stablehlo::Scatter({val_init}, indices, {updates},
-                                             val_body, scatter_dims)[0];
+  auto max_values = mlir::stablehlo::Scatter(
+      {val_init}, indices, {updates_for_max}, val_body, scatter_dims)[0];
 
-  // Gather max_values back to updates shape to find which indices achieved the
-  // max
+  // Gather max_values back to updates shape to find winning positions.
   TT_ASSIGN_OR_RETURN(auto max_values_gathered,
                       BuildEmbeddingGather(builder, max_values, offset2bag));
-
-  // Compare to find valid indices
-  auto is_max = mlir::stablehlo::Compare(
+  auto matches_max = mlir::stablehlo::Compare(
       updates, max_values_gathered, mlir::stablehlo::ComparisonDirection::EQ);
+  auto is_valid_entry = mlir::stablehlo::Not(is_excluded);
+  auto is_max = mlir::stablehlo::And(matches_max, is_valid_entry);
 
-  // Construct iota representing the original linear indices
-  const int64_t num_updates = GetTensorTypeOrDie(updates).getDimSize(0);
+  // Construct iota representing the original linear positions in `indices`.
   auto iota = mlir::stablehlo::Iota(
       builder, mlir::RankedTensorType::get({num_updates}, i64_type), 0);
   mlir::MlirOp iota_extended = iota;
@@ -178,45 +244,59 @@ absl::StatusOr<MaxAggregationResult> BuildMaxAggregation(
   }
   TT_ASSIGN_OR_RETURN(auto iota_bcst,
                       BroadcastIfNeeded(iota_extended, updates));
-
-  // Select valid indices (use max_i64 for non-max elements)
-  auto max_i64_scalar = MakeScalarConstant(
-      builder, std::numeric_limits<int64_t>::max(), i64_type);
   TT_ASSIGN_OR_RETURN(auto max_i64_bcst,
                       BroadcastIfNeeded(max_i64_scalar, iota_bcst));
   auto valid_indices = mlir::stablehlo::Select(is_max, iota_bcst, max_i64_bcst);
 
-  // Scatter 2: MIN index
-  auto idx_body = [i64_type](mlir::RegionBuilder& rb) {
-    mlir::stablehlo::buildReduceBody<mlir::stablehlo::MinOp>(
-        i64_type, rb.getRegion(), rb.getOpBuilder());
-  };
+  // Scatter 2: MIN position achieving the max in each (bag, feature).
+  TT_ASSIGN_OR_RETURN(MinPositionsResult win_pos,
+                      ScatterMinPositions(builder, indices, valid_indices,
+                                          {batch_size, emb_dim}, scatter_dims,
+                                          max_i64_scalar, zero_i64, i64_type));
 
-  // Initialize intermediate tensor to max_i64 for the MIN scatter
-  int64_t batch_size = GetTensorTypeOrDie(val_init).getDimSize(0);
-  int64_t emb_dim = GetTensorTypeOrDie(val_init).getDimSize(1);
-  auto max_idx_init_min = mlir::stablehlo::Constant(
-      builder, mlir::DenseElementsAttr::get(
-                   mlir::RankedTensorType::get({batch_size, emb_dim}, i64_type),
-                   builder.getOpBuilder().getI64IntegerAttr(
-                       std::numeric_limits<int64_t>::max())));
+  // Map winning positions to vocabulary row indices `flattened_indices[pos]`.
+  mlir::MlirOp vocab_i64 = flattened_indices;
+  if (GetTensorTypeOrDie(vocab_i64).getElementType() != i64_type) {
+    vocab_i64 = mlir::stablehlo::ConvertElementType(vocab_i64, i64_type);
+  }
+  TT_ASSIGN_OR_RETURN(
+      auto win_vocab,
+      BuildEmbeddingGather(builder, vocab_i64, win_pos.safe_positions));
+  auto non_nan_max_indices =
+      mlir::stablehlo::Select(win_pos.is_empty, win_pos.zeros, win_vocab);
 
-  auto max_indices_min = mlir::stablehlo::Scatter(
-      {max_idx_init_min}, indices, {valid_indices}, idx_body, scatter_dims)[0];
+  // Find the first non-padding position in each bag to match PyTorch's
+  // first-element NaN semantics (when the first non-padding element is NaN,
+  // every subsequent `w > NaN` is false, so output stays NaN at `first_pos`).
+  mlir::MlirOp valid_first_pos = iota;
+  if (padding_idx >= 0) {
+    TT_ASSIGN_OR_RETURN(auto max_i64_1d,
+                        BroadcastIfNeeded(max_i64_scalar, iota));
+    valid_first_pos = mlir::stablehlo::Select(is_padding, max_i64_1d, iota);
+  }
+  TT_ASSIGN_OR_RETURN(
+      MinPositionsResult first_pos,
+      ScatterMinPositions(builder, indices, valid_first_pos, {batch_size},
+                          scatter_dims_1d, max_i64_scalar, zero_i64, i64_type));
 
-  // Handle empty bags: replace max_i64 with 0 (original idx_init value)
-  TT_ASSIGN_OR_RETURN(auto max_i64_bcst_batch,
-                      BroadcastIfNeeded(max_i64_scalar, max_indices_min));
-  auto is_empty_idx =
-      mlir::stablehlo::Compare(max_indices_min, max_i64_bcst_batch,
-                               mlir::stablehlo::ComparisonDirection::EQ);
-  auto zero_i64 = MakeScalarConstant(builder, 0, i64_type);
-  TT_ASSIGN_OR_RETURN(auto zero_i64_bcst,
-                      BroadcastIfNeeded(zero_i64, max_indices_min));
-  auto final_max_indices =
-      mlir::stablehlo::Select(is_empty_idx, zero_i64_bcst, max_indices_min);
+  TT_ASSIGN_OR_RETURN(
+      auto first_val,
+      BuildEmbeddingGather(builder, updates, first_pos.safe_positions));
+  TT_ASSIGN_OR_RETURN(
+      auto first_vocab_1d,
+      BuildEmbeddingGather(builder, vocab_i64, first_pos.safe_positions));
+  TT_ASSIGN_OR_RETURN(auto first_vocab_u, Unsqueeze(first_vocab_1d, 1));
+  TT_ASSIGN_OR_RETURN(auto first_vocab_2d,
+                      BroadcastIfNeeded(first_vocab_u, non_nan_max_indices));
+  auto first_is_nan = mlir::stablehlo::Compare(
+      first_val, first_val, mlir::stablehlo::ComparisonDirection::NE);
 
-  return MaxAggregationResult{max_values, final_max_indices};
+  auto final_output =
+      mlir::stablehlo::Select(first_is_nan, first_val, max_values);
+  auto final_max_indices = mlir::stablehlo::Select(first_is_nan, first_vocab_2d,
+                                                   non_nan_max_indices);
+
+  return MaxAggregationResult{final_output, final_max_indices};
 }
 
 absl::StatusOr<mlir::MlirOp> BuildRenormRow(mlir::MlirBuilder& builder,
@@ -402,25 +482,34 @@ absl::StatusOr<mlir::MlirOp> BuildMeanBagBackward(mlir::MlirBuilder& builder,
 }
 
 absl::StatusOr<mlir::MlirOp> BuildMaxBagBackward(
-    mlir::MlirBuilder& builder, mlir::MlirOp acc_grad, mlir::MlirOp max_indices,
-    int64_t num_indices, int64_t emb_dim, mlir::MlirOp zeros_float,
-    mlir::Type acc_elem_type, mlir::Type i64_type) {
-  auto gi_init = mlir::stablehlo::Constant(
-      builder,
-      mlir::DenseElementsAttr::get(
-          mlir::RankedTensorType::get({num_indices, emb_dim}, acc_elem_type),
-          builder.getOpBuilder().getZeroAttr(acc_elem_type)));
+    mlir::MlirBuilder& builder, mlir::MlirOp grad_weight_init,
+    mlir::MlirOp acc_grad, mlir::MlirOp max_indices, int64_t emb_dim,
+    int64_t padding_idx, mlir::MlirOp zeros_float, mlir::Type acc_elem_type,
+    mlir::Type i64_type) {
+  mlir::MlirOp max_indices_i64 = max_indices;
+  if (GetTensorTypeOrDie(max_indices_i64).getElementType() != i64_type) {
+    max_indices_i64 =
+        mlir::stablehlo::ConvertElementType(max_indices_i64, i64_type);
+  }
   auto d1i = mlir::stablehlo::Iota(
       builder, mlir::RankedTensorType::get({emb_dim}, i64_type), 0);
-  TT_ASSIGN_OR_RETURN(auto d1b, BroadcastIfNeeded(d1i, max_indices));
-  TT_ASSIGN_OR_RETURN(auto mu, Unsqueeze(max_indices, 2));
+  TT_ASSIGN_OR_RETURN(auto d1b, BroadcastIfNeeded(d1i, max_indices_i64));
+  TT_ASSIGN_OR_RETURN(auto mu, Unsqueeze(max_indices_i64, 2));
   TT_ASSIGN_OR_RETURN(auto d1u, Unsqueeze(d1b, 2));
   auto coords = mlir::stablehlo::Concatenate(builder, {mu, d1u}, 2);
   auto neg1_scalar = MakeScalarConstant(builder, -1, i64_type);
   TT_ASSIGN_OR_RETURN(auto neg1_bcst,
-                      BroadcastIfNeeded(neg1_scalar, max_indices));
+                      BroadcastIfNeeded(neg1_scalar, max_indices_i64));
   auto is_v = mlir::stablehlo::Compare(
-      max_indices, neg1_bcst, mlir::stablehlo::ComparisonDirection::GT);
+      max_indices_i64, neg1_bcst, mlir::stablehlo::ComparisonDirection::GT);
+  if (padding_idx >= 0) {
+    auto pad_scalar = MakeScalarConstant(builder, padding_idx, i64_type);
+    TT_ASSIGN_OR_RETURN(auto pad_bcst,
+                        BroadcastIfNeeded(pad_scalar, max_indices_i64));
+    auto not_pad = mlir::stablehlo::Compare(
+        max_indices_i64, pad_bcst, mlir::stablehlo::ComparisonDirection::NE);
+    is_v = mlir::stablehlo::And(is_v, not_pad);
+  }
   TT_ASSIGN_OR_RETURN(auto isv_u, Unsqueeze(is_v, 2));
   TT_ASSIGN_OR_RETURN(auto isv_b, BroadcastIfNeeded(isv_u, coords));
   auto zero_c = mlir::stablehlo::Constant(
@@ -437,8 +526,8 @@ absl::StatusOr<mlir::MlirOp> BuildMaxBagBackward(
   auto safe_updates = mlir::stablehlo::Select(is_v, acc_grad, ag_zero_bcst);
   auto scatter_dims = mlir::stablehlo::ScatterDimensionNumbersAttr::get(
       &builder.getContext(), {}, {0, 1}, {}, {}, {0, 1}, 2);
-  return mlir::stablehlo::Scatter({gi_init}, safe_coords, {safe_updates}, body,
-                                  scatter_dims)[0];
+  return mlir::stablehlo::Scatter({grad_weight_init}, safe_coords,
+                                  {safe_updates}, body, scatter_dims)[0];
 }
 
 absl::StatusOr<mlir::MlirOp> ZeroOutPaddingGradIndices(
@@ -644,6 +733,10 @@ absl::StatusOr<MlirOpResults<4>> BuildEmbeddingBagShlo(
       break;
     }
     case EmbeddingBagMode::kMax: {
+      TT_ASSIGN_OR_RETURN(
+          final_bag_size,
+          BuildBagSize(builder, bag_size_init, scatter_indices, num_indices,
+                       padding_idx, is_padding, i64_type));
       auto neg_inf_scalar =
           MakeScalarConstant(builder, -INFINITY, acc_elem_type);
       TT_ASSIGN_OR_RETURN(auto neg_inf_bcst,
@@ -651,22 +744,30 @@ absl::StatusOr<MlirOpResults<4>> BuildEmbeddingBagShlo(
       TT_ASSIGN_OR_RETURN(
           auto max_res,
           BuildMaxAggregation(builder, gathered, scatter_indices, neg_inf_bcst,
-                              max_indices_init, i64_type, acc_elem_type,
-                              offset2bag));
+                              flattened_indices, padding_idx, is_padding,
+                              i64_type, acc_elem_type, offset2bag));
       output = max_res.output;
       max_indices = max_res.max_indices;
 
-      auto is_neg_inf = mlir::stablehlo::Compare(
-          output, neg_inf_bcst, mlir::stablehlo::ComparisonDirection::EQ);
+      // Zero out empty bags using `final_bag_size == 0` rather than
+      // `output == -INFINITY` so legitimate -inf weights are preserved.
+      auto zero_i64_scalar = MakeScalarConstant(builder, 0, i64_type);
+      TT_ASSIGN_OR_RETURN(auto zero_i64_bag_bcst,
+                          BroadcastIfNeeded(zero_i64_scalar, final_bag_size));
+      auto is_empty_bag =
+          mlir::stablehlo::Compare(final_bag_size, zero_i64_bag_bcst,
+                                   mlir::stablehlo::ComparisonDirection::EQ);
+      TT_ASSIGN_OR_RETURN(auto is_empty_bag_u, Unsqueeze(is_empty_bag, 1));
+      TT_ASSIGN_OR_RETURN(auto is_empty_bag_bcst,
+                          BroadcastIfNeeded(is_empty_bag_u, output));
       auto zero_scalar = MakeScalarConstant(builder, 0.0, acc_elem_type);
       TT_ASSIGN_OR_RETURN(auto zero_bcst,
                           BroadcastIfNeeded(zero_scalar, output));
-      output = mlir::stablehlo::Select(is_neg_inf, zero_bcst, output);
-
-      TT_ASSIGN_OR_RETURN(
-          final_bag_size,
-          BuildBagSize(builder, bag_size_init, scatter_indices, num_indices,
-                       padding_idx, is_padding, i64_type));
+      output = mlir::stablehlo::Select(is_empty_bag_bcst, zero_bcst, output);
+      TT_ASSIGN_OR_RETURN(auto zero_i64_out_bcst,
+                          BroadcastIfNeeded(zero_i64_scalar, max_indices));
+      max_indices = mlir::stablehlo::Select(is_empty_bag_bcst,
+                                            zero_i64_out_bcst, max_indices);
       break;
     }
   }
@@ -727,6 +828,20 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingBagBackwardShlo(
     TT_ASSIGN_OR_RETURN(auto zeros_bcst,
                         BroadcastIfNeeded(zeros_float, acc_grad));
     acc_grad = mlir::stablehlo::Select(bie_b, zeros_bcst, acc_grad);
+
+    // `max_indices` stores vocabulary row indices directly, and PyTorch's MAX
+    // backward (`_embedding_bag_dense_backward_max`) ignores
+    // `scale_grad_by_freq`.
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp grad_weight,
+        BuildMaxBagBackward(builder, grad_weight_init, acc_grad, max_indices,
+                            emb_dim, padding_idx, zeros_float, acc_elem_type,
+                            i64_type));
+    if (needs_upcast) {
+      grad_weight =
+          mlir::stablehlo::ConvertElementType(grad_weight, grad_elem_type);
+    }
+    return grad_weight;
   }
 
   mlir::MlirOp grad_indices;
@@ -746,13 +861,10 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingBagBackwardShlo(
                                               needs_upcast));
       break;
     }
-    case EmbeddingBagMode::kMax: {
-      TT_ASSIGN_OR_RETURN(
-          grad_indices,
-          BuildMaxBagBackward(builder, acc_grad, max_indices, num_indices,
-                              emb_dim, zeros_float, acc_elem_type, i64_type));
-      break;
-    }
+    case EmbeddingBagMode::kMax:
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=Handled by early return above.
+                 error::kInternal)
+             << "EmbeddingBagMode::kMax should have been handled above.";
   }
   TT_ASSIGN_OR_RETURN(
       grad_indices,
