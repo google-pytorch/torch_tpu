@@ -134,7 +134,7 @@ absl::Status ValidateInputBroadcast(const at::Tensor& self,
 absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
     const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2,
     const MaybePromotedScalar& beta, const PromotedScalar& alpha,
-    std::optional<at::ScalarType> out_dtype) {
+    std::optional<at::ScalarType> out_dtype, bool has_activation) {
   const at::ScalarType out_scalar_type = out_dtype.value_or(self.scalar_type());
   TT_RET_CHECK(self.scalar_type() != at::kBool &&
                    mat1.scalar_type() != at::kBool &&
@@ -159,13 +159,14 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(mat1.scalar_type());
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out_scalar_type));
-  TT_RET_CHECK(!self.is_complex() && !mat1.is_complex() && !mat2.is_complex() &&
-                   beta.scalar().type() != at::kComplexFloat &&
-                   beta.scalar().type() != at::kComplexDouble &&
-                   alpha.scalar().type() != at::kComplexFloat &&
-                   alpha.scalar().type() != at::kComplexDouble,
+  TT_RET_CHECK(!has_activation || !IsComplex(out_scalar_type),
                error::kPythonNotImplementedError)
-      << "complex dtypes are not yet supported";
+      << "not implemented for " << ToString(out_scalar_type);
+  TT_RET_CHECK(IsComplex(mat1) ||
+                   (!IsComplex(beta.scalar()) && !IsComplex(alpha.scalar())),
+               error::kInvalidArgument)
+      << "for non-complex input tensors, arguments beta and alpha must not be "
+         "complex numbers";
   TT_RET_CHECK(mat1.dim() == 2, error::kInvalidArgument)
       << "expected mat1 to be a matrix, got " << mat1.dim() << "D tensor";
   TT_RET_CHECK(mat2.dim() == 2, error::kInvalidArgument)
@@ -211,7 +212,8 @@ ReturnType DispatchAddmm(const at::Tensor& self, const at::Tensor& mat1,
                          Dispatch5&& dispatch5) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
                       ValidateAddmmInputsAndGetOutputDtype(
-                          self, mat1, mat2, beta, alpha, out_dtype));
+                          self, mat1, mat2, beta, alpha, out_dtype,
+                          /*has_activation=*/use_gelu.has_value()));
   const at::ScalarType out_scalar_type = out_dtype.value_or(self.scalar_type());
   const at::ScalarType compute_scalar_type = ToAccumulateType(out_scalar_type);
   Dimensions output_dims_vec = {mat1.size(0), mat2.size(1)};
