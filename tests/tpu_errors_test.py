@@ -965,22 +965,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     self.assertEqual(dst.dtype, dtype)
     self.assertEqual(dst.data_ptr(), orig_ptr)
 
-  # Confirmed this test does NOT fail on cpu.
-  @et.why_tpu_only("TODO: support complex dtypes in addmm on TPU.")
-  def test_addmm_on_complex_input(self):
-    complex_val = torch.complex(torch.tensor(1.0), torch.tensor(1.0))
-    complex_val = complex_val.tile((2, 2))
-    complex_val = complex_val.to(et.device())
-
-    input_ = complex_val.clone()
-    mat1 = complex_val.clone()
-    mat2 = complex_val.clone()
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""addmm(): complex dtypes are not yet supported""",
-    ):
-      torch.addmm(input_, mat1, mat2)
-
   @et.why_tpu_only(
       "TPU cummax uses int32 for the indices output. GPU supports larger"
       " indices."

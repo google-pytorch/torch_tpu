@@ -30609,6 +30609,110 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     )
 
   @parameterized.named_parameters(
+      ("complex64", torch.complex64),
+      ("complex128", torch.complex128),
+  )
+  def test_addmm_complex(self, dtype: torch.dtype):
+    """Tests torch.addmm, out=, inplace addmm_, and addmm.dtype on complex."""
+    b_cpu = torch.tensor(
+        [[1.0 + 2.0j, -3.0 + 0.5j], [0.25 - 1.5j, 4.0 + 1.0j]], dtype=dtype
+    )
+    m1_cpu = torch.tensor(
+        [
+            [2.0 - 1.0j, 0.5 + 3.0j, -1.0 + 0.0j],
+            [1.5 + 0.5j, -2.0 + 1.0j, 0.0 - 2.0j],
+        ],
+        dtype=dtype,
+    )
+    m2_cpu = torch.tensor(
+        [
+            [1.0 + 1.0j, -0.5 + 2.0j],
+            [3.0 - 0.5j, 1.0 + 0.0j],
+            [0.5 + 1.5j, -2.0 - 1.0j],
+        ],
+        dtype=dtype,
+    )
+    for beta, alpha in (
+        (1.0, 1.0),
+        (1.0 + 2.0j, 3.0 - 1.0j),
+        (0.0, 2.0 + 1.5j),
+        (0.0 + 0.0j, 1.0 - 0.5j),
+    ):
+      with self.subTest(dtype=dtype, beta=beta, alpha=alpha):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, beta=beta, alpha=alpha: torch.addmm(
+                b_cpu.to(device),
+                m1_cpu.to(device),
+                m2_cpu.to(device),
+                beta=beta,
+                alpha=alpha,
+            )
+        )
+
+        def run_out(device, beta=beta, alpha=alpha):
+          out = torch.empty(2, 2, dtype=dtype, device=device)
+          torch.addmm(
+              b_cpu.to(device),
+              m1_cpu.to(device),
+              m2_cpu.to(device),
+              beta=beta,
+              alpha=alpha,
+              out=out,
+          )
+          return out
+
+        self.assert_close_tpu_vs_cpu(run_out)
+
+        def run_inplace(device, beta=beta, alpha=alpha):
+          b = b_cpu.to(device).clone()
+          b.addmm_(m1_cpu.to(device), m2_cpu.to(device), beta=beta, alpha=alpha)
+          return b
+
+        self.assert_close_tpu_vs_cpu(run_inplace)
+
+    # Verify beta=0 does not propagate NaN from input bias tensor.
+    b_nan = torch.full((2, 2), complex(float("nan"), float("nan")), dtype=dtype)
+    for beta_zero in (0, 0.0, 0.0 + 0.0j):
+      with self.subTest(dtype=dtype, beta_zero=beta_zero):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, beta_zero=beta_zero: torch.addmm(
+                b_nan.to(device),
+                m1_cpu.to(device),
+                m2_cpu.to(device),
+                beta=beta_zero,
+                alpha=2.0 + 1.0j,
+            )
+        )
+
+    # Verify addmm.dtype and addmm.dtype_out with complex out_dtype.
+    expected = torch.addmm(
+        b_cpu, m1_cpu, m2_cpu, beta=1.0 + 0.5j, alpha=2.0 - 1.0j
+    )
+    res = torch.addmm(
+        b_cpu.to("tpu"),
+        m1_cpu.to("tpu"),
+        m2_cpu.to("tpu"),
+        beta=1.0 + 0.5j,
+        alpha=2.0 - 1.0j,
+        out_dtype=dtype,
+    )
+    self.assertEqual(res.dtype, dtype)
+    utils.assert_close(res.cpu(), expected)
+
+    out_dtype_tpu = torch.empty(2, 2, dtype=dtype, device="tpu")
+    torch.addmm(
+        b_cpu.to("tpu"),
+        m1_cpu.to("tpu"),
+        m2_cpu.to("tpu"),
+        beta=1.0 + 0.5j,
+        alpha=2.0 - 1.0j,
+        out_dtype=dtype,
+        out=out_dtype_tpu,
+    )
+    self.assertEqual(out_dtype_tpu.dtype, dtype)
+    utils.assert_close(out_dtype_tpu.cpu(), expected)
+
+  @parameterized.named_parameters(
       ("2d", (4, 6), (2, 6), 1),
       ("3d", (4, 3, 6), (2, 3, 6), 2),
   )

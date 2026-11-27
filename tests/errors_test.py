@@ -4156,6 +4156,48 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           input_, mat1, mat2, beta=1.0, alpha=1.0, use_gelu=False, out=out
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="relu",
+          use_gelu=False,
+          gpu_msg="""clamp is not supported for complex types""",
+      ),
+      dict(
+          testcase_name="gelu",
+          use_gelu=True,
+          gpu_msg=""""GeluCUDAKernelImpl" not implemented for 'ComplexFloat'""",
+      ),
+  )
+  def test__addmm_activation_complex_dtype(self, use_gelu: bool, gpu_msg: str):
+    input_ = torch.ones(2, 2, device=et.device(), dtype=torch.complex64)
+    mat1 = torch.ones(2, 2, device=et.device(), dtype=torch.complex64)
+    mat2 = torch.ones(2, 2, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""addmm_activation(): not implemented for complex64""",
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten._addmm_activation(
+          input_, mat1, mat2, beta=1.0, alpha=1.0, use_gelu=use_gelu
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="complex_alpha", beta=1.0, alpha=1 + 2j),
+      dict(testcase_name="complex_beta", beta=1 + 2j, alpha=1.0),
+  )
+  def test_addmm_complex_scalar_on_real_input(
+      self, beta: float | complex, alpha: float | complex
+  ):
+    input_ = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    mat1 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    mat2 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""addmm(): for non-complex input tensors, arguments beta and alpha must not be complex numbers""",
+        gpu="""value cannot be converted to type float without overflow""",
+    ):
+      torch.addmm(input_, mat1, mat2, beta=beta, alpha=alpha)
+
   def test_empty_strided_size_stride_mismatch(self):
     """Tests that empty_strided fails with expected error when size and stride arrays have different lengths."""
     with et.assert_raises_message(

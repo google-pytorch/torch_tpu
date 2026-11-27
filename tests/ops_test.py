@@ -332,11 +332,13 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 4.5e-3, "atol": 1.2e-3},
     },
     "addmm": {
+        torch.complex64: {"rtol": 1.2e-2},
         torch.float16: {"rtol": 1.5e-2},
         torch.float32: {"rtol": 7.7e-3},
     },
     "addmm.dtype": {
         torch.bfloat16: {"atol": 6.1e-2},
+        torch.complex64: {"rtol": 1.4e-2, "atol": 1.4e-2},
         torch.float16: {"rtol": 2.9e-2, "atol": 9.3e-2},
         torch.float32: {"rtol": 2.8e-2, "atol": 8e-2},
     },
@@ -841,10 +843,12 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float16: {"rtol": 1.4e-3, "atol": 1.2e-3},
     },
     "addmm": {
+        torch.complex64: {"rtol": 1.2e-2},
         torch.float16: {"rtol": 1.4e-2},
         torch.float32: {"rtol": 7.7e-3},
     },
     "addmm.dtype": {
+        torch.complex64: {"rtol": 1.4e-2, "atol": 1.4e-2},
         torch.float16: {"rtol": 5.1e-3, "atol": 2.5e-3},
         torch.float32: {"rtol": 4.6e-3, "atol": 3.8e-3},
     },
@@ -1693,23 +1697,13 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_addmm(self):
     self.do_test_op(
         "addmm",
-        # TODO: XLA doesn't support complex dtypes currently. Fails with:
-        # algebraic_simplifier.cc:584] Check failed: computation->Accept(this)
-        # is OK (UNIMPLEMENTED: Converting from type C128 to type F32 is not
-        # implemented.
         # TODO: make addmm fail for integral dtypes to match GPU.
-        exclude_dtypes=COMPLEX_DTYPES
-        + (
+        exclude_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
         ),
-        # TODO: XLA doesn't support complex dtypes currently. Fails with:
-        # algebraic_simplifier.cc:584] Check failed: computation->Accept(this)
-        # is OK (UNIMPLEMENTED: Converting from type C128 to type F32 is not
-        # implemented.
-        exclude_inplace_dtypes=COMPLEX_DTYPES
-        + (
+        exclude_inplace_dtypes=(
             torch.uint8,
             torch.int8,
             torch.int16,
@@ -1729,9 +1723,8 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_addmm_dtype(self):
     self.do_test_op(
         "addmm.dtype",
-        # TorchTPU's addmm.dtype kernel does not yet support complex or integral
-        # dtypes.
-        exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
+        # TorchTPU's addmm.dtype kernel does not yet support integral dtypes.
+        exclude_dtypes=INTEGRAL_DTYPES,
         # ATen's addmm.dtype overload does not register an autograd derivative.
         check_grad=False,
     )
