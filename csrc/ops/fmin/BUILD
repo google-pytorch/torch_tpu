@@ -30,11 +30,13 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:cache_key",
         "//csrc/common:error_utils",
+        "//csrc/common:to_string",
         "//csrc/ops:binary_aten_kernels",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",

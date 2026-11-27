@@ -6177,6 +6177,74 @@ Supported combinations for non-constant padding:
       torch.atan2(x, y.to(torch.complex64))
 
   @parameterized.named_parameters(
+      {"testcase_name": "fmax", "op_name": "fmax", "op": torch.fmax},
+      {"testcase_name": "fmin", "op_name": "fmin", "op": torch.fmin},
+  )
+  def test_fmax_fmin_complex(self, op_name: str, op: Any):
+    real = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+    # Upstream's complex check switched from TORCH_CHECK (RuntimeError) to
+    # TORCH_CHECK_TYPE (TypeError) in PyTorch 2.15.
+    upstream_err_type = (
+        TypeError if utils.get_torch_version() >= (2, 15) else RuntimeError
+    )
+    for c_dtype, dtype_str in (
+        (torch.complex64, "complex64"),
+        (torch.complex128, "complex128"),
+    ):
+      c = torch.tensor([1.0 + 2.0j, 3.0 + 4.0j], dtype=c_dtype).to(et.device())
+      out = torch.empty(2, dtype=c_dtype, device=et.device())
+      gpu_msg = f"""{op_name} not implemented for complex tensors."""
+
+      with self.subTest(dtype=dtype_str, variant="functional_both"):
+        with et.assert_raises_message(
+            upstream_err_type,
+            tpu=gpu_msg,
+            gpu=gpu_msg,
+        ):
+          op(c, c)
+
+      with self.subTest(dtype=dtype_str, variant="functional_first"):
+        with et.assert_raises_message(
+            upstream_err_type,
+            tpu=gpu_msg,
+            gpu=gpu_msg,
+        ):
+          op(c, real)
+
+      with self.subTest(dtype=dtype_str, variant="functional_second"):
+        with et.assert_raises_message(
+            upstream_err_type,
+            tpu=gpu_msg,
+            gpu=gpu_msg,
+        ):
+          op(real, c)
+
+      out_err_type = RuntimeError if et.is_on_tpu() else upstream_err_type
+      with self.subTest(dtype=dtype_str, variant="out_both"):
+        with et.assert_raises_message(
+            out_err_type,
+            tpu=f"""{op_name}(): expected the dtype of the first argument not to be complex, got {dtype_str}""",
+            gpu=gpu_msg,
+        ):
+          op(c, c, out=out)
+
+      with self.subTest(dtype=dtype_str, variant="out_first"):
+        with et.assert_raises_message(
+            out_err_type,
+            tpu=f"""{op_name}(): expected the dtype of the first argument not to be complex, got {dtype_str}""",
+            gpu=gpu_msg,
+        ):
+          op(c, real, out=out)
+
+      with self.subTest(dtype=dtype_str, variant="out_second"):
+        with et.assert_raises_message(
+            out_err_type,
+            tpu=f"""{op_name}(): expected the dtype of the second argument not to be complex, got {dtype_str}""",
+            gpu=gpu_msg,
+        ):
+          op(real, c, out=out)
+
+  @parameterized.named_parameters(
       {
           "testcase_name": "bitwise_and",
           "op_name": "bitwise_and",

@@ -17,9 +17,12 @@
 #include "csrc/ops/fmax/fmax_aten_kernels.h"
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/ops/binary_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -32,6 +35,17 @@ namespace torch_tpu {
 
 namespace {
 
+absl::Status ValidateInputsNotComplex(const at::Tensor& self,
+                                      const at::Tensor& other) {
+  TT_RET_CHECK(!self.is_complex(), error::kInvalidArgument)
+      << "expected the dtype of the first argument not to be complex, got "
+      << ToString(self.scalar_type());
+  TT_RET_CHECK(!other.is_complex(), error::kInvalidArgument)
+      << "expected the dtype of the second argument not to be complex, got "
+      << ToString(other.scalar_type());
+  return absl::OkStatus();
+}
+
 absl::StatusOr<mlir::MlirOp> BuildFmaxShlo(mlir::MlirOp self,
                                            mlir::MlirOp other) {
   TT_ASSIGN_OR_RETURN((auto [self_, other_]),
@@ -40,15 +54,21 @@ absl::StatusOr<mlir::MlirOp> BuildFmaxShlo(mlir::MlirOp self,
     return mlir::stablehlo::Max(self_, other_);
   }
 
-  mlir::MlirOp self_greater = mlir::stablehlo::Compare(
-      self_, other_, mlir::stablehlo::ComparisonDirection::GT);
+  // `x == x` is false only for NaN.
+  mlir::MlirOp self_not_nan = mlir::stablehlo::Compare(
+      self_, self_, mlir::stablehlo::ComparisonDirection::EQ);
   mlir::MlirOp other_nan = mlir::stablehlo::Compare(
       other_, other_, mlir::stablehlo::ComparisonDirection::NE);
-
-  mlir::MlirOp self_greater_or_other_nan =
-      mlir::stablehlo::Or(self_greater, other_nan);
-
-  return mlir::stablehlo::Select(self_greater_or_other_nan, self_, other_);
+  // Use IEEE-754 TOTALORDER so +0.0 > -0.0; guard with self_not_nan because
+  // TOTALORDER places +NaN above +inf.
+  mlir::MlirOp self_greater = mlir::stablehlo::Compare(
+      self_, other_, mlir::stablehlo::ComparisonDirection::GT,
+      mlir::stablehlo::ComparisonTypeAttr::get(
+          &self_.getContext(), mlir::stablehlo::ComparisonType::TOTALORDER));
+  mlir::MlirOp self_valid_greater =
+      mlir::stablehlo::And(self_not_nan, self_greater);
+  mlir::MlirOp choose_self = mlir::stablehlo::Or(other_nan, self_valid_greater);
+  return mlir::stablehlo::Select(choose_self, self_, other_);
 }
 
 }  // namespace
@@ -56,6 +76,7 @@ absl::StatusOr<mlir::MlirOp> BuildFmaxShlo(mlir::MlirOp self,
 at::Tensor& AtenFmaxOut(const at::Tensor& self, const at::Tensor& other,
                         at::Tensor& out) {
   TT_KERNEL(OpName::kFmaxOut, _, (self, other, out), {
+    TT_THROW_IF_ERROR(ValidateInputsNotComplex(self, other));
     TT_THROW_IF_ERROR(
         BinaryOpOut(self, other, out, BuildFmaxShlo,
                     {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
