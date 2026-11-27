@@ -16025,6 +16025,109 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.named_parameters(
+      ("float32", torch.float32, 1e-4, 1e-5),
+      ("bfloat16", torch.bfloat16, 1e-2, 1e-2),
+      ("float16", torch.float16, 1e-3, 1e-3),
+  )
+  def test_elu_out_empty_and_mismatched_shape_resize(self, dtype, rtol, atol):
+    """Tests that aten.elu.out resizes empty or mismatched-shape out tensors."""
+    for x in [
+        torch.tensor([-2.0, -0.5, 0.0, 1.5], dtype=dtype),
+        torch.tensor([[-1.0, 0.5], [2.0, -0.25]], dtype=dtype),
+        torch.tensor(-0.75, dtype=dtype),
+    ]:
+      for out_shape in [(0,), (5,)]:
+
+        def compute(device, x=x, out_shape=out_shape):
+          out = torch.empty(out_shape, device=device, dtype=dtype)
+          res = torch.ops.aten.elu.out(x.to(device), 1.2, 0.8, 1.5, out=out)
+          self.assertEqual(out.shape, x.shape)
+          self.assertEqual(res.shape, x.shape)
+          return out
+
+        self.assert_close_tpu_vs_cpu(compute, rtol=rtol, atol=atol)
+
+  @parameterized.named_parameters(
+      ("is_result_false", False, 1.2),
+      ("is_result_false_neg_alpha", False, -1.5),
+      ("is_result_true", True, 1.2),
+      ("is_result_true_zero_alpha", True, 0.0),
+  )
+  def test_elu_backward_grad_input_empty_and_broadcast(self, is_result, alpha):
+    """Tests aten.elu_backward.grad_input with empty grad_input and broadcasting."""
+    grad_output = torch.tensor([[-1.0], [2.0]], dtype=torch.float32)
+    self_or_result = torch.tensor([[-1.5, 0.0, 0.75]], dtype=torch.float32)
+
+    def compute(device):
+      grad_in = torch.empty(0, device=device, dtype=torch.float32)
+      res = torch.ops.aten.elu_backward.grad_input(
+          grad_output.to(device),
+          alpha,
+          0.9,
+          1.3,
+          is_result,
+          self_or_result.to(device),
+          grad_input=grad_in,
+      )
+      self.assertEqual(grad_in.shape, (2, 3))
+      self.assertEqual(res.shape, (2, 3))
+      return grad_in
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-4, atol=1e-5)
+
+  @parameterized.named_parameters(
+      ("f32_bf16_default", torch.float32, torch.bfloat16, None, False),
+      ("f32_bf16_is_result", torch.float32, torch.bfloat16, None, True),
+      ("bf16_f32_default", torch.bfloat16, torch.float32, None, False),
+      ("i64_f32_default", torch.int64, torch.float32, None, False),
+      ("bool_f32_default", torch.bool, torch.float32, None, False),
+      (
+          "f32_bf16_out_bf16",
+          torch.float32,
+          torch.bfloat16,
+          torch.bfloat16,
+          False,
+      ),
+      (
+          "f64_f32_out_f32",
+          torch.float64,
+          torch.float32,
+          torch.float32,
+          False,
+      ),
+  )
+  def test_elu_backward_mixed_dtypes_and_out_cast(
+      self, grad_dtype, self_dtype, out_dtype, is_result
+  ):
+    """Tests aten.elu_backward with mixed input dtypes and output dtype casting."""
+    if grad_dtype == torch.bool:
+      grad_output = torch.tensor([True, False, True, True], dtype=grad_dtype)
+    elif grad_dtype == torch.int64:
+      grad_output = torch.tensor([-2, 0, 1, 3], dtype=grad_dtype)
+    else:
+      grad_output = torch.tensor([-1.5, 0.25, 2.0, -0.5], dtype=grad_dtype)
+    self_or_result = torch.tensor([-2.0, -0.25, 0.0, 1.5], dtype=self_dtype)
+
+    def compute(device):
+      g = grad_output.to(device)
+      s = self_or_result.to(device)
+      if out_dtype is None:
+        return torch.ops.aten.elu_backward(g, 1.0, 1.0, 1.0, is_result, s)
+      grad_in = torch.empty(0, device=device, dtype=out_dtype)
+      torch.ops.aten.elu_backward.grad_input(
+          g, 1.0, 1.0, 1.0, is_result, s, grad_input=grad_in
+      )
+      return grad_in
+
+    rtol = (
+        1e-2 if torch.bfloat16 in (grad_dtype, self_dtype, out_dtype) else 1e-4
+    )
+    atol = (
+        1e-2 if torch.bfloat16 in (grad_dtype, self_dtype, out_dtype) else 1e-5
+    )
+    self.assert_close_tpu_vs_cpu(compute, rtol=rtol, atol=atol)
+
   def test_elu_small_negative_input_precision_float32(self):
     """Tests elu, selu and celu in float32 for negative inputs close to 0.
 

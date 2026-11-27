@@ -20,9 +20,15 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -118,11 +124,28 @@ absl::StatusOr<mlir::MlirOp> BuildEluBackwardGradInputShlo(
                                  /*on_false=*/positive_val);
 }
 
-absl::Status ValidateIsFloatingPoint(const at::Tensor& tensor,
+absl::Status ValidateIsFloatingPoint(const at::ScalarType dtype,
                                      const std::string_view name) {
-  TT_RET_CHECK(IsFloatingPoint(tensor), error::kInvalidArgument)
+  TT_RET_CHECK(c10::isFloatingType(dtype), error::kInvalidArgument)
       << "expected the " << name << " dtype to be floating point, got "
-      << ToString(tensor.scalar_type());
+      << ToString(dtype);
+  return absl::OkStatus();
+}
+
+absl::Status ValidateInPlaceBroadcast(const at::Tensor& out,
+                                      const absl::Span<const at::Tensor> inputs,
+                                      const Dimensions& output_dims) {
+  for (const at::Tensor& input : inputs) {
+    if (out.is_alias_of(input)) {
+      TT_RET_CHECK(absl::MakeConstSpan(out.sizes()) == output_dims,
+                   error::kInvalidArgument)
+          << "output with shape " << ToString(out.sizes())
+          << " doesn't match the broadcast shape of the tensor being operated "
+             "on in-place, which has shape "
+          << ToString(output_dims);
+      break;
+    }
+  }
   return absl::OkStatus();
 }
 
@@ -137,7 +160,14 @@ at::Tensor& AtenEluOut(const at::Tensor& input, const at::Scalar& alpha,
   TT_KERNEL(
       OpName::kEluOut, param_keys,
       (input, promoted_alpha, promoted_scale, promoted_input_scale, out), {
-        TT_THROW_IF_ERROR(ValidateIsFloatingPoint(input, /* name= */ "input"));
+        TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+            << "expected the output tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
+        TT_THROW_IF_ERROR(ValidateIsFloatingPoint(input.scalar_type(),
+                                                  /*name=*/"input"));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(input));
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, input.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
 
         const at::ScalarType comp_scalar_type =
             InferComputationDtype(input.scalar_type());
@@ -151,7 +181,7 @@ at::Tensor& AtenEluOut(const at::Tensor& input, const at::Scalar& alpha,
         TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
         TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
-                           InferComputationDtype(out_dtype));
+                           ConvertTo<mlir::ElementType>(comp_scalar_type));
 
         auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
@@ -159,11 +189,12 @@ at::Tensor& AtenEluOut(const at::Tensor& input, const at::Scalar& alpha,
           return BuildEluShlo(input, alpha, scale, input_scale);
         };
 
+        const Dimensions output_shape = CopyIntVector(input.sizes());
         TT_THROW_IF_ERROR(DispatchOpOut<4>(
             std::move(op_builder),
             {input, alpha_tensor, scale_tensor, input_scale_tensor}, out,
             {.out_dtype = out_dtype,
-             .out_dims = CopyIntVector(out.sizes()),
+             .out_dims = output_shape,
              .computation_dtype = computation_dtype,
              .op_param_cache_keys = std::move(param_keys)}));
         return out;
@@ -182,11 +213,33 @@ at::Tensor& AtenEluBackwardGradInput(
       (grad_output, promoted_alpha, promoted_scale, promoted_input_scale,
        is_result, self_or_result, grad_input),
       {
+        TT_CHECK_THROW(!is_result || promoted_alpha.scalar().toDouble() >= 0.0,
+                       error::kInvalidArgument)
+            << "expected alpha to be >= 0 for is_result=true, got "
+            << promoted_alpha.scalar().toDouble();
+        TT_CHECK_THROW(IsPrivateUse1Device(grad_input), error::kInvalidArgument)
+            << "expected the output tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got "
+            << grad_input.device();
+
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_output));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self_or_result));
+        const at::ScalarType promoted_type =
+            at::result_type(grad_output, self_or_result);
         TT_THROW_IF_ERROR(
-            ValidateIsFloatingPoint(grad_output, /* name= */ "grad output"));
+            ValidateIsFloatingPoint(promoted_type, /*name=*/"promoted input"));
+        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, promoted_type,
+                                           /*allow_out_dtype_cast=*/true));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_input));
+
+        TT_ASSIGN_OR_THROW(
+            const Dimensions output_shape,
+            InferSize(grad_output.sizes(), self_or_result.sizes()));
+        TT_THROW_IF_ERROR(ValidateInPlaceBroadcast(
+            grad_input, {grad_output, self_or_result}, output_shape));
 
         const at::ScalarType comp_scalar_type =
-            InferComputationDtype(grad_output.scalar_type());
+            InferComputationDtype(promoted_type);
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
                            promoted_alpha.GetTensor(comp_scalar_type));
         TT_ASSIGN_OR_THROW(const at::Tensor scale_tensor,
@@ -204,11 +257,10 @@ at::Tensor& AtenEluBackwardGradInput(
         };
 
         TT_ASSIGN_OR_THROW(
-            const auto output_dtype,
+            const mlir::ElementType output_dtype,
             ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
         TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
-                           InferComputationDtype(output_dtype));
-        auto output_shape = CopyIntVector(grad_input.sizes());
+                           ConvertTo<mlir::ElementType>(comp_scalar_type));
 
         TT_THROW_IF_ERROR(
             DispatchOpOut<5>(std::move(op_builder),

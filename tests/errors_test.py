@@ -4314,6 +4314,197 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.nn.functional.elu(inp)
 
+  def test_elu_out_invalid_output_dtype(self):
+    inp = torch.ones(2, device=et.device(), dtype=torch.float32)
+    out_int = torch.empty(2, device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu(): expected the output dtype to be float32, got int64""",
+        gpu="""Found dtype Long but expected Float""",
+    ):
+      torch.ops.aten.elu.out(inp, out=out_int)
+
+    out_bf16 = torch.empty(2, device=et.device(), dtype=torch.bfloat16)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu(): expected the output dtype to be float32, got bfloat16""",
+        gpu="""Found dtype BFloat16 but expected Float""",
+    ):
+      torch.ops.aten.elu.out(inp, out=out_bf16)
+
+  def test_elu_out_cpu_output_tensor(self):
+    inp = torch.ones(2, device=et.device(), dtype=torch.float32)
+    out_cpu = torch.empty(2, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.ops.aten.elu.out(inp, out=out_cpu)
+
+  def test_elu_float8_e4m3fn_not_implemented(self):
+    inp = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""elu(): not implemented for float8_e4m3fn""",
+        gpu=""""elu_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.nn.functional.elu(inp)
+
+  @parameterized.named_parameters(
+      ("bool", torch.bool, "bool", "Bool"),
+      ("int64", torch.int64, "int64", "Long"),
+      ("complex64", torch.complex64, "complex64", "ComplexFloat"),
+  )
+  def test_elu_backward_unsupported_dtypes(
+      self, dtype: torch.dtype, tpu_dtype_str: str, gpu_dtype_str: str
+  ):
+    grad_output = torch.ones(4, device=et.device(), dtype=dtype)
+    self_or_result = torch.ones(4, device=et.device(), dtype=dtype)
+    grad_input = torch.empty(4, device=et.device(), dtype=dtype)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu_backward(): expected the promoted input dtype to be"""
+        f""" floating point, got {tpu_dtype_str}""",
+        gpu=f""""elu_backward_cuda" not implemented for '{gpu_dtype_str}'""",
+    ):
+      torch.ops.aten.elu_backward(
+          grad_output, 1.0, 1.0, 1.0, False, self_or_result
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu_backward(): expected the promoted input dtype to be"""
+        f""" floating point, got {tpu_dtype_str}""",
+        gpu=f""""elu_backward_cuda" not implemented for '{gpu_dtype_str}'""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          grad_output,
+          1.0,
+          1.0,
+          1.0,
+          False,
+          self_or_result,
+          grad_input=grad_input,
+      )
+
+  def test_elu_backward_grad_input_negative_alpha_with_is_result(self):
+    grad_output = torch.ones(2, device=et.device(), dtype=torch.float32)
+    result = torch.ones(2, device=et.device(), dtype=torch.float32)
+    grad_input = torch.empty_like(grad_output)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""In-place elu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead.""",
+        gpu="""In-place elu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead.""",
+    ):
+      torch.ops.aten.elu_backward(grad_output, -1.0, 1.0, 1.0, True, result)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu_backward(): expected alpha to be >= 0 for is_result=true, got -1""",
+        gpu="""In-place elu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead.""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          grad_output, -1.0, 1.0, 1.0, True, result, grad_input=grad_input
+      )
+
+  def test_elu_backward_grad_input_cpu_output_tensor(self):
+    grad_output = torch.ones(2, device=et.device(), dtype=torch.float32)
+    self_or_result = torch.ones(2, device=et.device(), dtype=torch.float32)
+    grad_input_cpu = torch.empty(2, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu_backward(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grad_output is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_elu_backward_out_grad_input)""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          grad_output,
+          1.0,
+          1.0,
+          1.0,
+          False,
+          self_or_result,
+          grad_input=grad_input_cpu,
+      )
+
+  def test_elu_backward_grad_input_invalid_output_dtype(self):
+    grad_output = torch.ones(2, device=et.device(), dtype=torch.float32)
+    self_or_result = torch.ones(2, device=et.device(), dtype=torch.float32)
+    grad_input_int = torch.empty(2, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu_backward(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          grad_output,
+          1.0,
+          1.0,
+          1.0,
+          False,
+          self_or_result,
+          grad_input=grad_input_int,
+      )
+
+  def test_elu_backward_grad_input_inplace_broadcast_mismatch(self):
+    grad_output = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    small = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu_backward(): output with shape [1, 2] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 2]""",
+        gpu="""output with shape [1, 2] doesn't match the broadcast shape [2, 2]""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          grad_output, 1.0, 1.0, 1.0, False, small, grad_input=small
+      )
+
+  def test_elu_backward_grad_input_incompatible_shapes(self):
+    grad_output = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    self_or_result = torch.ones(4, 5, device=et.device(), dtype=torch.float32)
+    grad_input = torch.empty(0, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""elu_backward(): the size of tensor a (3) must match the size of tensor b (5) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (3) must match the size of tensor b (5) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          grad_output,
+          1.0,
+          1.0,
+          1.0,
+          False,
+          self_or_result,
+          grad_input=grad_input,
+      )
+
+  def test_elu_backward_grad_input_float8_e4m3fn_not_implemented(self):
+    fp8 = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    f32 = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu="""elu_backward(): not implemented for float8_e4m3fn""",
+        gpu="""Promotion for Float8 Types is not supported, attempted to promote Float8_e4m3fn and Float""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          fp8, 1.0, 1.0, 1.0, False, f32, grad_input=f32
+      )
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""elu_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""elu_backward_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten.elu_backward.grad_input(
+          f32, 1.0, 1.0, 1.0, False, f32, grad_input=fp8
+      )
+
   @parameterized.named_parameters(
       ("complex64", torch.complex64, "complex64", "ComplexFloat"),
       ("int32", torch.int32, "int32", "Int"),

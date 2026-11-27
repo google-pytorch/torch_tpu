@@ -122,7 +122,7 @@ csrc/ops/dynamic/dynamic_slice/dynamic_slice.cc: {remaining: 0, total: 6, infeas
 csrc/ops/dynamic/pad_real_to_static/pad_real_to_static.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/dynamic/set_dimension_logical_size/set_dimension_logical_size.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/ops/einsum/einsum_aten_kernels.cc: {remaining: 0, total: 19, infeasible: 0}
-csrc/ops/elu/elu_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/elu/elu_aten_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/embedding/embedding_aten_kernels.cc: {remaining: 0, total: 13, infeasible: 0}
 csrc/ops/experimental/collectives/collectives_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/experimental/ragged_all_to_all/ragged_all_to_all_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 3}
