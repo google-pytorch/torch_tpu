@@ -6217,17 +6217,26 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""floor_divide(): expected dtype of the first argument to be neither complex nor bool, got complex64""",
+        tpu="""floor_divide(): expected the dtype of the first argument not to be complex, got complex64""",
         gpu=""""div_floor_cuda" not implemented for 'ComplexFloat'""",
     ):
       torch.floor_divide(lhs.to(torch.complex64), rhs)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""floor_divide(): expected dtype of the second argument to be neither complex nor bool, got complex64""",
+        tpu="""floor_divide(): expected the dtype of the second argument not to be complex, got complex64""",
         gpu=""""div_floor_cuda" not implemented for 'ComplexFloat'""",
     ):
       torch.floor_divide(lhs, rhs.to(torch.complex64))
+
+  def test_floor_divide_bool_bool(self):
+    b = torch.tensor([True, True], dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""floor_divide(): expected the promoted dtype of the inputs not to be bool, got bool""",
+        gpu=""""div_floor_cuda" not implemented for 'Bool'""",
+    ):
+      torch.floor_divide(b, b)
 
   def test_atan2_complex(self):
     x = torch.tensor([1.0, 2.0], device=et.device())

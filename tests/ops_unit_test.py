@@ -31440,6 +31440,28 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_floor_divide_and_fmod_mixed_bool_numeric(self):
+    int_cpu = torch.tensor([10, 20], dtype=torch.int64)
+    bool_cpu = torch.tensor([True, True], dtype=torch.bool)
+    bool_mix_cpu = torch.tensor([True, False], dtype=torch.bool)
+
+    utils.assert_close(
+        torch.floor_divide(int_cpu.to("tpu"), bool_cpu.to("tpu")).cpu(),
+        torch.floor_divide(int_cpu, bool_cpu),
+    )
+    utils.assert_close(
+        torch.floor_divide(bool_mix_cpu.to("tpu"), 2).cpu(),
+        torch.floor_divide(bool_mix_cpu, 2),
+    )
+    utils.assert_close(
+        torch.fmod(int_cpu.to("tpu"), bool_cpu.to("tpu")).cpu(),
+        torch.fmod(int_cpu, bool_cpu),
+    )
+    utils.assert_close(
+        torch.fmod(bool_mix_cpu.to("tpu"), 2.0).cpu(),
+        torch.fmod(bool_mix_cpu, 2.0),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
