@@ -137,7 +137,7 @@ csrc/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_gradient_stack_ate
 csrc/ops/experimental/sparse_gather/sparse_gather_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 0}
 csrc/ops/experimental/sparse_iota/sparse_iota_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/experimental/sparse_map_row/sparse_map_row_aten_kernels.cc: {remaining: 0, total: 14, infeasible: 6}
-csrc/ops/exponential/exponential_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/exponential/exponential_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
 csrc/ops/fake_quantize/fused_moving_avg_obs_fq_helper_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/fft/fft_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 2}
 csrc/ops/fill/fill_aten_kernels.cc: {remaining: 0, total: 2, infeasible: 0}
@@ -265,8 +265,8 @@ csrc/ops/tril_indices/tril_indices_aten_kernels.cc: {remaining: 0, total: 1, inf
 csrc/ops/unary.cc: {remaining: 0, total: 3, infeasible: 3}
 csrc/ops/unary_aten_kernels.cc: {remaining: 0, total: 10, infeasible: 0}
 csrc/ops/unfold/unfold_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
-csrc/ops/uniform/uniform.cc: {remaining: 0, total: 1, infeasible: 0}
-csrc/ops/uniform/uniform_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/uniform/uniform.cc: {remaining: 0, total: 1, infeasible: 1}
+csrc/ops/uniform/uniform_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 1}
 csrc/ops/unique/unique_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 0}
 csrc/ops/unique_consecutive/unique_consecutive_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/upsample/upsample_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}

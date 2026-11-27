@@ -858,7 +858,6 @@ _BASE_TEST_EXCLUSIONS: Final[_TestExclusions] = {
             "test_diff": {"dtypes": [torch.complex128]},
             "test_diff_noncontig": {"dtypes": [torch.complex128]},
             "test_dim_function_empty": "*",
-            "test_exponential": "*",
             "test_exponential_no_zero": "*",
             "test_fill_barebones_unsigned": {"dtypes": [torch.uint64]},
             "test_gather_backward_deterministic_path": "*",

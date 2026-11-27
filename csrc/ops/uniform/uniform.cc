@@ -75,7 +75,9 @@ absl::StatusOr<mlir::MlirOp> BitsToUniform(mlir::MlirOp random_bits,
     set_exp_to_bias_mask = MakeConstantLike(random_bits, 0x3C00U);
     random_bits_as_float_type = random_bits_type.clone(op_builder.getF16Type());
   } else {
-    return TT_ERROR(error::kInvalidArgument)
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Callers validate standard
+                      // floating-point dtypes before lowering.
+               error::kInvalidArgument)
            << "expected the float type to be one of float64, float32, "
               "bfloat16, or float16, got "
            << ToString(from_elem_type);

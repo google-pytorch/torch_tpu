@@ -7933,6 +7933,19 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     expected_offset = (n_gen * compute_bits + 127) // 128
     self.assertEqual(gen.get_offset(), expected_offset)
 
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("int32", torch.int32),
+      ("complex64", torch.complex64),
+      ("float8_e4m3fn", torch.float8_e4m3fn),
+  )
+  def test_exponential_empty_tensor(self, dtype: torch.dtype) -> None:
+    """Empty tensors with valid lambd > 0 succeed (matching CPU/CUDA)."""
+    t = torch.empty(0, dtype=dtype, device="tpu")
+    res = t.exponential_(1.0)
+    self.assertEqual(res.shape, (0,))
+    self.assertEqual(res.dtype, dtype)
+
   def test_random_distribution(self):
     for dtype in [
         torch.int32,
@@ -12690,6 +12703,33 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         torch_tpu_result=t.mean().cpu(),
         atol=atol,
     )
+
+  def test_uniform_empty_and_boundary_bounds(self):
+    """Tests empty tensors and valid boundary bounds for uniform_."""
+    t_empty = torch.empty(0, dtype=torch.float32, device="tpu")
+    self.assertEqual(t_empty.uniform_(0.0, 1.0).shape, (0,))
+
+    # Upstream PyTorch/CUDA returns early for empty complex tensors without
+    # checking bounds.
+    t_empty_complex = torch.empty(0, dtype=torch.complex64, device="tpu")
+    self.assertEqual(t_empty_complex.uniform_(5.0, 2.0).shape, (0,))
+
+    # Equal bounds (from == to) are valid and fill with `from`.
+    t_eq = torch.empty(4, dtype=torch.float32, device="tpu").uniform_(2.5, 2.5)
+    self.assert_close(
+        golden_result=torch.full((4,), 2.5, dtype=torch.float32),
+        torch_tpu_result=t_eq.cpu(),
+    )
+
+    # Boundary ranges where to - from == max(dtype) are valid.
+    t_f16_lo = torch.empty(4, dtype=torch.float16, device="tpu").uniform_(
+        -65504.0, 0.0
+    )
+    self.assertTrue(torch.isfinite(t_f16_lo).all().item())
+    t_f16_hi = torch.empty(4, dtype=torch.float16, device="tpu").uniform_(
+        0.0, 65504.0
+    )
+    self.assertTrue(torch.isfinite(t_f16_hi).all().item())
 
   @parameterized.named_parameters(
       ("float32", torch.float32),

@@ -5265,6 +5265,53 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       t_complex.exponential_()
 
+  @parameterized.named_parameters(
+      ("zero", 0.0, "0"),
+      ("negative", -0.5, "-0.5"),
+      ("neg_inf", float("-inf"), "-inf"),
+      ("nan", float("nan"), "nan"),
+  )
+  def test_exponential_invalid_lambd(self, lambd, lambd_str):
+    device = et.device()
+    t = torch.empty((2, 2), device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""exponential_(): expected lambd > 0, got {lambd_str}""",
+        gpu=f"""exponential_ expects lambda > 0.0, but found lambda={lambd_str}""",
+    ):
+      t.exponential_(lambd)
+
+  @parameterized.named_parameters(
+      ("empty_float32_zero", torch.float32, 0.0, "0"),
+      ("empty_float32_negative", torch.float32, -0.5, "-0.5"),
+      ("empty_float32_nan", torch.float32, float("nan"), "nan"),
+      ("empty_int32_zero", torch.int32, 0.0, "0"),
+  )
+  def test_exponential_empty_invalid_lambd(self, dtype, lambd, lambd_str):
+    device = et.device()
+    t = torch.empty(0, device=device, dtype=dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""exponential_(): expected lambd > 0, got {lambd_str}""",
+        gpu=f"""exponential_ expects lambda > 0.0, but found lambda={lambd_str}""",
+    ):
+      t.exponential_(lambd)
+
+  @parameterized.named_parameters(
+      ("float8_e4m3fn", torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+      ("float8_e5m2", torch.float8_e5m2, "float8_e5m2", "Float8_e5m2"),
+  )
+  def test_exponential_low_precision_float_unsupported(
+      self, dtype, tpu_dtype, gpu_dtype
+  ):
+    t = torch.empty(2, device=et.device(), dtype=dtype)
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu=f"""exponential_(): not implemented for {tpu_dtype}""",
+        gpu=f""""exponential_cuda" not implemented for '{gpu_dtype}'""",
+    ):
+      t.exponential_(1.0)
+
   def test_bernoulli_invalid_p(self):
     device = et.device()
     t = torch.ones((2, 2), device=device, dtype=torch.float32)
@@ -10444,12 +10491,258 @@ Note: this function is intended to be used with the output produced by torch.lin
   def test_uniform_float8_unsupported(self):
     t = torch.empty(2, dtype=torch.float8_e4m3fn, device=et.device())
     with et.assert_raises_message(
-        RuntimeError,
-        tpu="""uniform_(): expected the float type to be one of float64, float32, bfloat16, or float16, got f8E4M3FN""",
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu="""uniform_(): not implemented for float8_e4m3fn""",
         gpu=""""check_uniform_bounds" not implemented for 'Float8_e4m3fn'""",
     ):
       t.uniform_()
-      t.cpu()
+
+  def test_uniform_empty_unsupported_dtype(self):
+    t_int = torch.empty(0, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""uniform_(): expected the input dtype to be floating point or complex, got int32""",
+        gpu=""""check_uniform_bounds" not implemented for 'Int'""",
+    ):
+      t_int.uniform_(0.0, 1.0)
+
+    t_fp8 = torch.empty(0, dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu="""uniform_(): not implemented for float8_e4m3fn""",
+        gpu=""""check_uniform_bounds" not implemented for 'Float8_e4m3fn'""",
+    ):
+      t_fp8.uniform_(0.0, 1.0)
+
+  @parameterized.named_parameters(
+      ("float32", (4,), torch.float32),
+      ("empty_float32", (0,), torch.float32),
+      ("complex64", (4,), torch.complex64),
+  )
+  def test_uniform_from_greater_than_to(self, shape, dtype):
+    t = torch.empty(shape, dtype=dtype, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""uniform_(): expected from <= to, got from=5 and to=2""",
+        gpu="""uniform_ expects to return a [from, to) range, but found from=5 > to=2""",
+    ):
+      t.uniform_(5.0, 2.0)
+
+  @parameterized.named_parameters(
+      (
+          "float16_from_oob",
+          (4,),
+          torch.float16,
+          -1e5,
+          1.0,
+          (
+              "uniform_(): expected from to be in [-65504, 65504] for float16,"
+              " got -100000"
+          ),
+          "from is out of bounds for c10::Half",
+      ),
+      (
+          "float16_to_oob",
+          (4,),
+          torch.float16,
+          0.0,
+          1e5,
+          (
+              "uniform_(): expected to to be in [-65504, 65504] for float16,"
+              " got 100000"
+          ),
+          "to is out of bounds for c10::Half",
+      ),
+      (
+          "empty_float16_from_oob",
+          (0,),
+          torch.float16,
+          -1e5,
+          1e5,
+          (
+              "uniform_(): expected from to be in [-65504, 65504] for float16,"
+              " got -100000"
+          ),
+          "from is out of bounds for c10::Half",
+      ),
+      (
+          "float32_from_nan",
+          (4,),
+          torch.float32,
+          float("nan"),
+          1.0,
+          (
+              "uniform_(): expected from to be in [-3.40282e+38, 3.40282e+38]"
+              " for float32, got nan"
+          ),
+          "from is out of bounds for float",
+      ),
+      (
+          "float32_to_nan",
+          (4,),
+          torch.float32,
+          0.0,
+          float("nan"),
+          (
+              "uniform_(): expected to to be in [-3.40282e+38, 3.40282e+38] for"
+              " float32, got nan"
+          ),
+          "to is out of bounds for float",
+      ),
+      (
+          "float32_from_neg_inf",
+          (4,),
+          torch.float32,
+          float("-inf"),
+          1.0,
+          (
+              "uniform_(): expected from to be in [-3.40282e+38, 3.40282e+38]"
+              " for float32, got -inf"
+          ),
+          "from is out of bounds for float",
+      ),
+      (
+          "float32_to_pos_inf",
+          (4,),
+          torch.float32,
+          0.0,
+          float("inf"),
+          (
+              "uniform_(): expected to to be in [-3.40282e+38, 3.40282e+38] for"
+              " float32, got inf"
+          ),
+          "to is out of bounds for float",
+      ),
+      (
+          "complex64_to_pos_inf",
+          (4,),
+          torch.complex64,
+          0.0,
+          float("inf"),
+          (
+              "uniform_(): expected to to be in [-3.40282e+38, 3.40282e+38] for"
+              " float32, got inf"
+          ),
+          "to is out of bounds for float",
+      ),
+  )
+  def test_uniform_bounds_out_of_range(
+      self, shape, dtype, lo, hi, tpu_msg, gpu_msg
+  ):
+    t = torch.empty(shape, dtype=dtype, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_msg}""",
+        gpu=f"""{gpu_msg}""",
+    ):
+      t.uniform_(lo, hi)
+
+  @parameterized.named_parameters(
+      (
+          "float32",
+          (4,),
+          torch.float32,
+          -3e38,
+          3e38,
+          (
+              "uniform_(): expected to - from <= 3.40282e+38 for float32, got"
+              " to=3e+38 and from=-3e+38"
+          ),
+          (
+              "uniform_ expects to-from <= std::numeric_limits<Float>::max(),"
+              " but found to=3e+38 and from=-3e+38 which result in to-from to"
+              " exceed the limit"
+          ),
+      ),
+      (
+          "empty_float32",
+          (0,),
+          torch.float32,
+          -3e38,
+          3e38,
+          (
+              "uniform_(): expected to - from <= 3.40282e+38 for float32, got"
+              " to=3e+38 and from=-3e+38"
+          ),
+          (
+              "uniform_ expects to-from <= std::numeric_limits<Float>::max(),"
+              " but found to=3e+38 and from=-3e+38 which result in to-from to"
+              " exceed the limit"
+          ),
+      ),
+      (
+          "float16",
+          (4,),
+          torch.float16,
+          -40000.0,
+          40000.0,
+          (
+              "uniform_(): expected to - from <= 65504 for float16, got"
+              " to=40000 and from=-40000"
+          ),
+          (
+              "uniform_ expects to-from <= std::numeric_limits<Half>::max(),"
+              " but found to=40000 and from=-40000 which result in to-from to"
+              " exceed the limit"
+          ),
+      ),
+      (
+          "bfloat16",
+          (4,),
+          torch.bfloat16,
+          -2e38,
+          2e38,
+          (
+              "uniform_(): expected to - from <= 3.38953e+38 for bfloat16, got"
+              " to=2e+38 and from=-2e+38"
+          ),
+          (
+              "uniform_ expects to-from <="
+              " std::numeric_limits<BFloat16>::max(), but found to=2e+38 and"
+              " from=-2e+38 which result in to-from to exceed the limit"
+          ),
+      ),
+      (
+          "float64",
+          (4,),
+          torch.float64,
+          -1e308,
+          1e308,
+          (
+              "uniform_(): expected to - from <= 1.79769e+308 for float64, got"
+              " to=1e+308 and from=-1e+308"
+          ),
+          (
+              "uniform_ expects to-from <= std::numeric_limits<Double>::max(),"
+              " but found to=1e+308 and from=-1e+308 which result in to-from to"
+              " exceed the limit"
+          ),
+      ),
+      (
+          "complex64",
+          (4,),
+          torch.complex64,
+          -3e38,
+          3e38,
+          (
+              "uniform_(): expected to - from <= 3.40282e+38 for float32, got"
+              " to=3e+38 and from=-3e+38"
+          ),
+          (
+              "uniform_ expects to-from <= std::numeric_limits<Float>::max(),"
+              " but found to=3e+38 and from=-3e+38 which result in to-from to"
+              " exceed the limit"
+          ),
+      ),
+  )
+  def test_uniform_range_overflow(self, shape, dtype, lo, hi, tpu_msg, gpu_msg):
+    t = torch.empty(shape, dtype=dtype, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_msg}""",
+        gpu=f"""{gpu_msg}""",
+    ):
+      t.uniform_(lo, hi)
 
   def test_linalg_inv_ex_1d(self):
     a = torch.ones(5, device=et.device())

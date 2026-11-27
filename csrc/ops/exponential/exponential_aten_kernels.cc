@@ -119,20 +119,39 @@ NAryMlirOpBuilder<2, 1> GetExponentialFunctional(
   };
 }
 
+absl::Status ValidateExponentialLambda(const double lambd) {
+  TT_RET_CHECK(lambd > 0.0, error::kInvalidArgument)
+      << "expected lambd > 0, got " << ToString(lambd);
+  return absl::OkStatus();
+}
+
+at::Tensor& AtenExponentialEmpty_(at::Tensor& self, const double lambd,
+                                  std::optional<at::Generator> generator) {
+  TT_KERNEL(OpName::kExponential_, _,
+            (self, IgnoreInCacheKey(lambd, "Empty tensor early return"),
+             IgnoreInCacheKey(generator, "Empty tensor early return")),
+            {
+              TT_THROW_IF_ERROR(ValidateExponentialLambda(lambd));
+              return self;
+            });
+}
+
 }  // namespace
 
 at::Tensor& AtenExponential_(at::Tensor& self, double lambd,
                              std::optional<at::Generator> generator) {
+  if (self.numel() == 0) {
+    return AtenExponentialEmpty_(self, lambd, std::move(generator));
+  }
   PromotedScalar promoted_lambd = PromoteScalar(at::Scalar(lambd));
   TT_KERNEL(
       OpName::kExponential_, param_keys, (self, promoted_lambd, generator), {
-        if (self.numel() == 0) {
-          return self;
-        }
+        TT_THROW_IF_ERROR(ValidateExponentialLambda(lambd));
         TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
             << "expected input tensor dtype to be a floating-point real type, "
                "got "
             << ToString(self.scalar_type());
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self));
 
         TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));

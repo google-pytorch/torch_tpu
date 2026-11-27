@@ -16,6 +16,7 @@
 
 #include "csrc/ops/uniform/uniform_aten_kernels.h"
 
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -24,6 +25,7 @@
 #include "ATen/core/Generator.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -40,6 +42,9 @@
 #include "csrc/ops/view/view_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
+#include "torch/headeronly/util/BFloat16.h"
+#include "torch/headeronly/util/Half.h"
 
 namespace torch_tpu {
 
@@ -53,12 +58,72 @@ NAryMlirOpBuilder<1, 1> GetUniformFunctional(Dimensions dims,
   };
 }
 
+struct FloatBounds {
+  double min;
+  double max;
+};
+
+absl::StatusOr<FloatBounds> GetFloatBounds(const at::ScalarType dtype) {
+  switch (dtype) {
+    case at::ScalarType::Half:
+      return FloatBounds{
+          .min = static_cast<double>(std::numeric_limits<c10::Half>::lowest()),
+          .max = static_cast<double>(std::numeric_limits<c10::Half>::max()),
+      };
+    case at::ScalarType::BFloat16:
+      return FloatBounds{
+          .min =
+              static_cast<double>(std::numeric_limits<c10::BFloat16>::lowest()),
+          .max = static_cast<double>(std::numeric_limits<c10::BFloat16>::max()),
+      };
+    case at::ScalarType::Float:
+      return FloatBounds{
+          .min = static_cast<double>(std::numeric_limits<float>::lowest()),
+          .max = static_cast<double>(std::numeric_limits<float>::max()),
+      };
+    case at::ScalarType::Double:
+      return FloatBounds{
+          .min = std::numeric_limits<double>::lowest(),
+          .max = std::numeric_limits<double>::max(),
+      };
+    default:
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=Caller validates standard
+                        // floating-point dtypes before querying bounds.
+                 error::kInvalidArgument)
+             << "expected the input dtype to be floating point or complex, got "
+             << ToString(dtype);
+  }
+}
+
 absl::Status ValidateUniformPreconditions(const at::Tensor& self) {
   TT_RET_CHECK(IsFloatingPoint(self) || IsComplex(self),
                error::kInvalidArgument)
       << "expected the input dtype to be floating point or complex, got "
       << ToString(self.scalar_type());
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(self));
 
+  return absl::OkStatus();
+}
+
+absl::Status ValidateUniformBounds(const at::ScalarType real_dtype,
+                                   const double from, const double to) {
+  TT_ASSIGN_OR_RETURN(const FloatBounds bounds, GetFloatBounds(real_dtype));
+  TT_RET_CHECK(from >= bounds.min && from <= bounds.max,
+               error::kInvalidArgument)
+      << "expected from to be in [" << ToString(bounds.min) << ", "
+      << ToString(bounds.max) << "] for " << ToString(real_dtype) << ", got "
+      << ToString(from);
+  TT_RET_CHECK(to >= bounds.min && to <= bounds.max, error::kInvalidArgument)
+      << "expected to to be in [" << ToString(bounds.min) << ", "
+      << ToString(bounds.max) << "] for " << ToString(real_dtype) << ", got "
+      << ToString(to);
+  TT_RET_CHECK(from <= to, error::kInvalidArgument)
+      << "expected from <= to, got from=" << ToString(from)
+      << " and to=" << ToString(to);
+  TT_RET_CHECK((to - from) <= bounds.max, error::kInvalidArgument)
+      << "expected to - from <= " << ToString(bounds.max) << " for "
+      << ToString(real_dtype) << ", got to=" << ToString(to)
+      << " and from=" << ToString(from);
   return absl::OkStatus();
 }
 
@@ -67,10 +132,17 @@ absl::Status ValidateUniformPreconditions(const at::Tensor& self) {
 at::Tensor& AtenUniform_(at::Tensor& self, double from, double to,
                          std::optional<at::Generator> generator) {
   TT_KERNEL(OpName::kUniform_, param_keys, (self, from, to, generator), {
-    if (self.numel() == 0) {
+    // Match upstream PyTorch/CUDA, which skips bounds validation on empty
+    // complex tensors while still validating bounds on non-complex empty ones.
+    if (self.is_complex() && self.numel() == 0) {
       return self;
     }
     TT_THROW_IF_ERROR(ValidateUniformPreconditions(self));
+    const at::ScalarType real_dtype = c10::toRealValueType(self.scalar_type());
+    TT_THROW_IF_ERROR(ValidateUniformBounds(real_dtype, from, to));
+    if (self.numel() == 0) {
+      return self;
+    }
     at::Tensor self_real = self.is_complex() ? AtenViewAsReal(self) : self;
 
     TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
