@@ -18657,6 +18657,83 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  def test_tril_triu_extreme_diagonal(self):
+    diagonals = (
+        (1 << 63) - 1,
+        (1 << 63) - 2,
+        -(1 << 63),
+        -(1 << 63) + 1,
+    )
+    shapes = ((3, 3), (3, 5), (2, 3, 4))
+    for op in (torch.tril, torch.triu):
+      for shape in shapes:
+        x_cpu = torch.arange(
+            1, math.prod(shape) + 1, dtype=torch.float32
+        ).reshape(shape)
+        for diagonal in diagonals:
+          with self.subTest(op=op.__name__, shape=shape, diagonal=diagonal):
+            self.assert_close_tpu_vs_cpu(
+                lambda device, op=op, x_cpu=x_cpu, diagonal=diagonal: op(
+                    x_cpu.to(device), diagonal=diagonal
+                )
+            )
+            out_cpu = torch.empty(0, dtype=x_cpu.dtype)
+            op(x_cpu, diagonal=diagonal, out=out_cpu)
+            out_tpu = torch.empty(0, dtype=x_cpu.dtype, device="tpu")
+            op(x_cpu.to("tpu"), diagonal=diagonal, out=out_tpu)
+            utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+
+  def test_tril_indices_extreme_offset(self):
+    offsets = (
+        (1 << 63) - 1,
+        (1 << 63) - 2,
+        -(1 << 63),
+        -(1 << 63) + 1,
+    )
+    shapes = ((4, 4), (3, 5), (5, 3), (0, 4), (4, 0))
+    for row, col in shapes:
+      for offset in offsets:
+        for dtype in (torch.int64, torch.int32):
+          with self.subTest(row=row, col=col, offset=offset, dtype=dtype):
+            # Reference via CPU torch.tril (which clamps the diagonal) because
+            # PyTorch CPU's get_tril_size overflows int64 on offsets near
+            # INT64_MAX.
+            expected = (
+                torch.tril(
+                    torch.ones((row, col), dtype=torch.bool), diagonal=offset
+                )
+                .nonzero()
+                .T.to(dtype)
+            )
+            actual = torch.tril_indices(
+                row, col, offset=offset, dtype=dtype, device="tpu"
+            ).cpu()
+            utils.assert_close(actual=actual, expected=expected)
+
+    # Also verify direct TPU-vs-CPU parity for non-overflowing negative offset.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.tril_indices(
+            4, 4, offset=-(1 << 63) + 1, device=device
+        )
+    )
+
+  def test_tril_triu_out_insufficient_dims_eager(self):
+    for op, diagonal in ((torch.triu, 1), (torch.tril, 0)):
+      for shape in ((), (3,)):
+        with self.subTest(op=op.__name__, shape=shape):
+          t = torch.ones(shape, dtype=torch.float32, device="tpu")
+          out = torch.empty((2, 2), dtype=torch.float32, device="tpu")
+          with execution_mode.set_eager_mode(
+              execution_mode.EagerMode.DEFER_AND_FUSE
+          ):
+            with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifies eager DEFER_AND_FUSE validation without mutating out.
+                RuntimeError,
+                rf"^{op.__name__}\(\): expected input to have at least 2"
+                rf" dimensions, got {len(shape)}(?:\n|$)",
+            ):
+              op(t, diagonal, out=out)
+          self.assertEqual(out.shape, (2, 2))
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

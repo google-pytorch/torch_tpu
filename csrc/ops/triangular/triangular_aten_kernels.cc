@@ -55,38 +55,43 @@ namespace stablehlo = mlir::stablehlo;
 //   A boolean mask tensor matching the shape of `input_op`.
 // The mask is constructed as follows for a matrix with last two dimensions
 // [m, n]:
-//   1. Create a coordinate tensor a matching `input_op`'s shape containing the
-//      column indices 0, 1, ..., n-1 along the last dimension.
-//   2. Create a coordinate tensor b matching `input_op`'s shape containing the
-//      row indices 0, 1, ..., m-1 along the second-to-last dimension.
-//   3. Add the diagonal offset to the row indices in b.
-//   4. Compare the values in the (b + diagonal) and a tensors using '<=' for
-//      the upper triangle and '>=' for the lower triangle.
+//   1. Create a coordinate tensor `col` matching `input_op`'s shape containing
+//      the column indices 0, 1, ..., n-1 along the last dimension.
+//   2. Create a coordinate tensor `row` matching `input_op`'s shape containing
+//      the row indices 0, 1, ..., m-1 along the second-to-last dimension.
+//   3. Compute `col - row`, which lies in [-(m - 1), n - 1] and avoids signed
+//      int64 overflow for extreme `diagonal` values near INT64_MAX/INT64_MIN.
+//   4. Compare `(col - row)` against `diagonal` using '>=' for the upper
+//      triangle and '<=' for the lower triangle.
 //   For a matrix of shape [3, 2], diagonal = 0, the upper-triangle mask is
 //   constructed as:
-//     [[0, 0],       [[0, 1],         [[1, 1],
-//      [1, 1],  <=    [0, 1],    =     [0, 1],
-//      [2, 2]]        [0, 1]]          [0, 0]]
-mlir::MlirOp TriangularMask(mlir::MlirOp input_op, int64_t diagonal,
-                            TriangleType triangle_type) {
+//     [[ 0,  1],       [[0, 0],         [[1, 1],
+//      [-1,  0],  >=    [0, 0],    =     [0, 1],
+//      [-2, -1]]        [0, 0]]          [0, 0]]
+mlir::MlirOp TriangularMask(mlir::MlirOp input_op, const int64_t diagonal,
+                            const TriangleType triangle_type) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   const int64_t n_dims = input_type.getRank();
-  auto mlir_element_type = mlir::ElementType::I64;
-  mlir::MlirOp a = stablehlo::IotaLike(input_op, n_dims - 1, mlir_element_type);
-  mlir::MlirOp b = stablehlo::IotaLike(input_op, n_dims - 2, mlir_element_type);
-  mlir::MlirOp diagonal_shlo_broadcast = MakeConstantLike(b, diagonal);
-  mlir::MlirOp b_plus_diagonal = stablehlo::Add(b, diagonal_shlo_broadcast);
-  auto comparison_direction = triangle_type == TriangleType::kUpper
-                                  ? stablehlo::ComparisonDirection::LE
-                                  : stablehlo::ComparisonDirection::GE;
-  return stablehlo::Compare(b_plus_diagonal, a, comparison_direction);
+  const auto mlir_element_type = mlir::ElementType::I64;
+  mlir::MlirOp col =
+      stablehlo::IotaLike(input_op, n_dims - 1, mlir_element_type);
+  mlir::MlirOp row =
+      stablehlo::IotaLike(input_op, n_dims - 2, mlir_element_type);
+  mlir::MlirOp col_minus_row = stablehlo::Subtract(col, row);
+  mlir::MlirOp diagonal_shlo_broadcast =
+      MakeConstantLike(col_minus_row, diagonal);
+  const auto comparison_direction = triangle_type == TriangleType::kUpper
+                                        ? stablehlo::ComparisonDirection::GE
+                                        : stablehlo::ComparisonDirection::LE;
+  return stablehlo::Compare(col_minus_row, diagonal_shlo_broadcast,
+                            comparison_direction);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildTriangularShlo(
     const int64_t diagonal, const TriangleType triangle_type,
     mlir::MlirOp input_op) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=pytorch catches this error first.
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=checked by AtenTriuOut/AtenTrilOut.
       input_type.getRank() >= 2, error::kInvalidArgument)
       << "input shape must have at least 2 dimensions, got rank "
       << input_type.getRank();
@@ -101,6 +106,8 @@ absl::StatusOr<mlir::MlirOp> BuildTriangularShlo(
 at::Tensor& AtenTriuOut(const at::Tensor& self, int64_t diagonal,
                         at::Tensor& out) {
   TT_KERNEL(OpName::kTriuOut, param_keys, (self, diagonal, out), {
+    TT_CHECK_THROW(self.dim() >= 2, error::kInvalidArgument)
+        << "expected input to have at least 2 dimensions, got " << self.dim();
     TT_THROW_IF_ERROR(UnaryOpOut(
         self, out,
         absl::bind_front(BuildTriangularShlo, diagonal, TriangleType::kUpper),
@@ -113,6 +120,8 @@ at::Tensor& AtenTriuOut(const at::Tensor& self, int64_t diagonal,
 at::Tensor& AtenTrilOut(const at::Tensor& self, int64_t diagonal,
                         at::Tensor& out) {
   TT_KERNEL(OpName::kTrilOut, param_keys, (self, diagonal, out), {
+    TT_CHECK_THROW(self.dim() >= 2, error::kInvalidArgument)
+        << "expected input to have at least 2 dimensions, got " << self.dim();
     TT_THROW_IF_ERROR(UnaryOpOut(
         self, out,
         absl::bind_front(BuildTriangularShlo, diagonal, TriangleType::kLower),
