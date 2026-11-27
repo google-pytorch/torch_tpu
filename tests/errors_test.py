@@ -3090,6 +3090,17 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.view_as_real(t)
 
+  def test_view_as_real_conjugated(self):
+    t = torch.tensor(
+        [1.0 + 2.0j], dtype=torch.complex64, device=et.device()
+    ).conj()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""view_as_real(): unresolved conjugated tensors are not supported; call resolve_conj() first""",
+        gpu="""view_as_real doesn't work on unresolved conjugated tensors.  To resolve the conjugate tensor so you can view it as real, use self.resolve_conj(); however, be warned that the resulting tensor will NOT alias the original.""",
+    ):
+      torch.view_as_real(t)
+
   def test_select_index_out_of_bounds(self):
     """Select function fails when index is out of bounds."""
     t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)

@@ -118,15 +118,20 @@ std::string GetInvalidDimensionIndexStr(absl::Span<const int64_t> sizes) {
       /* to_value= */ [sizes](const int64_t i) { return sizes[i]; });
 }
 
-std::string DropLastAndGetOddStridesStr(absl::Span<const int64_t> strides) {
+std::string DropLastAndGetOddStridesStr(absl::Span<const int64_t> sizes,
+                                        absl::Span<const int64_t> strides) {
   // Drop last element.
+  sizes.remove_suffix(1);
   strides.remove_suffix(1);
 
   return FilterIndicesAndBuildErrorStr(
       strides.size(),
       /* singular= */ "odd stride",
       /* plural= */ "odd strides",
-      /* pred= */ [strides](const int64_t i) { return strides[i] % 2 != 0; },
+      /* pred= */
+      [sizes, strides](const int64_t i) {
+        return sizes[i] != 1 && strides[i] % 2 != 0;
+      },
       /* to_value= */ [strides](const int64_t i) { return strides[i]; });
 }
 
@@ -270,6 +275,9 @@ at::Tensor AtenView(const at::Tensor& self, c10::SymIntArrayRef size_sym) {
 
 at::Tensor AtenViewAsReal(const at::Tensor& self) {
   TT_KERNEL(OpName::kViewAsReal, _, (self), {
+    TT_CHECK_THROW(!self.is_conj(), error::kInvalidArgument)
+        << "unresolved conjugated tensors are not supported; call "
+           "resolve_conj() first";
     TT_CHECK_THROW(IsComplex(self), error::kInvalidArgument)
         << "expected the input dtype to be complex, got "
         << ToString(self.scalar_type());
@@ -288,8 +296,8 @@ at::Tensor AtenViewAsReal(const at::Tensor& self) {
 
     c10::Storage storage_copy = self.storage();
     at::Tensor tensor(c10::make_intrusive<c10::TensorImpl>(
-        std::move(storage_copy),
-        c10::DispatchKeySet(c10::DispatchKey::PrivateUse1), output_type_meta));
+        c10::TensorImpl::VIEW, std::move(storage_copy), self.key_set(),
+        output_type_meta));
     tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
         output_dims, output_strides, output_storage_offset);
     return tensor;
@@ -318,15 +326,20 @@ at::Tensor AtenViewAsComplex(const at::Tensor& self) {
            "be 1, got "
         << self.stride(-1);
 
+    const absl::Span<const int64_t> sizes = self.sizes();
     const absl::Span<const int64_t> strides = self.strides();
 
-    TT_CHECK_THROW(
-        absl::c_all_of(strides.first(strides.size() - 1),
-                       [](int64_t stride) { return stride % 2 == 0; }),
-        error::kInvalidArgument)
+    bool has_invalid_odd_stride = false;
+    for (size_t i = 0; i + 1 < strides.size(); ++i) {
+      if (sizes[i] != 1 && strides[i] % 2 != 0) {
+        has_invalid_odd_stride = true;
+        break;
+      }
+    }
+    TT_CHECK_THROW(!has_invalid_odd_stride, error::kInvalidArgument)
         << "expected the input strides " << ToString(strides)
         << " to be even numbers (except in the last dimension), got "
-        << DropLastAndGetOddStridesStr(strides);
+        << DropLastAndGetOddStridesStr(sizes, strides);
 
     TT_CHECK_THROW(self.storage_offset() % 2 == 0, error::kInvalidArgument)
         << "expected the storage offset to be divisible by 2, got "
@@ -345,8 +358,8 @@ at::Tensor AtenViewAsComplex(const at::Tensor& self) {
 
     c10::Storage storage_copy = self.storage();
     at::Tensor tensor(c10::make_intrusive<c10::TensorImpl>(
-        std::move(storage_copy),
-        c10::DispatchKeySet(c10::DispatchKey::PrivateUse1), output_type_meta));
+        c10::TensorImpl::VIEW, std::move(storage_copy), self.key_set(),
+        output_type_meta));
     tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
         output_dims, output_strides, output_storage_offset);
     return tensor;

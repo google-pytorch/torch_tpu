@@ -31440,6 +31440,31 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  @parameterized.named_parameters(
+      ("2d_singleton_dim0", (1, 2), (3, 1)),
+      ("3d_singleton_dim1", (2, 1, 2), (4, 3, 1)),
+  )
+  def test_view_as_complex_size_one_odd_stride_and_is_view(
+      self, sizes, strides
+  ):
+    base_cpu = torch.arange(8, dtype=torch.float32)
+    base_tpu = base_cpu.to("tpu")
+
+    cpu_view = torch.view_as_complex(base_cpu.as_strided(sizes, strides))
+    tpu_view = torch.view_as_complex(base_tpu.as_strided(sizes, strides))
+    self.assertEqual(tpu_view.shape, cpu_view.shape)
+    self.assertEqual(tpu_view.stride(), cpu_view.stride())
+    self.assertTrue(tpu_view._is_view())
+    utils.assert_close(tpu_view.cpu(), cpu_view)
+
+  def test_view_as_real_is_view(self):
+    base_cpu = torch.arange(8, dtype=torch.float32)
+    base_tpu = base_cpu.to("tpu")
+
+    real_view = torch.view_as_real(torch.view_as_complex(base_tpu.view(4, 2)))
+    self.assertTrue(real_view._is_view())
+    utils.assert_close(real_view.cpu(), base_cpu.view(4, 2))
+
 
 if __name__ == "__main__":
   absltest.main()
