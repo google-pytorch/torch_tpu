@@ -21378,6 +21378,166 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
           grad_out, result, -0.1, True, grad_input=grad_in
       )
 
+  def test_leaky_relu_out_dtype_mismatch(self):
+    inp = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+    out = torch.empty((2, 2), dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu(): expected the output dtype to be float32, got bfloat16""",
+        gpu="""Found dtype BFloat16 but expected Float""",
+    ):
+      torch.ops.aten.leaky_relu.out(inp, 0.01, out=out)
+
+  def test_leaky_relu_out_device_mismatch(self):
+    inp = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+    out_cpu = torch.empty((2, 2), dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.ops.aten.leaky_relu.out(inp, 0.01, out=out_cpu)
+
+    inp_cpu = torch.ones((2, 2), dtype=torch.float32, device="cpu")
+    out_dev = torch.empty((2, 2), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu(): expected self tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.ops.aten.leaky_relu.out(inp_cpu, 0.01, out=out_dev)
+
+  def test_leaky_relu_backward_validation_errors(self):
+    grad_out = torch.ones((2, 3), dtype=torch.float32, device=et.device())
+    self_t = torch.ones((2, 3), dtype=torch.float32, device=et.device())
+    out_int = torch.empty((2, 3), dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, self_t, 0.01, False, grad_input=out_int
+      )
+
+    out_cpu = torch.empty((2, 3), dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): expected grad_input tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grad_output is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_leaky_relu_backward_out_grad_input)""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, self_t, 0.01, False, grad_input=out_cpu
+      )
+
+    bad_self = torch.ones((2, 4), dtype=torch.float32, device=et.device())
+    grad_in = torch.empty((2, 3), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.leaky_relu_backward(grad_out, bad_self, 0.01, False)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): the size of tensor a (3) must match the size of tensor b (4) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, bad_self, 0.01, False, grad_input=grad_in
+      )
+
+    small_grad = torch.ones((1, 3), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          small_grad, self_t, 0.01, False, grad_input=small_grad
+      )
+
+    small_self = torch.ones((1, 3), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, small_self, 0.01, False, grad_input=small_self
+      )
+
+  def test_leaky_relu_backward_input_device_mismatch(self):
+    on_device = torch.ones((2, 3), dtype=torch.float32, device=et.device())
+    on_cpu = torch.ones((2, 3), dtype=torch.float32, device="cpu")
+    grad_in = torch.empty((2, 3), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): expected grad_output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grad_output is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_leaky_relu_backward_out_grad_input)""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          on_cpu, on_device, 0.01, False, grad_input=grad_in
+      )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): expected self_or_result tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_leaky_relu_backward_out_grad_input)""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          on_device, on_cpu, 0.01, False, grad_input=grad_in
+      )
+
+  def test_leaky_relu_low_precision_float(self):
+    fp8 = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""leaky_relu(): not implemented for float8_e4m3fn""",
+        gpu=""""leaky_relu_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.nn.functional.leaky_relu(fp8)
+
+    inp = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu(): expected the output dtype to be float32, got float8_e4m3fn""",
+        gpu="""Found dtype Float8_e4m3fn but expected Float""",
+    ):
+      torch.ops.aten.leaky_relu.out(inp, 0.01, out=fp8)
+
+  def test_leaky_relu_backward_low_precision_float_input(self):
+    fp8 = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""leaky_relu_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""leaky_relu_backward_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten.leaky_relu_backward(fp8, fp8, 0.01, False)
+
+    grad_out = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+    grad_in = torch.empty((2, 2), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""leaky_relu_backward(): not implemented for float8_e4m3fn""",
+        gpu="""Promotion for Float8 Types is not supported, attempted to promote Float8_e4m3fn and Float""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, fp8, 0.01, False, grad_input=grad_in
+      )
+
+  def test_leaky_relu_backward_low_precision_float_grad_input(self):
+    grad_out = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+    self_t = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+    grad_in = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""leaky_relu_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""leaky_relu_backward_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_out, self_t, 0.01, False, grad_input=grad_in
+      )
+
   def test_einsum_mixed_device_error(self):
     a = torch.ones(2, 3, dtype=torch.float32, device=et.device())
     b = torch.ones(3, 4, dtype=torch.float32, device="cpu")

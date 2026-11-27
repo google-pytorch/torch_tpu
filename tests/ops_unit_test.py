@@ -16112,6 +16112,171 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float32_negative_slope",
+          dtype=torch.float32,
+          negative_slope=-0.2,
+      ),
+      dict(
+          testcase_name="float32_positive_slope",
+          dtype=torch.float32,
+          negative_slope=0.2,
+      ),
+      dict(
+          testcase_name="float32_zero_slope",
+          dtype=torch.float32,
+          negative_slope=0.0,
+      ),
+      dict(
+          testcase_name="bfloat16_negative_slope",
+          dtype=torch.bfloat16,
+          negative_slope=-0.2,
+      ),
+      dict(
+          testcase_name="bfloat16_positive_slope",
+          dtype=torch.bfloat16,
+          negative_slope=0.2,
+      ),
+      dict(
+          testcase_name="bfloat16_zero_slope",
+          dtype=torch.bfloat16,
+          negative_slope=0.0,
+      ),
+      dict(
+          testcase_name="float16_negative_slope",
+          dtype=torch.float16,
+          negative_slope=-0.2,
+      ),
+      dict(
+          testcase_name="float16_positive_slope",
+          dtype=torch.float16,
+          negative_slope=0.2,
+      ),
+      dict(
+          testcase_name="float16_zero_slope",
+          dtype=torch.float16,
+          negative_slope=0.0,
+      ),
+  )
+  def test_leaky_relu_signed_zero_and_nan(
+      self, dtype: torch.dtype, negative_slope: float
+  ) -> None:
+    cpu_zeros = torch.tensor([-0.0, 0.0], dtype=dtype)
+    expected_zeros = torch.nn.functional.leaky_relu(cpu_zeros, negative_slope)
+    actual_zeros = torch.nn.functional.leaky_relu(
+        cpu_zeros.to("tpu"), negative_slope
+    ).cpu()
+    self.assert_close(
+        golden_result=expected_zeros, torch_tpu_result=actual_zeros
+    )
+    self.assertEqual(torch.signbit(actual_zeros), torch.signbit(expected_zeros))
+
+    cpu_nan = torch.tensor([float("nan")], dtype=dtype)
+    expected_nan = torch.nn.functional.leaky_relu(cpu_nan, negative_slope)
+    actual_nan = torch.nn.functional.leaky_relu(
+        cpu_nan.to("tpu"), negative_slope
+    ).cpu()
+    self.assert_close(golden_result=expected_nan, torch_tpu_result=actual_nan)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="grad_broadcast_to_self",
+          grad_shape=(1, 3),
+          self_shape=(2, 3),
+          grad_dtype=torch.float32,
+          self_dtype=torch.float32,
+          out_dtype=torch.float32,
+          negative_slope=0.01,
+          self_is_result=False,
+      ),
+      dict(
+          testcase_name="self_broadcast_to_grad",
+          grad_shape=(2, 3),
+          self_shape=(1, 3),
+          grad_dtype=torch.float32,
+          self_dtype=torch.float32,
+          out_dtype=torch.float32,
+          negative_slope=0.2,
+          self_is_result=True,
+      ),
+      dict(
+          testcase_name="mixed_f32_bf16_out_f32",
+          grad_shape=(2, 3),
+          self_shape=(2, 3),
+          grad_dtype=torch.float32,
+          self_dtype=torch.bfloat16,
+          out_dtype=torch.float32,
+          negative_slope=0.1,
+          self_is_result=False,
+      ),
+      dict(
+          testcase_name="mixed_bf16_f32_out_bf16_cast",
+          grad_shape=(1, 4),
+          self_shape=(3, 4),
+          grad_dtype=torch.bfloat16,
+          self_dtype=torch.float32,
+          out_dtype=torch.bfloat16,
+          negative_slope=0.05,
+          self_is_result=False,
+      ),
+      dict(
+          testcase_name="mixed_int32_f32_promotes_to_f32",
+          grad_shape=(2, 3),
+          self_shape=(2, 3),
+          grad_dtype=torch.int32,
+          self_dtype=torch.float32,
+          out_dtype=torch.float32,
+          negative_slope=0.1,
+          self_is_result=False,
+      ),
+  )
+  def test_leaky_relu_backward_broadcast_and_mixed_dtypes(
+      self,
+      grad_shape,
+      self_shape,
+      grad_dtype,
+      self_dtype,
+      out_dtype,
+      negative_slope,
+      self_is_result,
+  ):
+    if grad_dtype.is_floating_point:
+      grad_cpu = (
+          torch.linspace(-2.0, 2.0, math.prod(grad_shape))
+          .reshape(grad_shape)
+          .to(grad_dtype)
+      )
+    else:
+      grad_cpu = torch.arange(math.prod(grad_shape), dtype=grad_dtype).reshape(
+          grad_shape
+      )
+    self_cpu = (
+        torch.linspace(-1.5, 1.5, math.prod(self_shape))
+        .reshape(self_shape)
+        .to(self_dtype)
+    )
+    out_shape = torch.broadcast_shapes(grad_shape, self_shape)
+
+    def fn(device):
+      res = torch.ops.aten.leaky_relu_backward(
+          grad_cpu.to(device),
+          self_cpu.to(device),
+          negative_slope,
+          self_is_result,
+      )
+      out = torch.empty(out_shape, dtype=out_dtype, device=device)
+      torch.ops.aten.leaky_relu_backward.grad_input(
+          grad_cpu.to(device),
+          self_cpu.to(device),
+          negative_slope,
+          self_is_result,
+          grad_input=out,
+      )
+      return res, out
+
+    self.assert_close_tpu_vs_cpu(fn)
+
   def test_foreach_ceil_integral(self):
     for dtype in [torch.int32, torch.uint8]:
       x = [
