@@ -581,10 +581,12 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 4.2e-1, "atol": 4.6e-1},
     },
     "nn.functional.conv3d": {
+        torch.bfloat16: {"atol": 1.9e-2},
         torch.float16: {"rtol": 6.5e-1, "atol": 6.6e-1},
         torch.float32: {"rtol": 5e-1, "atol": 7e-1},
     },
     "nn.functional.conv_transpose1d": {
+        torch.bfloat16: {"atol": 8.3e-3},
         torch.float16: {"rtol": 6.7e-2, "atol": 1.6e-1},
         torch.float32: {"rtol": 7.1e-2, "atol": 2.1e-1},
     },
