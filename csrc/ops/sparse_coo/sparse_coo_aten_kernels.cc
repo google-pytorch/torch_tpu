@@ -61,6 +61,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/sparse_coo/sparse_coo.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
@@ -479,14 +480,40 @@ const at::Tensor& SparseResizeAndClearImpl(const at::Tensor& self,
   return self;
 }
 
+void CheckSparseAlpha(const at::ScalarType common_dtype,
+                      const c10::Scalar& alpha) {
+  TT_CHECK_THROW(!alpha.isBoolean() || common_dtype == at::ScalarType::Bool,
+                 error::kInvalidArgument)
+      << "boolean alpha only supported for boolean results";
+  TT_CHECK_THROW(c10::isFloatingType(common_dtype) ||
+                     c10::isComplexType(common_dtype) ||
+                     alpha.isIntegral(/*includeBool=*/true),
+                 error::kInvalidArgument)
+      << "for integral input tensors, argument alpha must not be a floating "
+         "point number";
+  TT_CHECK_THROW(c10::isComplexType(common_dtype) || !alpha.isComplex(),
+                 error::kInvalidArgument)
+      << "for non-complex input tensors, argument alpha must not be a "
+         "complex number";
+  const at::ScalarType opmath_type = InferComputationDtype(common_dtype);
+  TT_ASSIGN_OR_THROW(const bool can_cast_alpha,
+                     CanCastScalarWithoutOverflow(alpha, opmath_type));
+  TT_CHECK_THROW(can_cast_alpha, error::kInvalidArgument)
+      << "value cannot be converted to type " << ToString(opmath_type)
+      << " without overflow";
+}
+
 at::Tensor& AddOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
                              MaybePromotedScalar& promoted_alpha,
                              OpParamCacheKeys pk, at::Tensor& out) {
-  if (!self.is_sparse() && other.is_sparse()) {
-    return AddOutDenseSparse(self, other, promoted_alpha, std::move(pk), out);
-  }
-  if (self.is_sparse() && other.is_sparse()) {
-    return AddOutSparseSparse(self, other, promoted_alpha, std::move(pk), out);
+  const bool is_dense_sparse = !self.is_sparse() && other.is_sparse();
+  const bool is_sparse_sparse = self.is_sparse() && other.is_sparse();
+  if (is_dense_sparse || is_sparse_sparse) {
+    CheckSparseAlpha(at::result_type(self, other), promoted_alpha.scalar());
+    return is_dense_sparse ? AddOutDenseSparse(self, other, promoted_alpha,
+                                               std::move(pk), out)
+                           : AddOutSparseSparse(self, other, promoted_alpha,
+                                                std::move(pk), out);
   }
   if (!promoted_alpha.IsOne()) {
     const at::ScalarType alpha_dtype =
@@ -633,6 +660,8 @@ void CheckSubNotBool(const at::Tensor& self, const at::Tensor& other) {
 
 MaybePromotedScalar PromoteNegAlpha(const c10::Scalar& alpha) {
   if (alpha.isBoolean()) {
+    // Defer boolean alpha rejection into TT_KERNEL so CheckSubNotBool and
+    // CheckSparseAlpha run with the proper op name prefix.
     return PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
   }
   return PromoteScalar(-alpha).AvoidPromoting(ScalarValue::kOne);

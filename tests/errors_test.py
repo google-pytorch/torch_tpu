@@ -25023,5 +25023,414 @@ class IndexReduceErrorTest(et.ErrorTestBase):
       torch.index_reduce(self_t, 0, index, source, "prod", out=out)
 
 
+class SparseCooAddSubErrorTest(et.ErrorTestBase):
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("int32", torch.int32),
+      ("complex64", torch.complex64),
+  )
+  def test_sparse_coo_sub_bool_alpha(self, dtype):
+    indices = torch.tensor(
+        [[0, 1], [0, 1]], dtype=torch.int64, device=et.device()
+    )
+    vals_a = torch.tensor([10, 20], dtype=dtype, device=et.device())
+    vals_b = torch.tensor([3, 5], dtype=dtype, device=et.device())
+    sp_a = torch.sparse_coo_tensor(indices, vals_a, (2, 2), device=et.device())
+    sp_b = torch.sparse_coo_tensor(indices, vals_b, (2, 2), device=et.device())
+    dense_a = torch.ones((2, 2), dtype=dtype, device=et.device())
+    sp_out = torch.empty_like(sp_a)
+    dense_out = torch.empty_like(dense_a)
+
+    with self.subTest("sub_sparse_sparse_true"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): boolean alpha only supported for boolean results""",
+          gpu="""torch boolean negative, the `-` operator, is not supported.""",
+      ):
+        torch.sub(sp_a, sp_b, alpha=True)
+
+    with self.subTest("sub_sparse_sparse_false"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): boolean alpha only supported for boolean results""",
+          gpu="""torch boolean negative, the `-` operator, is not supported.""",
+      ):
+        torch.sub(sp_a, sp_b, alpha=False)
+
+    with self.subTest("sub_inplace_sparse_sparse"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub_(): boolean alpha only supported for boolean results""",
+          gpu="""torch boolean negative, the `-` operator, is not supported.""",
+      ):
+        sp_a.clone().sub_(sp_b, alpha=True)
+
+    with self.subTest("sub_out_sparse_sparse"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): boolean alpha only supported for boolean results""",
+          gpu="""torch boolean negative, the `-` operator, is not supported.""",
+      ):
+        torch.sub(sp_a, sp_b, alpha=True, out=sp_out)
+
+    with self.subTest("sub_dense_sparse"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): boolean alpha only supported for boolean results""",
+          gpu="""torch boolean negative, the `-` operator, is not supported.""",
+      ):
+        torch.sub(dense_a, sp_b, alpha=True)
+
+    with self.subTest("sub_out_dense_sparse"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): boolean alpha only supported for boolean results""",
+          gpu="""torch boolean negative, the `-` operator, is not supported.""",
+      ):
+        torch.sub(dense_a, sp_b, alpha=True, out=dense_out)
+
+    with self.subTest("sub_empty_sparse_sparse"):
+      sp_empty = torch.sparse_coo_tensor(
+          torch.empty((2, 0), dtype=torch.int64, device=et.device()),
+          torch.empty((0,), dtype=dtype, device=et.device()),
+          (2, 2),
+          device=et.device(),
+      )
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): boolean alpha only supported for boolean results""",
+          gpu="""torch boolean negative, the `-` operator, is not supported.""",
+      ):
+        torch.sub(sp_empty, sp_empty, alpha=True)
+
+  def test_sparse_coo_sub_bool_tensors(self):
+    indices = torch.tensor(
+        [[0, 1], [0, 1]], dtype=torch.int64, device=et.device()
+    )
+    sp_bool_a = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([True, False], dtype=torch.bool, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    sp_bool_b = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([False, True], dtype=torch.bool, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    sp_f32 = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([1.0, 2.0], dtype=torch.float32, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    dense_bool = torch.ones((2, 2), dtype=torch.bool, device=et.device())
+    sp_out = torch.empty_like(sp_bool_a)
+
+    with self.subTest("sub_two_bool"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): expected non-bool tensors for subtraction, got bool and bool""",
+          gpu="""Subtraction, the `-` operator, with two bool tensors is not supported. Use the `^` or `logical_xor()` operator instead.""",
+      ):
+        torch.sub(sp_bool_a, sp_bool_b)
+
+    with self.subTest("sub_inplace_two_bool"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub_(): expected non-bool tensors for subtraction, got bool and bool""",
+          gpu="""Subtraction, the `-` operator, with two bool tensors is not supported. Use the `^` or `logical_xor()` operator instead.""",
+      ):
+        sp_bool_a.clone().sub_(sp_bool_b)
+
+    with self.subTest("sub_out_two_bool"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): expected non-bool tensors for subtraction, got bool and bool""",
+          gpu="""Subtraction, the `-` operator, with two bool tensors is not supported. Use the `^` or `logical_xor()` operator instead.""",
+      ):
+        torch.sub(sp_bool_a, sp_bool_b, out=sp_out)
+
+    with self.subTest("sub_one_bool"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): expected non-bool tensors for subtraction, got bool and float32""",
+          gpu="""Subtraction, the `-` operator, with a bool tensor is not supported. If you are trying to invert a mask, use the `~` or `logical_not()` operator instead.""",
+      ):
+        torch.sub(sp_bool_a, sp_f32)
+
+    with self.subTest("sub_dense_bool_sparse_bool"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): expected non-bool tensors for subtraction, got bool and bool""",
+          gpu="""Subtraction, the `-` operator, with two bool tensors is not supported. Use the `^` or `logical_xor()` operator instead.""",
+      ):
+        torch.sub(dense_bool, sp_bool_b)
+
+  def test_sparse_coo_add_alpha_dtype_mismatch(self):
+    indices = torch.tensor(
+        [[0, 1], [0, 1]], dtype=torch.int64, device=et.device()
+    )
+    sp_i32_a = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([10, 20], dtype=torch.int32, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    sp_i32_b = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([3, 5], dtype=torch.int32, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    dense_i32 = torch.ones((2, 2), dtype=torch.int32, device=et.device())
+    sp_f32_a = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([10.0, 20.0], dtype=torch.float32, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    sp_f32_b = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([3.0, 5.0], dtype=torch.float32, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    dense_f32 = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+
+    with self.subTest("add_int_float_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
+      ):
+        torch.add(sp_i32_a, sp_i32_b, alpha=1.5)
+
+    with self.subTest("add_dense_sparse_int_float_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
+      ):
+        torch.add(dense_i32, sp_i32_b, alpha=1.5)
+
+    with self.subTest("sub_int_float_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
+      ):
+        torch.sub(sp_i32_a, sp_i32_b, alpha=1.5)
+
+    with self.subTest("sub_dense_sparse_int_float_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
+      ):
+        torch.sub(dense_i32, sp_i32_b, alpha=1.5)
+
+    with self.subTest("sub_inplace_int_float_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub_(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""dtype of values (Float) must match dtype of sparse tensor (Int)""",
+      ):
+        sp_i32_a.clone().sub_(sp_i32_b, alpha=1.5)
+
+    with self.subTest("add_int_float_one_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
+      ):
+        torch.add(sp_i32_a, sp_i32_b, alpha=1.0)
+
+    with self.subTest("sub_int_float_neg_one_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
+      ):
+        torch.sub(sp_i32_a, sp_i32_b, alpha=-1.0)
+
+    with self.subTest("add_inplace_int_float_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add_(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""dtype of values (Float) must match dtype of sparse tensor (Int)""",
+      ):
+        sp_i32_a.clone().add_(sp_i32_b, alpha=2.5)
+
+    with self.subTest("add_out_int_float_alpha"):
+      out_i32 = torch.empty_like(sp_i32_a)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""dtype of values (Float) must match dtype of sparse tensor (Int)""",
+      ):
+        torch.add(sp_i32_a, sp_i32_b, alpha=2.5, out=out_i32)
+
+    with self.subTest("sub_out_int_float_alpha"):
+      out_i32 = torch.empty_like(sp_i32_a)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): for integral input tensors, argument alpha must not be a floating point number""",
+          gpu="""dtype of values (Float) must match dtype of sparse tensor (Int)""",
+      ):
+        torch.sub(sp_i32_a, sp_i32_b, alpha=1.5, out=out_i32)
+
+    with self.subTest("add_float_bool_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): boolean alpha only supported for boolean results""",
+          gpu="""Boolean alpha only supported for Boolean results.""",
+      ):
+        torch.add(sp_f32_a, sp_f32_b, alpha=True)
+
+    with self.subTest("add_int_bool_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): boolean alpha only supported for boolean results""",
+          gpu="""Boolean alpha only supported for Boolean results.""",
+      ):
+        torch.add(sp_i32_a, sp_i32_b, alpha=True)
+
+    with self.subTest("add_dense_sparse_float_bool_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): boolean alpha only supported for boolean results""",
+          gpu="""Boolean alpha only supported for Boolean results.""",
+      ):
+        torch.add(dense_f32, sp_f32_b, alpha=True)
+
+    with self.subTest("add_float_complex_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): for non-complex input tensors, argument alpha must not be a complex number""",
+          gpu="""For non-complex input tensors, argument alpha must not be a complex number.""",
+      ):
+        torch.add(sp_f32_a, sp_f32_b, alpha=1 + 2j)
+
+    with self.subTest("add_inplace_float_complex_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add_(): for non-complex input tensors, argument alpha must not be a complex number""",
+          gpu="""value cannot be converted to type float without overflow""",
+      ):
+        sp_f32_a.clone().add_(sp_f32_b, alpha=1 + 2j)
+
+    with self.subTest("add_out_float_complex_alpha"):
+      out_f32 = torch.empty_like(sp_f32_a)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): for non-complex input tensors, argument alpha must not be a complex number""",
+          gpu="""value cannot be converted to type float without overflow""",
+      ):
+        torch.add(sp_f32_a, sp_f32_b, alpha=1 + 2j, out=out_f32)
+
+    with self.subTest("sub_float_complex_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): for non-complex input tensors, argument alpha must not be a complex number""",
+          gpu="""For non-complex input tensors, argument alpha must not be a complex number.""",
+      ):
+        torch.sub(sp_f32_a, sp_f32_b, alpha=1 + 2j)
+
+    with self.subTest("sub_inplace_float_complex_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub_(): for non-complex input tensors, argument alpha must not be a complex number""",
+          gpu="""value cannot be converted to type float without overflow""",
+      ):
+        sp_f32_a.clone().sub_(sp_f32_b, alpha=1 + 2j)
+
+    with self.subTest("sub_out_float_complex_alpha"):
+      out_f32 = torch.empty_like(sp_f32_a)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): for non-complex input tensors, argument alpha must not be a complex number""",
+          gpu="""value cannot be converted to type float without overflow""",
+      ):
+        torch.sub(sp_f32_a, sp_f32_b, alpha=1 + 2j, out=out_f32)
+
+  def test_sparse_coo_add_sub_alpha_overflow(self):
+    indices = torch.tensor(
+        [[0, 1], [0, 1]], dtype=torch.int64, device=et.device()
+    )
+    sp_i8_a = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([1, 2], dtype=torch.int8, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    sp_i8_b = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([3, 4], dtype=torch.int8, device=et.device()),
+        (2, 2),
+        device=et.device(),
+    )
+    dense_i8 = torch.ones((2, 2), dtype=torch.int8, device=et.device())
+    out_i8 = torch.empty_like(sp_i8_a)
+
+    with self.subTest("add_int8_alpha_overflow"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): value cannot be converted to type int8 without overflow""",
+          gpu="""value cannot be converted to type int8_t without overflow""",
+      ):
+        torch.add(sp_i8_a, sp_i8_b, alpha=1000)
+
+    with self.subTest("add_inplace_int8_alpha_overflow"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add_(): value cannot be converted to type int8 without overflow""",
+          gpu="""value cannot be converted to type int8_t without overflow""",
+      ):
+        sp_i8_a.clone().add_(sp_i8_b, alpha=1000)
+
+    with self.subTest("add_out_int8_alpha_overflow"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): value cannot be converted to type int8 without overflow""",
+          gpu="""value cannot be converted to type int8_t without overflow""",
+      ):
+        torch.add(sp_i8_a, sp_i8_b, alpha=1000, out=out_i8)
+
+    with self.subTest("add_dense_sparse_int8_alpha_overflow"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): value cannot be converted to type int8 without overflow""",
+          gpu="""value cannot be converted to type int8_t without overflow""",
+      ):
+        torch.add(dense_i8, sp_i8_b, alpha=1000)
+
+    with self.subTest("sub_int8_alpha_overflow"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): value cannot be converted to type int8 without overflow""",
+          gpu="""value cannot be converted to type int8_t without overflow""",
+      ):
+        torch.sub(sp_i8_a, sp_i8_b, alpha=1000)
+
+    with self.subTest("sub_inplace_int8_alpha_overflow"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub_(): value cannot be converted to type int8 without overflow""",
+          gpu="""value cannot be converted to type int8_t without overflow""",
+      ):
+        sp_i8_a.clone().sub_(sp_i8_b, alpha=1000)
+
+    with self.subTest("sub_out_int8_alpha_overflow"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): value cannot be converted to type int8 without overflow""",
+          gpu="""value cannot be converted to type int8_t without overflow""",
+      ):
+        torch.sub(sp_i8_a, sp_i8_b, alpha=1000, out=out_i8)
+
+
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)

@@ -11527,6 +11527,64 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_add_sub_cases, atol=tol_opt, rtol=tol_opt)
 
+  def test_sparse_coo_int_add_sub_alpha(self):
+    """Tests integral sparse COO add/sub with integer alpha values."""
+    dense_base = torch.tensor(
+        [[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=torch.int32
+    )
+    idx1 = torch.tensor([[0, 2], [1, 0]], dtype=torch.long)
+    val1 = torch.tensor([10, 20], dtype=torch.int32)
+    idx2 = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
+    val2 = torch.tensor([3, 5], dtype=torch.int32)
+
+    def run_cases(device):
+      d = to(dense_base.clone(), device=device)
+      sp1 = torch.sparse_coo_tensor(
+          to(idx1, device=device),
+          to(val1, device=device),
+          (3, 3),
+          device=device,
+      )
+      sp2 = torch.sparse_coo_tensor(
+          to(idx2, device=device),
+          to(val2, device=device),
+          (3, 3),
+          device=device,
+      )
+
+      sp_add = torch.add(sp1, sp2, alpha=2)
+      sp_sub = torch.sub(sp1, sp2, alpha=2)
+      sp_sub_neg = torch.sub(sp1, sp2, alpha=-1)
+      sp_sub_zero = torch.sub(sp1, sp2, alpha=0)
+
+      sp_add_inplace = sp1.clone().add_(sp2, alpha=3)
+      sp_sub_inplace = sp1.clone().sub_(sp2, alpha=3)
+
+      sp_add_out = torch.empty_like(sp1)
+      torch.add(sp1, sp2, alpha=2, out=sp_add_out)
+      sp_sub_out = torch.empty_like(sp1)
+      torch.sub(sp1, sp2, alpha=2, out=sp_sub_out)
+
+      dense_add = torch.add(d, sp2, alpha=2)
+      dense_sub = torch.sub(d, sp2, alpha=2)
+      dense_sub_inplace = d.clone().sub_(sp2, alpha=2)
+
+      return (
+          sp_add.to_dense(),
+          sp_sub.to_dense(),
+          sp_sub_neg.to_dense(),
+          sp_sub_zero.to_dense(),
+          sp_add_inplace.to_dense(),
+          sp_sub_inplace.to_dense(),
+          sp_add_out.to_dense(),
+          sp_sub_out.to_dense(),
+          dense_add,
+          dense_sub,
+          dense_sub_inplace,
+      )
+
+    self.assert_close_tpu_vs_cpu(run_cases)
+
   @parameterized.named_parameters(
       ("float32", torch.float32),
       ("bfloat16", torch.bfloat16),

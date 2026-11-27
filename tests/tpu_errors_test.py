@@ -4256,6 +4256,30 @@ module {
           [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
+  @et.why_tpu_only(
+      "PyTorch GPU sparse add_ and add.out do not run alpha_check for boolean"
+      " alpha on float tensors."
+  )
+  def test_sparse_coo_add_bool_alpha_inplace_and_out(self):
+    indices = torch.tensor([[0, 1], [1, 2]], device="tpu")
+    values = torch.tensor([1.0, 2.0], device="tpu")
+    sp = torch.sparse_coo_tensor(indices, values, (2, 3), device="tpu")
+
+    with self.subTest("add_inplace_float_bool_alpha"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add_(): boolean alpha only supported for boolean results""",
+      ):
+        sp.clone().add_(sp, alpha=True)
+
+    with self.subTest("add_out_float_bool_alpha"):
+      out_sp = torch.empty_like(sp)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): boolean alpha only supported for boolean results""",
+      ):
+        torch.add(sp, sp, alpha=True, out=out_sp)
+
   @et.why_tpu_only("Sparse operations fallback to SparsePrivateUse1 on TPU.")
   def test_sparse_ops_not_supported(self):
     indices = torch.tensor([[0, 1], [1, 2]], device="tpu")
@@ -4383,13 +4407,6 @@ module {
           tpu="""neg(): expected result dtype to be castable to 'out' dtype, got float32 and int32""",
       ):
         torch.neg(sp, out=sp_i32)
-
-    with self.subTest("sub_sparse_bool"):
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""sub(): expected non-bool tensors for subtraction, got bool and bool""",
-      ):
-        torch.sub(sp_bool, sp_bool)
 
     with self.subTest("to_dense_sparse_dtype"):
       with et.assert_raises_message(
