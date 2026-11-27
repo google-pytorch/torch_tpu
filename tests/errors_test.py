@@ -3555,15 +3555,86 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
       torch.cumsum(t, dim=0, dtype=torch.float64, out=out)
     self.assertEqual(out.shape, (0,))
 
+  def test_cumprod_with_unsupported_dtype(self):
+    t = torch.ones(2, 2, device=et.device())
+    output = torch.empty(10, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected out tensor to have dtype c10::dummy_int1_7_t<1>, but got float instead""",
+        tpu="""cumprod(): expected the output dtype to be int1, got float32""",
+    ):
+      torch.cumprod(t, dim=1, dtype=torch.int1, out=output)
+    self.assertEqual(output.shape, (10,))
+
   def test_cumprod_out_dtype_mismatch(self):
+    t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(10, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Expected out tensor to have dtype double, but got float instead""",
         tpu="""cumprod(): expected the output dtype to be float64, got float32""",
     ):
-      t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
-      out = torch.empty(2, 2, device=et.device(), dtype=torch.float32)
       torch.cumprod(t, dim=0, dtype=torch.float64, out=out)
+    self.assertEqual(out.shape, (10,))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="1d", shape=(3,), dim=5, expected_range="[-1, 0]"),
+      dict(
+          testcase_name="empty_2d",
+          shape=(0, 3),
+          dim=5,
+          expected_range="[-2, 1]",
+      ),
+  )
+  def test_cumprod_dimension_out_of_range(
+      self, shape: tuple[int, ...], dim: int, expected_range: str
+  ):
+    t = torch.ones(shape, device=et.device())
+    output = torch.empty(10, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        gpu=f"""Dimension out of range (expected to be in range of {expected_range}, but got {dim})""",
+        tpu=f"""cumprod(): expected dimension to be in range {expected_range}, got {dim}""",
+    ):
+      torch.cumprod(t, dim=dim, out=output)
+    self.assertEqual(output.shape, (10,))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="scalar", input_shape=(), out_shape=()),
+      dict(testcase_name="empty", input_shape=(0,), out_shape=(0,)),
+      dict(testcase_name="1d_same_shape", input_shape=(3,), out_shape=(3,)),
+      dict(testcase_name="1d_diff_shape", input_shape=(3,), out_shape=(10,)),
+  )
+  def test_cumprod_cpu_out_tensor(
+      self, input_shape: tuple[int, ...], out_shape: tuple[int, ...]
+  ):
+    t = torch.ones(input_shape, device=et.device())
+    out = torch.empty(out_shape, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cumprod(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.cumprod(t, dim=0, out=out)
+    self.assertEqual(out.shape, out_shape)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="scalar", input_shape=(), out_shape=(10,)),
+      dict(testcase_name="empty", input_shape=(0,), out_shape=(10,)),
+      dict(testcase_name="1d", input_shape=(3,), out_shape=(10,)),
+  )
+  def test_cumprod_cpu_input_tensor(
+      self, input_shape: tuple[int, ...], out_shape: tuple[int, ...]
+  ):
+    t = torch.ones(input_shape, device="cpu")
+    out = torch.empty(out_shape, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cumprod(): expected the input tensor to be on tpu, got cpu""",
+        gpu="""CUDAGuardImpl initialized with non-CUDA DeviceType: cpu""",
+    ):
+      torch.cumprod(t, dim=0, out=out)
+    self.assertEqual(out.shape, out_shape)
 
   def test_cumsum_dimension_out_of_range(self):
     t = torch.ones(1, device=et.device())
@@ -3599,14 +3670,15 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
         torch.cumsum(t, dim=0, out=out)
 
   def test_cumprod_scalar_dimension_out_of_range(self):
+    t = torch.tensor(1.0, device=et.device())
+    output = torch.empty(2, device=et.device())
     with et.assert_raises_message(
         IndexError,
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
         tpu="""cumprod(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
     ):
-      t = torch.tensor(1.0, device=et.device())
-      output = torch.empty_like(t)
       torch.cumprod(t, dim=1, out=output)
+    self.assertEqual(output.shape, (2,))
 
   def test_prod_out_with_unsupported_dtype(self):
     with et.assert_raises_message(
@@ -18305,6 +18377,127 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       t = torch.ones(2, 2, device=et.device(), dtype=torch.complex64)
       torch.cummin(t, dim=1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="cummax_helper_cpu_self",
+          helper=torch._cummax_helper,
+          op_name="cummax_helper",
+          cpu_arg="self",
+          tpu_arg_name="input",
+          gpu_arg="values",
+          gpu_arg_dev="cuda:0",
+          gpu_other_dev="cpu",
+      ),
+      dict(
+          testcase_name="cummax_helper_cpu_values",
+          helper=torch._cummax_helper,
+          op_name="cummax_helper",
+          cpu_arg="values",
+          tpu_arg_name="values",
+          gpu_arg="values",
+          gpu_arg_dev="cpu",
+          gpu_other_dev="cuda:0",
+      ),
+      dict(
+          testcase_name="cummax_helper_cpu_indices",
+          helper=torch._cummax_helper,
+          op_name="cummax_helper",
+          cpu_arg="indices",
+          tpu_arg_name="indices",
+          gpu_arg="indices",
+          gpu_arg_dev="cpu",
+          gpu_other_dev="cuda:0",
+      ),
+      dict(
+          testcase_name="cummin_helper_cpu_self",
+          helper=torch._cummin_helper,
+          op_name="cummin_helper",
+          cpu_arg="self",
+          tpu_arg_name="input",
+          gpu_arg="values",
+          gpu_arg_dev="cuda:0",
+          gpu_other_dev="cpu",
+      ),
+      dict(
+          testcase_name="cummin_helper_cpu_values",
+          helper=torch._cummin_helper,
+          op_name="cummin_helper",
+          cpu_arg="values",
+          tpu_arg_name="values",
+          gpu_arg="values",
+          gpu_arg_dev="cpu",
+          gpu_other_dev="cuda:0",
+      ),
+      dict(
+          testcase_name="cummin_helper_cpu_indices",
+          helper=torch._cummin_helper,
+          op_name="cummin_helper",
+          cpu_arg="indices",
+          tpu_arg_name="indices",
+          gpu_arg="indices",
+          gpu_arg_dev="cpu",
+          gpu_other_dev="cuda:0",
+      ),
+  )
+  def test_cummax_cummin_helper_empty_mixed_device(
+      self,
+      helper,
+      op_name: str,
+      cpu_arg: str,
+      tpu_arg_name: str,
+      gpu_arg: str,
+      gpu_arg_dev: str,
+      gpu_other_dev: str,
+  ):
+    dev = et.device()
+    x = torch.empty(
+        (0, 3), dtype=torch.float32, device="cpu" if cpu_arg == "self" else dev
+    )
+    values = torch.empty(
+        (10,), dtype=torch.float32, device="cpu" if cpu_arg == "values" else dev
+    )
+    indices = torch.empty(
+        (10,), dtype=torch.int64, device="cpu" if cpu_arg == "indices" else dev
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected the {tpu_arg_name} tensor to be on tpu, got cpu""",
+        gpu=f"""Expected all tensors to be on the same device, but got {gpu_arg} is on {gpu_arg_dev}, different from other tensors on {gpu_other_dev} (when checking argument in method wrapper_CUDA___{op_name})""",
+    ):
+      helper(x, values, indices, 1)
+    self.assertEqual(values.shape, (10,))
+    self.assertEqual(indices.shape, (10,))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="cummax_helper",
+          helper=torch._cummax_helper,
+          op_name="cummax_helper",
+          cuda_op="cummax_cuda",
+      ),
+      dict(
+          testcase_name="cummin_helper",
+          helper=torch._cummin_helper,
+          op_name="cummin_helper",
+          cuda_op="cummin_cuda",
+      ),
+  )
+  def test_cummax_cummin_helper_empty_complex_dtype(
+      self, helper, op_name: str, cuda_op: str
+  ):
+    dev = et.device()
+    x = torch.empty((0, 3), dtype=torch.complex64, device=dev)
+    values = torch.empty((10,), dtype=torch.complex64, device=dev)
+    indices = torch.empty((10,), dtype=torch.int64, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected supported element type, got complex64""",
+        gpu=f""""{cuda_op}" not implemented for 'ComplexFloat'""",
+    ):
+      helper(x, values, indices, 1)
+    self.assertEqual(values.shape, (10,))
+    self.assertEqual(indices.shape, (10,))
 
   @parameterized.named_parameters(
       dict(

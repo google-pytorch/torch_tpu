@@ -22,6 +22,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -31,6 +33,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/scan_builder.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -41,6 +44,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -93,14 +97,15 @@ absl::StatusOr<CumminOutputs> BuildCumminShlo(const int64_t dim,
                       BroadcastIfNeeded(index_init, carry_shape));
 
   // Cumulative min. On equal values keep the highest index, matching
-  // torch.cummin. min with max-index-on-tie is associative (it selects the
-  // (value, index) pair with the smallest value, breaking ties by largest
-  // index), so the result is independent of the scan's tree reordering
-  // (is_associative).
+  // torch.cummin. For floating-point inputs, NaN beats any non-NaN value and a
+  // later NaN updates the index (matching PyTorch's cummax_cummin_helper). This
+  // is associative (lexicographic order on (is_nan, -value, index)), so the
+  // result is independent of the scan's tree reordering (is_associative).
+  const bool is_float = mlir::isa<mlir::FloatType>(element_type);
   MultiInputScanBodyBuilder body_builder =
-      [](mlir::OpBuilder& op_builder, mlir::Location loc,
-         mlir::ValueRange input_slices, mlir::Value /*index*/,
-         mlir::ValueRange carries) -> absl::StatusOr<ScanBodyResults> {
+      [is_float](mlir::OpBuilder& op_builder, mlir::Location loc,
+                 mlir::ValueRange input_slices, mlir::Value /*index*/,
+                 mlir::ValueRange carries) -> absl::StatusOr<ScanBodyResults> {
     const mlir::Value cur_val = input_slices[0];
     const mlir::Value cur_idx = input_slices[1];
     const mlir::Value run_val = carries[0];
@@ -109,14 +114,42 @@ absl::StatusOr<CumminOutputs> BuildCumminShlo(const int64_t dim,
     const mlir::Value new_val =
         mlir::stablehlo::MinOp::create(op_builder, loc, run_val, cur_val)
             .getResult();
-    const mlir::Value lt = mlir::stablehlo::CompareOp::create(
-                               op_builder, loc, run_val, cur_val,
-                               mlir::stablehlo::ComparisonDirection::LT)
-                               .getResult();
-    const mlir::Value eq = mlir::stablehlo::CompareOp::create(
-                               op_builder, loc, run_val, cur_val,
-                               mlir::stablehlo::ComparisonDirection::EQ)
-                               .getResult();
+    mlir::Value lt = mlir::stablehlo::CompareOp::create(
+                         op_builder, loc, run_val, cur_val,
+                         mlir::stablehlo::ComparisonDirection::LT)
+                         .getResult();
+    mlir::Value eq = mlir::stablehlo::CompareOp::create(
+                         op_builder, loc, run_val, cur_val,
+                         mlir::stablehlo::ComparisonDirection::EQ)
+                         .getResult();
+    if (is_float) {
+      const mlir::Value run_is_nan =
+          mlir::stablehlo::CompareOp::create(
+              op_builder, loc, run_val, run_val,
+              mlir::stablehlo::ComparisonDirection::NE)
+              .getResult();
+      const mlir::Value cur_is_nan =
+          mlir::stablehlo::CompareOp::create(
+              op_builder, loc, cur_val, cur_val,
+              mlir::stablehlo::ComparisonDirection::NE)
+              .getResult();
+      const mlir::Value cur_not_nan =
+          mlir::stablehlo::CompareOp::create(
+              op_builder, loc, cur_val, cur_val,
+              mlir::stablehlo::ComparisonDirection::EQ)
+              .getResult();
+      const mlir::Value run_only_nan =
+          mlir::stablehlo::AndOp::create(op_builder, loc, run_is_nan,
+                                         cur_not_nan)
+              .getResult();
+      const mlir::Value both_nan = mlir::stablehlo::AndOp::create(
+                                       op_builder, loc, run_is_nan, cur_is_nan)
+                                       .getResult();
+      lt = mlir::stablehlo::OrOp::create(op_builder, loc, lt, run_only_nan)
+               .getResult();
+      eq = mlir::stablehlo::OrOp::create(op_builder, loc, eq, both_nan)
+               .getResult();
+    }
     const mlir::Value max_idx =
         mlir::stablehlo::MaxOp::create(op_builder, loc, run_idx, cur_idx)
             .getResult();
@@ -156,6 +189,16 @@ absl::StatusOr<CumminOutputs> BuildCumminShlo(const int64_t dim,
 void AtenCumminHelper(const at::Tensor& self, at::Tensor& values,
                       at::Tensor& indices, int64_t dim) {
   TT_KERNEL(OpName::kCumminHelper, param_keys, (self, values, indices, dim), {
+    TT_CHECK_THROW(IsPrivateUse1Device(self), error::kInvalidArgument)
+        << "expected the input tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << self.device();
+    TT_CHECK_THROW(IsPrivateUse1Device(values), error::kInvalidArgument)
+        << "expected the values tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << values.device();
+    TT_CHECK_THROW(IsPrivateUse1Device(indices), error::kInvalidArgument)
+        << "expected the indices tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << indices.device();
+
     if (self.dim() == 0) {
       values.copy_(self);
       indices.fill_(0);
@@ -175,10 +218,18 @@ void AtenCumminHelper(const at::Tensor& self, at::Tensor& values,
         << "expected dimension size to be less than or equal to "
         << std::numeric_limits<int32_t>::max() << ", got " << current_dim_size;
 
-    Dimensions output_dims = CopyIntVector(self.sizes());
-
-    TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
+    TT_ASSIGN_OR_THROW(const mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
+
+    // Fast-path: 0-element tensors (including empty non-scan dimensions)
+    // require no scan computation.
+    if (self.numel() == 0) {
+      TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(values, self.sizes()));
+      TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(indices, self.sizes()));
+      return;
+    }
+
+    Dimensions output_dims = CopyIntVector(self.sizes());
 
     auto op_builder =
         [normalized_dim](
