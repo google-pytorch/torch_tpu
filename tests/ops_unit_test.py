@@ -13890,6 +13890,80 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         utils.assert_close(tpu_out.cpu(), cpu_out.cpu(), rtol=0, atol=0)
         self.assertEqual(cpu_mask.cpu(), tpu_mask.cpu())
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bf16_scale_1_over_255_uint8",
+          dtype=torch.bfloat16,
+          values=[-0.1, 0.0, 0.25, 0.5, 0.75, 1.0, 1.2],
+          scale=1.0 / 255.0,
+          zero_point=0,
+          quant_min=0,
+          quant_max=255,
+      ),
+      dict(
+          testcase_name="bf16_large_quant_bounds_and_zero_point",
+          dtype=torch.bfloat16,
+          values=[-258.0, -257.0, -256.0, 0.0, 253.0, 254.0, 255.0, 256.0],
+          scale=1.0,
+          zero_point=257,
+          quant_min=0,
+          quant_max=511,
+      ),
+      dict(
+          testcase_name="bf16_ties_and_mask_boundary_uint8",
+          dtype=torch.bfloat16,
+          values=[-64.0, -0.25, 0.25, 0.75, 63.5, 64.0],
+          scale=0.5,
+          zero_point=128,
+          quant_min=0,
+          quant_max=255,
+      ),
+      dict(
+          testcase_name="fp16_subnormal_scale",
+          dtype=torch.float16,
+          values=[-1.3e-3, -1.27e-3, -5e-5, 0.0, 5e-5, 1e-3, 1.27e-3, 1.28e-3],
+          scale=1e-5,
+          zero_point=0,
+          quant_min=-128,
+          quant_max=127,
+      ),
+      dict(
+          testcase_name="fp16_underflow_scale",
+          dtype=torch.float16,
+          values=[-1e-4, 0.0, 1e-4],
+          scale=1e-8,
+          zero_point=0,
+          quant_min=-128,
+          quant_max=127,
+      ),
+      dict(
+          testcase_name="fp16_ties_and_mask_boundary_uint8",
+          dtype=torch.float16,
+          values=[-64.25, -63.75, -0.25, 0.25, 0.75, 63.25, 63.75],
+          scale=0.5,
+          zero_point=128,
+          quant_min=0,
+          quant_max=255,
+      ),
+  )
+  def test_fake_quantize_per_tensor_affine_low_precision_opmath(
+      self, dtype, values, scale, zero_point, quant_min, quant_max
+  ):
+    x_cpu = torch.tensor(values, dtype=dtype)
+    cpu_out, cpu_mask = (
+        torch.ops.aten.fake_quantize_per_tensor_affine_cachemask(
+            x_cpu, scale, zero_point, quant_min, quant_max
+        )
+    )
+    x_tpu = x_cpu.to("tpu")
+    tpu_out, tpu_mask = (
+        torch.ops.aten.fake_quantize_per_tensor_affine_cachemask(
+            x_tpu, scale, zero_point, quant_min, quant_max
+        )
+    )
+    self.assertEqual(tpu_out.cpu(), cpu_out, rtol=0, atol=0)
+    self.assertEqual(tpu_mask.cpu(), cpu_mask)
+
   def test_embedding_bag_max_indices(self):
     """Tests that max_indices is computed correctly in _embedding_bag."""
     weight = torch.tensor(

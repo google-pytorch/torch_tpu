@@ -23794,6 +23794,113 @@ class OpsErrorCoverageTest(et.ErrorTestBase):
     ):
       torch.ops.aten.addmv.out(t, mat, vec, out=out)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="non_empty", shape=(2, 3)),
+      dict(testcase_name="empty", shape=(0,)),
+  )
+  def test_fake_quantize_per_tensor_affine_cachemask_quant_min_gt_quant_max(
+      self, shape
+  ):
+    t = torch.ones(shape, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fake_quantize_per_tensor_affine_cachemask(): expected quant_min <= quant_max, got quant_min=10 and quant_max=5""",
+        gpu="""`quant_min` should be less than or         equal to `quant_max`.""",
+    ):
+      torch.ops.aten.fake_quantize_per_tensor_affine_cachemask(
+          t, scale=0.5, zero_point=0, quant_min=10, quant_max=5
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="below_quant_min",
+          shape=(2, 3),
+          zero_point=-129,
+          quant_min=-128,
+          quant_max=127,
+      ),
+      dict(
+          testcase_name="above_quant_max",
+          shape=(2, 3),
+          zero_point=128,
+          quant_min=-128,
+          quant_max=127,
+      ),
+      dict(
+          testcase_name="empty_below_quant_min",
+          shape=(0,),
+          zero_point=-1,
+          quant_min=0,
+          quant_max=255,
+      ),
+  )
+  def test_fake_quantize_per_tensor_affine_cachemask_zero_point_out_of_range(
+      self, shape, zero_point, quant_min, quant_max
+  ):
+    t = torch.ones(shape, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fake_quantize_per_tensor_affine_cachemask(): expected zero_point to be in [{quant_min}, {quant_max}], got {zero_point}""",
+        gpu="""`zero_point` must be between `quant_min` and `quant_max`.""",
+    ):
+      torch.ops.aten.fake_quantize_per_tensor_affine_cachemask(
+          t,
+          scale=0.5,
+          zero_point=zero_point,
+          quant_min=quant_min,
+          quant_max=quant_max,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int32",
+          shape=(2, 3),
+          dtype=torch.int32,
+          tpu_dtype="int32",
+          gpu_dtype="Int",
+      ),
+      dict(
+          testcase_name="bool",
+          shape=(2, 3),
+          dtype=torch.bool,
+          tpu_dtype="bool",
+          gpu_dtype="Bool",
+      ),
+      dict(
+          testcase_name="complex64",
+          shape=(2, 3),
+          dtype=torch.complex64,
+          tpu_dtype="complex64",
+          gpu_dtype="ComplexFloat",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          shape=(2, 3),
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_dtype="Float8_e4m3fn",
+      ),
+      dict(
+          testcase_name="empty_int32",
+          shape=(0,),
+          dtype=torch.int32,
+          tpu_dtype="int32",
+          gpu_dtype="Int",
+      ),
+  )
+  def test_fake_quantize_per_tensor_affine_cachemask_unsupported_dtype(
+      self, shape, dtype, tpu_dtype, gpu_dtype
+  ):
+    t = torch.zeros(shape, dtype=torch.float32, device=et.device()).to(dtype)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""fake_quantize_per_tensor_affine_cachemask(): not implemented for {tpu_dtype}""",
+        gpu=f""""fake_quantize_tensor_cachemask_kernel_types" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten.fake_quantize_per_tensor_affine_cachemask(
+          t, scale=0.5, zero_point=0, quant_min=-128, quant_max=127
+      )
+
 
 class IndexReduceErrorTest(et.ErrorTestBase):
 
