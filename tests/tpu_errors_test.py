@@ -1625,6 +1625,34 @@ Please use clone() or contiguous() to copy the tensor before writing""",
             inp, grad_out, weight, [True, True, True]
         )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          dtype_str="float8_e4m3fn",
+      ),
+      dict(
+          testcase_name="float8_e5m2",
+          dtype=torch.float8_e5m2,
+          dtype_str="float8_e5m2",
+      ),
+  )
+  @et.why_tpu_only(
+      "aten.linear_backward is only registered for TPU (PrivateUse1), not"
+      " CPU/CUDA."
+  )
+  def test_linear_backward_float8_not_implemented(
+      self, dtype: torch.dtype, dtype_str: str
+  ):
+    inp = torch.empty((2, 4), dtype=dtype, device=et.device())
+    weight = torch.empty((3, 4), dtype=dtype, device=et.device())
+    grad_out = torch.empty((2, 3), dtype=dtype, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""linear_backward(): not implemented for {dtype_str}""",
+    ):
+      torch.ops.aten.linear_backward(inp, grad_out, weight, [True, True, True])
+
   @et.why_tpu_only(
       "Calling aten.einsum with an empty tensor list requires PrivateUse1"
       " redispatch to reach the TPU kernel."

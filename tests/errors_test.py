@@ -22119,6 +22119,37 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
     ):
       torch.nn.functional.linear(inp, weight)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+      ),
+      dict(
+          testcase_name="float8_e5m2",
+          dtype=torch.float8_e5m2,
+      ),
+  )
+  def test_linear_float8_not_implemented(self, dtype: torch.dtype):
+    inp = torch.empty((2, 4), dtype=dtype, device=et.device())
+    weight = torch.empty((3, 4), dtype=dtype, device=et.device())
+    out = torch.empty((2, 3), dtype=dtype, device=et.device())
+
+    with self.subTest("default"):
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""linear(): not implemented for {_get_short_dtype_str(dtype)}""",
+          gpu=f""""addmm_cuda" not implemented for '{_get_torch_dtype_str(dtype)}'""",
+      ):
+        torch.nn.functional.linear(inp, weight)
+
+    with self.subTest("out"):
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""linear(): not implemented for {_get_short_dtype_str(dtype)}""",
+          gpu=f""""addmm_cuda" not implemented for '{_get_torch_dtype_str(dtype)}'""",
+      ):
+        torch.nn.functional.linear(inp, weight, out=out)
+
   def test_scaled_grouped_mm_invalid_scale_a_dim(self):
     a = torch.randn(3, 16, device=et.device())
     b = torch.randn(3, 16, 16, device=et.device()).transpose(-2, -1)

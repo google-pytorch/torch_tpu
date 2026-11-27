@@ -319,6 +319,8 @@ absl::StatusOr<c10::SymDimVector> ValidateLinearInputs(
         << ToString(bias_sizes);
   }
 
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(input.scalar_type()));
+
   return output_dims;
 }
 
