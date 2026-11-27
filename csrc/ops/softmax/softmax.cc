@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <vector>
 
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
@@ -44,15 +45,12 @@ absl::StatusOr<mlir::MlirOp> BuildBroadcastedMaxShlo(mlir::MlirOp input_op,
                                                      int64_t dim) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  auto scalar_type =
-      mlir::RankedTensorType::get({}, input_type.getElementType());
-  TT_ASSIGN_OR_RETURN(mlir::DenseElementsAttr min_finite_value,
-                      GetVerifiedMinFiniteValue(builder, scalar_type));
-  mlir::MlirOp min_finite_const =
-      mlir::stablehlo::Constant(builder, min_finite_value);
+  mlir::MlirOp neg_inf_const =
+      MakeScalarConstant(builder, -std::numeric_limits<double>::infinity(),
+                         input_type.getElementType());
 
   mlir::SmallVector<mlir::MlirOp> max_val_reduced = mlir::stablehlo::Reduce(
-      builder, {input_op}, {min_finite_const},
+      builder, {input_op}, {neg_inf_const},
       [&input_type](mlir::RegionBuilder& rb) {
         // Scalar Max Region
         mlir::stablehlo::buildReduceBody<mlir::stablehlo::MaxOp>(
@@ -90,6 +88,18 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
                       InferComputationDtype(orig_element_type));
   TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, computation_dtype));
+
+  if (input_type.isDynamicDim(dim)) {
+    mlir::MlirOp neg_inf_const = MakeScalarConstant(
+        builder, -std::numeric_limits<double>::infinity(), computation_dtype);
+    const StaticAtBounds static_input = MakeStaticAtBounds(input_op);
+    std::vector<std::optional<mlir::MlirOp>> mask_sizes(input_type.getRank());
+    mask_sizes[dim] = static_input.runtime_sizes[dim];
+    mlir::MlirOp masked_static =
+        FillPastRuntimeSizes(static_input.op, neg_inf_const, mask_sizes);
+    input_op =
+        RestoreDynamicDimSizes(masked_static, static_input.runtime_sizes);
+  }
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp max_val_broadcasted,
                       BuildBroadcastedMaxShlo(input_op, dim));
