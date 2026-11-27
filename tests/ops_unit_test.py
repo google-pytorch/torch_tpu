@@ -31440,6 +31440,19 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_foreach_norm_complex(self):
+    for dtype in (torch.complex64, torch.complex128):
+      x_cpu = torch.tensor([3.0 + 4.0j, 0.0 + 12.0j], dtype=dtype)
+      y_cpu = torch.tensor([1.0 - 2.0j], dtype=dtype)
+      for ord_val in (1, 2, float("inf"), 0):
+        cpu_res = torch._foreach_norm([x_cpu, y_cpu], ord=ord_val)
+        tpu_res = torch._foreach_norm(
+            [x_cpu.to("tpu"), y_cpu.to("tpu")], ord=ord_val
+        )
+        for t_out, c_out in zip(tpu_res, cpu_res):
+          self.assertEqual(t_out.dtype, c_out.dtype)
+          utils.assert_close(t_out.cpu(), c_out)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -2743,13 +2743,16 @@ class TestOps(op_testing.OpInfoTestBase):
           pass
       return None
 
+    exclude_dtypes = (
+        # TODO(b/485291373): fix _foreach_norm() grad failing with complex
+        # dtypes.
+        (*COMPLEX_DTYPES, torch.int4)
+        if op_testing._COMPUTE_GRAD.value
+        else (torch.int4,)
+    )
     self.do_test_op(
         "_foreach_norm",
-        # TODO(b/485291373): fix _foreach_norm() failing with complex dtypes.
-        exclude_dtypes=(
-            *COMPLEX_DTYPES,
-            torch.int4,
-        ),
+        exclude_dtypes=exclude_dtypes,
         skip_if=skip_if,
     )
 
