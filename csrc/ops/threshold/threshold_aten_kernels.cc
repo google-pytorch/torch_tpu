@@ -16,15 +16,19 @@
 
 #include "csrc/ops/threshold/threshold_aten_kernels.h"
 
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Scalar.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -37,24 +41,34 @@
 #include "csrc/ops/where/where.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildThresholdShlo(mlir::MlirOp input,
                                                 mlir::MlirOp threshold,
-                                                mlir::MlirOp value) {
+                                                mlir::MlirOp value,
+                                                mlir::ElementType out_dtype) {
   TT_ASSIGN_OR_RETURN(auto condition, BuildLeShlo(input, threshold));
-  TT_ASSIGN_OR_RETURN(auto out_dtype, GetElementType(input));
-  return BuildWhereShlo(condition, value, input, out_dtype);
+  TT_ASSIGN_OR_RETURN(auto input_dtype, GetElementType(input));
+  TT_ASSIGN_OR_RETURN(auto result,
+                      BuildWhereShlo(condition, value, input, input_dtype));
+  return CastIfNeeded(result, out_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildThresholdBackwardShlo(
-    mlir::MlirOp grad_output, mlir::MlirOp self, mlir::MlirOp threshold) {
-  TT_ASSIGN_OR_RETURN(auto condition, BuildGtShlo(self, threshold));
-  TT_ASSIGN_OR_RETURN(auto out_dtype, GetElementType(grad_output));
-  auto zero = MakeConstantLike(grad_output, 0.0, out_dtype);
-  return BuildWhereShlo(condition, grad_output, zero, out_dtype);
+    mlir::MlirOp grad_output, mlir::MlirOp self, mlir::MlirOp threshold,
+    mlir::ElementType compute_dtype, mlir::ElementType out_dtype) {
+  TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
+  TT_ASSIGN_OR_RETURN(self, CastIfNeeded(self, compute_dtype));
+  TT_ASSIGN_OR_RETURN((auto [bcast_grad_output, bcast_self]),
+                      ApplyBroadcastIfNeeded(grad_output, self));
+  TT_ASSIGN_OR_RETURN(auto condition, BuildGtShlo(bcast_self, threshold));
+  auto zero = MakeConstantLike(bcast_grad_output, 0.0, compute_dtype);
+  TT_ASSIGN_OR_RETURN(auto result, BuildWhereShlo(condition, bcast_grad_output,
+                                                  zero, compute_dtype));
+  return CastIfNeeded(result, out_dtype);
 }
 
 absl::Status ValidateThresholdInputs(const at::Tensor& self) {
@@ -62,6 +76,17 @@ absl::Status ValidateThresholdInputs(const at::Tensor& self) {
                error::kPythonNotImplementedError)
       << "expected the input dtype to be non-bool and non-complex, got "
       << ToString(self.scalar_type());
+  return absl::OkStatus();
+}
+
+absl::Status ValidateThresholdScalar(const at::Scalar& scalar,
+                                     at::ScalarType dtype,
+                                     std::string_view name) {
+  TT_ASSIGN_OR_RETURN(const bool can_cast,
+                      CanCastScalarWithoutOverflow(scalar, dtype));
+  TT_RET_CHECK(can_cast, error::kInvalidArgument)
+      << "expected " << name << " to be representable as " << ToString(dtype)
+      << ", got " << ToString(scalar);
   return absl::OkStatus();
 }
 
@@ -76,6 +101,15 @@ at::Tensor& AtenThresholdOut(const at::Tensor& self,
       OpName::kThresholdOut, param_keys,
       (self, promoted_threshold, promoted_value, out), {
         TT_THROW_IF_ERROR(ValidateThresholdInputs(self));
+        TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+            << "expected out tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                           /*allow_out_dtype_cast=*/true));
+        TT_THROW_IF_ERROR(ValidateThresholdScalar(threshold, self.scalar_type(),
+                                                  "threshold"));
+        TT_THROW_IF_ERROR(
+            ValidateThresholdScalar(value, self.scalar_type(), "value"));
 
         TT_ASSIGN_OR_THROW(auto threshold_tensor,
                            promoted_threshold.GetTensor(self.scalar_type()));
@@ -85,10 +119,11 @@ at::Tensor& AtenThresholdOut(const at::Tensor& self,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-        auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
-          auto& [input, threshold, value] = inputs;
-          return BuildThresholdShlo(input, threshold, value);
-        };
+        auto op_builder =
+            [output_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+              auto& [input, threshold, value] = inputs;
+              return BuildThresholdShlo(input, threshold, value, output_dtype);
+            };
 
         TT_THROW_IF_ERROR(DispatchOpOut<3>(
             std::move(op_builder), {self, threshold_tensor, value_tensor}, out,
@@ -107,25 +142,43 @@ at::Tensor& AtenThresholdBackwardGradInput(const at::Tensor& grad_output,
   TT_KERNEL(
       OpName::kThresholdBackwardGradInput, param_keys,
       (grad_output, self, promoted_threshold, grad_input), {
+        TT_THROW_IF_ERROR(ValidateThresholdInputs(grad_output));
         TT_THROW_IF_ERROR(ValidateThresholdInputs(self));
+        TT_CHECK_THROW(IsPrivateUse1Device(grad_input), error::kInvalidArgument)
+            << "expected grad_input tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got "
+            << grad_input.device();
+
+        const at::ScalarType promoted_dtype =
+            at::result_type(grad_output, self);
+        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, promoted_dtype,
+                                           /*allow_out_dtype_cast=*/true));
+        TT_THROW_IF_ERROR(
+            ValidateThresholdScalar(threshold, promoted_dtype, "threshold"));
+        TT_ASSIGN_OR_THROW(const Dimensions out_dims,
+                           InferSize(grad_output.sizes(), self.sizes()));
 
         TT_ASSIGN_OR_THROW(auto threshold_tensor,
-                           promoted_threshold.GetTensor(self.scalar_type()));
+                           promoted_threshold.GetTensor(promoted_dtype));
 
+        TT_ASSIGN_OR_THROW(const auto compute_dtype,
+                           ConvertTo<mlir::ElementType>(promoted_dtype));
         TT_ASSIGN_OR_THROW(
             const auto output_dtype,
             ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
 
-        auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+        auto op_builder = [compute_dtype, output_dtype](
+                              FixedSizeSpan<mlir::MlirOp, 3> inputs) {
           auto& [grad_output, self, threshold] = inputs;
-          return BuildThresholdBackwardShlo(grad_output, self, threshold);
+          return BuildThresholdBackwardShlo(grad_output, self, threshold,
+                                            compute_dtype, output_dtype);
         };
 
         TT_THROW_IF_ERROR(
             DispatchOpOut<3>(std::move(op_builder),
                              {grad_output, self, threshold_tensor}, grad_input,
                              {.out_dtype = output_dtype,
-                              .out_dims = grad_output.sizes(),
+                              .out_dims = out_dims,
                               .op_param_cache_keys = std::move(param_keys)}));
         return grad_input;
       });

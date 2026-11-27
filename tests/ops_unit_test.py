@@ -31440,6 +31440,40 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_threshold_backward_broadcast_and_mixed_dtype(self):
+    grad_cpu = torch.tensor([2.0], dtype=torch.float32)
+    self_cpu = torch.tensor([[0.0, 1.0], [2.0, -1.0]], dtype=torch.float32)
+    out_cpu = torch.ops.aten.threshold_backward(grad_cpu, self_cpu, 0.5)
+    out_tpu = torch.ops.aten.threshold_backward(
+        grad_cpu.to("tpu"), self_cpu.to("tpu"), 0.5
+    )
+    self.assertEqual(out_tpu.shape, out_cpu.shape)
+    utils.assert_close(out_tpu.cpu(), out_cpu)
+
+    # Mismatched input dtypes (bfloat16 grad_output + float32 self) with
+    # widened float64 grad_input.
+    grad_bf16_cpu = torch.tensor([2.0], dtype=torch.bfloat16)
+    grad_in_f64_cpu = torch.empty((2, 2), dtype=torch.float64)
+    torch.ops.aten.threshold_backward.grad_input(
+        grad_bf16_cpu, self_cpu, 0.5, grad_input=grad_in_f64_cpu
+    )
+    grad_in_f64_tpu = torch.empty((2, 2), dtype=torch.float64, device="tpu")
+    torch.ops.aten.threshold_backward.grad_input(
+        grad_bf16_cpu.to("tpu"),
+        self_cpu.to("tpu"),
+        0.5,
+        grad_input=grad_in_f64_tpu,
+    )
+    utils.assert_close(grad_in_f64_tpu.cpu(), grad_in_f64_cpu)
+
+    # Safe widening cast on threshold.out (int32 -> float32).
+    x_i32_cpu = torch.tensor([0, 2, 5], dtype=torch.int32)
+    out_f32_cpu = torch.empty(3, dtype=torch.float32)
+    torch.threshold(x_i32_cpu, 2, -1, out=out_f32_cpu)
+    out_f32_tpu = torch.empty(3, dtype=torch.float32, device="tpu")
+    torch.threshold(x_i32_cpu.to("tpu"), 2, -1, out=out_f32_tpu)
+    utils.assert_close(out_f32_tpu.cpu(), out_f32_cpu)
+
 
 if __name__ == "__main__":
   absltest.main()
