@@ -92,6 +92,37 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildMinMaxObservationShlo(
                                      ? GetAllDimensions(self_op)
                                      : GetBatchDimensions(rank, norm_ch_axis);
 
+  // When any reduced dimension is empty, skip min/max observation so reducing
+  // over 0 elements cannot corrupt running statistics with +/-inf or NaN.
+  bool has_empty_reduce_dim = false;
+  for (int64_t dim : reduce_dims) {
+    if (self_type.getDimSize(dim) == 0) {
+      has_empty_reduce_dim = true;
+      break;
+    }
+  }
+  if (has_empty_reduce_dim) {
+    if (is_uninitialized_observer) {
+      mlir::MlirOp rmin_init = MakeConstantLike(
+          running_min_op, std::numeric_limits<double>::infinity());
+      mlir::MlirOp rmax_init = MakeConstantLike(
+          running_max_op, -std::numeric_limits<double>::infinity());
+      if (per_row_fake_quant && rank > 0) {
+        const mlir::stablehlo::DimensionInfo ch_dim =
+            GetDimensions(self_op)[norm_ch_axis];
+        if (ch_dim.boundOp.has_value()) {
+          mlir::MlirOp bound_op(self_op.getBuilder(), *ch_dim.boundOp);
+          mlir::MlirOp ch_size =
+              mlir::stablehlo::GetDimensionSize(bound_op, ch_dim.boundOpDim);
+          rmin_init = mlir::stablehlo::SetDimensionSize(rmin_init, ch_size, 0);
+          rmax_init = mlir::stablehlo::SetDimensionSize(rmax_init, ch_size, 0);
+        }
+      }
+      return std::array<mlir::MlirOp, 2>{rmin_init, rmax_init};
+    }
+    return std::array<mlir::MlirOp, 2>{running_min_op, running_max_op};
+  }
+
   // Compute min/max of the input tensor along the reduction dimensions.
   mlir::MlirOp curr_min = self_op;
   mlir::MlirOp curr_max = self_op;
