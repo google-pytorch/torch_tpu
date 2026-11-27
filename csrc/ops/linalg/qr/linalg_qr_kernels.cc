@@ -27,12 +27,15 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -42,34 +45,38 @@
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
 
-constexpr mlir::ElementType kCastDtypeForIntegerInput = mlir::ElementType::F64;
-
-absl::StatusOr<mlir::ElementType> GetOutDtype(const at::Tensor& self) {
-  const bool input_is_integer = IsInteger(self);
-  TT_ASSIGN_OR_RETURN(mlir::ElementType out_dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  if (input_is_integer) {
-    out_dtype = kCastDtypeForIntegerInput;
-  }
-  return out_dtype;
+absl::Status ValidateDevices(const at::Tensor& self, const at::Tensor& out1,
+                             const at::Tensor& out2) {
+  TT_RET_CHECK(IsPrivateUse1Device(self) && IsPrivateUse1Device(out1) &&
+                   IsPrivateUse1Device(out2),
+               error::kInvalidArgument)
+      << "expected all tensors to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << ToString(self.device()) << ", " << ToString(out1.device())
+      << ", and " << ToString(out2.device());
+  return absl::OkStatus();
 }
 
-mlir::MlirOp MaybeCastToFloat(mlir::MlirOp self_op, bool input_is_integer) {
-  return input_is_integer ? mlir::stablehlo::ConvertElementType(
-                                self_op, kCastDtypeForIntegerInput)
-                          : self_op;
+absl::Status ValidateSupportedDtype(const at::Tensor& self) {
+  const at::ScalarType dtype = self.scalar_type();
+  const bool is_supported = dtype == at::kFloat || dtype == at::kDouble ||
+                            dtype == at::kComplexFloat ||
+                            dtype == at::kComplexDouble;
+  TT_RET_CHECK(is_supported, error::kPythonNotImplementedError)
+      << "expected the input dtype to be float32, float64, complex64, or "
+         "complex128, got "
+      << ToString(dtype);
+  return absl::OkStatus();
 }
 
 absl::Status ValidateGeqrfInputs(const at::Tensor& self) {
   TT_RET_CHECK(self.dim() >= 2, error::kInvalidArgument)
       << "expected input to have at least 2 dimensions, got " << self.dim();
-  return absl::OkStatus();
+  return ValidateSupportedDtype(self);
 }
 
 template <typename ReturnType, typename DispatchFn>
@@ -77,25 +84,14 @@ ReturnType DispatchGeqrf(const at::Tensor& self,
                          std::array<mlir::ElementType, 2> out_dtypes,
                          OpParamCacheKeys param_keys,
                          DispatchFn&& dispatch_fn) {
-  // Capture metadata properties (like 'input_is_integer') by copy instead of
-  // capturing the 'at::Tensor self' handle. This prevents locking 'self' and
-  // its entire autograd graph in memory, avoiding high peak HBM consumption.
-  const bool input_is_integer = IsInteger(self);
-
-  TT_RETURN_IF_ERROR(ValidateGeqrfInputs(self));
   const int64_t m = self.size(self.dim() - 2);
   const int64_t n = self.size(self.dim() - 1);
   Dimensions tau_dims = CopyIntVector(self.sizes().slice(0, self.dim() - 2));
   tau_dims.push_back(std::min(m, n));
 
   auto op_builder =
-      [input_is_integer](
-          mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
-    const mlir::MlirOp cast_self_op =
-        MaybeCastToFloat(self_op, input_is_integer);
-    TT_ASSIGN_OR_RETURN(const MlirOpResults<2> result_ops,
-                        BuildGeqrfShlo(cast_self_op));
-    return result_ops;
+      [](mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
+    return BuildGeqrfShlo(self_op);
   };
 
   return dispatch_fn(
@@ -107,7 +103,9 @@ ReturnType DispatchGeqrf(const at::Tensor& self,
 
 absl::StatusOr<DeviceBufferRefArray<2>> Geqrf(const at::Tensor& self,
                                               OpParamCacheKeys param_keys) {
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
+  TT_RETURN_IF_ERROR(ValidateGeqrfInputs(self));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
   return DispatchGeqrf<absl::StatusOr<DeviceBufferRefArray<2>>>(
       self, {out_dtype, out_dtype}, std::move(param_keys),
       [&self](auto op_builder, DispatchOpOptions<2> options) {
@@ -118,14 +116,12 @@ absl::StatusOr<DeviceBufferRefArray<2>> Geqrf(const at::Tensor& self,
 
 absl::Status GeqrfOut(const at::Tensor& self, OpParamCacheKeys param_keys,
                       at::Tensor& a, at::Tensor& tau) {
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
-                      GetOutDtype(self));
-  const at::ScalarType result_scalar_type =
-      ConvertTo<at::ScalarType>(computation_dtype);
+  TT_RETURN_IF_ERROR(ValidateDevices(self, a, tau));
+  TT_RETURN_IF_ERROR(ValidateGeqrfInputs(self));
   TT_RETURN_IF_ERROR(
-      ValidateOutDtype(a, result_scalar_type, /*allow_out_dtype_cast=*/true));
+      ValidateOutDtype(a, self.scalar_type(), /*allow_out_dtype_cast=*/true));
   TT_RETURN_IF_ERROR(
-      ValidateOutDtype(tau, result_scalar_type, /*allow_out_dtype_cast=*/true));
+      ValidateOutDtype(tau, self.scalar_type(), /*allow_out_dtype_cast=*/true));
 
   TT_ASSIGN_OR_RETURN(const mlir::ElementType a_out_dtype,
                       ConvertTo<mlir::ElementType>(a.scalar_type()));
@@ -147,10 +143,6 @@ struct QrDims {
 
 absl::StatusOr<QrDims> ComputeQrDims(const at::Tensor& self,
                                      std::string_view mode) {
-  TT_RET_CHECK(self.dim() >= 2, error::kInvalidArgument)
-      << "expected input tensor to have at least 2 dimensions, got "
-      << self.dim();
-
   const int64_t m = self.size(self.dim() - 2);
   const int64_t n = self.size(self.dim() - 1);
   const int64_t k = std::min(m, n);
@@ -182,22 +174,25 @@ absl::StatusOr<QrDims> ComputeQrDims(const at::Tensor& self,
 
 absl::Status QrOut(const at::Tensor& self, std::string_view mode,
                    OpParamCacheKeys param_keys, at::Tensor& q, at::Tensor& r) {
+  TT_RETURN_IF_ERROR(ValidateDevices(self, q, r));
+  TT_RET_CHECK(self.dim() >= 2, error::kInvalidArgument)
+      << "expected input tensor to have at least 2 dimensions, got "
+      << self.dim();
+  TT_RETURN_IF_ERROR(ValidateSupportedDtype(self));
+  TT_ASSIGN_OR_RETURN(const QrDims qr_dims, ComputeQrDims(self, mode));
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(q, self.scalar_type(), /*allow_out_dtype_cast=*/false));
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(r, self.scalar_type(), /*allow_out_dtype_cast=*/false));
 
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
 
   auto op_builder =
       [mode = std::string(mode)](
           mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
-    TT_ASSIGN_OR_RETURN(const MlirOpResults<2> result_ops,
-                        BuildQrShlo(self_op, mode));
-    return result_ops;
+    return BuildQrShlo(self_op, mode);
   };
-
-  TT_ASSIGN_OR_RETURN(const QrDims qr_dims, ComputeQrDims(self, mode));
 
   return DispatchOpOut<1, 2>(std::move(op_builder), self, {q, r},
                              {.out_dtypes = {out_dtype, out_dtype},

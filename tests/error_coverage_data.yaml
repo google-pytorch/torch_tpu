@@ -179,7 +179,7 @@ csrc/ops/linalg/cross/linalg_cross_kernels.cc: {remaining: 0, total: 5, infeasib
 csrc/ops/linalg/linalg_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
 csrc/ops/linalg/linalg_svd_kernels.cc: {remaining: 0, total: 7, infeasible: 2}
 csrc/ops/linalg/lu/linalg_lu_kernels.cc: {remaining: 0, total: 28, infeasible: 2}
-csrc/ops/linalg/qr/linalg_qr_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
+csrc/ops/linalg/qr/linalg_qr_kernels.cc: {remaining: 0, total: 5, infeasible: 0}
 csrc/ops/linalg/solve_triangular/linalg_solve_triangular_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
 csrc/ops/linalg/vector_norm/aten_vector_norm_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
 csrc/ops/linear/linear_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 0}

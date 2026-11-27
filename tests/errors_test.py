@@ -24607,6 +24607,328 @@ class UnaryOpsErrorTest(et.ErrorTestBase):
         ):
           op(t, out=out)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int64",
+          dtype=torch.int64,
+          tpu_dtype="int64",
+          gpu_dtype="Long",
+      ),
+      dict(
+          testcase_name="int32",
+          dtype=torch.int32,
+          tpu_dtype="int32",
+          gpu_dtype="Int",
+      ),
+      dict(
+          testcase_name="bool",
+          dtype=torch.bool,
+          tpu_dtype="bool",
+          gpu_dtype="Bool",
+      ),
+      dict(
+          testcase_name="bfloat16",
+          dtype=torch.bfloat16,
+          tpu_dtype="bfloat16",
+          gpu_dtype="BFloat16",
+      ),
+      dict(
+          testcase_name="float16",
+          dtype=torch.float16,
+          tpu_dtype="float16",
+          gpu_dtype="Half",
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_dtype="Float8_e4m3fn",
+      ),
+  )
+  def test_geqrf_unsupported_input_dtypes(self, dtype, tpu_dtype, gpu_dtype):
+    for shape in ((3, 3), (0, 3)):
+      x = torch.zeros(shape, dtype=dtype, device=et.device())
+      with self.subTest(op="geqrf", shape=shape):
+        with et.assert_raises_message(
+            NotImplementedError,
+            tpu=f"""geqrf(): expected the input dtype to be float32, float64, complex64, or complex128, got {tpu_dtype}""",
+            gpu=f""""geqrf_cuda" not implemented for '{gpu_dtype}'""",
+        ):
+          torch.geqrf(x)
+
+      out_a = torch.empty((1,), dtype=dtype, device=et.device())
+      out_tau = torch.empty((1,), dtype=dtype, device=et.device())
+      with self.subTest(op="geqrf_out", shape=shape):
+        with et.assert_raises_message(
+            NotImplementedError,
+            tpu=f"""geqrf(): expected the input dtype to be float32, float64, complex64, or complex128, got {tpu_dtype}""",
+            gpu=f""""geqrf_cuda" not implemented for '{gpu_dtype}'""",
+        ):
+          torch.geqrf(x, out=(out_a, out_tau))
+        self.assertEqual(tuple(out_a.shape), (1,))
+        self.assertEqual(tuple(out_tau.shape), (1,))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int64",
+          dtype=torch.int64,
+          tpu_dtype="int64",
+          gpu_dtype="Long",
+          is_floating=False,
+      ),
+      dict(
+          testcase_name="int32",
+          dtype=torch.int32,
+          tpu_dtype="int32",
+          gpu_dtype="Int",
+          is_floating=False,
+      ),
+      dict(
+          testcase_name="bool",
+          dtype=torch.bool,
+          tpu_dtype="bool",
+          gpu_dtype="Bool",
+          is_floating=False,
+      ),
+      dict(
+          testcase_name="bfloat16",
+          dtype=torch.bfloat16,
+          tpu_dtype="bfloat16",
+          gpu_dtype="BFloat16",
+          is_floating=True,
+      ),
+      dict(
+          testcase_name="float16",
+          dtype=torch.float16,
+          tpu_dtype="float16",
+          gpu_dtype="Half",
+          is_floating=True,
+      ),
+      dict(
+          testcase_name="float8_e4m3fn",
+          dtype=torch.float8_e4m3fn,
+          tpu_dtype="float8_e4m3fn",
+          gpu_dtype="Float8_e4m3fn",
+          is_floating=True,
+      ),
+  )
+  def test_linalg_qr_unsupported_input_dtypes(
+      self, dtype, tpu_dtype, gpu_dtype, is_floating
+  ):
+    if is_floating:
+      expected_err = NotImplementedError
+      gpu_msg = f""""geqrf_cuda" not implemented for '{gpu_dtype}'"""
+      functional_tpu_msg = f"""linalg_qr(): expected the input dtype to be float32, float64, complex64, or complex128, got {tpu_dtype}"""
+    else:
+      # Upstream checkFloatingOrComplex switched from TORCH_CHECK (RuntimeError)
+      # to TORCH_CHECK_NOT_IMPLEMENTED (NotImplementedError) in PyTorch 2.15.
+      expected_err = (
+          NotImplementedError
+          if utils.get_torch_version() >= (2, 15)
+          else RuntimeError
+      )
+      gpu_msg = f"""linalg.qr: Expected a floating point or complex tensor as input. Got {gpu_dtype}"""
+      # Non-floating dtypes are rejected by PyTorch's TORCH_META_FUNC before
+      # reaching linalg_qr.out.
+      functional_tpu_msg = gpu_msg
+
+    for shape in ((3, 3), (0, 3)):
+      x = torch.zeros(shape, dtype=dtype, device=et.device())
+      with self.subTest(op="linalg_qr", shape=shape):
+        with et.assert_raises_message(
+            expected_err,
+            tpu=functional_tpu_msg,
+            gpu=gpu_msg,
+        ):
+          torch.linalg.qr(x)
+
+      out_q = torch.empty((1,), dtype=dtype, device=et.device())
+      out_r = torch.empty((1,), dtype=dtype, device=et.device())
+      with self.subTest(op="linalg_qr_out", shape=shape):
+        with et.assert_raises_message(
+            expected_err,
+            tpu=f"""linalg_qr(): expected the input dtype to be float32, float64, complex64, or complex128, got {tpu_dtype}""",
+            gpu=gpu_msg,
+        ):
+          torch.linalg.qr(x, out=(out_q, out_r))
+        if et.is_on_tpu() or not is_floating:
+          self.assertEqual(tuple(out_q.shape), (1,))
+          self.assertEqual(tuple(out_r.shape), (1,))
+
+  def test_geqrf_out_device_mismatch(self):
+    x_dev = torch.ones((3, 3), dtype=torch.float32, device=et.device())
+    x_cpu = torch.ones((3, 3), dtype=torch.float32, device="cpu")
+    a_dev = torch.empty((3, 3), dtype=torch.float32, device=et.device())
+    a_cpu = torch.empty((3, 3), dtype=torch.float32, device="cpu")
+    tau_dev = torch.empty((3,), dtype=torch.float32, device=et.device())
+    tau_cpu = torch.empty((3,), dtype=torch.float32, device="cpu")
+
+    with self.subTest(mismatch="a_on_cpu"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""geqrf(): expected all tensors to be on tpu, got tpu:0, cpu, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got tau is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_a_geqrf_out)""",
+      ):
+        torch.geqrf(x_dev, out=(a_cpu, tau_dev))
+
+    with self.subTest(mismatch="tau_on_cpu"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""geqrf(): expected all tensors to be on tpu, got tpu:0, tpu:0, and cpu""",
+          gpu="""Expected all tensors to be on the same device, but got tau is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_a_geqrf_out)""",
+      ):
+        torch.geqrf(x_dev, out=(a_dev, tau_cpu))
+
+    with self.subTest(mismatch="self_on_cpu"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""geqrf(): expected all tensors to be on tpu, got cpu, tpu:0, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_a_geqrf_out)""",
+      ):
+        torch.geqrf(x_cpu, out=(a_dev, tau_dev))
+
+  def test_linalg_qr_out_device_mismatch(self):
+    x_dev = torch.ones((3, 3), dtype=torch.float32, device=et.device())
+    x_cpu = torch.ones((3, 3), dtype=torch.float32, device="cpu")
+    q_dev = torch.empty((3, 3), dtype=torch.float32, device=et.device())
+    q_cpu = torch.empty((3, 3), dtype=torch.float32, device="cpu")
+    r_dev = torch.empty((3, 3), dtype=torch.float32, device=et.device())
+    r_cpu = torch.empty((3, 3), dtype=torch.float32, device="cpu")
+
+    with self.subTest(mismatch="q_on_cpu"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected all tensors to be on tpu, got tpu:0, cpu, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got R is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_linalg_qr_out_out)""",
+      ):
+        torch.linalg.qr(x_dev, out=(q_cpu, r_dev))
+
+    with self.subTest(mismatch="r_on_cpu"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected all tensors to be on tpu, got tpu:0, tpu:0, and cpu""",
+          gpu="""Expected all tensors to be on the same device, but got R is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_linalg_qr_out_out)""",
+      ):
+        torch.linalg.qr(x_dev, out=(q_dev, r_cpu))
+
+    with self.subTest(mismatch="self_on_cpu"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected all tensors to be on tpu, got cpu, tpu:0, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got A is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_linalg_qr_out_out)""",
+      ):
+        torch.linalg.qr(x_cpu, out=(q_dev, r_dev))
+
+  def test_geqrf_out_validation_order(self):
+    f32_1d = torch.ones((3,), dtype=torch.float32, device=et.device())
+    i64_1d = torch.ones((3,), dtype=torch.int64, device=et.device())
+    out_i32 = torch.empty((3,), dtype=torch.int32, device=et.device())
+    out_f32 = torch.empty((3,), dtype=torch.float32, device=et.device())
+    out_i64 = torch.empty((3,), dtype=torch.int64, device=et.device())
+    out_cpu = torch.empty((3,), dtype=torch.float32, device="cpu")
+
+    with self.subTest(case="device_before_rank"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""geqrf(): expected all tensors to be on tpu, got tpu:0, cpu, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got tau is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_a_geqrf_out)""",
+      ):
+        torch.geqrf(f32_1d, out=(out_cpu, out_f32))
+
+    with self.subTest(case="rank_before_out_dtype"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""geqrf(): expected input to have at least 2 dimensions, got 1""",
+          gpu="""torch.geqrf: input must have at least 2 dimensions.""",
+      ):
+        torch.geqrf(f32_1d, out=(out_i32, out_f32))
+
+    with self.subTest(case="rank_before_input_dtype"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""geqrf(): expected input to have at least 2 dimensions, got 1""",
+          gpu="""torch.geqrf: input must have at least 2 dimensions.""",
+      ):
+        torch.geqrf(i64_1d, out=(out_i64, out_i64))
+
+  def test_linalg_qr_out_validation_order(self):
+    f32_1d = torch.ones((3,), dtype=torch.float32, device=et.device())
+    i64_1d = torch.ones((3,), dtype=torch.int64, device=et.device())
+    f32_2d = torch.ones((3, 3), dtype=torch.float32, device=et.device())
+    i64_2d = torch.ones((3, 3), dtype=torch.int64, device=et.device())
+    out_f64 = torch.empty((3, 3), dtype=torch.float64, device=et.device())
+    out_f32 = torch.empty((3, 3), dtype=torch.float32, device=et.device())
+    out_i64 = torch.empty((3, 3), dtype=torch.int64, device=et.device())
+    out_cpu = torch.empty((3, 3), dtype=torch.float32, device="cpu")
+
+    with self.subTest(case="device_before_rank"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected all tensors to be on tpu, got tpu:0, cpu, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got R is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_linalg_qr_out_out)""",
+      ):
+        torch.linalg.qr(f32_1d, out=(out_cpu, out_f32))
+
+    with self.subTest(case="rank_before_out_dtype"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected input tensor to have at least 2 dimensions, got 1""",
+          gpu="""linalg.qr: The input tensor A must have at least 2 dimensions.""",
+      ):
+        torch.linalg.qr(f32_1d, out=(out_f64, out_f32))
+
+    with self.subTest(case="rank_before_mode"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected input tensor to have at least 2 dimensions, got 1""",
+          gpu="""linalg.qr: The input tensor A must have at least 2 dimensions.""",
+      ):
+        torch.linalg.qr(f32_1d, mode="invalid", out=(out_f32, out_f32))
+
+    with self.subTest(case="rank_before_input_dtype"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected input tensor to have at least 2 dimensions, got 1""",
+          gpu="""linalg.qr: The input tensor A must have at least 2 dimensions.""",
+      ):
+        torch.linalg.qr(i64_1d, out=(out_i64, out_i64))
+
+    # Upstream checkFloatingOrComplex switched from TORCH_CHECK (RuntimeError)
+    # to TORCH_CHECK_NOT_IMPLEMENTED (NotImplementedError) in PyTorch 2.15.
+    expected_dtype_err = (
+        NotImplementedError
+        if utils.get_torch_version() >= (2, 15)
+        else RuntimeError
+    )
+
+    with self.subTest(case="input_dtype_before_mode"):
+      with et.assert_raises_message(
+          expected_dtype_err,
+          tpu="""linalg_qr(): expected the input dtype to be float32, float64, complex64, or complex128, got int64""",
+          gpu="""linalg.qr: Expected a floating point or complex tensor as input. Got Long""",
+      ):
+        torch.linalg.qr(i64_2d, mode="invalid", out=(out_i64, out_i64))
+
+    with self.subTest(case="input_dtype_before_out_dtype"):
+      with et.assert_raises_message(
+          expected_dtype_err,
+          tpu="""linalg_qr(): expected the input dtype to be float32, float64, complex64, or complex128, got int64""",
+          gpu="""linalg.qr: Expected a floating point or complex tensor as input. Got Long""",
+      ):
+        torch.linalg.qr(i64_2d, out=(out_f32, out_i64))
+
+    with self.subTest(case="mode_before_out_dtype"):
+      q_small = torch.empty((1,), dtype=torch.float64, device=et.device())
+      r_small = torch.empty((1,), dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_qr(): expected mode to be one of 'reduced', 'complete', or 'r', got 'invalid'""",
+          gpu="""qr received unrecognized mode 'invalid' but expected one of 'reduced' (default), 'r', or 'complete'""",
+      ):
+        torch.linalg.qr(f32_2d, mode="invalid", out=(q_small, r_small))
+      self.assertEqual(tuple(q_small.shape), (1,))
+      self.assertEqual(tuple(r_small.shape), (1,))
+
 
 class OpsErrorCoverageTest(et.ErrorTestBase):
   """Tests error messages for ops across TPU and GPU."""
