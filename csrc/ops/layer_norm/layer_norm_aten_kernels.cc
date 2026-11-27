@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -35,6 +36,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -78,6 +80,26 @@ absl::Status ValidateInputs(const at::Tensor& input,
       << "expected the normalized shape to have <= " << input.dim()
       << " dimensions, got " << normalized_shape.size()
       << " dimensions of shape " << ToString(normalized_shape);
+
+  const int64_t axis =
+      input.dim() - static_cast<int64_t>(normalized_shape.size());
+  for (size_t i = 0; i < normalized_shape.size(); ++i) {
+    TT_RET_CHECK(input.size(axis + i) == normalized_shape[i],
+                 error::kInvalidArgument)
+        << "expected trailing dimensions of input to match normalized_shape "
+        << ToString(normalized_shape) << ", got input shape "
+        << ToString(input.sizes());
+  }
+
+  TT_RET_CHECK(!weight.has_value() || weight->sizes() == normalized_shape,
+               error::kInvalidArgument)
+      << "expected weight to have shape " << ToString(normalized_shape)
+      << ", got " << ToString(weight->sizes());
+
+  TT_RET_CHECK(!bias.has_value() || bias->sizes() == normalized_shape,
+               error::kInvalidArgument)
+      << "expected bias to have shape " << ToString(normalized_shape)
+      << ", got " << ToString(bias->sizes());
 
   return absl::OkStatus();
 }
@@ -206,6 +228,30 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
         const auto sanitized_weight = SanitizeOptionalTensor(weight_opt);
         TT_THROW_IF_ERROR(ValidateInputs(input, normalized_shape,
                                          sanitized_weight, sanitized_bias));
+        TT_CHECK_THROW(IsFloatingPoint(dY), error::kInvalidArgument)
+            << "expected grad_out dtype to be floating point, got "
+            << ToString(dY.scalar_type());
+        TT_CHECK_THROW(dY.sizes() == x.sizes(), error::kInvalidArgument)
+            << "expected grad_out shape to match input shape "
+            << ToString(x.sizes()) << ", got " << ToString(dY.sizes());
+        const size_t norm_dims = normalized_shape.size();
+        const size_t x_dims = x.dim();
+        Dimensions expected_stats_shape;
+        expected_stats_shape.reserve(x_dims);
+        for (size_t i = 0; i < x_dims - norm_dims; ++i) {
+          expected_stats_shape.push_back(x.size(i));
+        }
+        for (size_t i = x_dims - norm_dims; i < x_dims; ++i) {
+          expected_stats_shape.push_back(1);
+        }
+        TT_CHECK_THROW(mean.sizes() == expected_stats_shape,
+                       error::kInvalidArgument)
+            << "expected mean to have shape " << ToString(expected_stats_shape)
+            << ", got " << ToString(mean.sizes());
+        TT_CHECK_THROW(rstd.sizes() == expected_stats_shape,
+                       error::kInvalidArgument)
+            << "expected rstd to have shape " << ToString(expected_stats_shape)
+            << ", got " << ToString(rstd.sizes());
 
         const bool compute_dbeta = sanitized_bias.has_value();
         const bool has_weight = sanitized_weight.has_value();

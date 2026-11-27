@@ -10285,6 +10285,79 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       _run_native_layer_norm(inp, normalized_shape)
 
+  def test_native_layer_norm_shape_mismatch(self):
+    inp = torch.ones(2, 8, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""layer_norm(): expected trailing dimensions of input to match normalized_shape [4], got input shape [2, 8]""",
+        gpu="""Given normalized_shape=[4], expected input with shape [*, 4], but got input of size[2, 8]""",
+    ):
+      _run_native_layer_norm(inp, (4,))
+
+    bad_w = torch.ones(4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""layer_norm(): expected weight to have shape [8], got [4]""",
+        gpu="""Expected weight to be of same shape as normalized_shape, but got weight of shape [4] and normalized_shape = [8]""",
+    ):
+      _run_native_layer_norm(inp, (8,), weight=bad_w)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""layer_norm(): expected bias to have shape [8], got [4]""",
+        gpu="""Expected bias to be of same shape as normalized_shape, but got bias of shape [4] and normalized_shape = [8]""",
+    ):
+      _run_native_layer_norm(inp, (8,), bias=bad_w)
+
+  def test_native_layer_norm_backward_shape_mismatch(self):
+    inp = torch.ones(2, 8, device=et.device())
+    mean = torch.zeros(2, 1, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    bad_dy = torch.ones(2, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_layer_norm_backward(): expected grad_out shape to match input shape [2, 8], got [2, 4]""",
+        gpu=re.compile(r".*"),
+    ):
+      torch.ops.aten.native_layer_norm_backward(
+          bad_dy, inp, [8], mean, rstd, None, None, [True, False, False]
+      )
+
+    dy = torch.ones(2, 8, device=et.device())
+    bad_mean = torch.zeros(3, 1, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_layer_norm_backward(): expected mean to have shape [2, 1], got [3, 1]""",
+        gpu=re.compile(r".*"),
+    ):
+      torch.ops.aten.native_layer_norm_backward(
+          dy, inp, [8], bad_mean, rstd, None, None, [True, False, False]
+      )
+
+    bad_rstd = torch.ones(3, 1, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_layer_norm_backward(): expected rstd to have shape [2, 1], got [3, 1]""",
+        gpu=re.compile(r".*"),
+    ):
+      torch.ops.aten.native_layer_norm_backward(
+          dy, inp, [8], mean, bad_rstd, None, None, [True, False, False]
+      )
+
+  def test_native_layer_norm_backward_int_grad_out(self):
+    inp = torch.ones(2, 8, device=et.device())
+    mean = torch.zeros(2, 1, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    int_dy = torch.ones(2, 8, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_layer_norm_backward(): expected grad_out dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      torch.ops.aten.native_layer_norm_backward(
+          int_dy, inp, [8], mean, rstd, None, None, [True, False, False]
+      )
+
   def test_native_layer_norm_backward_normalized_shape_too_large(self):
     inp = torch.ones(5, 5, device=et.device())
     normalized_shape = (5, 3, 3)

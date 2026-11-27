@@ -32,6 +32,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
@@ -61,6 +62,13 @@ absl::StatusOr<TwoMoments> ComputeTwoMoments(
   }
 
   if (!has_dynamic_reduction_dim) {
+    if (num_elements == 0) {
+      mlir::MlirOp zero_stats = MakeConstantLike(sum_x, 0.0);
+      return TwoMoments{
+          .mean = zero_stats,
+          .mean_squared = zero_stats,
+      };
+    }
     mlir::MlirOp inv_num_elements =
         MakeConstantLike(sum_x, 1.0 / static_cast<double>(num_elements));
     return TwoMoments{
@@ -83,9 +91,17 @@ absl::StatusOr<TwoMoments> ComputeTwoMoments(
   }
   count_op =
       mlir::stablehlo::BroadcastInDim(GetTensorTypeOrDie(sum_x), count_op, {});
+  mlir::MlirOp zero_count = MakeConstantLike(count_op, 0.0);
+  mlir::MlirOp one_count = MakeConstantLike(count_op, 1.0);
+  mlir::MlirOp is_zero = mlir::stablehlo::Compare(
+      count_op, zero_count, mlir::stablehlo::ComparisonDirection::EQ);
+  mlir::MlirOp safe_count =
+      mlir::stablehlo::Select(is_zero, one_count, count_op);
+  mlir::MlirOp mean_div = mlir::stablehlo::Div(sum_x, safe_count);
+  mlir::MlirOp mean_sq_div = mlir::stablehlo::Div(sum_x_squared, safe_count);
   return TwoMoments{
-      .mean = mlir::stablehlo::Div(sum_x, count_op),
-      .mean_squared = mlir::stablehlo::Div(sum_x_squared, count_op),
+      .mean = mlir::stablehlo::Select(is_zero, zero_count, mean_div),
+      .mean_squared = mlir::stablehlo::Select(is_zero, zero_count, mean_sq_div),
   };
 }
 

@@ -21951,6 +21951,21 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  def test_layer_norm_zero_sized_normalized_dim(self):
+    """Verifies layer_norm with N=0 normalized dimension matches CUDA/CPU stats."""
+    x = torch.empty(2, 0, dtype=torch.float32)
+    out, mean, rstd = torch.ops.aten.native_layer_norm(
+        x.to("tpu"), [0], None, None, 1e-5
+    )
+    self.assertEqual(tuple(out.shape), (2, 0))
+    utils.assert_close(mean.cpu(), torch.zeros(2, 1))
+    utils.assert_close(
+        rstd.cpu(),
+        torch.full((2, 1), 1.0 / math.sqrt(1e-5)),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
   def test_layer_norm_non_contiguous(self):
     """Verifies layer_norm with transposed non-contiguous inputs."""
     torch.manual_seed(42)
