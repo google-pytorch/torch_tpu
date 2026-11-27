@@ -2519,6 +2519,30 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.take(t, torch.tensor([0], dtype=torch.int64, device=et.device()))
 
+  def test_take_out_memory_overlap(self):
+    """Tests that torch.take(..., out=...) rejects overlapping output tensors."""
+    x = torch.tensor([10.0, 20.0, 30.0], device=et.device())
+    idx = torch.tensor([2, 0, 1], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.take(x, idx, out=x)
+
+    x_long = torch.tensor([10, 20, 30], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.take(x_long, idx, out=idx)
+
+    out_internal = torch.zeros(1, device=et.device()).expand(3)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.take(x, idx, out=out_internal)
+
   def test_invalid_index_in_take(self):
     """Tests that torch.take() fails when the index is invalid."""
     if et.is_on_gpu():

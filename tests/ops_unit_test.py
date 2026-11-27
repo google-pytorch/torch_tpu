@@ -2844,12 +2844,14 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   def test_empty_tensor_empty_index_in_take(self):
     """Tests that torch.take() works when the input tensor and index are both empty."""
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.take(
-            torch.tensor([], dtype=torch.float32, device=device),
-            torch.tensor([], dtype=torch.int64, device=device),
+    for index_shape in ((0,), (2, 0), (2, 0, 3)):
+      with self.subTest(index_shape=index_shape):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, shape=index_shape: torch.take(
+                torch.empty(0, dtype=torch.float32, device=device),
+                torch.empty(shape, dtype=torch.int64, device=device),
+            )
         )
-    )
 
   def test__add_relu_Scalar(self):
     """Tests _add_relu.Scalar with various inputs and dtypes."""

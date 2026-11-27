@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <utility>
 
+#include "ATen/MemoryOverlap.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -81,11 +82,15 @@ absl::StatusOr<mlir::MlirOp> BuildTakeShlo(const int64_t num_elements,
           /*start_index_map=*/{0},
           /*index_vector_dim=*/index_type.getRank());
 
-  // When num_elements is 0, it's invalid to call Gather() with slice_sizes =
-  // {1}, so we just return an empty 1D tensor in that case.
+  // When num_elements is 0 (which ValidateTakeInputs guarantees implies
+  // index has 0 elements), it is invalid to call Gather() with slice_sizes =
+  // {1}, so reshape the empty 1D tensor directly to the index shape.
   auto result =
       num_elements == 0
-          ? reshaped_input
+          ? mlir::stablehlo::Reshape(
+                mlir::makeTensorType(builder.getContext(),
+                                     index_type.getShape(), input_element_type),
+                reshaped_input)
           : stablehlo::Gather(reshaped_input, normalized_index,
                               gather_dimension_numbers, /*slice_sizes=*/{1},
                               /*indices_are_sorted=*/false);
@@ -99,8 +104,6 @@ absl::Status ValidateIndicesInRange(const int64_t num_elements,
   if (num_indices == 0) {  // No indices to check.
     return absl::OkStatus();
   }
-  TT_RET_CHECK(num_elements > 0, error::kPythonIndexError)
-      << "input tensor must be non-empty when the index tensor is non-empty";
   const auto max_index = index.max().cpu().item<int64_t>();
   TT_RET_CHECK(max_index < num_elements, error::kPythonIndexError)
       << "expected indices to be in range [" << -num_elements << ", "
@@ -120,6 +123,11 @@ absl::Status ValidateTakeInputs(const at::Tensor& self,
       << "expected index dtype to be int64, got " << ToString(index_dtype);
 
   TT_ASSIGN_OR_RETURN(const int64_t num_elements, NumElements(self));
+  TT_ASSIGN_OR_RETURN(const int64_t num_indices, NumElements(index));
+  if (num_indices > 0) {
+    TT_RET_CHECK(num_elements > 0, error::kPythonIndexError)
+        << "input tensor must be non-empty when the index tensor is non-empty";
+  }
   if (GetEnableDebugChecks()) {
     TT_RETURN_IF_ERROR(ValidateIndicesInRange(num_elements, index));
   } else {
@@ -164,6 +172,9 @@ at::Tensor AtenTake(const at::Tensor& self, const at::Tensor& index) {
 at::Tensor& AtenTakeOut(const at::Tensor& self, const at::Tensor& index,
                         at::Tensor& out) {
   TT_KERNEL(OpName::kTakeOut, _, (self, index, out), {
+    at::assert_no_internal_overlap(out);
+    at::assert_no_overlap(out, self);
+    at::assert_no_overlap(out, index);
     TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
                                        /*allow_out_dtype_cast=*/false));
     TT_THROW_IF_ERROR(ValidateTakeInputs(self, index));
