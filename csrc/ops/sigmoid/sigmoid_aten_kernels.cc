@@ -20,8 +20,10 @@
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
@@ -30,6 +32,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/binary_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -40,6 +43,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -63,8 +67,10 @@ absl::StatusOr<mlir::MlirOp> BuildSigmoidBackwardShlo(mlir::MlirOp grad_output,
 
   // For complex numbers, the gradient is grad_output * conj(f'(x))
   TT_ASSIGN_OR_RETURN(auto conj_mul, BuildConjPhysicalShlo(mul));
+  TT_ASSIGN_OR_RETURN((auto [bcast_grad_output, bcast_conj_mul]),
+                      ApplyBroadcastIfNeeded(grad_output, conj_mul));
 
-  auto result = mlir::stablehlo::Mul(grad_output, conj_mul);
+  auto result = mlir::stablehlo::Mul(bcast_grad_output, bcast_conj_mul);
   return CastIfNeeded(result, orig_dtype);
 }
 
@@ -245,30 +251,15 @@ at::Tensor& AtenSigmoidBackwardGradInput(const at::Tensor& grad_output,
                                          at::Tensor& grad_input) {
   TT_KERNEL(
       OpName::kSigmoidBackwardGradInput, _, (grad_output, output, grad_input), {
-        TT_CHECK_THROW(output.is_floating_point() || output.is_complex(),
-                       error::kPythonNotImplementedError)
-            << "not implemented for input type "
-            << ToString(output.scalar_type());
-        TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=all dtypes are supported.
-            const auto output_mlir_type,
-            ConvertTo<mlir::ElementType>(output.scalar_type()));
-        const auto comp_type = ToAccumulateType(output.scalar_type());
-        TT_ASSIGN_OR_THROW(const auto computation_dtype,
-                           ConvertTo<mlir::ElementType>(comp_type));
-
-        DispatchOpOptions<1> options = {
-            .out_dtype = output_mlir_type,
-            .out_dims = grad_input.sizes(),
-            .computation_dtype = computation_dtype,
-            .op_param_cache_keys = OpParamCacheKeys::Empty(),
-        };
-        TT_THROW_IF_ERROR(DispatchOpOut<2>(
-            [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-                -> absl::StatusOr<mlir::MlirOp> {
-              auto& [grad_output_op, output_op] = inputs;
-              return BuildSigmoidBackwardShlo(grad_output_op, output_op);
-            },
-            {grad_output, output}, grad_input, std::move(options)));
+        const c10::ScalarType promoted_type =
+            at::result_type(grad_output, output);
+        TT_CHECK_THROW(
+            c10::isFloatingType(promoted_type) || IsComplex(promoted_type),
+            error::kPythonNotImplementedError)
+            << "not implemented for input type " << ToString(promoted_type);
+        TT_THROW_IF_ERROR(BinaryOpOut(
+            grad_output, output, grad_input, BuildSigmoidBackwardShlo,
+            {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
         return grad_input;
       });
 }

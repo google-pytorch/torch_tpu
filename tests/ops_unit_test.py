@@ -28954,6 +28954,42 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  def test_sigmoid_backward_broadcast_mixed_and_empty_out(self):
+    """Tests sigmoid_backward broadcasting, mixed dtypes, and empty grad_input."""
+    # 1. Broadcasted shapes
+    grad_bcast = torch.randn(2, 3, dtype=torch.float32)
+    out_bcast = torch.sigmoid(torch.randn(1, 3, dtype=torch.float32))
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.sigmoid_backward(
+            grad_bcast.to(device), out_bcast.to(device)
+        )
+    )
+
+    # 2. Empty pre-allocated grad_input resized by .grad_input
+    def run_out(device):
+      grad_in = torch.empty(0, dtype=torch.float32, device=device)
+      torch.ops.aten.sigmoid_backward.grad_input(
+          grad_bcast.to(device), out_bcast.to(device), grad_input=grad_in
+      )
+      return grad_in
+
+    self.assert_close_tpu_vs_cpu(run_out)
+
+    # 3. Mixed dtypes (float64 + float32, complex64 + float32, bf16 + float32)
+    for g_dtype, o_dtype in (
+        (torch.float64, torch.float32),
+        (torch.complex64, torch.float32),
+        (torch.bfloat16, torch.float32),
+    ):
+      with self.subTest(g_dtype=g_dtype, o_dtype=o_dtype):
+        g = torch.tensor([1.0, 2.0], dtype=g_dtype)
+        o = torch.tensor([0.25, 0.5], dtype=o_dtype)
+        self.assert_close_tpu_vs_cpu(
+            lambda device, g=g, o=o: torch.ops.aten.sigmoid_backward(
+                g.to(device), o.to(device)
+            )
+        )
+
   def test_sort_out_resize(self):
     def test_fn(device):
       t = torch.tensor([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]], device=device)
