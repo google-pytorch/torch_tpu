@@ -8186,6 +8186,57 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
       self.assert_close_tpu_vs_cpu(run_out)
 
+  @parameterized.product(
+      dtype=(torch.float32, torch.bfloat16, torch.float16),
+      variant=("function", "inplace", "out", "compiled"),
+      decimals=(1, 3, -1, -3, 38, -38, 39, -39),
+  )
+  def test_round_decimals_matches_cpu_bitwise(self, dtype, variant, decimals):
+    """round() needs the exact quotient; a plain TPU division is 1 ULP off."""
+    # float64 is left out: TPU emulates it and is not bit-exact.
+    # Ties are odd multiples of half the rounding step 10^-decimals. That step
+    # is not a binary fraction for decimals > 0, where odd multiples of
+    # 2^-(decimals + 1) are ties too: they scale to odd multiples of
+    # 5^decimals / 2.
+    half_step = 0.5 * (0.5**decimals if decimals > 0 else 10.0**-decimals)
+    ties = torch.arange(1, 64, 2, dtype=torch.float64) * half_step
+    # Converting to `dtype` would round the other values off the tie.
+    ties = ties[ties.to(dtype).to(torch.float64) == ties]
+    # 1 / 10^38 is subnormal in float32 and 10^39 is infinite, so these also
+    # cover tiny results and the ones CPU overflows to infinity or NaN.
+    special = torch.tensor(
+        [0.0, -0.0, 7e-38, 1e-35, 1.25, -3.5, 6e4, 3e38, -3e38]
+        + [math.inf, -math.inf, math.nan],
+        dtype=torch.float64,
+    )
+    cpu_input = torch.cat([ties, -ties, special]).to(dtype)
+    tpu_input = cpu_input.to("tpu")
+    match variant:
+      case "function":
+        actual = torch.round(tpu_input, decimals=decimals)
+      case "inplace":
+        actual = tpu_input.round_(decimals=decimals)
+      case "out":
+        actual = torch.round(
+            tpu_input, decimals=decimals, out=torch.empty_like(tpu_input)
+        )
+      case "compiled":
+        actual = torch.compile(
+            lambda x: torch.round(x, decimals=decimals),
+            backend="tpu",
+            fullgraph=True,
+        )(tpu_input)
+      case _:
+        self.fail(f"Unexpected variant: {variant}")
+    actual = actual.cpu()
+    expected = torch.round(cpu_input, decimals=decimals)
+
+    utils.assert_close(actual, expected, rtol=0, atol=0)
+    # assert_close treats -0.0 and 0.0 as equal.
+    self.assertEqual(
+        torch.signbit(actual.nan_to_num()), torch.signbit(expected.nan_to_num())
+    )
+
   def test_linalg_lu_factor_ex_empty_and_aliasing(self):
     # Empty tensors with pivot=False must return early without raising
     # (ops_test.py skips all pivot=False samples via
