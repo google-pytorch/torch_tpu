@@ -38,11 +38,14 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/ArrayRef.h"  // IWYU pragma: keep for operator==
 #include "c10/util/DimVector.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -73,6 +76,7 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"
 #include "torch/csrc/autograd/functions/utils.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 // =============================================================================
 // Fused StableHLO GRU (aten::gru.input) Kernel Implementation for Google TPU
@@ -295,6 +299,8 @@ absl::Status ValidateGruWeights(const at::TensorList params,
 // hyperparameters.
 //
 // What it computes / checks:
+// - Confirms `input` is floating point, and that `hx` and `params` have its
+// dtype or the dtype it is computed in.
 // - Confirms `input` is 3D: [seq_len, batch, input_size] or [batch, seq_len,
 // input_size].
 // - Verifies sequence length, batch size, and layer count are strictly positive
@@ -322,6 +328,31 @@ absl::Status ValidateGruInputs(const at::Tensor& input, const at::Tensor& hx,
                                const double dropout, const bool train,
                                const bool bidirectional,
                                const bool batch_first) {
+  const at::ScalarType dtype = input.scalar_type();
+  TT_RET_CHECK(c10::isFloatingType(dtype), error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(dtype);
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(dtype));
+  // A bfloat16 or float16 input is computed in float32, so the state and
+  // parameters may be float32 too. No other dtype is converted.
+  const at::ScalarType compute_dtype = ToAccumulateType(dtype);
+  const auto allowed_dtypes = [dtype, compute_dtype]() -> std::string {
+    if (compute_dtype != dtype) {
+      return absl::StrCat(ToString(dtype), " or ", ToString(compute_dtype));
+    }
+    return std::string(ToString(dtype));
+  };
+  TT_RET_CHECK(hx.scalar_type() == dtype || hx.scalar_type() == compute_dtype,
+               error::kInvalidArgument)
+      << "expected the initial hidden state (hx) to have dtype "
+      << allowed_dtypes() << ", got " << ToString(hx.scalar_type());
+  for (const at::Tensor& param : params) {
+    TT_RET_CHECK(
+        param.scalar_type() == dtype || param.scalar_type() == compute_dtype,
+        error::kInvalidArgument)
+        << "expected the weights and biases (params) to have dtype "
+        << allowed_dtypes() << ", got " << ToString(param.scalar_type());
+  }
+
   // Check input tensor dimensionality
   TT_RET_CHECK(input.dim() == 3, error::kInvalidArgument)
       << "expected input to be a 3D tensor, got " << input.dim() << "D";
@@ -850,7 +881,10 @@ inline InterLayerDropoutResult ApplyInterLayerDropout(mlir::MlirOp layer_out,
   // Clamp full dropout to complete zeroing
   if (dropout >= 1.0) {
     mlir::MlirOp zero_const = MakeConstantLike(layer_out, 0.0);
-    mlir::MlirOp false_const = MakeConstantLike(rand_tensor, false);
+    // The backward pass selects with this mask, so it must be boolean rather
+    // than have the float type of `rand_tensor`.
+    mlir::MlirOp false_const =
+        MakeConstantLike(rand_tensor, false, mlir::ElementType::PRED);
     return {zero_const, false_const};
   }
   // Generate boolean retention mask: rand >= dropout
@@ -886,9 +920,14 @@ inline mlir::MlirOp ApplyDropoutBackward(mlir::MlirOp grad_output,
   if (dropout <= 0.0) {
     return grad_output;
   }
+  mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
+  if (dropout >= 1.0) {
+    // Everything was dropped, and scaling 0 by 1 / (1 - dropout) = inf would
+    // give NaN.
+    return zero;
+  }
   // Zero out gradients where activations were dropped and scale retained
   // gradients
-  mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
   mlir::MlirOp masked = mlir::stablehlo::Select(mask, grad_output, zero);
   const double scale = 1.0 / (1.0 - dropout);
   mlir::MlirOp scale_const = MakeConstantLike(masked, scale);

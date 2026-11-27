@@ -20797,6 +20797,100 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
           x, hx, params, True, 1, -0.5, True, False, False
       )
 
+  @parameterized.named_parameters(
+      ("int32", torch.int32, "int32", "Int"),
+      ("float8_e4m3fn", torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+  )
+  def test_gru_input_unsupported_dtypes(
+      self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
+  ):
+    x, hx, params = _get_gru_inputs()
+    x = x.to(dtype)
+    hx = hx.to(dtype)
+    params = [p.to(dtype) for p in params]
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""gru(): not implemented for {tpu_dtype}""",
+        gpu=f""""addmm_cuda" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten.gru.input(x, hx, params, True, 1, 0.0, False, False, False)
+
+  def test_gru_input_hx_dtype_mismatch(self):
+    x, hx, params = _get_gru_inputs()
+    hx = hx.to(torch.bfloat16)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the initial hidden state (hx) to have dtype float32, got bfloat16""",
+        gpu="""Input and hidden tensors are not the same dtype, found input tensor with Float and hidden tensor with BFloat16""",
+    ):
+      torch.ops.aten.gru.input(x, hx, params, True, 1, 0.0, False, False, False)
+
+  def test_gru_input_params_dtype_mismatch(self):
+    x, hx, params = _get_gru_inputs()
+    x = x.to(torch.bfloat16)
+    hx = hx.to(torch.bfloat16)
+    params = [p.to(torch.float64) for p in params]
+
+    # A bfloat16 input is computed in float32, so float32 would be accepted.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the weights and biases (params) to have dtype bfloat16 or float32, got float64""",
+        gpu="""Input and parameter tensors are not the same dtype, found input tensor with BFloat16 and parameter tensor with Double""",
+    ):
+      torch.ops.aten.gru.input(x, hx, params, True, 1, 0.0, False, False, False)
+
+  @parameterized.named_parameters(
+      ("int32", torch.int32, "int32", "Int"),
+      ("float8_e4m3fn", torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+  )
+  def test_lstm_input_unsupported_dtypes(
+      self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
+  ):
+    x, hx, params = _get_lstm_inputs()
+    x = x.to(dtype)
+    hx = [h.to(dtype) for h in hx]
+    params = [p.to(dtype) for p in params]
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""lstm(): not implemented for {tpu_dtype}""",
+        gpu=f""""addmm_cuda" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_hx_dtype_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    hx = [h.to(torch.bfloat16) for h in hx]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the initial states (hx) to have dtype float32, got bfloat16""",
+        gpu="""Input and hidden tensors are not the same dtype, found input tensor with Float and hidden tensor with BFloat16""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_params_dtype_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    x = x.to(torch.bfloat16)
+    hx = [h.to(torch.bfloat16) for h in hx]
+    params = [p.to(torch.float64) for p in params]
+
+    # A bfloat16 input is computed in float32, so float32 would be accepted.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the weights and biases (params) to have dtype bfloat16 or float32, got float64""",
+        gpu="""Input and parameter tensors are not the same dtype, found input tensor with BFloat16 and parameter tensor with Double""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params, True, 1, 0.0, False, False, False
+      )
+
   def test_jagged_to_padded_values_0d(self):
     values = torch.tensor(1.0, device=et.device())
     offsets = torch.tensor([0], dtype=torch.int64, device=et.device())
