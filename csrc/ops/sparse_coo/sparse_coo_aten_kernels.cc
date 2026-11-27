@@ -27,6 +27,7 @@
 #include "ATen/native/SparseTensorUtils.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/result_type.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
@@ -61,6 +62,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/sparse_coo/sparse_coo.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
@@ -401,10 +403,26 @@ at::Tensor MakeSparseCooTensor(const int64_t sparse_dim,
 
 namespace {
 
+absl::Status ValidateSparseCooDims(const int64_t sparse_dim,
+                                   const int64_t dense_dim,
+                                   const at::IntArrayRef size) {
+  TT_RET_CHECK(sparse_dim >= 0, error::kInvalidArgument)
+      << "expected sparse_dim to be >= 0, got " << sparse_dim;
+  TT_RET_CHECK(dense_dim >= 0, error::kInvalidArgument)
+      << "expected dense_dim to be >= 0, got " << dense_dim;
+  const int64_t ndim = static_cast<int64_t>(size.size());
+  TT_RET_CHECK(sparse_dim <= ndim && dense_dim == ndim - sparse_dim,
+               error::kInvalidArgument)
+      << "expected sparse_dim + dense_dim to equal len(size) (" << size.size()
+      << "), got sparse_dim=" << sparse_dim << " and dense_dim=" << dense_dim;
+  return absl::OkStatus();
+}
+
 at::Tensor SparseCooTensorWithDimsImpl(
     const int64_t sparse_dim, const int64_t dense_dim,
     const at::IntArrayRef size, const std::optional<at::ScalarType> dtype,
     const std::optional<at::Device> device) {
+  TT_THROW_IF_ERROR(ValidateSparseCooDims(sparse_dim, dense_dim, size));
   const at::ScalarType target_dtype =
       dtype.value_or(c10::get_default_dtype_as_scalartype());
   const at::Device target_device =
@@ -928,20 +946,37 @@ at::Tensor AtenSparseCooTensorWithDimsAndTensors(
   for (const auto& s : size) {
     int_size_vec.push_back(s.guard_int(__FILE__, __LINE__));
   }
-  TT_KERNEL(OpName::kSparseCooTensorWithDimsAndTensors, _,
-            (IgnoreInCacheKey(sparse_dim, "Doesn't affect SHLO"),
-             IgnoreInCacheKey(dense_dim, "Doesn't affect SHLO"),
-             IgnoreInCacheKey(int_size_vec, "Doesn't affect SHLO"), indices,
-             values, IgnoreInCacheKey(dtype, "Metadata wrapper"),
-             IgnoreInCacheKey(layout, "Metadata wrapper"),
-             IgnoreInCacheKey(device, "Metadata wrapper"),
-             IgnoreInCacheKey(pin_memory, "Metadata wrapper"),
-             IgnoreInCacheKey(is_coalesced, "Metadata wrapper")),
-            {
-              const bool coalesced = is_coalesced.value_or(values.size(0) < 2);
-              return MakeSparseCooTensor(sparse_dim, dense_dim, int_size_vec,
-                                         indices, values, coalesced);
-            });
+  TT_KERNEL(
+      OpName::kSparseCooTensorWithDimsAndTensors, _,
+      (IgnoreInCacheKey(sparse_dim, "Doesn't affect SHLO"),
+       IgnoreInCacheKey(dense_dim, "Doesn't affect SHLO"),
+       IgnoreInCacheKey(int_size_vec, "Doesn't affect SHLO"), indices, values,
+       IgnoreInCacheKey(dtype, "Metadata wrapper"),
+       IgnoreInCacheKey(layout, "Metadata wrapper"),
+       IgnoreInCacheKey(device, "Metadata wrapper"),
+       IgnoreInCacheKey(pin_memory, "Metadata wrapper"),
+       IgnoreInCacheKey(is_coalesced, "Metadata wrapper")),
+      {
+        TT_THROW_IF_ERROR(
+            ValidateSparseCooDims(sparse_dim, dense_dim, int_size_vec));
+        if (dtype.has_value()) {
+          TT_CHECK_THROW(values.scalar_type() == *dtype,
+                         error::kInvalidArgument)
+              << "expected values dtype to match requested dtype "
+              << ToString(*dtype) << ", got " << ToString(values.scalar_type());
+        }
+        if (device.has_value()) {
+          const bool same_device = device->type() == values.device().type() &&
+                                   (!device->has_index() ||
+                                    device->index() == values.device().index());
+          TT_CHECK_THROW(same_device, error::kInvalidArgument)
+              << "expected values device to match requested device " << *device
+              << ", got " << values.device();
+        }
+        const bool coalesced = is_coalesced.value_or(values.size(0) < 2);
+        return MakeSparseCooTensor(sparse_dim, dense_dim, int_size_vec, indices,
+                                   values, coalesced);
+      });
 }
 
 const at::Tensor& AtenSparseResize_(const at::Tensor& self,
