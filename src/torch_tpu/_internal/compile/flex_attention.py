@@ -282,38 +282,48 @@ def flex_attention_fwd(
   return out, lse.reshape(query.shape[:3])
 
 
-def _dkv_kernel_args(
+def _bwd_kernel_args(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
     block_mask: fa.BlockMask,
     *,
     scale: float | None = None,
-) -> tuple[object, ...]:
-  """Returns the arguments of `_flex_attention_bwd_dkv` after di."""
+) -> tuple[tuple[object, ...], tuple[object, ...]]:
+  """Returns the arguments after di of `_flex_attention_bwd_dq` and `_dkv`.
+
+  Both kernels share the tile and the mask MLIR. dQ walks the KV blocks of each
+  query block (the forward's tables); dK / dV walk the query blocks of each KV
+  block (the transposed tables).
+  """
   if scale is None:
     scale = 1.0 / math.sqrt(query.shape[-1])
   tile, mask_mod = _tile_and_mask_mod(
       query, key, value, block_mask, backward=True
   )
-  q_num_blocks, q_indices, (q_block, kv_block) = _block_tables(
-      block_mask, mask_mod is not None, tile, by_kv=True
-  )
-  mask_batch, mask_heads, _ = q_num_blocks.shape
+  has_mask_mod = mask_mod is not None
+  kv_tables = _block_tables(block_mask, has_mask_mod, tile)
+  q_tables = _block_tables(block_mask, has_mask_mod, tile, by_kv=True)
+  q_block, kv_block = kv_tables[2]
   mask_mlir = ""
-  if mask_mod is not None:
+  if has_mask_mod:
     mask_mlir = mod_to_mlir(
         mask_mod, q_block=q_block, kv_block=kv_block, has_score=False
     )
-  return (
-      *_flat_tables(q_num_blocks, q_indices, query.device),
-      mask_batch,
-      mask_heads,
-      q_block,
-      kv_block,
-      float(scale),
-      mask_mlir,
-  )
+
+  def args(num_blocks, indices, _):
+    mask_batch, mask_heads, _ = num_blocks.shape
+    return (
+        *_flat_tables(num_blocks, indices, query.device),
+        mask_batch,
+        mask_heads,
+        q_block,
+        kv_block,
+        float(scale),
+        mask_mlir,
+    )
+
+  return args(*kv_tables), args(*q_tables)
 
 
 def flex_attention_bwd(
@@ -326,8 +336,8 @@ def flex_attention_bwd(
     block_mask: fa.BlockMask,
     *,
     scale: float | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-  """Returns (dk, dv) of `flex_attention_fwd` for the gradient `grad_out`.
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  """Returns (dq, dk, dv) of `flex_attention_fwd` for the gradient `grad_out`.
 
   Args: query, key, value, block_mask, scale: As in `flex_attention_fwd`.
     out: The forward's output, [B, Hq, T, Dv].
@@ -335,17 +345,17 @@ def flex_attention_bwd(
     grad_out: Gradient of the loss with respect to `out`, like `out`.
 
   Returns:
-    `(dk, dv)`: [B, Hkv, S, D] and [B, Hkv, S, Dv] in query's dtype.
-    score_mod is not supported yet.
+    `(dq, dk, dv)`: [B, Hq, T, D], [B, Hkv, S, D] and [B, Hkv, S, Dv] in
+    query's dtype. score_mod is not supported yet.
   """
   rows = (*query.shape[:2], 1, query.shape[2])
-  di = (grad_out.float() * out.float()).sum(-1)
-  return torch.ops.tpu._flex_attention_bwd_dkv(
-      query,
-      key,
-      value,
-      grad_out,
-      lse.reshape(rows),
-      di.reshape(rows),
-      *_dkv_kernel_args(query, key, value, block_mask, scale=scale),
+  lse = lse.reshape(rows)
+  # di = rowsum(dO * O), the softmax backward's per-row term.
+  di = (grad_out.float() * out.float()).sum(-1).reshape(rows)
+  inputs = (query, key, value, grad_out, lse, di)
+  dq_args, dkv_args = _bwd_kernel_args(
+      query, key, value, block_mask, scale=scale
   )
+  dq = torch.ops.tpu._flex_attention_bwd_dq(*inputs, *dq_args)
+  dk, dv = torch.ops.tpu._flex_attention_bwd_dkv(*inputs, *dkv_args)
+  return dq, dk, dv
