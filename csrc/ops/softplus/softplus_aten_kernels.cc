@@ -20,15 +20,19 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -137,24 +141,33 @@ at::Tensor& AtenSoftplusBackwardGradInput(const at::Tensor& grad_output,
   TT_KERNEL(
       OpName::kSoftplusBackwardGradInput, param_keys,
       (grad_output, self, promoted_beta, promoted_threshold, grad_input), {
-        TT_CHECK_THROW(
-            !isIntegralType(self.scalar_type(), /*includeBool=*/true) &&
-                !IsComplex(self),
-            error::kPythonNotImplementedError)
+        TT_THROW_IF_ERROR(GetBaseBuffer(grad_input).status());
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_output));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self));
+        const at::ScalarType promoted_type = at::result_type(grad_output, self);
+        TT_CHECK_THROW(c10::isFloatingType(promoted_type),
+                       error::kPythonNotImplementedError)
             << "expected the input dtype to be floating-point, got "
-            << ToString(self.scalar_type());
+            << ToString(promoted_type);
 
-        TT_CHECK_THROW(grad_output.scalar_type() == self.scalar_type() &&
-                           grad_input.scalar_type() == self.scalar_type(),
-                       error::kInvalidArgument)
-            << "expected dtype to be the same across grad_output, self, and "
-            << "grad_input, got grad_output="
-            << ToString(grad_output.scalar_type())
-            << ", self=" << ToString(self.scalar_type())
-            << ", and grad_input=" << ToString(grad_input.scalar_type());
+        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, promoted_type,
+                                           /*allow_out_dtype_cast=*/true));
+        TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(grad_input));
+
+        TT_ASSIGN_OR_THROW(const Dimensions out_dims,
+                           InferSize(grad_output.sizes(), self.sizes()));
+        if (grad_input.is_alias_of(grad_output) ||
+            grad_input.is_alias_of(self)) {
+          TT_CHECK_THROW(absl::MakeConstSpan(grad_input.sizes()) == out_dims,
+                         error::kInvalidArgument)
+              << "output with shape " << ToString(grad_input.sizes())
+              << " doesn't match the broadcast shape of the tensor being "
+                 "operated on in-place, which has shape "
+              << ToString(out_dims);
+        }
 
         const at::ScalarType comp_scalar_type =
-            InferComputationDtype(grad_input.scalar_type());
+            InferComputationDtype(promoted_type);
         TT_ASSIGN_OR_THROW(const at::Tensor beta_tensor,
                            promoted_beta.GetTensor(comp_scalar_type));
         TT_ASSIGN_OR_THROW(const at::Tensor threshold_tensor,
@@ -164,7 +177,7 @@ at::Tensor& AtenSoftplusBackwardGradInput(const at::Tensor& grad_output,
             const mlir::ElementType out_dtype,
             ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
         TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
-                           InferComputationDtype(out_dtype));
+                           ConvertTo<mlir::ElementType>(comp_scalar_type));
 
         auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
@@ -176,7 +189,7 @@ at::Tensor& AtenSoftplusBackwardGradInput(const at::Tensor& grad_output,
             std::move(op_builder),
             {grad_output, self, beta_tensor, threshold_tensor}, grad_input,
             {.out_dtype = out_dtype,
-             .out_dims = CopyIntVector(grad_input.sizes()),
+             .out_dims = out_dims,
              .computation_dtype = computation_dtype,
              .op_param_cache_keys = std::move(param_keys)}));
         return grad_input;

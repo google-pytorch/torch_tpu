@@ -11534,19 +11534,134 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.ops.aten.softplus_backward(t_complex64, t_complex64, 1.0, 20.0)
 
-  def test_softplus_backward_mismatched_dtypes(self):
-    if et.is_on_gpu():
-      self.skipTest("GPU behavior difference")
+    t_float32 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus_backward(): expected the input dtype to be floating-point, got complex64""",
+        gpu=""""softplus_backward_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.ops.aten.softplus_backward(t_complex64, t_float32, 1.0, 20.0)
 
-    # TPU pass raises the strict consistency validation error!
-    grad_float = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
-    self_bfloat = torch.ones(2, 2, device=et.device(), dtype=torch.bfloat16)
+  def test_softplus_backward_grad_input_invalid_output_dtype(self):
+    grad = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    grad_input_int = torch.empty(2, 2, device=et.device(), dtype=torch.int32)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""softplus_backward(): expected dtype to be the same across grad_output, self, and grad_input, got grad_output=float32, self=bfloat16, and grad_input=float32""",
+        tpu="""softplus_backward(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
     ):
-      torch.ops.aten.softplus_backward(grad_float, self_bfloat, 1.0, 20.0)
+      torch.ops.aten.softplus_backward.grad_input(
+          grad, self_t, 1.0, 20.0, grad_input=grad_input_int
+      )
+
+    grad_input_bool = torch.empty(2, 2, device=et.device(), dtype=torch.bool)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus_backward(): result type float32 can't be cast to the desired output type bool""",
+        gpu="""result type Float can't be cast to the desired output type Bool""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          grad, self_t, 1.0, 20.0, grad_input=grad_input_bool
+      )
+
+  def test_softplus_backward_shape_mismatch(self):
+    grad_out = torch.ones((2, 4), device=et.device(), dtype=torch.float32)
+    x = torch.full((3,), 0.5, device=et.device(), dtype=torch.float32)
+    out = torch.empty((2, 4), device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.softplus_backward(grad_out, x, 1.0, 20.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus_backward(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          grad_out, x, 1.0, 20.0, grad_input=out
+      )
+
+  def test_softplus_backward_grad_input_broadcast_alias(self):
+    grad_large = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    x_small = torch.full((1, 3), 0.5, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          grad_large, x_small, 1.0, 20.0, grad_input=x_small
+      )
+    self.assertEqual(x_small.shape, (1, 3))
+
+    grad_small = torch.ones((1, 3), device=et.device(), dtype=torch.float32)
+    x_large = torch.full((2, 3), 0.5, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus_backward(): output with shape [1, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [2, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          grad_small, x_large, 1.0, 20.0, grad_input=grad_small
+      )
+    self.assertEqual(grad_small.shape, (1, 3))
+
+  def test_softplus_backward_grad_input_cpu_tensor(self):
+    grad = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    x = torch.full((2, 3), 0.5, device=et.device(), dtype=torch.float32)
+    grad_input_cpu = torch.empty(0, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus_backward(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grad_output is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_softplus_backward_out_grad_input)""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          grad, x, 1.0, 20.0, grad_input=grad_input_cpu
+      )
+    self.assertEqual(grad_input_cpu.shape, (0,))
+
+  def test_softplus_backward_float8_e4m3fn_not_implemented(self):
+    t_fp8 = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
+    t_f32 = torch.ones((2, 2), dtype=torch.float32, device=et.device())
+    grad_input_f32 = torch.empty(
+        (2, 2), dtype=torch.float32, device=et.device()
+    )
+
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu="""softplus_backward(): not implemented for float8_e4m3fn""",
+        gpu="""Promotion for Float8 Types is not supported, attempted to promote Float8_e4m3fn and Float""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          t_fp8, t_f32, 1.0, 20.0, grad_input=grad_input_f32
+      )
+
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu="""softplus_backward(): not implemented for float8_e4m3fn""",
+        gpu="""Promotion for Float8 Types is not supported, attempted to promote Float and Float8_e4m3fn""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          t_f32, t_fp8, 1.0, 20.0, grad_input=grad_input_f32
+      )
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""softplus_backward(): not implemented for float8_e4m3fn""",
+        gpu=""""softplus_backward_cuda" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten.softplus_backward.grad_input(
+          t_f32, t_f32, 1.0, 20.0, grad_input=t_fp8
+      )
 
   def test_hardtanh_unsupported_complex_dtype(self):
     t = torch.ones(2, device=et.device(), dtype=torch.complex64)
