@@ -265,9 +265,13 @@ at::Tensor& AtenAbsOut(const at::Tensor& self, at::Tensor& out) {
 at::Tensor& AtenErfOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kErfOut, param_keys, (self, out), {
     TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
-    TT_ASSIGN_OR_THROW(const auto out_dtype,
-                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
-    auto op_builder =
+    const c10::ScalarType out_scalar_type = InferOutputDtype(self);
+    if (!IsFloatingPoint(self)) {
+      TT_THROW_IF_ERROR(param_keys.SetParam("default_dtype", out_scalar_type));
+    }
+    TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
+                       ConvertTo<mlir::ElementType>(out_scalar_type));
+    MlirUnaryOpBuilder op_builder =
         [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildErfShlo(input, out_dtype);
     };
@@ -281,9 +285,13 @@ at::Tensor& AtenErfOut(const at::Tensor& self, at::Tensor& out) {
 at::Tensor& AtenErfInvOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kErfInvOut, param_keys, (self, out), {
     TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
-    TT_ASSIGN_OR_THROW(const auto out_dtype,
-                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
-    auto op_builder =
+    const c10::ScalarType out_scalar_type = InferOutputDtype(self);
+    if (!IsFloatingPoint(self)) {
+      TT_THROW_IF_ERROR(param_keys.SetParam("default_dtype", out_scalar_type));
+    }
+    TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
+                       ConvertTo<mlir::ElementType>(out_scalar_type));
+    MlirUnaryOpBuilder op_builder =
         [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildErfInvShlo(input, out_dtype);
     };

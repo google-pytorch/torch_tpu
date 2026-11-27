@@ -17986,6 +17986,14 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  def test_trunc_signed_zero(self):
+    """Tests that the sign of zero results matches CPU."""
+    x = torch.tensor([-0.0, 0.0, -0.5, 0.5])
+    expected = torch.trunc(x)
+    actual = torch.trunc(x.to("tpu")).cpu()
+    self.assert_close(golden_result=expected, torch_tpu_result=actual)
+    self.assertEqual(torch.signbit(actual), torch.signbit(expected))
+
   @parameterized.named_parameters(
       ("div_out", lambda a, b, out: torch.div(a, b, out=out), [2, 2], [2]),
       (
@@ -18064,6 +18072,8 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ("atanh_out", torch.atanh, (0,)),
       ("cos_out", torch.cos, (1,)),
       ("cosh_out", torch.cosh, (1,)),
+      ("erf_out", torch.erf, (1,)),
+      ("erfinv_out", torch.erfinv, (0,)),
       ("exp_out", torch.exp, (1,)),
       ("exp2_out", torch.exp2, (16,)),
       ("expm1_out", torch.expm1, (1,)),
@@ -18134,6 +18144,8 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   @parameterized.named_parameters(
       ("cos_out", torch.cos),
+      ("erf_out", torch.erf),
+      ("erfinv_out", torch.erfinv),
       ("lgamma_out", torch.lgamma),
   )
   def test_unary_float_out_bool_default_dtype(self, op_fn):
@@ -18167,12 +18179,16 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     out_c64 = torch.empty(19, dtype=torch.complex64, device="tpu")
     with set_default_dtype(torch.float32):
       torch.cos(x_f32, out=out_f32).cpu()
+      torch.erf(x_f32, out=out_f32).cpu()
+      torch.erfinv(x_f32, out=out_f32).cpu()
       torch.lgamma(x_f32, out=out_f32).cpu()
       torch.cos(x_c64, out=out_c64).cpu()
     with utils.count_tpu_compilations(clear_cache=False) as compilations:
       for default_dtype in (torch.bfloat16, torch.float16):
         with set_default_dtype(default_dtype):
           torch.cos(x_f32, out=out_f32).cpu()
+          torch.erf(x_f32, out=out_f32).cpu()
+          torch.erfinv(x_f32, out=out_f32).cpu()
           torch.lgamma(x_f32, out=out_f32).cpu()
           torch.cos(x_c64, out=out_c64).cpu()
     self.assertEqual(compilations.count, 0)
