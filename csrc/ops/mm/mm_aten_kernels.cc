@@ -40,6 +40,7 @@
 #include "csrc/ops/precision_context.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -53,6 +54,7 @@ namespace {
 namespace stablehlo = mlir::stablehlo;
 
 absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
+                                         mlir::ElementType out_dtype,
                                          mlir::stablehlo::Precision precision) {
   mlir::MlirBuilder& builder = lhs.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
@@ -72,13 +74,13 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
       << "BuildMmShlo: rhs must be a 2D tensor, got rank "
       << rhs_tensor_type.getRank();
 
-  auto dot_general_element_type = lhs_tensor_type.getElementType();
+  const mlir::Type lhs_element_type = lhs_tensor_type.getElementType();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Type constraint is checked before Mlir
                  // lowering.
-      rhs_tensor_type.getElementType() == dot_general_element_type,
+      rhs_tensor_type.getElementType() == lhs_element_type,
       error::kInvalidArgument)
       << "BuildMmShlo: lhs and rhs must have the same element type, got "
-      << mlir::debugString(lhs_tensor_type.getElementType()) << " and "
+      << mlir::debugString(lhs_element_type) << " and "
       << mlir::debugString(rhs_tensor_type.getElementType());
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dimension constraint is checked before
                  // Mlir lowering.
@@ -88,9 +90,8 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
       << lhs_shape[1] << " and " << rhs_shape[0];
 
   // XLA doesn't support matmul with i64, so we convert them to f64.
-  const bool is_any_i64 = lhs_tensor_type.getElementType().isInteger(64) ||
-                          rhs_tensor_type.getElementType().isInteger(64);
-  if (is_any_i64) {
+  const bool is_i64 = lhs_element_type.isInteger(64);
+  if (is_i64) {
     lhs = stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
     rhs = stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
   }
@@ -113,12 +114,13 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
 
   // NB: deliberately using DotGeneral instead of Dot because Dot is scheduled
   // for removal from StableHLO.
-  auto dot_result =
-      stablehlo::DotGeneral(lhs, rhs, dot_dimension_numbers,
-                            /*precision_config=*/precision_config_attr);
-  return is_any_i64 ? stablehlo::ConvertElementType(dot_result,
-                                                    dot_general_element_type)
-                    : dot_result;
+  mlir::MlirOp dot_result = stablehlo::DotGeneral(
+      lhs, rhs, dot_dimension_numbers,
+      /*precision_config=*/precision_config_attr,
+      /*preferredElementType=*/
+      is_i64 ? std::nullopt : std::optional<mlir::ElementType>(out_dtype));
+  return is_i64 ? stablehlo::ConvertElementType(dot_result, out_dtype)
+                : dot_result;
 }
 
 absl::Status ValidateMmOutInputs(const at::Tensor& lhs, const at::Tensor& rhs,
@@ -191,20 +193,12 @@ absl::Status Mm(const at::Tensor& lhs, const at::Tensor& rhs, at::Tensor& out,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
-  bool needs_conversion = (lhs.scalar_type() != target_scalar_type);
 
-  auto op_builder = [current_precision, target_elem_dtype,
-                     needs_conversion](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+  auto op_builder = [current_precision,
+                     target_elem_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
-    mlir::MlirOp lhs_op = inputs[0];
-    mlir::MlirOp rhs_op = inputs[1];
-
-    if (needs_conversion) {
-      lhs_op = mlir::stablehlo::ConvertElementType(lhs_op, target_elem_dtype);
-      rhs_op = mlir::stablehlo::ConvertElementType(rhs_op, target_elem_dtype);
-    }
-
-    return BuildMmShlo(lhs_op, rhs_op, current_precision);
+    return BuildMmShlo(inputs[0], inputs[1], target_elem_dtype,
+                       current_precision);
   };
 
   return DispatchOpOut<2>(std::move(op_builder), {lhs, rhs}, out,
