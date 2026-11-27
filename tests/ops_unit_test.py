@@ -18559,6 +18559,219 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="grad_larger_than_self",
+          grad_shape=(2, 3),
+          self_shape=(1, 3),
+      ),
+      dict(
+          testcase_name="self_larger_than_grad",
+          grad_shape=(1, 3),
+          self_shape=(2, 3),
+      ),
+      dict(
+          testcase_name="bidirectional_broadcast",
+          grad_shape=(2, 1),
+          self_shape=(1, 3),
+      ),
+      dict(
+          testcase_name="scalar_grad",
+          grad_shape=(),
+          self_shape=(2, 3),
+      ),
+      dict(
+          testcase_name="scalar_self",
+          grad_shape=(2, 3),
+          self_shape=(),
+      ),
+      dict(
+          testcase_name="zero_element_broadcast",
+          grad_shape=(0, 3),
+          self_shape=(1, 3),
+      ),
+  )
+  def test_hardtanh_backward_broadcast(self, grad_shape, self_shape):
+    grad_cpu = torch.arange(
+        1, math.prod(grad_shape) + 1, dtype=torch.float32
+    ).reshape(grad_shape)
+    self_vals = torch.linspace(-2.0, 2.0, max(math.prod(self_shape), 1))
+    self_cpu = self_vals[: math.prod(self_shape)].reshape(self_shape)
+
+    expected = torch.ops.aten.hardtanh_backward(grad_cpu, self_cpu, -1.0, 1.0)
+    actual = torch.ops.aten.hardtanh_backward(
+        grad_cpu.to("tpu"), self_cpu.to("tpu"), -1.0, 1.0
+    )
+    self.assertEqual(actual.shape, expected.shape)
+    self.assertEqual(actual.dtype, expected.dtype)
+    self.assert_close(golden_result=expected, torch_tpu_result=actual.cpu())
+
+    out_tpu = torch.empty(0, dtype=torch.float32, device="tpu")
+    ret = torch.ops.aten.hardtanh_backward.grad_input(
+        grad_cpu.to("tpu"), self_cpu.to("tpu"), -1.0, 1.0, grad_input=out_tpu
+    )
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.shape, expected.shape)
+    self.assert_close(golden_result=expected, torch_tpu_result=out_tpu.cpu())
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="f32_bf16",
+          grad_dtype=torch.float32,
+          self_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="bf16_f32",
+          grad_dtype=torch.bfloat16,
+          self_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="f16_bf16",
+          grad_dtype=torch.float16,
+          self_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="f32_i32",
+          grad_dtype=torch.float32,
+          self_dtype=torch.int32,
+      ),
+      dict(
+          testcase_name="i32_f32",
+          grad_dtype=torch.int32,
+          self_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="f32_bool",
+          grad_dtype=torch.float32,
+          self_dtype=torch.bool,
+      ),
+  )
+  def test_hardtanh_backward_mixed_dtype(self, grad_dtype, self_dtype):
+    grad_base = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    self_base = torch.tensor([[-2.0, 0.0, 2.0]])
+    grad_cpu = grad_base.to(grad_dtype)
+    self_cpu = self_base.to(self_dtype)
+
+    expected = torch.ops.aten.hardtanh_backward(grad_cpu, self_cpu, -1.0, 1.0)
+    actual = torch.ops.aten.hardtanh_backward(
+        grad_cpu.to("tpu"), self_cpu.to("tpu"), -1.0, 1.0
+    )
+    self.assertEqual(actual.shape, expected.shape)
+    self.assertEqual(actual.dtype, expected.dtype)
+    self.assert_close(golden_result=expected, torch_tpu_result=actual.cpu())
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="downcast_bf16",
+          grad_dtype=torch.float32,
+          self_dtype=torch.bfloat16,
+          out_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="upcast_f32",
+          grad_dtype=torch.bfloat16,
+          self_dtype=torch.bfloat16,
+          out_dtype=torch.float32,
+      ),
+  )
+  def test_hardtanh_backward_grad_input_cast(
+      self, grad_dtype, self_dtype, out_dtype
+  ):
+    grad_cpu = torch.tensor(
+        [[1.5, -2.5, 3.25], [0.5, 4.0, -1.0]], dtype=grad_dtype
+    )
+    self_cpu = torch.tensor([[-1.0, 0.0, 1.0]], dtype=self_dtype)
+
+    expected = torch.empty(0, dtype=out_dtype)
+    torch.ops.aten.hardtanh_backward.grad_input(
+        grad_cpu, self_cpu, -1.0, 1.0, grad_input=expected
+    )
+    out_tpu = torch.empty(0, dtype=out_dtype, device="tpu")
+    ret = torch.ops.aten.hardtanh_backward.grad_input(
+        grad_cpu.to("tpu"), self_cpu.to("tpu"), -1.0, 1.0, grad_input=out_tpu
+    )
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.shape, expected.shape)
+    self.assertEqual(out_tpu.dtype, out_dtype)
+    self.assert_close(golden_result=expected, torch_tpu_result=out_tpu.cpu())
+
+  def test_hardtanh_backward_grad_input_int_inputs_and_alias(self):
+    # Integral inputs into floating-point grad_input (matches CUDA
+    # TensorIterator dispatch on grad_input dtype).
+    grad_i32 = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.int32)
+    self_i32 = torch.tensor([[-2, 0, 2]], dtype=torch.int32)
+    expected_from_i32 = torch.ops.aten.hardtanh_backward(
+        grad_i32.to(torch.float32), self_i32.to(torch.float32), -1.0, 1.0
+    )
+    out_from_i32 = torch.empty(0, dtype=torch.float32, device="tpu")
+    torch.ops.aten.hardtanh_backward.grad_input(
+        grad_i32.to("tpu"),
+        self_i32.to("tpu"),
+        -1.0,
+        1.0,
+        grad_input=out_from_i32,
+    )
+    self.assertEqual(out_from_i32.dtype, torch.float32)
+    self.assert_close(
+        golden_result=expected_from_i32, torch_tpu_result=out_from_i32.cpu()
+    )
+
+    # Allowed in-place alias when grad_input matches broadcast shape.
+    grad_cpu = torch.tensor(
+        [[1.5, -2.5, 3.25], [0.5, 4.0, -1.0]], dtype=torch.float32
+    )
+    self_cpu = torch.tensor([[-1.0, 0.0, 1.0]], dtype=torch.bfloat16)
+    grad_alias = grad_cpu.to("tpu")
+    expected_alias = torch.ops.aten.hardtanh_backward(
+        grad_cpu, self_cpu, -1.0, 1.0
+    )
+    ret_alias = torch.ops.aten.hardtanh_backward.grad_input(
+        grad_alias, self_cpu.to("tpu"), -1.0, 1.0, grad_input=grad_alias
+    )
+    self.assertIs(ret_alias, grad_alias)
+    self.assert_close(
+        golden_result=expected_alias, torch_tpu_result=grad_alias.cpu()
+    )
+
+  def test_hardtanh_backward_opmath_and_nan(self):
+    # Opmath precision: bf16 self=1.0 vs max_val=1.001 (f32 > bf16(1.0)).
+    grad_prec = torch.tensor([2.0, 3.0], dtype=torch.bfloat16)
+    self_prec = torch.tensor([1.0, -1.0], dtype=torch.bfloat16)
+    expected_prec = torch.ops.aten.hardtanh_backward(
+        grad_prec, self_prec, -1.001, 1.001
+    )
+    actual_prec = torch.ops.aten.hardtanh_backward(
+        grad_prec.to("tpu"), self_prec.to("tpu"), -1.001, 1.001
+    )
+    self.assert_close(
+        golden_result=expected_prec, torch_tpu_result=actual_prec.cpu()
+    )
+
+    # NaN in self preserves grad_output (matches CUDA ActivationHardtanhKernel).
+    grad_nan = torch.tensor([2.5, -1.5, 4.0], dtype=torch.float32)
+    self_nan = torch.tensor([float("nan"), -1.0, 0.0], dtype=torch.float32)
+    expected_nan = torch.tensor([2.5, 0.0, 4.0], dtype=torch.float32)
+    actual_nan = torch.ops.aten.hardtanh_backward(
+        grad_nan.to("tpu"), self_nan.to("tpu"), -1.0, 1.0
+    )
+    self.assert_close(
+        golden_result=expected_nan, torch_tpu_result=actual_nan.cpu()
+    )
+
+  def test_hardtanh_backward_compiled_broadcast_mixed_dtype(self):
+    grad_cpu = torch.tensor(
+        [[1.5, -2.5, 3.25], [0.5, 4.0, -1.0]], dtype=torch.float32
+    )
+    self_cpu = torch.tensor([[-1.0, 0.0, 1.0]], dtype=torch.bfloat16)
+    expected = torch.ops.aten.hardtanh_backward(grad_cpu, self_cpu, -1.0, 1.0)
+
+    def fn(g, x):
+      return torch.ops.aten.hardtanh_backward(g, x, -1.0, 1.0)
+
+    compiled_fn = torch.compile(fn, backend="tpu", fullgraph=True)
+    actual = compiled_fn(grad_cpu.to("tpu"), self_cpu.to("tpu"))
+    self.assert_close(golden_result=expected, torch_tpu_result=actual.cpu())
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
