@@ -31440,6 +31440,109 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_bitwise_shift_scalar_bool_and_large_shift(self):
+    b_cpu = torch.tensor([True, False], dtype=torch.bool)
+    self.assert_close(
+        golden_result=b_cpu << 2, torch_tpu_result=(b_cpu.to("tpu") << 2).cpu()
+    )
+    self.assert_close(
+        golden_result=b_cpu >> 1, torch_tpu_result=(b_cpu.to("tpu") >> 1).cpu()
+    )
+
+    i_cpu = torch.tensor([4, 8], dtype=torch.int64)
+    self.assert_close(
+        golden_result=i_cpu << True,
+        torch_tpu_result=(i_cpu.to("tpu") << True).cpu(),
+    )
+    self.assert_close(
+        golden_result=i_cpu >> True,
+        torch_tpu_result=(i_cpu.to("tpu") >> True).cpu(),
+    )
+
+    i_ilshift_cpu = i_cpu.clone()
+    i_ilshift_tpu = i_cpu.to("tpu")
+    i_ilshift_cpu <<= True
+    i_ilshift_tpu <<= True
+    self.assert_close(
+        golden_result=i_ilshift_cpu, torch_tpu_result=i_ilshift_tpu.cpu()
+    )
+
+    i_irshift_cpu = i_cpu.clone()
+    i_irshift_tpu = i_cpu.to("tpu")
+    i_irshift_cpu >>= True
+    i_irshift_tpu >>= True
+    self.assert_close(
+        golden_result=i_irshift_cpu, torch_tpu_result=i_irshift_tpu.cpu()
+    )
+
+    # Shift counts outside promoted dtype range wrap modulo 2^bitwidth like CPU.
+    i8_neg = torch.tensor([-8, 8], dtype=torch.int8)
+    self.assert_close(
+        golden_result=i8_neg >> 256,
+        torch_tpu_result=(i8_neg.to("tpu") >> 256).cpu(),
+    )
+    i8_pos = torch.tensor([1, -1], dtype=torch.int8)
+    self.assert_close(
+        golden_result=i8_pos << 256,
+        torch_tpu_result=(i8_pos.to("tpu") << 256).cpu(),
+    )
+    u8 = torch.tensor([200, 1], dtype=torch.uint8)
+    self.assert_close(
+        golden_result=u8 >> 256, torch_tpu_result=(u8.to("tpu") >> 256).cpu()
+    )
+
+    i8_ilshift_cpu = i8_pos.clone()
+    i8_ilshift_tpu = i8_pos.to("tpu")
+    i8_ilshift_cpu <<= 256
+    i8_ilshift_tpu <<= 256
+    self.assert_close(
+        golden_result=i8_ilshift_cpu, torch_tpu_result=i8_ilshift_tpu.cpu()
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="shift_10", shift=10),
+      dict(testcase_name="shift_8", shift=8),
+      dict(testcase_name="shift_7", shift=7),
+      dict(testcase_name="shift_neg1", shift=-1),
+  )
+  def test_bitwise_shift_scalar_out_of_range(self, shift):
+    i8_neg = torch.tensor([-8, 8], dtype=torch.int8)
+    i8_pos = torch.tensor([1, -1], dtype=torch.int8)
+    u8 = torch.tensor([200, 1], dtype=torch.uint8)
+
+    self.assert_close(
+        golden_result=i8_neg >> shift,
+        torch_tpu_result=(i8_neg.to("tpu") >> shift).cpu(),
+    )
+    self.assert_close(
+        golden_result=i8_pos << shift,
+        torch_tpu_result=(i8_pos.to("tpu") << shift).cpu(),
+    )
+    self.assert_close(
+        golden_result=u8 >> shift,
+        torch_tpu_result=(u8.to("tpu") >> shift).cpu(),
+    )
+    self.assert_close(
+        golden_result=u8 << shift,
+        torch_tpu_result=(u8.to("tpu") << shift).cpu(),
+    )
+
+    i8_irshift_cpu = i8_neg.clone()
+    i8_irshift_tpu = i8_neg.to("tpu")
+    i8_irshift_cpu >>= shift
+    i8_irshift_tpu >>= shift
+    self.assert_close(
+        golden_result=i8_irshift_cpu, torch_tpu_result=i8_irshift_tpu.cpu()
+    )
+
+    u8_ilshift_cpu = u8.clone()
+    u8_ilshift_tpu = u8.to("tpu")
+    u8_ilshift_cpu <<= shift
+    u8_ilshift_tpu <<= shift
+    self.assert_close(
+        golden_result=u8_ilshift_cpu, torch_tpu_result=u8_ilshift_tpu.cpu()
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

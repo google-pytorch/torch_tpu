@@ -757,24 +757,94 @@ enum class BitwiseShiftDirection {
   kRight,
 };
 
+absl::StatusOr<at::ScalarType> ValidateBitwiseShiftScalarInputs(
+    const at::Tensor& self, const at::Scalar& other) {
+  TT_RET_CHECK(other.isIntegral(/*include_bool=*/true), error::kInvalidArgument)
+      << "expected the dtype of the second argument to be integer or bool, got "
+      << ToString(GetScalarType(other));
+
+  const at::ScalarType promoted_type = at::result_type(self, other);
+  TT_RET_CHECK(c10::isIntegralType(promoted_type, /*includeBool=*/false),
+               error::kInvalidArgument)
+      << "expected the promoted dtype of the inputs to be integer, got "
+      << ToString(promoted_type);
+  return promoted_type;
+}
+
 absl::Status BitwiseShiftScalarHelper(const at::Tensor& self,
                                       PromotedScalar& promoted_other,
+                                      at::ScalarType promoted_type,
                                       at::Tensor& out,
                                       BitwiseShiftDirection direction) {
-  TT_RET_CHECK(promoted_other.scalar().isIntegral(/*include_bool=*/false),
-               error::kInvalidArgument)
-      << "expected the dtype of the second argument to be integer, got "
-      << ToString(GetScalarType(promoted_other.scalar()));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out, promoted_type, /*allow_out_dtype_cast=*/true));
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
 
+  // Materialize `other` as `uint64` (for `uint64` scalars) or `int64` so
+  // host/compile-time scalar creation avoids overflow errors on narrow integer
+  // dtypes, then cast to `promoted_mlir_type` in StableHLO to match PyTorch
+  // CPU/CUDA scalar wrapping before range checks.
+  const at::ScalarType other_materialize_type =
+      promoted_other.scalar().type() == at::kUInt64 ? at::kUInt64 : at::kLong;
   TT_ASSIGN_OR_RETURN(const at::Tensor other_tensor,
-                      promoted_other.GetTensor(out.scalar_type()));
-  TT_RETURN_IF_ERROR(ValidateBitwiseShiftInputs(self, other_tensor));
+                      promoted_other.GetTensor(other_materialize_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType promoted_mlir_type,
+                      ConvertTo<mlir::ElementType>(promoted_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_element_type,
+                      ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-  MlirBinaryOpBuilder builder = direction == BitwiseShiftDirection::kLeft
-                                    ? BuildBitwiseLeftShiftShlo
-                                    : BuildBitwiseRightShiftShlo;
-  return BinaryOpOut(self, other_tensor, out, std::move(builder),
-                     {.op_param_cache_keys = OpParamCacheKeys::Empty()});
+  auto op_builder = [direction, promoted_mlir_type,
+                     out_element_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    auto& [self_op, other_op] = inputs;
+    TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, promoted_mlir_type));
+    TT_ASSIGN_OR_RETURN(other_op, CastIfNeeded(other_op, promoted_mlir_type));
+    TT_ASSIGN_OR_RETURN(other_op, BroadcastIfNeeded(other_op, self_op));
+
+    const mlir::Type self_elem_type =
+        GetTensorTypeOrDie(self_op).getElementType();
+    const int64_t bitwidth = self_elem_type.getIntOrFloatBitWidth();
+    const bool is_unsigned = self_elem_type.isUnsignedInteger();
+    const int64_t max_shift =
+        (direction == BitwiseShiftDirection::kLeft || is_unsigned)
+            ? bitwidth
+            : bitwidth - 1;
+
+    mlir::MlirOp zero_op = MakeConstantLike(other_op, 0);
+    mlir::MlirOp max_shift_op = MakeConstantLike(other_op, max_shift);
+    mlir::MlirOp out_of_range = stablehlo::Compare(
+        other_op, max_shift_op, stablehlo::ComparisonDirection::GE);
+    if (!is_unsigned) {
+      mlir::MlirOp is_neg = stablehlo::Compare(
+          other_op, zero_op, stablehlo::ComparisonDirection::LT);
+      out_of_range = stablehlo::Or(is_neg, out_of_range);
+    }
+
+    // Clamp to [0, bitwidth - 1] so StableHLO shift ops always receive a valid
+    // shift count before `Select` picks `oob_val` for out-of-range counts.
+    mlir::MlirOp clamp_hi = MakeConstantLike(other_op, bitwidth - 1);
+    mlir::MlirOp shift_amt = stablehlo::Clamp(zero_op, other_op, clamp_hi);
+
+    mlir::MlirOp shifted;
+    mlir::MlirOp oob_val;
+    if (direction == BitwiseShiftDirection::kLeft) {
+      shifted = stablehlo::ShiftLeft(self_op, shift_amt);
+      oob_val = zero_op;
+    } else if (is_unsigned) {
+      shifted = stablehlo::ShiftRightLogical(self_op, shift_amt);
+      oob_val = zero_op;
+    } else {
+      shifted = stablehlo::ShiftRightArithmetic(self_op, shift_amt);
+      oob_val = stablehlo::ShiftRightArithmetic(self_op, max_shift_op);
+    }
+    mlir::MlirOp result = stablehlo::Select(out_of_range, oob_val, shifted);
+    return CastIfNeeded(result, out_element_type);
+  };
+
+  return DispatchOpOut<2>(std::move(op_builder), {self, other_tensor}, out,
+                          {.out_dtype = out_element_type,
+                           .out_dims = self.sizes(),
+                           .op_param_cache_keys = OpParamCacheKeys::Empty()});
 }
 
 // Returns an empty tensor of type `dtype` to hold the result of a binary op on
@@ -1574,7 +1644,10 @@ at::Tensor& AtenGtTensorOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor& AtenIlshiftScalar(at::Tensor& self, const at::Scalar& other) {
   PromotedScalar promoted_other = PromoteScalar(other);
   TT_KERNEL(OpName::kIlshiftScalar, _, (self, promoted_other), {
-    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(self, promoted_other, self,
+    TT_ASSIGN_OR_THROW(const at::ScalarType promoted_type,
+                       ValidateBitwiseShiftScalarInputs(self, other));
+    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(self, promoted_other,
+                                               promoted_type, self,
                                                BitwiseShiftDirection::kLeft));
     return self;
   });
@@ -1590,7 +1663,10 @@ at::Tensor& AtenIlshiftTensor(at::Tensor& self, const at::Tensor& other) {
 at::Tensor& AtenIrshiftScalar(at::Tensor& self, const at::Scalar& other) {
   PromotedScalar promoted_other = PromoteScalar(other);
   TT_KERNEL(OpName::kIrshiftScalar, _, (self, promoted_other), {
-    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(self, promoted_other, self,
+    TT_ASSIGN_OR_THROW(const at::ScalarType promoted_type,
+                       ValidateBitwiseShiftScalarInputs(self, other));
+    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(self, promoted_other,
+                                               promoted_type, self,
                                                BitwiseShiftDirection::kRight));
     return self;
   });
@@ -1706,11 +1782,12 @@ at::Tensor& AtenLeTensorOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor AtenLshiftScalar(const at::Tensor& self, const at::Scalar& other) {
   PromotedScalar promoted_other = PromoteScalar(other);
   TT_KERNEL(OpName::kLshiftScalar, _, (self, promoted_other), {
-    TT_ASSIGN_OR_THROW(
-        at::Tensor out,
-        MakeEmptyTensor(self.sizes(), self.scalar_type(), self.device()));
-    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(self, promoted_other, out,
-                                               BitwiseShiftDirection::kLeft));
+    TT_ASSIGN_OR_THROW(const at::ScalarType out_dtype,
+                       ValidateBitwiseShiftScalarInputs(self, other));
+    TT_ASSIGN_OR_THROW(at::Tensor out,
+                       MakeEmptyTensor(self.sizes(), out_dtype, self.device()));
+    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(
+        self, promoted_other, out_dtype, out, BitwiseShiftDirection::kLeft));
     return out;
   });
 }
@@ -1948,11 +2025,12 @@ at::Tensor& AtenRemainderTensorOut(const at::Tensor& self,
 at::Tensor AtenRshiftScalar(const at::Tensor& self, const at::Scalar& other) {
   PromotedScalar promoted_other = PromoteScalar(other);
   TT_KERNEL(OpName::kRshiftScalar, _, (self, promoted_other), {
-    TT_ASSIGN_OR_THROW(
-        at::Tensor out,
-        MakeEmptyTensor(self.sizes(), self.scalar_type(), self.device()));
-    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(self, promoted_other, out,
-                                               BitwiseShiftDirection::kRight));
+    TT_ASSIGN_OR_THROW(const at::ScalarType out_dtype,
+                       ValidateBitwiseShiftScalarInputs(self, other));
+    TT_ASSIGN_OR_THROW(at::Tensor out,
+                       MakeEmptyTensor(self.sizes(), out_dtype, self.device()));
+    TT_THROW_IF_ERROR(BitwiseShiftScalarHelper(
+        self, promoted_other, out_dtype, out, BitwiseShiftDirection::kRight));
     return out;
   });
 }

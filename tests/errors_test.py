@@ -6337,10 +6337,86 @@ Supported combinations for non-constant padding:
     x = torch.ones(5, dtype=torch.int64, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""__lshift__(): expected the dtype of the second argument to be integer, got float64""",
+        tpu="""__lshift__(): expected the dtype of the second argument to be integer or bool, got float64""",
         gpu=""""lshift_cuda" not implemented for 'Float'""",
     ):
       x.__lshift__(1.5)
+
+  def test_bitwise_shift_scalar_bool_bool(self):
+    x = torch.tensor([True, False], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""__lshift__(): expected the promoted dtype of the inputs to be integer, got bool""",
+        gpu=""""lshift_cuda" not implemented for 'Bool'""",
+    ):
+      _ = x << True
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="lshift",
+          op=lambda x: x << 1j,
+          tpu_op="__lshift__",
+          gpu_op="lshift_cuda",
+      ),
+      dict(
+          testcase_name="rshift",
+          op=lambda x: x >> 1j,
+          tpu_op="__rshift__",
+          gpu_op="rshift_cuda",
+      ),
+  )
+  def test_bitwise_shift_scalar_float16_complex(self, op, tpu_op, gpu_op):
+    x = torch.ones(2, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op}(): expected the dtype of the second argument to be integer or bool, got complex128""",
+        gpu=f""""{gpu_op}" not implemented for 'ComplexHalf'""",
+    ):
+      op(x)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="ilshift",
+          op=lambda x: x.__ilshift__(2),
+          tpu_op="__ilshift__",
+      ),
+      dict(
+          testcase_name="irshift",
+          op=lambda x: x.__irshift__(2),
+          tpu_op="__irshift__",
+      ),
+  )
+  def test_bitwise_shift_scalar_inplace_bool_int(self, op, tpu_op):
+    x = torch.tensor([True, False], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op}(): result type int64 can't be cast to the desired output type bool""",
+        gpu="""result type Long can't be cast to the desired output type Bool""",
+    ):
+      op(x)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="lshift",
+          op=lambda x: x << 2,
+          tpu_op="__lshift__",
+          gpu_op="lshift_cuda",
+      ),
+      dict(
+          testcase_name="rshift",
+          op=lambda x: x >> 2,
+          tpu_op="__rshift__",
+          gpu_op="rshift_cuda",
+      ),
+  )
+  def test_bitwise_shift_scalar_float_int(self, op, tpu_op, gpu_op):
+    x = torch.ones(2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{tpu_op}(): expected the promoted dtype of the inputs to be integer, got float32""",
+        gpu=f""""{gpu_op}" not implemented for 'Float'""",
+    ):
+      op(x)
 
   def test_col2im_output_size_must_be_2d(self):
     img = torch.randn(1, 4, 16, device=et.device())
