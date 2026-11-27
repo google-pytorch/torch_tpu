@@ -28,6 +28,8 @@ torch_tpu_cc_library(
     srcs = ["dot.cc"],
     hdrs = ["dot.h"],
     deps = [
+        "//csrc/common:aten_utils",
+        "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",

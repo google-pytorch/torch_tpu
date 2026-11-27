@@ -14,7 +14,11 @@
 
 #include "csrc/ops/dot/dot.h"
 
+#include <optional>
+
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
+#include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -28,21 +32,25 @@ absl::StatusOr<mlir::MlirOp> BuildDotShlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
   const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
   const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  bool is_any_i64 = lhs_type.getElementType().isInteger(64) ||
-                    rhs_type.getElementType().isInteger(64);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType orig_dtype, GetElementType(lhs));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  const bool is_any_i64 = lhs_type.getElementType().isInteger(64) ||
+                          rhs_type.getElementType().isInteger(64);
   if (is_any_i64) {
     lhs = mlir::stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
     rhs = mlir::stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
   }
-  auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
+  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
       &lhs.getContext(), {precision, precision});
-  auto dot_dimension_numbers =
+  const auto dot_dimension_numbers =
       mlir::stablehlo::getDefaultDotDimensionNumbers(lhs.getValue());
-  auto dot_result = mlir::stablehlo::DotGeneral(lhs, rhs, dot_dimension_numbers,
-                                                precision_config);
-  if (is_any_i64) {
-    return mlir::stablehlo::ConvertElementType(dot_result,
-                                               lhs_type.getElementType());
+  mlir::MlirOp dot_result = mlir::stablehlo::DotGeneral(
+      lhs, rhs, dot_dimension_numbers, precision_config,
+      is_any_i64 ? std::nullopt
+                 : std::optional<mlir::ElementType>(compute_dtype));
+  if (is_any_i64 || compute_dtype != orig_dtype) {
+    return mlir::stablehlo::ConvertElementType(dot_result, orig_dtype);
   }
   return dot_result;
 }

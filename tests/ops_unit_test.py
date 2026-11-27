@@ -29034,6 +29034,332 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             atol=0,
         )
 
+  @parameterized.named_parameters(
+      dict(testcase_name="dot_bfloat16", op=torch.dot, dtype=torch.bfloat16),
+      dict(testcase_name="dot_float16", op=torch.dot, dtype=torch.float16),
+      dict(testcase_name="vdot_bfloat16", op=torch.vdot, dtype=torch.bfloat16),
+      dict(testcase_name="vdot_float16", op=torch.vdot, dtype=torch.float16),
+  )
+  def test_dot_vdot_half_precision_accumulates_in_float32(
+      self,
+      op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+      dtype: torch.dtype,
+  ):
+    # Summing 4096 ones saturates at 256 in bfloat16 and 2048 in float16 if
+    # accumulated in the input dtype instead of float32.
+    ones_lhs = torch.ones(4096, dtype=dtype, device="tpu")
+    ones_rhs = torch.ones(4096, dtype=dtype, device="tpu")
+    expected_ones = torch.tensor(4096.0, dtype=dtype)
+    utils.assert_close(
+        op(ones_lhs, ones_rhs).cpu(), expected_ones, rtol=1e-6, atol=1e-6
+    )
+
+    # 4096 + 0.5 rounds back to 4096 in both bfloat16 and float16, so without
+    # float32 accumulation the sum collapses to 0 instead of 1.5.
+    cancel_lhs = torch.tensor(
+        [4096.0, 0.5, 0.5, 0.5, -4096.0], dtype=dtype, device="tpu"
+    )
+    cancel_rhs = torch.ones(5, dtype=dtype, device="tpu")
+    expected_cancel = torch.tensor(1.5, dtype=dtype)
+    utils.assert_close(
+        op(cancel_lhs, cancel_rhs).cpu(), expected_cancel, rtol=1e-6, atol=1e-6
+    )
+
+    if dtype == torch.float16:
+      # Intermediate sum 40000 + 40000 = 80000 overflows float16 (max 65504),
+      # while float32 accumulation produces exact 30016 (40000 + 40000 - 49984).
+      overflow_lhs = torch.tensor(
+          [40000.0, 40000.0, -49984.0], dtype=dtype, device="tpu"
+      )
+      overflow_rhs = torch.ones(3, dtype=dtype, device="tpu")
+      expected_overflow = torch.tensor(30016.0, dtype=dtype)
+      utils.assert_close(
+          op(overflow_lhs, overflow_rhs).cpu(),
+          expected_overflow,
+          rtol=1e-6,
+          atol=1e-6,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="bfloat16", dtype=torch.bfloat16),
+      dict(testcase_name="float16", dtype=torch.float16),
+  )
+  def test_mv_half_precision_accumulates_in_float32(self, dtype: torch.dtype):
+    ones_mat = torch.ones((2, 4096), dtype=dtype, device="tpu")
+    ones_vec = torch.ones((4096,), dtype=dtype, device="tpu")
+    expected_ones = torch.full((2,), 4096.0, dtype=dtype)
+    utils.assert_close(
+        torch.mv(ones_mat, ones_vec).cpu(), expected_ones, rtol=1e-6, atol=1e-6
+    )
+    out = torch.empty((2,), dtype=dtype, device="tpu")
+    torch.mv(ones_mat, ones_vec, out=out)
+    utils.assert_close(out.cpu(), expected_ones, rtol=1e-6, atol=1e-6)
+
+    cancel_mat = torch.tensor(
+        [[4096.0, 0.5, 0.5, 0.5, -4096.0]], dtype=dtype, device="tpu"
+    )
+    cancel_vec = torch.ones((5,), dtype=dtype, device="tpu")
+    expected_cancel = torch.tensor([1.5], dtype=dtype)
+    utils.assert_close(
+        torch.mv(cancel_mat, cancel_vec).cpu(),
+        expected_cancel,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+    if dtype == torch.float16:
+      overflow_mat = torch.tensor(
+          [[40000.0, 40000.0, -49984.0]], dtype=dtype, device="tpu"
+      )
+      overflow_vec = torch.ones((3,), dtype=dtype, device="tpu")
+      expected_overflow = torch.tensor([30016.0], dtype=dtype)
+      utils.assert_close(
+          torch.mv(overflow_mat, overflow_vec).cpu(),
+          expected_overflow,
+          rtol=1e-6,
+          atol=1e-6,
+      )
+
+  @parameterized.named_parameters(
+      # 1.001 * 256 - 0.255 * 1000 = 256.256 - 255.0 = 1.256. Rounding alpha and
+      # beta to bfloat16 on host collapses the result to 0.0.
+      dict(
+          testcase_name="bfloat16_alpha_beta_not_representable",
+          dtype=torch.bfloat16,
+          self_val=1000.0,
+          mat_shape=(1, 256),
+          mat_val=1.0,
+          vec_val=1.0,
+          beta=-0.255,
+          alpha=1.001,
+      ),
+      dict(
+          testcase_name="float16_alpha_beta_not_representable",
+          dtype=torch.float16,
+          self_val=1000.0,
+          mat_shape=(1, 256),
+          mat_val=1.0,
+          vec_val=1.0,
+          beta=-0.255,
+          alpha=1.001,
+      ),
+      # 70000 exceeds float16 max (65504), but 70000 * 0.125 = 8750 fits.
+      dict(
+          testcase_name="float16_alpha_above_dtype_max",
+          dtype=torch.float16,
+          self_val=0.0,
+          mat_shape=(2, 2),
+          mat_val=0.25,
+          vec_val=0.25,
+          beta=0.0,
+          alpha=70000.0,
+      ),
+      dict(
+          testcase_name="float16_beta_above_dtype_max",
+          dtype=torch.float16,
+          self_val=0.125,
+          mat_shape=(2, 2),
+          mat_val=1.0,
+          vec_val=0.5,
+          beta=70000.0,
+          alpha=2.0,
+      ),
+      dict(
+          testcase_name="float16_beta_above_dtype_max_alpha_zero",
+          dtype=torch.float16,
+          self_val=0.125,
+          mat_shape=(2, 2),
+          mat_val=1.0,
+          vec_val=1.0,
+          beta=70000.0,
+          alpha=0.0,
+      ),
+      # 2 * 40000 = 80000 overflows float16, but -49984 + 80000 = 30016 fits.
+      dict(
+          testcase_name="float16_scaled_product_above_dtype_max",
+          dtype=torch.float16,
+          self_val=-50000.0,
+          mat_shape=(2, 2),
+          mat_val=100.0,
+          vec_val=200.0,
+          beta=1.0,
+          alpha=2.0,
+      ),
+      # 2 * 19 * 13.5 = 513 rounds to 512 in bfloat16, giving 0 instead of 1.
+      dict(
+          testcase_name="bfloat16_product_not_representable",
+          dtype=torch.bfloat16,
+          self_val=-512.0,
+          mat_shape=(2, 2),
+          mat_val=19.0,
+          vec_val=13.5,
+          beta=1.0,
+          alpha=1.0,
+      ),
+  )
+  def test_addmv_half_precision_computes_in_float32(
+      self,
+      dtype: torch.dtype,
+      self_val: float,
+      mat_shape: tuple[int, int],
+      mat_val: float,
+      vec_val: float,
+      beta: float,
+      alpha: float,
+  ):
+    rows, cols = mat_shape
+    self_cpu = torch.full((rows,), self_val, dtype=dtype)
+    mat_cpu = torch.full((rows, cols), mat_val, dtype=dtype)
+    vec_cpu = torch.full((cols,), vec_val, dtype=dtype)
+    expected = (
+        beta * self_cpu.float() + alpha * (mat_cpu.float() @ vec_cpu.float())
+    ).to(dtype)
+
+    mat_tpu = mat_cpu.to("tpu")
+    vec_tpu = vec_cpu.to("tpu")
+
+    with self.subTest("functional"):
+      result = torch.addmv(
+          self_cpu.to("tpu"), mat_tpu, vec_tpu, beta=beta, alpha=alpha
+      )
+      self.assertEqual(result.dtype, dtype)
+      utils.assert_close(result.cpu(), expected, rtol=1e-6, atol=1e-6)
+
+    with self.subTest("out"):
+      out = torch.empty((rows,), dtype=dtype, device="tpu")
+      torch.addmv(
+          self_cpu.to("tpu"), mat_tpu, vec_tpu, beta=beta, alpha=alpha, out=out
+      )
+      self.assertEqual(out.dtype, dtype)
+      utils.assert_close(out.cpu(), expected, rtol=1e-6, atol=1e-6)
+
+    with self.subTest("inplace"):
+      self_tpu = self_cpu.to("tpu")
+      self_tpu.addmv_(mat_tpu, vec_tpu, beta=beta, alpha=alpha)
+      self.assertEqual(self_tpu.dtype, dtype)
+      utils.assert_close(self_tpu.cpu(), expected, rtol=1e-6, atol=1e-6)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="float32", dtype=torch.float32),
+      dict(testcase_name="bfloat16", dtype=torch.bfloat16),
+      dict(testcase_name="float16", dtype=torch.float16),
+  )
+  def test_addmv_bool_scalars(self, dtype: torch.dtype):
+    self_cpu = torch.tensor([1.0, 2.0], dtype=dtype)
+    mat_cpu = torch.tensor([[3.0, 4.0], [5.0, 6.0]], dtype=dtype)
+    vec_cpu = torch.tensor([2.0, -1.0], dtype=dtype)
+
+    for beta, alpha in (
+        (False, True),
+        (True, False),
+        (True, True),
+        (False, False),
+    ):
+      with self.subTest(beta=beta, alpha=alpha):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, beta=beta, alpha=alpha: torch.addmv(
+                self_cpu.to(device),
+                mat_cpu.to(device),
+                vec_cpu.to(device),
+                beta=beta,
+                alpha=alpha,
+            )
+        )
+
+    # beta=False ignores NaN in self, and alpha=False ignores NaN in mat.
+    nan_self = torch.full((2,), float("nan"), dtype=dtype, device="tpu")
+    result_beta_false = torch.addmv(
+        nan_self,
+        mat_cpu.to("tpu"),
+        vec_cpu.to("tpu"),
+        beta=False,
+        alpha=True,
+    )
+    utils.assert_close(
+        result_beta_false.cpu(),
+        (mat_cpu.float() @ vec_cpu.float()).to(dtype),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+    nan_mat = torch.full((2, 2), float("nan"), dtype=dtype, device="tpu")
+    result_alpha_false = torch.addmv(
+        self_cpu.to("tpu"),
+        nan_mat,
+        vec_cpu.to("tpu"),
+        beta=True,
+        alpha=False,
+    )
+    utils.assert_close(result_alpha_false.cpu(), self_cpu, rtol=1e-6, atol=1e-6)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="scalar_self_float32",
+          self_shape=(),
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="size1_self_float32",
+          self_shape=(1,),
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="scalar_self_bfloat16",
+          self_shape=(),
+          dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="size1_self_bfloat16",
+          self_shape=(1,),
+          dtype=torch.bfloat16,
+      ),
+  )
+  def test_addmv_alpha_zero_broadcasted_self(
+      self, self_shape: tuple[int, ...], dtype: torch.dtype
+  ):
+    self_cpu = torch.full(self_shape, 3.0, dtype=dtype)
+    mat_cpu = torch.ones((4, 3), dtype=dtype)
+    vec_cpu = torch.ones((3,), dtype=dtype)
+    for beta in (1.0, 2.5):
+      with self.subTest(beta=beta):
+        expected = torch.full((4,), beta * 3.0, dtype=dtype)
+        result = torch.addmv(
+            self_cpu.to("tpu"),
+            mat_cpu.to("tpu"),
+            vec_cpu.to("tpu"),
+            beta=beta,
+            alpha=0.0,
+        )
+        self.assertEqual(result.shape, (4,))
+        utils.assert_close(result.cpu(), expected, rtol=1e-6, atol=1e-6)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="complex64", dtype=torch.complex64),
+      dict(testcase_name="complex128", dtype=torch.complex128),
+  )
+  def test_addmv_complex_scalars(self, dtype: torch.dtype):
+    self_cpu = torch.tensor([1.0 + 2.0j, -3.0 + 0.5j], dtype=dtype)
+    mat_cpu = torch.tensor(
+        [[2.0 - 1.0j, 0.5 + 1.5j], [-1.0 + 2.0j, 3.0 - 0.5j]], dtype=dtype
+    )
+    vec_cpu = torch.tensor([1.0 + 1.0j, 2.0 - 1.0j], dtype=dtype)
+
+    for beta, alpha in (
+        (1.5 - 0.5j, 2.0 + 1.0j),
+        (0.0, 1.0j),
+        (2.0j, 0.0),
+    ):
+      with self.subTest(beta=beta, alpha=alpha):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, beta=beta, alpha=alpha: torch.addmv(
+                self_cpu.to(device),
+                mat_cpu.to(device),
+                vec_cpu.to(device),
+                beta=beta,
+                alpha=alpha,
+            )
+        )
+
 
 class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""
