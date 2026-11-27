@@ -16,7 +16,12 @@
 # ghpvnist
 # zhanyong-wan
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_cc_test",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -28,6 +33,7 @@ torch_tpu_cc_library(
     srcs = ["sparse_coo.cc"],
     hdrs = ["sparse_coo.h"],
     deps = [
+        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:utils",
@@ -80,6 +86,25 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "sparse_coo_test",
+    srcs = ["sparse_coo_test.cc"],
+    deps = [
+        ":sparse_coo",
+        "//csrc/common:dtype",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/ops:op_builder_utils",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:func_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )

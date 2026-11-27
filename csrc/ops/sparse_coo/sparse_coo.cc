@@ -23,6 +23,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/Scalar.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"
@@ -227,18 +228,21 @@ absl::StatusOr<mlir::MlirOp> BuildSparseToDenseShlo(
     mlir::MlirOp indices_op, mlir::MlirOp values_op,
     absl::Span<const int64_t> out_sizes, mlir::ElementType out_dtype) {
   auto& builder = indices_op.getBuilder();
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp zero_dense,
-                      MakeConstant(builder, c10::Scalar(0), out_dtype,
-                                   mlir::ArrayRef<int64_t>(out_sizes.data(),
-                                                           out_sizes.size())));
+  const mlir::ArrayRef<int64_t> out_shape(out_sizes.data(), out_sizes.size());
   if (GetTensorTypeOrDie(values_op).getDimSize(0) == 0) {
-    return zero_dense;
+    return MakeConstant(builder, c10::Scalar(0), out_dtype, out_shape);
   }
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp zero_dense,
+      MakeConstant(builder, c10::Scalar(0), compute_dtype, out_shape));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_values,
-                      CastIfNeeded(values_op, out_dtype));
+                      CastIfNeeded(values_op, compute_dtype));
   mlir::MlirOp scatter_indices = mlir::stablehlo::Transpose(indices_op, {1, 0});
-  return ScatterAddSparseToDense(builder, zero_dense, scatter_indices,
-                                 converted_values);
+  mlir::MlirOp dense = ScatterAddSparseToDense(
+      builder, zero_dense, scatter_indices, converted_values);
+  return CastIfNeeded(dense, out_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAddDenseSparseShlo(
@@ -246,21 +250,24 @@ absl::StatusOr<mlir::MlirOp> BuildAddDenseSparseShlo(
     mlir::MlirOp sparse_values_op, std::optional<mlir::MlirOp> alpha_op,
     mlir::ElementType out_dtype) {
   auto& builder = dense_self_op.getBuilder();
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_dense,
-                      CastIfNeeded(dense_self_op, out_dtype));
+                      CastIfNeeded(dense_self_op, compute_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp scaled_values,
-                      CastIfNeeded(sparse_values_op, out_dtype));
+                      CastIfNeeded(sparse_values_op, compute_dtype));
   if (alpha_op.has_value()) {
     TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_alpha,
-                        CastIfNeeded(*alpha_op, out_dtype));
+                        CastIfNeeded(*alpha_op, compute_dtype));
     TT_ASSIGN_OR_RETURN(mlir::MlirOp bcast_alpha,
                         BroadcastIfNeeded(converted_alpha, scaled_values));
     scaled_values = mlir::stablehlo::Mul(scaled_values, bcast_alpha);
   }
   mlir::MlirOp scatter_indices =
       mlir::stablehlo::Transpose(sparse_indices_op, {1, 0});
-  return ScatterAddSparseToDense(builder, converted_dense, scatter_indices,
-                                 scaled_values);
+  mlir::MlirOp result = ScatterAddSparseToDense(builder, converted_dense,
+                                                scatter_indices, scaled_values);
+  return CastIfNeeded(result, out_dtype);
 }
 
 absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildAddSparseSparseShlo(
@@ -335,12 +342,18 @@ absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildCoalesceAndCountShlo(
   mlir::MlirOp dest_idx_2d = mlir::stablehlo::Reshape(dest_idx_1d, {nnz, 1});
 
   const mlir::RankedTensorType val_type = GetTensorTypeOrDie(values_op);
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp zero_values,
-      MakeConstant(builder, c10::Scalar(0), GetElementTypeOrDie(values_op),
-                   val_type.getShape()));
-  mlir::MlirOp compacted_values =
-      ScatterAddSparseToDense(builder, zero_values, dest_idx_2d, sorted_values);
+  const mlir::ElementType orig_elem_type = GetElementTypeOrDie(values_op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_elem_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp zero_values,
+                      MakeConstant(builder, c10::Scalar(0), compute_dtype,
+                                   val_type.getShape()));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp compute_sorted_values,
+                      CastIfNeeded(sorted_values, compute_dtype));
+  mlir::MlirOp compacted_values = ScatterAddSparseToDense(
+      builder, zero_values, dest_idx_2d, compute_sorted_values);
+  TT_ASSIGN_OR_RETURN(compacted_values,
+                      CastIfNeeded(compacted_values, orig_elem_type));
   mlir::MlirOp compacted_indices =
       CompactUniqueIndices(builder, sorted_indices, is_unique_mask);
   return std::array<mlir::MlirOp, 3>{compacted_indices, compacted_values,
