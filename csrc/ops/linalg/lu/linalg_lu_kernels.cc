@@ -27,24 +27,23 @@
 #include "ATen/MemoryOverlap.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/IListRef_inl.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/native/LinearAlgebraUtils.h"
 #include "ATen/ops/_linalg_check_errors.h"
-#include "ATen/ops/add.h"
-#include "ATen/ops/any.h"
 #include "ATen/ops/arange.h"
-#include "ATen/ops/argmax.h"
-#include "ATen/ops/diagonal.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/empty_like.h"
-#include "ATen/ops/eq.h"
 #include "ATen/ops/eye.h"
 #include "ATen/ops/gather.h"
 #include "ATen/ops/reshape.h"
 #include "ATen/ops/tril.h"
 #include "ATen/ops/triu.h"
-#include "ATen/ops/where.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/TensorImpl.h"
+#include "c10/util/ArrayRef.h"
+#include "c10/util/DimVector.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
@@ -54,7 +53,6 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 #include "csrc/ops/linalg/solve_triangular/linalg_solve_triangular_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -66,6 +64,7 @@
 #include "mlir/IR/TypeRange.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -331,21 +330,21 @@ absl::StatusOr<MlirOpResults<2>> BuildComplexL2PivotedLuShlo(
   return {{a, pivots}};
 }
 
-absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
+absl::StatusOr<MlirOpResults<2>> BuildRawLuDecomposition(mlir::MlirOp input) {
   auto& builder = input.getBuilder();
   auto& op_builder = builder.getOpBuilder();
   auto& ctx = builder.getContext();
 
-  const auto a_type = GetTensorTypeOrDie(input);
-  const auto a_shape = a_type.getShape();
-  int rank = a_shape.size();
+  const mlir::RankedTensorType a_type = GetTensorTypeOrDie(input);
+  const mlir::ArrayRef<int64_t> a_shape = a_type.getShape();
+  const int64_t rank = a_shape.size();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dimensions constraints are checked
                  // before Mlir lowering.
       rank >= 2, error::kInvalidArgument)
       << "expected input tensor to have at least 2 dimensions, got " << rank;
 
-  const int n = a_shape[rank - 2];
-  const int m = a_shape[rank - 1];
+  const int64_t n = a_shape[rank - 2];
+  const int64_t m = a_shape[rank - 1];
   Dimensions batch_dims = CopyIntVector(a_shape.drop_back(2));
   int64_t batch_count = 1;
   for (int64_t d : batch_dims) {
@@ -395,6 +394,78 @@ absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
   mlir::MlirOp lu(builder, lu_op.getResult(0));
   mlir::MlirOp pivots(builder, lu_op.getResult(1));
   return {{lu, pivots}};
+}
+
+// Computes the LAPACK-style `info` tensor of shape `batch_dims` with I32 dtype
+// from the LU factor `lu` of shape `(..., n, m)`. Returns 0 if every diagonal
+// entry of U is non-zero (or NaN), or the 1-based index of the first zero
+// diagonal entry.
+absl::StatusOr<mlir::MlirOp> ComputeLuInfo(mlir::MlirOp lu) {
+  mlir::MlirBuilder& builder = lu.getBuilder();
+  const mlir::RankedTensorType lu_type = GetTensorTypeOrDie(lu);
+  const int64_t rank = lu_type.getRank();
+  const int64_t row_dim = rank - 2;
+  const int64_t col_dim = rank - 1;
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp row_idx, Iota(lu, row_dim, i32_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp col_idx, Iota(lu, col_dim, i32_type));
+  mlir::MlirOp on_diag = mlir::stablehlo::Compare(
+      row_idx, col_idx, mlir::stablehlo::ComparisonDirection::EQ);
+
+  mlir::MlirOp is_nonzero = GetNonzeroMask(lu);
+  mlir::MlirOp is_zero = mlir::stablehlo::Not(is_nonzero);
+  mlir::MlirOp is_zero_diag = mlir::stablehlo::And(on_diag, is_zero);
+
+  constexpr int32_t kSentinel = std::numeric_limits<int32_t>::max();
+  mlir::MlirOp one = MakeConstantLike(row_idx, 1);
+  mlir::MlirOp one_based_row = mlir::stablehlo::Add(row_idx, one);
+  mlir::MlirOp sentinel = MakeConstantLike(row_idx, kSentinel);
+  mlir::MlirOp candidates =
+      mlir::stablehlo::Select(is_zero_diag, one_based_row, sentinel);
+
+  mlir::MlirOp init_val = MakeScalarConstant(builder, kSentinel, i32_type);
+  const auto min_reduce_builder = [i32_type](mlir::RegionBuilder& rb) {
+    mlir::stablehlo::buildReduceBody<mlir::stablehlo::MinOp>(
+        i32_type, rb.getRegion(), rb.getOpBuilder());
+  };
+  mlir::MlirOp min_zero_idx = mlir::stablehlo::Reduce(
+      builder, {candidates}, /*init_value=*/{init_val}, min_reduce_builder,
+      /*dimensions=*/{row_dim, col_dim})[0];
+
+  mlir::MlirOp sentinel_batch = MakeConstantLike(min_zero_idx, kSentinel);
+  mlir::MlirOp has_zero = mlir::stablehlo::Compare(
+      min_zero_idx, sentinel_batch, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp zero_batch = MakeConstantLike(min_zero_idx, 0);
+  return mlir::stablehlo::Select(has_zero, min_zero_idx, zero_batch);
+}
+
+absl::StatusOr<MlirOpResults<3>> LuDecompositionBuilder(mlir::MlirOp input) {
+  TT_ASSIGN_OR_RETURN(MlirOpResults<2> raw_lu, BuildRawLuDecomposition(input));
+  mlir::MlirOp lu = raw_lu[0];
+  mlir::MlirOp pivots_0based = raw_lu[1];
+
+  // Pivots from the LU kernel are 0-based, but PyTorch uses 1-based indexing.
+  mlir::MlirOp one = MakeConstantLike(pivots_0based, 1);
+  mlir::MlirOp pivots = mlir::stablehlo::Add(pivots_0based, one);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp info, ComputeLuInfo(lu));
+  return {{lu, pivots, info}};
+}
+
+// Resizes `lu` to `target_sizes` with batched column-major (Fortran-contiguous)
+// strides when its shape differs, matching upstream PyTorch's
+// `TORCH_META_FUNC(linalg_lu_factor_ex)`.
+absl::Status ResizeLuIfShapeDiffers(const at::Tensor& lu,
+                                    c10::IntArrayRef target_sizes) {
+  if (lu.sizes() == target_sizes) {
+    return absl::OkStatus();
+  }
+  TT_RETURN_IF_ERROR(ResizeTensor(lu, target_sizes));
+  const c10::DimVector lu_strides =
+      at::native::batched_matrix_contiguous_strides(target_sizes,
+                                                    /*f_contig=*/true);
+  lu.unsafeGetTensorImpl()->set_sizes_and_strides(target_sizes, lu_strides);
+  return absl::OkStatus();
 }
 
 absl::Status ValidatePivotsShape(const at::Tensor& tensor,
@@ -657,16 +728,16 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
       {
         TT_THROW_IF_ERROR(ValidateLuFactorExInputs(a, lu, pivots, info));
 
-        const int n = a.size(a.dim() - 2);
-        const int m = a.size(a.dim() - 1);
-        const int num_batch_dims = a.dim() - 2;
+        const int64_t n = a.size(a.dim() - 2);
+        const int64_t m = a.size(a.dim() - 1);
+        const int64_t num_batch_dims = a.dim() - 2;
         Dimensions batch_dims =
             CopyIntVector(a.sizes().slice(0, num_batch_dims));
         Dimensions pivot_dims = batch_dims;
         pivot_dims.push_back(std::min(n, m));
 
         if (a.numel() == 0) {
-          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(lu, a.sizes()));
+          TT_THROW_IF_ERROR(ResizeLuIfShapeDiffers(lu, a.sizes()));
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(pivots, pivot_dims));
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(info, batch_dims));
           info.zero_();
@@ -679,37 +750,40 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
 
         TT_ASSIGN_OR_THROW(mlir::ElementType out_mlir_type,
                            ConvertTo<mlir::ElementType>(a.scalar_type()));
+        TT_THROW_IF_ERROR(ResizeLuIfShapeDiffers(lu, a.sizes()));
 
-        TT_THROW_IF_ERROR((DispatchOpOut<1, 2>(
-            LuDecompositionBuilder, a, {lu, pivots},
-            {.out_dtypes = {out_mlir_type, mlir::ElementType::I32},
-             .out_dims_list = {a.sizes(), pivot_dims},
+        // If pivots and info alias the same storage, writing info after pivots
+        // would overwrite the shared element with 0 (an invalid 1-based pivot
+        // index). Upstream PyTorch/LAPACK (getrf) initializes info=0 before
+        // writing 1-based pivots. Dispatch into disjoint buffers when aliased
+        // so info is written before pivots while _linalg_check_errors still
+        // inspects the uncorrupted info.
+        const bool pivots_aliases_info = pivots.is_alias_of(info);
+        const at::Tensor pivots_out =
+            pivots_aliases_info
+                ? at::empty(pivot_dims, a.options().dtype(at::kInt))
+                : pivots;
+        const at::Tensor info_out =
+            pivots_aliases_info
+                ? at::empty(batch_dims, a.options().dtype(at::kInt))
+                : info;
+
+        TT_THROW_IF_ERROR((DispatchOpOut<1, 3>(
+            LuDecompositionBuilder, a, {lu, pivots_out, info_out},
+            {.out_dtypes = {out_mlir_type, mlir::ElementType::I32,
+                            mlir::ElementType::I32},
+             .out_dims_list = {a.sizes(), pivot_dims, batch_dims},
              .op_param_cache_keys = std::move(param_keys)})));
-        // Pivots are 0-based, but torch uses 1-based indexing.
-        pivots.add_(1);
-        // If pivots and info alias the same storage, writing info below would
-        // overwrite the shared element with 0 (an invalid 1-based pivot index).
-        // Upstream PyTorch/LAPACK (getrf) initializes info=0 before writing
-        // 1-based pivots. Snapshot pivots so _linalg_check_errors inspects the
-        // true computed info, then restore pivots afterwards to keep valid
-        // 1-based pivot indices (note: two aliased outputs physically cannot
-        // hold both values simultaneously).
-        at::Tensor saved_pivots =
-            pivots.is_alias_of(info) ? pivots.clone() : at::Tensor();
-        // Find the first non-zero diagonal element.
-        auto diagonal = at::diagonal(lu, /*offset=*/0, -2, -1);
-        auto zeros = at::eq(diagonal, 0).to(c10::ScalarType::Double);
-        auto has_zeros = at::any(zeros, -1);
-        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(info, batch_dims));
-        info.zero_();
-        auto indices = at::add(at::argmax(zeros, -1), 1);
-        CopyTensor(at::where(has_zeros, indices, 0).to(c10::kInt), info);
-        if (check_errors) {
-          at::_linalg_check_errors(info, "torch.linalg.lu_factor_ex",
-                                   a.dim() == 2);
+
+        if (pivots_aliases_info) {
+          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(info, batch_dims));
+          info.copy_(info_out);
+          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(pivots, pivot_dims));
+          pivots.copy_(pivots_out);
         }
-        if (saved_pivots.defined()) {
-          pivots.copy_(saved_pivots);
+        if (check_errors) {
+          at::_linalg_check_errors(info_out.contiguous(),
+                                   "torch.linalg.lu_factor_ex", a.dim() == 2);
         }
         return {lu, pivots, info};
       });

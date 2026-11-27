@@ -8237,6 +8237,317 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
     self.assertEqual(pivots_tpu.cpu().tolist(), [[1, 2, 3]])
 
+    # Exact same tensor object passed for pivots and info requiring resize on
+    # a batched input must not fail with a shape mismatch.
+    a_batch = torch.eye(3, dtype=torch.float32, device="tpu").unsqueeze(0)
+    a_batch = a_batch.repeat(2, 1, 1)
+    lu_batch = torch.empty(0, dtype=torch.float32, device="tpu")
+    shared = torch.empty(0, dtype=torch.int32, device="tpu")
+    torch.linalg.lu_factor_ex(
+        a_batch, check_errors=True, out=(lu_batch, shared, shared)
+    )
+    self.assertEqual(shared.shape, (2, 3))
+    self.assertEqual(shared.cpu().tolist(), [[1, 2, 3], [1, 2, 3]])
+    self.assertEqual(lu_batch.stride(), (9, 1, 3))
+
+    # In-place lu aliasing input `a` (out=(a, pivots, info)).
+    a_inplace_cpu = torch.randn(2, 3, 4, dtype=torch.float32)
+    a_inplace_tpu = a_inplace_cpu.clone().to("tpu")
+    piv_tpu = torch.empty(0, dtype=torch.int32, device="tpu")
+    inf_tpu = torch.empty(0, dtype=torch.int32, device="tpu")
+    torch.linalg.lu_factor_ex(
+        a_inplace_tpu, check_errors=True, out=(a_inplace_tpu, piv_tpu, inf_tpu)
+    )
+    p_tpu, l_tpu, u_tpu = torch.lu_unpack(a_inplace_tpu, piv_tpu)
+    utils.assert_close(
+        p_tpu.cpu() @ l_tpu.cpu() @ u_tpu.cpu(),
+        a_inplace_cpu,
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+    # Non-contiguous pre-sized `info` with check_errors=True must not fail.
+    info_backing = torch.full((4,), -1, dtype=torch.int32, device="tpu")
+    info_strided = info_backing[::2]
+    lu_nc = torch.empty_like(a_batch)
+    piv_nc = torch.empty((2, 3), dtype=torch.int32, device="tpu")
+    torch.linalg.lu_factor_ex(
+        a_batch, check_errors=True, out=(lu_nc, piv_nc, info_strided)
+    )
+    self.assertEqual(info_strided.cpu().tolist(), [0, 0])
+
+  @parameterized.named_parameters(
+      ("batched_3d_f32", (2, 3, 4), torch.float32, (12, 1, 3)),
+      ("matrix_2d_f32", (3, 4), torch.float32, (1, 3)),
+      ("empty_rows_3d_f32", (2, 0, 4), torch.float32, (4, 1, 1)),
+      ("empty_batch_3d_f32", (0, 3, 4), torch.float32, (12, 1, 3)),
+      ("batched_3d_c64", (2, 3, 4), torch.complex64, (12, 1, 3)),
+      ("batched_square_c64", (2, 3, 3), torch.complex64, (9, 1, 3)),
+  )
+  def test_linalg_lu_factor_ex_out_resized_strides(
+      self,
+      shape: tuple[int, ...],
+      dtype: torch.dtype,
+      expected_stride: tuple[int, ...],
+  ):
+    a_cpu = torch.randn(shape, dtype=dtype)
+    a_tpu = a_cpu.to("tpu")
+
+    lu_cpu = torch.empty(0, dtype=dtype)
+    pivots_cpu = torch.empty(0, dtype=torch.int32)
+    info_cpu = torch.empty(0, dtype=torch.int32)
+    torch.linalg.lu_factor_ex(a_cpu, out=(lu_cpu, pivots_cpu, info_cpu))
+
+    lu_tpu = torch.empty(0, dtype=dtype, device="tpu")
+    pivots_tpu = torch.empty(0, dtype=torch.int32, device="tpu")
+    info_tpu = torch.empty(0, dtype=torch.int32, device="tpu")
+    torch.linalg.lu_factor_ex(a_tpu, out=(lu_tpu, pivots_tpu, info_tpu))
+
+    self.assertEqual(lu_tpu.shape, lu_cpu.shape)
+    self.assertEqual(lu_tpu.stride(), expected_stride)
+    self.assertEqual(lu_tpu.stride(), lu_cpu.stride())
+    self.assertEqual(pivots_tpu.stride(), pivots_cpu.stride())
+    self.assertEqual(info_tpu.stride(), info_cpu.stride())
+    self.assertEqual(info_tpu.cpu().tolist(), info_cpu.tolist())
+    if a_cpu.numel() > 0:
+      p_tpu, l_tpu, u_tpu = torch.lu_unpack(lu_tpu, pivots_tpu)
+      utils.assert_close(
+          p_tpu.cpu() @ l_tpu.cpu() @ u_tpu.cpu(), a_cpu, rtol=1e-4, atol=1e-4
+      )
+
+      # Also verify resizing from a non-empty mismatched shape assigns
+      # column-major strides.
+      lu_wrong_tpu = torch.empty((5, 5), dtype=dtype, device="tpu")
+      pivots_wrong_tpu = torch.empty((5,), dtype=torch.int32, device="tpu")
+      info_wrong_tpu = torch.empty((5,), dtype=torch.int32, device="tpu")
+      torch.linalg.lu_factor_ex(
+          a_tpu, out=(lu_wrong_tpu, pivots_wrong_tpu, info_wrong_tpu)
+      )
+      self.assertEqual(lu_wrong_tpu.shape, lu_cpu.shape)
+      self.assertEqual(lu_wrong_tpu.stride(), expected_stride)
+      p_w, l_w, u_w = torch.lu_unpack(lu_wrong_tpu, pivots_wrong_tpu)
+      utils.assert_close(
+          p_w.cpu() @ l_w.cpu() @ u_w.cpu(), a_cpu, rtol=1e-4, atol=1e-4
+      )
+
+  @parameterized.named_parameters(
+      ("matrix_2d_f32", (3, 3), torch.float32),
+      ("batched_3d_f32", (2, 3, 4), torch.float32),
+      ("matrix_2d_c64", (3, 3), torch.complex64),
+      ("batched_square_c64", (2, 3, 3), torch.complex64),
+  )
+  def test_linalg_lu_factor_ex_out_version_counters(
+      self, shape: tuple[int, ...], dtype: torch.dtype
+  ):
+    batch_shape = shape[:-2]
+    pivot_shape = (*batch_shape, min(shape[-2], shape[-1]))
+    a_cpu = torch.randn(shape, dtype=dtype)
+    a_tpu = a_cpu.to("tpu")
+
+    lu_cpu = torch.empty(shape, dtype=dtype)
+    pivots_cpu = torch.empty(pivot_shape, dtype=torch.int32)
+    info_cpu = torch.empty(batch_shape, dtype=torch.int32)
+    expected_row_major_stride = lu_cpu.stride()
+    torch.linalg.lu_factor_ex(a_cpu, out=(lu_cpu, pivots_cpu, info_cpu))
+
+    # Measure the single-dispatch version bump of a standard .out op on TPU
+    # (currently 2: +1 from AssignBufferToAtTensor and +1 from ADInplaceOrView).
+    # All three outputs of linalg.lu_factor_ex.out must incur only this single
+    # bump (previously pivots and info incurred extra in-place post-processing
+    # bumps).
+    ref_tpu = torch.empty(1, dtype=torch.float32, device="tpu")
+    torch.neg(ref_tpu, out=ref_tpu)
+    single_out_bump = ref_tpu._version
+
+    lu_tpu = torch.empty(shape, dtype=dtype, device="tpu")
+    pivots_tpu = torch.empty(pivot_shape, dtype=torch.int32, device="tpu")
+    info_tpu = torch.empty(batch_shape, dtype=torch.int32, device="tpu")
+    torch.linalg.lu_factor_ex(a_tpu, out=(lu_tpu, pivots_tpu, info_tpu))
+
+    self.assertEqual(
+        (lu_cpu._version, pivots_cpu._version, info_cpu._version),
+        (1, 1, 1),
+    )
+    self.assertEqual(
+        (lu_tpu._version, pivots_tpu._version, info_tpu._version),
+        (single_out_bump, single_out_bump, single_out_bump),
+    )
+    # Pre-allocated row-major output preserves its strides.
+    self.assertEqual(lu_tpu.stride(), expected_row_major_stride)
+    self.assertEqual(lu_tpu.stride(), lu_cpu.stride())
+
+  def test_linalg_lu_factor_ex_singular_info(self):
+    cases = [
+        (
+            "2d_first_diag_zero_f32",
+            torch.zeros(3, 3, dtype=torch.float32),
+            1,
+        ),
+        (
+            "2d_middle_diag_zero_f32",
+            torch.diag(torch.tensor([2.0, 0.0, 3.0], dtype=torch.float32)),
+            2,
+        ),
+        (
+            "2d_last_diag_zero_f32",
+            torch.diag(torch.tensor([2.0, 3.0, 0.0], dtype=torch.float32)),
+            3,
+        ),
+        (
+            "2d_multiple_zeros_picks_first_f32",
+            torch.diag(torch.tensor([2.0, 0.0, 0.0, 4.0], dtype=torch.float32)),
+            2,
+        ),
+        (
+            "3d_mixed_singular_and_nonsingular_f32",
+            torch.stack([
+                torch.eye(3, dtype=torch.float32),
+                torch.diag(torch.tensor([2.0, 0.0, 3.0], dtype=torch.float32)),
+                torch.diag(torch.tensor([1.0, 2.0, 0.0], dtype=torch.float32)),
+                torch.diag(torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)),
+            ]),
+            [0, 2, 3, 1],
+        ),
+        (
+            "rect_3x5_singular_f32",
+            torch.tensor(
+                [
+                    [2.0, 0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 3.0, 0.0, 1.0],
+                ],
+                dtype=torch.float32,
+            ),
+            2,
+        ),
+        (
+            "rect_5x3_singular_f32",
+            torch.tensor(
+                [
+                    [2.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 3.0],
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                ],
+                dtype=torch.float32,
+            ),
+            2,
+        ),
+        (
+            "2d_multiple_zeros_c64",
+            torch.diag(
+                torch.tensor(
+                    [1.0 + 2.0j, 0.0 + 0.0j, 0.0 + 0.0j], dtype=torch.complex64
+                )
+            ),
+            2,
+        ),
+        (
+            "3d_mixed_singular_and_nonsingular_c64",
+            torch.stack([
+                torch.eye(3, dtype=torch.complex64),
+                torch.diag(
+                    torch.tensor(
+                        [1.0 + 1.0j, 0.0 + 0.0j, 2.0 - 1.0j],
+                        dtype=torch.complex64,
+                    )
+                ),
+                torch.diag(
+                    torch.tensor(
+                        [0.0 + 0.0j, 1.0j, 0.0 + 0.0j], dtype=torch.complex64
+                    )
+                ),
+            ]),
+            [0, 2, 1],
+        ),
+        (
+            "rect_3x5_singular_c64",
+            torch.tensor(
+                [
+                    [1.0 + 1.0j, 0.0, 0.0, 2.0j, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 3.0 - 1.0j, 0.0, 1.0],
+                ],
+                dtype=torch.complex64,
+            ),
+            2,
+        ),
+        (
+            "rect_5x3_singular_c64",
+            torch.tensor(
+                [
+                    [1.0 + 1.0j, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 3.0 - 1.0j],
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                ],
+                dtype=torch.complex64,
+            ),
+            2,
+        ),
+    ]
+    for name, a_cpu, expected_info in cases:
+      with self.subTest(name=name):
+        _, _, info_cpu = torch.linalg.lu_factor_ex(a_cpu, check_errors=False)
+        lu_tpu, pivots_tpu, info_tpu = torch.linalg.lu_factor_ex(
+            a_cpu.to("tpu"), check_errors=False
+        )
+        self.assertEqual(info_cpu.tolist(), expected_info)
+        self.assertEqual(info_tpu.cpu().tolist(), expected_info)
+        p_tpu, l_tpu, u_tpu = torch.lu_unpack(lu_tpu, pivots_tpu)
+        utils.assert_close(
+            p_tpu.cpu() @ l_tpu.cpu() @ u_tpu.cpu(), a_cpu, rtol=1e-4, atol=1e-4
+        )
+
+    # NaN diagonal entries are not treated as zero (matching CPU). Place NaN on
+    # the last diagonal entry so pivoting and trailing updates do not perturb it.
+    for name, a_cpu, expected_info in [
+        (
+            "2d_nan_last_diag_no_zero_f32",
+            torch.diag(
+                torch.tensor([1.0, 2.0, float("nan")], dtype=torch.float32)
+            ),
+            0,
+        ),
+        (
+            "2d_zero_before_nan_diag_f32",
+            torch.diag(
+                torch.tensor([1.0, 0.0, float("nan")], dtype=torch.float32)
+            ),
+            2,
+        ),
+    ]:
+      with self.subTest(nan_case=name):
+        _, _, info_cpu = torch.linalg.lu_factor_ex(a_cpu, check_errors=False)
+        _, _, info_tpu = torch.linalg.lu_factor_ex(
+            a_cpu.to("tpu"), check_errors=False
+        )
+        self.assertEqual(info_cpu.tolist(), expected_info)
+        self.assertEqual(info_tpu.cpu().tolist(), expected_info)
+
+    # Non-singular 2D and batched 3D matrices succeed with check_errors=True.
+    for name, a_cpu in [
+        ("2d_f32", torch.eye(3, dtype=torch.float32)),
+        (
+            "3d_f32",
+            torch.eye(3, dtype=torch.float32).unsqueeze(0).repeat(2, 1, 1),
+        ),
+        ("2d_c64", torch.eye(3, dtype=torch.complex64)),
+        (
+            "3d_c64",
+            torch.eye(3, dtype=torch.complex64).unsqueeze(0).repeat(2, 1, 1),
+        ),
+    ]:
+      with self.subTest(check_errors_nonsingular=name):
+        _, _, info_tpu = torch.linalg.lu_factor_ex(
+            a_cpu.to("tpu"), check_errors=True
+        )
+        self.assertEqual(
+            info_tpu.cpu().tolist(), 0 if a_cpu.dim() == 2 else [0, 0]
+        )
+
   def test_solve_ex_singular(self):
     torch.manual_seed(1234)
     # Create a singular matrix to trigger the unsolvable case.
