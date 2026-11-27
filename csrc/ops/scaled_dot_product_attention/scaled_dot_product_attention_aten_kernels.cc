@@ -399,6 +399,10 @@ AtenScaledDotProductFusedAttentionOverrideableBackward(
     const at::Tensor& cum_seq_k, at::SymInt max_q, at::SymInt max_k,
     double dropout_p, bool is_causal, const at::Tensor& philox_seed,
     const at::Tensor& philox_offset, std::optional<double> scale) {
+  if (!grad_out.defined()) {
+    return std::make_tuple(at::Tensor(), at::Tensor(), at::Tensor(),
+                           at::Tensor());
+  }
   TT_KERNEL(
       OpName::kScaledDotProductFusedAttentionOverrideableBackward, param_keys,
       (grad_out, query, key, value, attn_bias,
