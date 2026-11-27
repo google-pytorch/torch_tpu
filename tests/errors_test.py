@@ -9804,6 +9804,36 @@ Note: this function is intended to be used with the output produced by torch.lin
     ):
       torch.multinomial(inp, num_samples=1, out=out)
 
+  def test_multinomial_zero_categories(self):
+    for shape in [(0,), (2, 0)]:
+      inp = torch.empty(shape, device=et.device(), dtype=torch.float32)
+      with self.subTest(shape=shape), et.assert_raises_message(
+          RuntimeError,
+          tpu="""multinomial(): expected the number of categories to be > 0, got 0""",
+          gpu="""aminmax(): cannot compute aminmax over an empty dimension as the operation has no identity.""",
+      ):
+        torch.multinomial(inp, num_samples=1, replacement=True)
+
+  def test_multinomial_out_wrong_device(self):
+    inp = torch.empty((0, 3), device=et.device(), dtype=torch.float32)
+    out = torch.empty((0, 1), device="cpu", dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""multinomial(): expected output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out_multinomial_out)""",
+    ):
+      torch.multinomial(inp, num_samples=1, replacement=True, out=out)
+
+  def test_multinomial_self_wrong_device(self):
+    inp = torch.empty((0, 3), device="cpu", dtype=torch.float32)
+    out = torch.empty((0, 1), device=et.device(), dtype=torch.int64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""multinomial(): expected input tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_out_multinomial_out)""",
+    ):
+      torch.multinomial(inp, num_samples=1, replacement=True, out=out)
+
   def test_index_too_many_indices(self):
     t = torch.ones(2, 2, device=et.device())
     indices = [

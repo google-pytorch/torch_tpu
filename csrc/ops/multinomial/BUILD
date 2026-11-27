@@ -29,6 +29,7 @@ torch_tpu_cc_library(
     hdrs = ["multinomial_aten_kernels.h"],
     deps = [
         "//csrc/common:aten_utils",
+        "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -45,6 +46,7 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//csrc/ops/min_max",
         "//csrc/ops/reductions",
+        "//csrc/ops/resize:resize_aten_kernels",
         "//csrc/ops/topk",
         "//csrc/ops/uniform",
         "//shims/torch:aten_headers",

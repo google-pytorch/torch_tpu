@@ -31440,6 +31440,24 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  @parameterized.named_parameters(
+      ("zero_rows_with_replacement", (0, 3), True),
+      ("zero_rows_without_replacement", (0, 3), False),
+      ("zero_rows_zero_categories_with_replacement", (0, 0), True),
+  )
+  def test_multinomial_zero_rows(self, shape, replacement):
+    inp_tpu = torch.empty(shape, dtype=torch.float32, device="tpu")
+    out_tpu = torch.multinomial(inp_tpu, num_samples=2, replacement=replacement)
+    self.assertEqual(out_tpu.shape, (0, 2))
+    self.assertEqual(out_tpu.dtype, torch.int64)
+
+    out_buf = torch.empty((4,), dtype=torch.int64, device="tpu")
+    ret = torch.multinomial(
+        inp_tpu, num_samples=2, replacement=replacement, out=out_buf
+    )
+    self.assertIs(ret, out_buf)
+    self.assertEqual(out_buf.shape, (0, 2))
+
 
 if __name__ == "__main__":
   absltest.main()
