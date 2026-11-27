@@ -17757,6 +17757,197 @@ Note: this function is intended to be used with the output produced by torch.lin
           2,
       )
 
+  @et.gpu_crashes_or_raises("CUDA crashes with SIGFPE when num_heads == 0")
+  def test_transformer_encoder_layer_fwd_zero_num_heads(self):
+    embed_dim = 16
+    num_heads = 0
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, embed_dim, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""transformer_encoder_layer_fwd(): expected num_heads > 0, got 0""",
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+      )
+
+  def test_transformer_encoder_layer_fwd_negative_num_heads(self):
+    embed_dim = 16
+    num_heads = -4
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, embed_dim, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""transformer_encoder_layer_fwd(): expected num_heads > 0, got -4""",
+        gpu="""invalid shape dimension -4 at index 2 of shape [2, -1, -4, -4]""",
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="3d_type0_mismatched_seq_len_b_nh",
+          mask_shape=(8, 3, 3),
+          mask_type=0,
+          tpu_message="""transformer_encoder_layer_fwd(): expected 3D mask shape to be [2, 8, 8], [4, 8, 8], or [8, 8, 8] for mask_type 0, got [8, 3, 3]""",
+          gpu_message="""Mask shape should match input. mask: [8, 3, 3] input: [2, 4, 8, 8]""",
+      ),
+      dict(
+          testcase_name="3d_type0_mismatched_seq_len_b",
+          mask_shape=(2, 3, 3),
+          mask_type=0,
+          tpu_message="""transformer_encoder_layer_fwd(): expected 3D mask shape to be [2, 8, 8], [4, 8, 8], or [8, 8, 8] for mask_type 0, got [2, 3, 3]""",
+          gpu_message="""Mask shape should match input. mask: [2, 3, 3] input: [2, 4, 8, 8]""",
+      ),
+      dict(
+          testcase_name="3d_type0_mismatched_dim0",
+          mask_shape=(5, 8, 8),
+          mask_type=0,
+          tpu_message="""transformer_encoder_layer_fwd(): expected 3D mask shape to be [2, 8, 8], [4, 8, 8], or [8, 8, 8] for mask_type 0, got [5, 8, 8]""",
+          gpu_message="""Mask shape should match input. mask: [5, 8, 8] input: [2, 4, 8, 8]""",
+      ),
+      dict(
+          testcase_name="3d_type1_mismatched_shape",
+          mask_shape=(8, 3, 3),
+          mask_type=1,
+          tpu_message="""transformer_encoder_layer_fwd(): expected 3D mask shape to be [2, 1, 8] for mask_type 1, got [8, 3, 3]""",
+          gpu_message="""Mask shape should match input. mask: [8, 3, 3] input: [2, 4, 8, 8]""",
+      ),
+      dict(
+          testcase_name="3d_type2_default_mask",
+          mask_shape=(8, 8, 8),
+          mask_type=2,
+          tpu_message="""transformer_encoder_layer_fwd(): expected 4D mask for mask_type 2, got 3D tensor of shape [8, 8, 8]""",
+          gpu_message="""Mask shape should match input. mask: [8, 8, 8] input: [2, 4, 8, 8]""",
+      ),
+      dict(
+          testcase_name="4d_mismatched_seq_len",
+          mask_shape=(2, 4, 3, 3),
+          mask_type=2,
+          tpu_message="""transformer_encoder_layer_fwd(): expected 4D mask shape to be [2, 4, 8, 8], got [2, 4, 3, 3]""",
+          gpu_message="""Mask shape should match input. mask: [2, 4, 3, 3] input: [2, 4, 8, 8]""",
+      ),
+      dict(
+          testcase_name="4d_mismatched_heads",
+          mask_shape=(2, 1, 8, 8),
+          mask_type=2,
+          tpu_message="""transformer_encoder_layer_fwd(): expected 4D mask shape to be [2, 4, 8, 8], got [2, 1, 8, 8]""",
+          gpu_message="""Mask shape should match input. mask: [2, 1, 8, 8] input: [2, 4, 8, 8]""",
+      ),
+  )
+  def test_transformer_encoder_layer_fwd_invalid_3d_or_4d_mask_shape(
+      self, mask_shape, mask_type, tpu_message, gpu_message
+  ):
+    embed_dim = 16
+    num_heads = 4
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, embed_dim, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+    mask = torch.zeros(mask_shape, dtype=torch.bool, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_message,
+        gpu=gpu_message,
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+          mask,
+          mask_type,
+      )
+
   def test_ones_unsupported_dtype(self):
     with et.assert_raises_message(
         NotImplementedError,

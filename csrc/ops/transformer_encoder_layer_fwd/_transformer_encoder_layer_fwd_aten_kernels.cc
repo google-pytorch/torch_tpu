@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,8 @@ void ValidateTransformerEncoderInputs(
   TT_CHECK_THROW(src.size(2) == embed_dim, error::kInvalidArgument)
       << "expected last dimension of src to match embed_dim " << embed_dim
       << ", got " << src.size(2);
+  TT_CHECK_THROW(num_heads > 0, error::kInvalidArgument)
+      << "expected num_heads > 0, got " << num_heads;
   TT_CHECK_THROW(embed_dim % num_heads == 0, error::kInvalidArgument)
       << "expected embed_dim to divide cleanly by num_heads, got "
       << "embed_dim " << embed_dim << " and num_heads " << num_heads;
@@ -157,20 +160,64 @@ void ValidateTransformerEncoderInputs(
     TT_CHECK_THROW(*mask_type == 0 || *mask_type == 1 || *mask_type == 2,
                    error::kInvalidArgument)
         << "expected mask_type to be 0, 1, or 2, got " << *mask_type;
-    if (sanitized_mask->dim() == 2) {
-      // A 2-D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
-      // src_key_padding_mask (mask_type 1); default_mask (2) must be 4-D.
-      TT_CHECK_THROW(*mask_type != 2, error::kInvalidArgument)
-          << "expected 4D mask for mask_type 2, got 2D tensor of shape "
-          << sanitized_mask->sizes();
-      const int64_t seq_len = src.size(1);
-      const int64_t expected_dim0 = *mask_type == 0 ? seq_len : src.size(0);
-      TT_CHECK_THROW(sanitized_mask->size(0) == expected_dim0 &&
-                         sanitized_mask->size(1) == seq_len,
+    const int64_t batch_size = src.size(0);
+    const int64_t seq_len = src.size(1);
+    if (sanitized_mask->dim() == 4) {
+      // A 4D mask must match the [B, num_heads, T, T] attention logits
+      // regardless of mask_type.
+      TT_CHECK_THROW(sanitized_mask->size(0) == batch_size &&
+                         sanitized_mask->size(1) == num_heads &&
+                         sanitized_mask->size(2) == seq_len &&
+                         sanitized_mask->size(3) == seq_len,
                      error::kInvalidArgument)
-          << "expected 2D mask shape to be [" << expected_dim0 << ", "
-          << seq_len << "] for mask_type " << *mask_type << ", got "
+          << "expected 4D mask shape to be [" << batch_size << ", " << num_heads
+          << ", " << seq_len << ", " << seq_len << "], got "
           << sanitized_mask->sizes();
+    } else {
+      // default_mask (mask_type 2) must be a 4D [B, num_heads, T, T] tensor.
+      TT_CHECK_THROW(*mask_type != 2, error::kInvalidArgument)
+          << "expected 4D mask for mask_type 2, got " << sanitized_mask->dim()
+          << "D tensor of shape " << sanitized_mask->sizes();
+      if (sanitized_mask->dim() == 2) {
+        // A 2D mask is either a [T, T] src_mask (mask_type 0) or a [B, T]
+        // src_key_padding_mask (mask_type 1).
+        const int64_t expected_dim0 = *mask_type == 0 ? seq_len : batch_size;
+        TT_CHECK_THROW(sanitized_mask->size(0) == expected_dim0 &&
+                           sanitized_mask->size(1) == seq_len,
+                       error::kInvalidArgument)
+            << "expected 2D mask shape to be [" << expected_dim0 << ", "
+            << seq_len << "] for mask_type " << *mask_type << ", got "
+            << sanitized_mask->sizes();
+      } else if (*mask_type == 1) {
+        // A 3D key-padding mask (mask_type 1) must have shape [B, 1, T].
+        TT_CHECK_THROW(sanitized_mask->size(0) == batch_size &&
+                           sanitized_mask->size(1) == 1 &&
+                           sanitized_mask->size(2) == seq_len,
+                       error::kInvalidArgument)
+            << "expected 3D mask shape to be [" << batch_size << ", 1, "
+            << seq_len << "] for mask_type 1, got " << sanitized_mask->sizes();
+      } else {
+        // A 3D attention mask (mask_type 0) must have shape [B, T, T],
+        // [num_heads, T, T], or [B * num_heads, T, T].
+        const absl::StatusOr<int64_t> batch_times_heads =
+            SafeMultiply(batch_size, num_heads);
+        const bool dim0_matches_batch_times_heads =
+            batch_times_heads.ok() &&
+            sanitized_mask->size(0) == *batch_times_heads;
+        TT_CHECK_THROW((sanitized_mask->size(0) == batch_size ||
+                        sanitized_mask->size(0) == num_heads ||
+                        dim0_matches_batch_times_heads) &&
+                           sanitized_mask->size(1) == seq_len &&
+                           sanitized_mask->size(2) == seq_len,
+                       error::kInvalidArgument)
+            << "expected 3D mask shape to be [" << batch_size << ", " << seq_len
+            << ", " << seq_len << "], [" << num_heads << ", " << seq_len << ", "
+            << seq_len << "], or ["
+            << (batch_times_heads.ok() ? std::to_string(*batch_times_heads)
+                                       : std::string("B * num_heads"))
+            << ", " << seq_len << ", " << seq_len << "] for mask_type 0, got "
+            << sanitized_mask->sizes();
+      }
     }
   }
 }
@@ -194,7 +241,7 @@ absl::StatusOr<mlir::MlirOp> ReshapeMask3DShlo(
     const int64_t B_dummy, const int64_t T_dummy, const int64_t nH) {
   const mlir::RankedTensorType mask_t = GetTensorTypeOrDie(mask_val);
   const auto mask_shape = mask_t.getShape();
-  if (mask_type.has_value() && *mask_type == 1) {
+  if (mask_type == 1) {
     // Key-padding mask [B, 1, T] -> [B, 1, 1, T]
     return Unsqueeze(mask_val, 2);
   }
