@@ -3048,20 +3048,10 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("index_put")
 
   def test_index_reduce_amax(self):
-    self.do_test_op(
-        "index_reduce",
-        variant_test_name="amax",
-        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
-        skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
-    )
+    self.do_test_op("index_reduce", variant_test_name="amax")
 
   def test_index_reduce_amin(self):
-    self.do_test_op(
-        "index_reduce",
-        variant_test_name="amin",
-        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
-        skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
-    )
+    self.do_test_op("index_reduce", variant_test_name="amin")
 
   def test_index_reduce_mean(self):
     self.do_test_op(
@@ -3071,17 +3061,18 @@ class TestOps(op_testing.OpInfoTestBase):
         # eager); compiled CUDA/Inductor widens via decomposition.
         exclude_dtypes=_if_tpu_vs_gpu_compiled(COMPLEX_DTYPES, ()),
         exclude_inplace_dtypes=_if_tpu_vs_gpu_compiled(COMPLEX_DTYPES, ()),
-        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
-        skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
+        # TODO(b/579088589): Root-cause the float16 3D mean mismatch against
+        # compiled CUDA/Inductor goldens (passes against eager CUDA) and either
+        # fix or add a compiled-mode tolerance override.
+        skip_if=lambda _variant, op_input: (
+            op_testing.is_tpu_vs_gpu_compiled()
+            and op_input.input_value.dtype == torch.float16
+            and op_input.input_value.ndim > 2
+        ),
     )
 
   def test_index_reduce_prod(self):
-    self.do_test_op(
-        "index_reduce",
-        variant_test_name="prod",
-        # TorchTPU only supports 0D/1D inputs in BuildScatterShlo.
-        skip_if=lambda _variant, op_input: (op_input.input_value.ndim > 1),
-    )
+    self.do_test_op("index_reduce", variant_test_name="prod")
 
   def test_index_select(self):
     self.do_test_op(
