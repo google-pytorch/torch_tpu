@@ -4504,6 +4504,52 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           t_float, t_float, grad_input=grad_input_int
       )
 
+  def test_gelu_backward_shape_mismatch(self):
+    grad_out = torch.ones((2, 4), device=et.device(), dtype=torch.float32)
+    x = torch.full((3,), 0.5, device=et.device(), dtype=torch.float32)
+    out = torch.empty((2, 4), device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.gelu_backward(grad_out, x)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gelu_backward(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+    ):
+      torch.ops.aten.gelu_backward.grad_input(grad_out, x, grad_input=out)
+
+  def test_gelu_backward_grad_input_broadcast_alias(self):
+    grad_large = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    x_small = torch.full((1, 3), 0.5, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gelu_backward(): output with shape [2, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [1, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.gelu_backward.grad_input(
+          grad_large, x_small, grad_input=x_small
+      )
+    self.assertEqual(x_small.shape, (1, 3))
+
+    grad_small = torch.ones((1, 3), device=et.device(), dtype=torch.float32)
+    x_large = torch.full((2, 3), 0.5, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gelu_backward(): output with shape [2, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [1, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+    ):
+      torch.ops.aten.gelu_backward.grad_input(
+          grad_small, x_large, grad_input=grad_small
+      )
+    self.assertEqual(grad_small.shape, (1, 3))
+
   def test_glu_unsupported_input_dtype(self):
     if et.is_on_gpu():
       # On TPU, passing an integer tensor raises RuntimeError ("expected
