@@ -31440,6 +31440,44 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_softmax_dynamic_dim_masks_padded_values(self):
+    full_tpu = torch.tensor(
+        [[-10.0, -10.0, 100.0, 100.0]], dtype=torch.float32, device="tpu"
+    )
+    logical_size = torch.tensor(2, dtype=torch.int32, device="tpu")
+    ref_cpu = torch.tensor([[-10.0, -10.0]], dtype=torch.float32)
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      dyn_tpu = torch.ops.tpu._set_dimension_logical_size(
+          full_tpu.clone(), 1, logical_size
+      )
+      out_softmax = torch.softmax(dyn_tpu, dim=1)
+      out_log_softmax = torch.log_softmax(dyn_tpu, dim=1)
+
+    utils.assert_close(out_softmax.cpu()[:, :2], torch.softmax(ref_cpu, dim=1))
+    utils.assert_close(
+        out_log_softmax.cpu()[:, :2], torch.log_softmax(ref_cpu, dim=1)
+    )
+
+    all_neg_inf_tpu = torch.tensor(
+        [[-float("inf"), -float("inf"), 100.0, 100.0]],
+        dtype=torch.float32,
+        device="tpu",
+    )
+    all_neg_inf_ref = torch.tensor(
+        [[-float("inf"), -float("inf")]], dtype=torch.float32
+    )
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      dyn_neg_inf = torch.ops.tpu._set_dimension_logical_size(
+          all_neg_inf_tpu.clone(), 1, logical_size
+      )
+      out_neg_inf = torch.softmax(dyn_neg_inf, dim=1)
+
+    utils.assert_close(
+        out_neg_inf.cpu()[:, :2],
+        torch.softmax(all_neg_inf_ref, dim=1),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
