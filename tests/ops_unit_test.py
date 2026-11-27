@@ -23248,6 +23248,136 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
       self.assert_close_tpu_vs_cpu(test_zero_feat_fn)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="large_p_precision",
+          p=100.0,
+          x_data=[[0.0, 0.0], [2.0, 1.5]],
+      ),
+      dict(
+          testcase_name="large_p_zero_diff_and_dist",
+          p=100.0,
+          x_data=[[1.0, 2.0], [3.0, 2.0], [1.0, 2.0]],
+      ),
+      dict(
+          testcase_name="p_lt_1_zero_diff_and_dist",
+          p=0.5,
+          x_data=[[1.0, 2.0], [3.0, 2.0], [1.0, 2.0]],
+      ),
+      dict(
+          testcase_name="p_gt_1_zero_diff_and_dist",
+          p=3.0,
+          x_data=[[1.0, 2.0], [3.0, 2.0], [1.0, 2.0]],
+      ),
+  )
+  def test_pdist_backward_large_p_and_edge_cases(self, p, x_data):
+    x_init = torch.tensor(x_data, dtype=torch.float32)
+
+    def test_fn(device):
+      x = to(x_init.clone(), device=device).requires_grad_(True)
+      dist = torch.nn.functional.pdist(x, p=p)
+      dist.backward(torch.ones_like(dist))
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="large_p_precision",
+          p=100.0,
+          x1_data=[[0.0, 0.0], [2.0, 1.5]],
+          x2_data=[[2.0, 1.5], [0.0, 0.0]],
+      ),
+      dict(
+          testcase_name="large_p_zero_diff_and_dist",
+          p=100.0,
+          x1_data=[[1.0, 2.0], [3.0, 2.0]],
+          x2_data=[[3.0, 2.0], [1.0, 2.0]],
+      ),
+      dict(
+          testcase_name="p_lt_1_zero_diff_and_dist",
+          p=0.5,
+          x1_data=[[1.0, 2.0], [3.0, 2.0]],
+          x2_data=[[3.0, 2.0], [1.0, 2.0]],
+      ),
+      dict(
+          testcase_name="p_gt_1_zero_diff_and_dist",
+          p=3.0,
+          x1_data=[[1.0, 2.0], [3.0, 2.0]],
+          x2_data=[[3.0, 2.0], [1.0, 2.0]],
+      ),
+  )
+  def test_cdist_backward_large_p_and_edge_cases(self, p, x1_data, x2_data):
+    x1_init = torch.tensor(x1_data, dtype=torch.float32)
+    x2_init = torch.tensor(x2_data, dtype=torch.float32)
+
+    def test_fn(device):
+      x1 = to(x1_init.clone(), device=device).requires_grad_(True)
+      x2 = to(x2_init.clone(), device=device).requires_grad_(True)
+      dist = torch.cdist(
+          x1, x2, p=p, compute_mode="donot_use_mm_for_euclid_dist"
+      )
+      dist.backward(torch.ones_like(dist))
+      return x1.grad, x2.grad
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="finite_dist", inf_dist=False),
+      dict(testcase_name="inf_dist", inf_dist=True),
+  )
+  def test_pdist_backward_large_p_no_overflow(self, inf_dist):
+    # At p=100, |diff|=10 overflows float32 in |diff|^(p-1) unless normalized
+    # by dist before exponentiation. Compare float32 TPU output against float64
+    # CPU reference (where 10^99 does not overflow).
+    p = 100.0
+    x_f64 = torch.tensor([[0.0, 0.0], [10.0, 5.0]], dtype=torch.float64)
+    dist_f64 = (
+        torch.tensor([float("inf")], dtype=torch.float64)
+        if inf_dist
+        else torch.nn.functional.pdist(x_f64, p=p)
+    )
+    grad_f64 = torch.ones_like(dist_f64)
+    expected = torch.ops.aten._pdist_backward(grad_f64, x_f64, p, dist_f64).to(
+        torch.float32
+    )
+    actual = torch.ops.aten._pdist_backward(
+        to(grad_f64.to(torch.float32), device="tpu"),
+        to(x_f64.to(torch.float32), device="tpu"),
+        p,
+        to(dist_f64.to(torch.float32), device="tpu"),
+    )
+    self.assert_close(golden_result=expected, torch_tpu_result=actual)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="finite_dist", inf_dist=False),
+      dict(testcase_name="inf_dist", inf_dist=True),
+  )
+  def test_cdist_backward_large_p_no_overflow(self, inf_dist):
+    # At p=100, |diff|=10 overflows float32 in |diff|^(p-1) unless normalized
+    # by dist before exponentiation. Compare float32 TPU output against float64
+    # CPU reference (where 10^99 does not overflow).
+    p = 100.0
+    x1_f64 = torch.tensor([[0.0, 0.0], [10.0, 5.0]], dtype=torch.float64)
+    x2_f64 = torch.tensor([[10.0, 5.0], [0.0, 0.0]], dtype=torch.float64)
+    dist_f64 = (
+        torch.full((2, 2), float("inf"), dtype=torch.float64)
+        if inf_dist
+        else torch.cdist(x1_f64, x2_f64, p=p)
+    )
+    grad_f64 = torch.ones_like(dist_f64)
+    expected = torch.ops.aten._cdist_backward(
+        grad_f64, x1_f64, x2_f64, p, dist_f64
+    ).to(torch.float32)
+    actual = torch.ops.aten._cdist_backward(
+        to(grad_f64.to(torch.float32), device="tpu"),
+        to(x1_f64.to(torch.float32), device="tpu"),
+        to(x2_f64.to(torch.float32), device="tpu"),
+        p,
+        to(dist_f64.to(torch.float32), device="tpu"),
+    )
+    self.assert_close(golden_result=expected, torch_tpu_result=actual)
+
   @parameterized.product(
       stride=[2],
       padding=[1],
