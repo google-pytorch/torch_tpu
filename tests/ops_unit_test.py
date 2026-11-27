@@ -15805,6 +15805,88 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         atol=1e-2,
     )
 
+  @parameterized.named_parameters(
+      ("bf16_to_f32", torch.bfloat16, torch.float32, "bf16", "f32"),
+      ("fp16_to_f32", torch.float16, torch.float32, "f16", "f32"),
+      (
+          "fp8_e4m3fn_to_bf16",
+          torch.float8_e4m3fn,
+          torch.bfloat16,
+          "f8E4M3FN",
+          "bf16",
+      ),
+      (
+          "fp8_e4m3fn_to_f32",
+          torch.float8_e4m3fn,
+          torch.float32,
+          "f8E4M3FN",
+          "f32",
+      ),
+      ("fp8_e5m2_to_bf16", torch.float8_e5m2, torch.bfloat16, "f8E5M2", "bf16"),
+      ("fp8_e5m2_to_f32", torch.float8_e5m2, torch.float32, "f8E5M2", "f32"),
+  )
+  def test_mm_dtype_direct_dot_general_mlir_and_numerics(
+      self,
+      in_dtype: torch.dtype,
+      out_dtype: torch.dtype,
+      mlir_in_dtype: str,
+      mlir_out_dtype: str,
+  ) -> None:
+    """Verifies mm.dtype passes out_dtype to dot_general without input casts."""
+    a_cpu = torch.randn(4, 8, dtype=torch.float32).to(in_dtype)
+    b_cpu = torch.randn(8, 6, dtype=torch.float32).to(in_dtype)
+    a_tpu = a_cpu.to("tpu")
+    b_tpu = b_cpu.to("tpu")
+    torch.accelerator.synchronize()
+
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      z = torch.mm(a_tpu, b_tpu, out_dtype=out_dtype)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([z], [a_tpu, b_tpu])
+    )
+    self.assertIn("stablehlo.dot_general", mlir_text)
+    self.assertIn(
+        f"(tensor<4x8x{mlir_in_dtype}>, tensor<8x6x{mlir_in_dtype}>) ->"
+        f" tensor<4x6x{mlir_out_dtype}>",
+        mlir_text,
+    )
+    self.assertNotIn("stablehlo.convert", mlir_text)
+
+    expected = torch.mm(a_cpu.float(), b_cpu.float()).to(out_dtype)
+    # bf16 and fp8 inputs are exact on MXU with f32 accumulation; fp16 inputs
+    # truncate mantissa to bf16 under Precision::DEFAULT and bf16 outputs round.
+    exact_f32 = out_dtype == torch.float32 and in_dtype != torch.float16
+    rtol = 1e-5 if exact_f32 else 2e-2
+    atol = 1e-5 if exact_f32 else 2e-2
+
+    self.assertEqual(z.dtype, out_dtype)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=z.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
+    actual = torch.mm(a_tpu, b_tpu, out_dtype=out_dtype)
+    self.assertEqual(actual.dtype, out_dtype)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=actual.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
+    out_tpu = torch.empty((4, 6), dtype=out_dtype, device="tpu")
+    ret = torch.ops.aten.mm.dtype_out(a_tpu, b_tpu, out_dtype, out=out_tpu)
+    self.assertIs(ret, out_tpu)
+    self.assertEqual(out_tpu.dtype, out_dtype)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
   def test_baddbmm_zero_beta_ignores_nan_input(self):
     """torch.baddbmm() with zero beta should ignore NaN input."""
     nan_input = torch.full((2, 2, 4), float("nan"), dtype=torch.float32)
