@@ -89,9 +89,8 @@ def _pinned_nightly_torch() -> str:
 
 @nox.session
 def lint(session: nox.Session) -> None:
-  """Run linting and formatting checks."""
-  session.install("clang-format", "google-re2", "ruff")
-  session.run("ci/tools/clang_format.sh", "lint", external=True)
+  """Run linting checks (excluding formatting auto-fixed by Copybara)."""
+  session.install("google-re2", "ruff")
   session.run("ci/tools/ruff_lint.sh", "lint", external=True)
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
   session.run("python3", "ci/tools/check_directory_layout.py", external=True)
@@ -115,7 +114,7 @@ def format(session: nox.Session) -> None:  # pylint: disable=redefined-builtin
 
 @nox.session(venv_backend="none")
 def buildifier_check(session: nox.Session) -> None:
-  """Run Buildifier formatting and lint check on modified Bazel files."""
+  """Run Buildifier non-auto-fixable lint check on modified Bazel files."""
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
 
 

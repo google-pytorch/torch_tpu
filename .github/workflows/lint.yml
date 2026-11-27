@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # This workflow enforces license headers, commit message validation, custom
-# convention checks, CI tool unit tests, and code linting checks (C++
-# clang-format and Python ruff) on Pull Requests.
+# convention checks, CI tool unit tests, and code linting checks
+# (non-auto-fixable buildifier lints and Python ruff) on Pull Requests.
 
 name: "Lint checks"
 

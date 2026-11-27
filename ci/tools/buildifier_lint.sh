@@ -15,15 +15,17 @@
 
 # This script checks and applies Bazel BUILD/bzl formatting using `buildifier`.
 #
-# Design Intent (Incremental Formatting & Linting):
+# Design Intent (Incremental Linting):
 #   Instead of running buildifier across the entire repository, this script uses
 #   `git diff` against a base tracking branch ($BASE_SHA). It strictly evaluates
-#   and fixes only the specific Bazel syntax files modified in the current Pull
-#   Request or local working tree.
+#   only the specific Bazel syntax files modified in the current Pull Request or
+#   local working tree.
 #
 # Modes:
-#   - 'lint'   : Used by CI. Detects formatting and linting violations, outputs
-#                self-serve fix instructions, and exits with a failure code.
+#   - 'lint'   : Used by CI. Runs Copybara-equivalent auto-fixes in a scratch
+#                directory first, then checks for syntax errors or remaining
+#                non-auto-fixable lint warnings so CI does not reject PRs for
+#                formatting/lints that Copybara fixes automatically on import.
 #   - 'format' : Used locally by developers. Automatically applies buildifier fixes
 #                and formatting in-place without failing.
 
@@ -70,19 +72,59 @@ GREP_PATTERN='(BUILD|BUILD\.bazel|\.bzl|\.star)$'
 
 BAZEL_FILES=$(git diff --name-only --diff-filter=ACMRT "$BASE_SHA" -- "${BUILDIFIER_PATTERNS[@]}" 2>/dev/null | grep -E "$GREP_PATTERN" || true)
 
+run_non_autofixable_lint() {
+  (
+    set -euo pipefail
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    trap 'rm -rf "${tmp_dir}"' EXIT
+
+    local -a tmp_files=()
+    local file
+    local target_dir
+    while IFS= read -r file; do
+      [[ -z "${file}" ]] && continue
+      [[ -f "${file}" ]] || continue
+      target_dir="${tmp_dir}/$(dirname "${file}")"
+      mkdir -p "${target_dir}"
+      cp "${file}" "${tmp_dir}/${file}"
+      tmp_files+=("${tmp_dir}/${file}")
+    done <<< "${BAZEL_FILES}"
+
+    if [[ "${#tmp_files[@]}" -eq 0 ]]; then
+      return 0
+    fi
+
+    # Apply the same formatting and auto-fixable lints that Copybara runs on
+    # PR import (`format.buildifier(lint = "FIX")`) to scratch copies so CI only
+    # fails on syntax errors or lint warnings Copybara cannot fix automatically.
+    # LINT.IfChange(buildifier_lint_fix)
+    local output
+    if ! output=$(buildifier -mode=fix -lint=fix -warnings=-out-of-order-load "${tmp_files[@]}" 2>&1); then
+      printf '%s\n' "${output//"${tmp_dir}/"/}" >&2
+      return 1
+    fi
+
+    if ! output=$(buildifier -mode=check -lint=warn -warnings=-out-of-order-load "${tmp_files[@]}" 2>&1); then
+      printf '%s\n' "${output//"${tmp_dir}/"/}" >&2
+      return 1
+    fi
+    # LINT.ThenChange(../../../copy.bara.sky:buildifier_lint_fix)
+  )
+}
+
 # Ensure a valid mode is explicitly passed; fail on unexpected args.
 case "$MODE" in
   lint)
-    echo "INFO: Running buildifier check on modified Bazel files against $BASE_SHA..."
+    echo "INFO: Running buildifier non-auto-fixable lint check on modified Bazel files against $BASE_SHA..."
     if [ -n "$BAZEL_FILES" ]; then
-        # Check rule violations and formatting
-        if ! echo "$BAZEL_FILES" | xargs buildifier -mode=check -lint=warn -warnings=-out-of-order-load; then
+        if ! run_non_autofixable_lint; then
             echo "================================================================="
-            echo "ERROR: Bazel BUILD/bzl style issues found in modified files."
+            echo "ERROR: Non-auto-fixable Bazel BUILD/bzl lint issues found."
             echo "================================================================="
-            echo "To fix automatically:"
-            echo "1. Run the formatter directly via nox: nox -e format"
-            echo "   (or run: ci/tools/buildifier_lint.sh format)"
+            echo "Formatting and auto-fixable lints are fixed automatically on"
+            echo "import, so the issues above require a manual fix or a targeted"
+            echo "suppression comment (e.g. # buildifier: disable=<warning>)."
             echo "================================================================="
             exit 1
         fi

@@ -65,8 +65,8 @@ When creating a pull request:
 
 Changes are checked against the rules in `ci/custom_lint_rules.METADATA`
 (license headers, macro naming, kernel registration, and C++ best practices),
-and CI runs `nox -s lint` (clang-format, ruff, buildifier, and the directory
-layout check). In addition, follow these conventions:
+and CI runs `nox -s lint` (ruff, non-auto-fixable buildifier lints, and the
+directory layout check). In addition, follow these conventions:
 
 *   **Style Guides**: Ensure that the code conforms to the
     [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html)
