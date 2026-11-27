@@ -850,7 +850,10 @@ inline InterLayerDropoutResult ApplyInterLayerDropout(mlir::MlirOp layer_out,
   // Clamp full dropout to complete zeroing
   if (dropout >= 1.0) {
     mlir::MlirOp zero_const = MakeConstantLike(layer_out, 0.0);
-    mlir::MlirOp false_const = MakeConstantLike(rand_tensor, false);
+    // The backward pass selects with this mask, so it must be boolean rather
+    // than have the float type of `rand_tensor`.
+    mlir::MlirOp false_const =
+        MakeConstantLike(rand_tensor, false, mlir::ElementType::PRED);
     return {zero_const, false_const};
   }
   // Generate boolean retention mask: rand >= dropout
@@ -886,9 +889,14 @@ inline mlir::MlirOp ApplyDropoutBackward(mlir::MlirOp grad_output,
   if (dropout <= 0.0) {
     return grad_output;
   }
+  mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
+  if (dropout >= 1.0) {
+    // Everything was dropped, and scaling 0 by 1 / (1 - dropout) = inf would
+    // give NaN.
+    return zero;
+  }
   // Zero out gradients where activations were dropped and scale retained
   // gradients
-  mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
   mlir::MlirOp masked = mlir::stablehlo::Select(mask, grad_output, zero);
   const double scale = 1.0 / (1.0 - dropout);
   mlir::MlirOp scale_const = MakeConstantLike(masked, scale);

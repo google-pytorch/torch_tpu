@@ -1047,7 +1047,9 @@ ApplyInterLayerDropout(mlir::MlirOp layer_out, mlir::MlirOp rand_tensor,
   }
   if (dropout >= 1.0) {
     mlir::MlirOp zero_const = MakeConstantLike(layer_out, 0.0);
-    mlir::MlirOp false_const = MakeConstantLike(rand_tensor, false);
+    // A mask is boolean, unlike the float `rand_tensor`.
+    mlir::MlirOp false_const =
+        MakeConstantLike(rand_tensor, false, mlir::ElementType::PRED);
     return {zero_const, false_const};
   }
   mlir::MlirOp p_const = MakeConstantLike(rand_tensor, dropout);
@@ -1068,6 +1070,11 @@ mlir::MlirOp ApplyDropoutBackward(mlir::MlirOp grad_output, mlir::MlirOp mask,
     return grad_output;
   }
   mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
+  if (dropout >= 1.0) {
+    // Everything was dropped, and scaling 0 by 1 / (1 - dropout) = inf would
+    // give NaN.
+    return zero;
+  }
   mlir::MlirOp masked = mlir::stablehlo::Select(mask, grad_output, zero);
   const double scale = 1.0 / (1.0 - dropout);
   mlir::MlirOp scale_const = MakeConstantLike(masked, scale);
