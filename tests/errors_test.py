@@ -24631,6 +24631,133 @@ class OpsErrorCoverageTest(et.ErrorTestBase):
     ):
       torch.ops.aten._fft_c2r.out(t, [0], 0, 4, out=out)
 
+  def test_sparse_coo_tensor_with_dims_invalid_dims(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims(): expected sparse_dim + dense_dim to equal len(size) (1), got sparse_dim=2 and dense_dim=0""",
+        gpu="""'len(size) == sparse_dim + dense_dim' is not satisfied: len(size) = 1, sparse_dim = 2, dense_dim = 0""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims(
+          2,
+          0,
+          [5],
+          dtype=torch.float32,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims(): expected sparse_dim to be >= 0, got -1""",
+        gpu="""Trying to create tensor with negative dimension -1: [-1, 0]""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims(
+          -1,
+          2,
+          [5],
+          dtype=torch.float32,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims(): expected dense_dim to be >= 0, got -1""",
+        gpu="""ArrayRef: invalid slice, N = 2; size = 1""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims(
+          2,
+          -1,
+          [5],
+          dtype=torch.float32,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
+  def test_sparse_coo_tensor_with_dims_and_tensors_mismatch(self):
+    i = torch.zeros((1, 1), dtype=torch.int64, device=et.device())
+    v = torch.ones((1,), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims_and_tensors(): expected values dtype to match requested dtype bfloat16, got float32""",
+        gpu="""dtype of values (Float) must match dtype of sparse tensor (BFloat16)""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims_and_tensors(
+          1,
+          0,
+          [2],
+          i,
+          v,
+          dtype=torch.bfloat16,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
+    v_cpu = torch.ones((1,), dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims_and_tensors(): expected values device to match requested device tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got values is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_SparseCUDA___sparse_coo_tensor_with_dims_and_tensors)""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims_and_tensors(
+          1,
+          0,
+          [2],
+          i,
+          v_cpu,
+          dtype=torch.float32,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims_and_tensors(): expected sparse_dim + dense_dim to equal len(size) (1), got sparse_dim=2 and dense_dim=0""",
+        gpu="""'len(size) == sparse_dim + dense_dim' is not satisfied: len(size) = 1, sparse_dim = 2, dense_dim = 0""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims_and_tensors(
+          2,
+          0,
+          [2],
+          i,
+          v,
+          dtype=torch.float32,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims_and_tensors(): expected sparse_dim to be >= 0, got -1""",
+        gpu="""ArrayRef: invalid slice, N = 18446744073709551615; size = 1""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims_and_tensors(
+          -1,
+          2,
+          [2],
+          i,
+          v,
+          dtype=torch.float32,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_coo_tensor_with_dims_and_tensors(): expected dense_dim to be >= 0, got -1""",
+        gpu="""ArrayRef: invalid slice, N = 2; size = 1""",
+    ):
+      torch.ops.aten._sparse_coo_tensor_with_dims_and_tensors(
+          2,
+          -1,
+          [2],
+          i,
+          v,
+          dtype=torch.float32,
+          layout=torch.sparse_coo,
+          device=et.device(),
+      )
+
   def test_sigmoid_backward_grad_input_int_output(self):
     grad_out = torch.ones(2, device=et.device(), dtype=torch.int32)
     out = torch.ones(2, device=et.device(), dtype=torch.int32)
