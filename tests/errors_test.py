@@ -6217,17 +6217,70 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""floor_divide(): expected dtype of the first argument to be neither complex nor bool, got complex64""",
+        tpu="""floor_divide(): expected the dtype of the first argument not to be complex, got complex64""",
         gpu=""""div_floor_cuda" not implemented for 'ComplexFloat'""",
     ):
       torch.floor_divide(lhs.to(torch.complex64), rhs)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""floor_divide(): expected dtype of the second argument to be neither complex nor bool, got complex64""",
+        tpu="""floor_divide(): expected the dtype of the second argument not to be complex, got complex64""",
         gpu=""""div_floor_cuda" not implemented for 'ComplexFloat'""",
     ):
       torch.floor_divide(lhs, rhs.to(torch.complex64))
+
+  def test_floor_divide_bool_bool(self):
+    b = torch.tensor([True, True], dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""floor_divide(): expected the promoted dtype of the inputs not to be bool, got bool""",
+        gpu=""""div_floor_cuda" not implemented for 'Bool'""",
+    ):
+      torch.floor_divide(b, b)
+
+  @parameterized.parameters("trunc", "floor")
+  def test_div_mode_bool_and_complex(self, mode):
+    b = torch.tensor([True, True], dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""div(): expected the promoted dtype of the inputs not to be bool, got bool""",
+        gpu=f""""div_{mode}_cuda" not implemented for 'Bool'""",
+    ):
+      torch.div(b, b, rounding_mode=mode)
+
+    c = torch.tensor([1.0 + 2.0j], dtype=torch.complex64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""div(): expected the dtype of the first argument not to be complex, got complex64""",
+        gpu=f""""div_{mode}_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.div(c, c, rounding_mode=mode)
+
+  @parameterized.named_parameters(
+      ("maximum", torch.maximum, "maximum"),
+      ("minimum", torch.minimum, "minimum"),
+  )
+  def test_maximum_minimum_complex(self, op_fn, op_name):
+    a = torch.tensor([1.0 + 2.0j], dtype=torch.complex64, device=et.device())
+    b = torch.tensor([3.0 + 4.0j], dtype=torch.complex64, device=et.device())
+    pytorch_err_type = (
+        TypeError if utils.get_torch_version() >= (2, 15) else RuntimeError
+    )
+    with et.assert_raises_message(
+        pytorch_err_type,
+        tpu=f"""{op_name} not implemented for complex tensors.""",
+        gpu=f"""{op_name} not implemented for complex tensors.""",
+    ):
+      op_fn(a, b)
+
+    out = torch.empty((1,), dtype=torch.complex64, device=et.device())
+    err_type = pytorch_err_type if et.is_on_gpu() else RuntimeError
+    with et.assert_raises_message(
+        err_type,
+        tpu=f"""{op_name}(): expected the dtype of the first argument not to be complex, got complex64""",
+        gpu=f"""{op_name} not implemented for complex tensors.""",
+    ):
+      op_fn(a, b, out=out)
 
   def test_atan2_complex(self):
     x = torch.tensor([1.0, 2.0], device=et.device())
