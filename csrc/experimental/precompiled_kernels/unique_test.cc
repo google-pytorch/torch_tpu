@@ -53,7 +53,8 @@ using UniqueTest = ::testing::TestWithParam<TestCase>;
 // number, ranks and dtypes of the operands; this covers the size bound and
 // non-default layout checks that Python tests can't reach.
 TEST_P(UniqueTest, IsCompatible) {
-  const auto& is_compatible =
+  // Copy the function pointer: the vector of registrations is a temporary.
+  const auto is_compatible =
       GetUniqueUnboundedDynamicKernels()[GetParam().kernel_idx]
           .kernel.metadata.is_compatible;
   EXPECT_EQ(is_compatible(GetParam().inputs, GetParam().outputs),
