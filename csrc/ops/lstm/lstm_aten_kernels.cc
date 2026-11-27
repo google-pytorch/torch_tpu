@@ -38,11 +38,14 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/ArrayRef.h"  // IWYU pragma: keep for operator==
 #include "c10/util/DimVector.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -76,6 +79,7 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"  // IWYU pragma: keep for torch::autograd::variable_list
 #include "torch/csrc/autograd/functions/utils.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 // =============================================================================
 // StableHLO LSTM Forward & Backward Kernels for TorchTPU
@@ -350,8 +354,8 @@ absl::Status ValidateLstmWeights(const at::TensorList params,
   return absl::OkStatus();
 }
 
-// Master validation routine verifying sequence dimensions, batch sizes,
-// supported feature flags (e.g. rejecting unsupported dropout modes),
+// Master validation routine verifying dtypes, sequence dimensions, batch
+// sizes, supported feature flags (e.g. rejecting unsupported dropout modes),
 // and dispatching detailed shape checks for states and weights.
 absl::Status ValidateLstmInputs(const at::Tensor& input,
                                 const at::TensorList hx,
@@ -360,6 +364,34 @@ absl::Status ValidateLstmInputs(const at::Tensor& input,
                                 const double dropout, const bool train,
                                 const bool bidirectional,
                                 const bool batch_first) {
+  const at::ScalarType dtype = input.scalar_type();
+  TT_RET_CHECK(c10::isFloatingType(dtype), error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(dtype);
+  TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(dtype));
+  // A bfloat16 or float16 input is computed in float32, so the states and
+  // parameters may be float32 too. No other dtype is converted.
+  const at::ScalarType compute_dtype = ToAccumulateType(dtype);
+  const auto allowed_dtypes = [dtype, compute_dtype]() -> std::string {
+    if (compute_dtype != dtype) {
+      return absl::StrCat(ToString(dtype), " or ", ToString(compute_dtype));
+    }
+    return std::string(ToString(dtype));
+  };
+  for (const at::Tensor& state : hx) {
+    TT_RET_CHECK(
+        state.scalar_type() == dtype || state.scalar_type() == compute_dtype,
+        error::kInvalidArgument)
+        << "expected the initial states (hx) to have dtype " << allowed_dtypes()
+        << ", got " << ToString(state.scalar_type());
+  }
+  for (const at::Tensor& param : params) {
+    TT_RET_CHECK(
+        param.scalar_type() == dtype || param.scalar_type() == compute_dtype,
+        error::kInvalidArgument)
+        << "expected the weights and biases (params) to have dtype "
+        << allowed_dtypes() << ", got " << ToString(param.scalar_type());
+  }
+
   TT_RET_CHECK(input.dim() == 3, error::kInvalidArgument)
       << "expected input to be a 3D tensor, got " << input.dim() << "D";
   TT_RET_CHECK(hx.size() == 2, error::kInvalidArgument)
@@ -1047,7 +1079,9 @@ ApplyInterLayerDropout(mlir::MlirOp layer_out, mlir::MlirOp rand_tensor,
   }
   if (dropout >= 1.0) {
     mlir::MlirOp zero_const = MakeConstantLike(layer_out, 0.0);
-    mlir::MlirOp false_const = MakeConstantLike(rand_tensor, false);
+    // A mask is boolean, unlike the float `rand_tensor`.
+    mlir::MlirOp false_const =
+        MakeConstantLike(rand_tensor, false, mlir::ElementType::PRED);
     return {zero_const, false_const};
   }
   mlir::MlirOp p_const = MakeConstantLike(rand_tensor, dropout);
@@ -1068,6 +1102,11 @@ mlir::MlirOp ApplyDropoutBackward(mlir::MlirOp grad_output, mlir::MlirOp mask,
     return grad_output;
   }
   mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
+  if (dropout >= 1.0) {
+    // Everything was dropped, and scaling 0 by 1 / (1 - dropout) = inf would
+    // give NaN.
+    return zero;
+  }
   mlir::MlirOp masked = mlir::stablehlo::Select(mask, grad_output, zero);
   const double scale = 1.0 / (1.0 - dropout);
   mlir::MlirOp scale_const = MakeConstantLike(masked, scale);
