@@ -282,6 +282,12 @@ def _init_device_impl(device: str) -> torch.device:
   torch._register_device_module(device, sys.modules[f"torch.{device}"])
   print(f"Registered Python module for '{device}'.", file=sys.stderr)
 
+  # PyTorch defaults the PrivateUse1 autocast dtype to float16, so
+  # `torch.autocast("tpu")` without `dtype` would run in float16. Use the
+  # TPU-native bfloat16 instead. The value is thread-local in PyTorch, so this
+  # only sets it for the thread that loads TorchTPU.
+  torch.set_autocast_dtype(device, device_module._get_autocast_dtype())  # pylint: disable=protected-access
+
   print(
       f"Device type: {device_d.type}, Device index:"
       f" {device_d.index if device_d.index is not None else 'default'}",

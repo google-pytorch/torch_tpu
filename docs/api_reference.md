@@ -109,6 +109,12 @@ supported_dtypes = torch.tpu.get_amp_supported_dtype()
 print(f"AMP supported dtypes: {supported_dtypes}")
 ```
 
+PyTorch keeps the default autocast dtype per thread.
+TorchTPU sets it to `bfloat16` in the thread that loads TorchTPU, which is
+usually the main thread, and autograd backward inherits it.
+In other threads, `torch.amp.autocast("tpu")` without `dtype` uses `float16`,
+so pass `dtype=torch.bfloat16` there.
+
 ## Streams and Events
 
 For stream management and device synchronization, use standard
