@@ -13965,32 +13965,130 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(tpu_mask.cpu(), cpu_mask)
 
   def test_embedding_bag_max_indices(self):
-    """Tests that max_indices is computed correctly in _embedding_bag."""
+    """Tests that max_indices stores vocabulary row indices in _embedding_bag."""
     weight = torch.tensor(
-        [[1.0, 5.0], [10.0, 2.0], [10.0, 8.0]], dtype=torch.float32
+        [
+            [0.0, 0.0],
+            [10.0, 1.0],
+            [2.0, 2.0],
+            [5.0, 20.0],
+            [8.0, 3.0],
+        ],
+        dtype=torch.float32,
     )
-    indices = torch.tensor([0, 1, 2], dtype=torch.long)
+    indices = torch.tensor([3, 1, 4], dtype=torch.long)
     offsets = torch.tensor([0], dtype=torch.long)
 
     def test_fn(device):
-      # returns output, grad_input, grad_weight, max_indices
       output, _, _, max_indices = torch.ops.aten._embedding_bag(
           weight.to(device), indices.to(device), offsets.to(device), mode=2
-      )
-
-      expected_output = torch.tensor([[10.0, 8.0]])
-      expected_max_indices = torch.tensor([[1, 2]], dtype=torch.long)
-      self.assert_close(
-          golden_result=expected_output.cpu(),
-          torch_tpu_result=output.cpu(),
-      )
-      self.assert_close(
-          golden_result=expected_max_indices.cpu(),
-          torch_tpu_result=max_indices.cpu(),
       )
       return output, max_indices
 
     self.assert_close_tpu_vs_cpu(test_fn)
+
+    # Tie-breaking: smallest position in `indices` wins even when its
+    # vocabulary row index is larger.
+    tie_weight = torch.tensor(
+        [
+            [0.0, 0.0],
+            [10.0, 1.0],
+            [2.0, 20.0],
+            [5.0, 20.0],
+            [10.0, 3.0],
+        ],
+        dtype=torch.float32,
+    )
+    tie_indices = torch.tensor([4, 1, 3, 2], dtype=torch.long)
+    tie_offsets = torch.tensor([0], dtype=torch.long)
+
+    def tie_fn(device):
+      output, _, _, max_indices = torch.ops.aten._embedding_bag(
+          tie_weight.to(device),
+          tie_indices.to(device),
+          tie_offsets.to(device),
+          mode=2,
+      )
+      return output, max_indices
+
+    self.assert_close_tpu_vs_cpu(tie_fn)
+
+    # include_last_offset=True with multiple bags (including an empty bag).
+    ilo_offsets = torch.tensor([0, 2, 2, 4], dtype=torch.long)
+
+    def ilo_fn(device):
+      output, _, _, max_indices = torch.ops.aten._embedding_bag(
+          tie_weight.to(device),
+          tie_indices.to(device),
+          ilo_offsets.to(device),
+          mode=2,
+          include_last_offset=True,
+      )
+      return output, max_indices
+
+    self.assert_close_tpu_vs_cpu(ilo_fn)
+
+  def test_embedding_bag_max_neg_inf_and_nan(self):
+    """Tests -inf preservation, NaN ordering, and padding_idx in mode=max."""
+    # 1. Legitimate -inf weight in a non-empty bag must be preserved.
+    w_inf = torch.tensor([[-float("inf"), 1.0], [-2.0, 3.0]])
+    ind_inf = torch.tensor([0], dtype=torch.long)
+    off = torch.tensor([0], dtype=torch.long)
+
+    def run_inf(device):
+      w = w_inf.detach().clone().to(device).requires_grad_(True)
+      out = torch.nn.functional.embedding_bag(
+          ind_inf.to(device), w, off.to(device), mode="max"
+      )
+      out.sum().backward()
+      return out, w.grad
+
+    self.assert_close_tpu_vs_cpu(run_inf)
+
+    # 2. NaN as second element is ignored; NaN as first element propagates.
+    w_nan = torch.tensor([[float("nan"), 1.0], [2.0, 3.0]])
+    for ind_list in ([1, 0], [0, 1]):
+      ind = torch.tensor(ind_list, dtype=torch.long)
+
+      def run_nan(device, ind=ind):
+        w = w_nan.detach().clone().to(device).requires_grad_(True)
+        out, _, _, max_idx = torch.ops.aten._embedding_bag(
+            w, ind.to(device), off.to(device), False, 2, False, None, False, -1
+        )
+        out.sum().backward()
+        return out, max_idx, w.grad
+
+      self.assert_close_tpu_vs_cpu(run_nan)
+
+    # 3. Padding index followed by legitimate -inf weight.
+    w_pad = torch.tensor([[99.0, 99.0], [-float("inf"), 2.0]])
+    ind_pad = torch.tensor([0, 1], dtype=torch.long)
+
+    def run_pad(device):
+      w = w_pad.detach().clone().to(device).requires_grad_(True)
+      out, _, _, max_idx = torch.ops.aten._embedding_bag(
+          w, ind_pad.to(device), off.to(device), False, 2, False, None, False, 0
+      )
+      out.sum().backward()
+      return out, max_idx, w.grad
+
+    self.assert_close_tpu_vs_cpu(run_pad)
+
+  def test_embedding_bag_max_scale_grad_by_freq_ignored(self):
+    """Tests that mode=max ignores scale_grad_by_freq in backward."""
+    w_init = torch.tensor([[1.0, 2.0], [5.0, 6.0], [3.0, 4.0]])
+    ind = torch.tensor([1, 1, 2], dtype=torch.long)
+    off = torch.tensor([0, 2], dtype=torch.long)
+
+    def run(device):
+      w = w_init.detach().clone().to(device).requires_grad_(True)
+      out, _, _, _ = torch.ops.aten._embedding_bag(
+          w, ind.to(device), off.to(device), True, 2, False, None, False, -1
+      )
+      out.sum().backward()
+      return out, w.grad
+
+    self.assert_close_tpu_vs_cpu(run)
 
   def test_embedding_bag_empty_bag(self):
     """Tests that empty bags are handled correctly in _embedding_bag."""
