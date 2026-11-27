@@ -18716,6 +18716,53 @@ Note: this function is intended to be used with the output produced by torch.lin
       t = torch.tensor([1 + 1j, 2 + 2j], device=et.device())
       torch.threshold(t, 0.5, 0.0)
 
+  def test_threshold_invalid_out_and_scalars(self):
+    x_f32 = torch.tensor([1.0, 2.0], dtype=torch.float32, device=et.device())
+    out_i32 = torch.empty(2, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""threshold(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.threshold(x_f32, 0.5, 0.0, out=out_i32)
+
+    out_cpu = torch.empty(2, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""threshold(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.threshold(x_f32, 0.5, 0.0, out=out_cpu)
+
+    x_i8 = torch.tensor([1, 2], dtype=torch.int8, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""threshold(): expected threshold to be representable as int8, got 1000""",
+        gpu="""value cannot be converted to type int8_t without overflow""",
+    ):
+      torch.threshold(x_i8, 1000, 0)
+
+    grad = torch.tensor([1.0, 2.0], dtype=torch.float32, device=et.device())
+    grad_in_i32 = torch.empty(2, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""threshold_backward(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.ops.aten.threshold_backward.grad_input(
+          grad, x_f32, 0.5, grad_input=grad_in_i32
+      )
+
+    grad_in_cpu = torch.empty(2, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""threshold_backward(): expected grad_input tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got grad_output is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_threshold_backward_out_grad_input)""",
+    ):
+      torch.ops.aten.threshold_backward.grad_input(
+          grad, x_f32, 0.5, grad_input=grad_in_cpu
+      )
+
   def test_aminmax_invalid_output_device(self):
     tensor = torch.ones(5, device=et.device(), dtype=torch.float32)
     out = _get_aminmax_outputs(torch.aminmax, device="cpu", dtype=torch.float32)
