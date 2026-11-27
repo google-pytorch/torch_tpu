@@ -50,8 +50,9 @@ absl::StatusOr<mlir::MlirOp> BuildLeakyReluShlo(
   mlir::MlirOp zero_op = MakeScalarConstant(builder, 0.0, computation_dtype);
   std::array<mlir::MlirOp, 2> broadcasted;
   TT_ASSIGN_OR_RETURN(broadcasted, ApplyBroadcastIfNeeded(self_op, zero_op));
-  mlir::MlirOp compare_ge_zero = mlir::stablehlo::Compare(
-      broadcasted[0], broadcasted[1], mlir::stablehlo::ComparisonDirection::GE);
+  // As in PyTorch, 0 and -0.0 take the negative-slope branch.
+  mlir::MlirOp compare_gt_zero = mlir::stablehlo::Compare(
+      broadcasted[0], broadcasted[1], mlir::stablehlo::ComparisonDirection::GT);
 
   TT_ASSIGN_OR_RETURN(broadcasted,
                       ApplyBroadcastIfNeeded(self_op, negative_slope_op));
@@ -59,7 +60,7 @@ absl::StatusOr<mlir::MlirOp> BuildLeakyReluShlo(
 
   std::array<mlir::MlirOp, 3> select_broadcasted;
   TT_ASSIGN_OR_RETURN(select_broadcasted,
-                      ApplyBroadcastIfNeeded(compare_ge_zero, self_op, mul_op));
+                      ApplyBroadcastIfNeeded(compare_gt_zero, self_op, mul_op));
   return mlir::stablehlo::Select(select_broadcasted[0], select_broadcasted[1],
                                  select_broadcasted[2]);
 }
