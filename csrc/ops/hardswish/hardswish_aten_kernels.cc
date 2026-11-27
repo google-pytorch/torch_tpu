@@ -16,18 +16,16 @@
 
 #include "csrc/ops/hardswish/hardswish_aten_kernels.h"
 
-#include <utility>
-
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
-#include "csrc/eager/device_buffer.h"
-#include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/binary_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -37,6 +35,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -59,29 +58,35 @@ absl::StatusOr<mlir::MlirOp> BuildHardswishShlo(mlir::MlirOp input_op) {
 
 absl::StatusOr<mlir::MlirOp> BuildHardswishBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp self) {
-  auto type = GetTensorTypeOrDie(self);
-  TT_ASSIGN_OR_RETURN(auto element_type,
-                      ConvertTo<mlir::ElementType>(type.getElementType()));
+  TT_ASSIGN_OR_RETURN((auto [bcast_grad, bcast_self]),
+                      ApplyBroadcastIfNeeded(grad_output, self));
 
-  mlir::MlirOp neg_three = MakeConstantLike(self, -3.0, element_type);
-  mlir::MlirOp three = MakeConstantLike(self, 3.0, element_type);
+  const mlir::ElementType out_dtype = GetElementTypeOrDie(bcast_self);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp grad,
+                      CastIfNeeded(bcast_grad, compute_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x, CastIfNeeded(bcast_self, compute_dtype));
+
+  mlir::MlirOp neg_three = MakeConstantLike(x, -3.0, compute_dtype);
+  mlir::MlirOp three = MakeConstantLike(x, 3.0, compute_dtype);
 
   mlir::MlirOp cond_less = mlir::stablehlo::Compare(
-      self, neg_three, mlir::stablehlo::ComparisonDirection::LE);
+      x, neg_three, mlir::stablehlo::ComparisonDirection::LE);
   mlir::MlirOp cond_greater = mlir::stablehlo::Compare(
-      self, three, mlir::stablehlo::ComparisonDirection::GE);
+      x, three, mlir::stablehlo::ComparisonDirection::GE);
 
-  mlir::MlirOp zero = MakeConstantLike(self, 0.0, element_type);
-  mlir::MlirOp one_third = MakeConstantLike(self, 1.0 / 3.0, element_type);
-  mlir::MlirOp half = MakeConstantLike(self, 0.5, element_type);
+  mlir::MlirOp zero = MakeConstantLike(x, 0.0, compute_dtype);
+  mlir::MlirOp one_third = MakeConstantLike(x, 1.0 / 3.0, compute_dtype);
+  mlir::MlirOp half = MakeConstantLike(x, 0.5, compute_dtype);
 
-  mlir::MlirOp self_over_three = mlir::stablehlo::Mul(self, one_third);
+  mlir::MlirOp self_over_three = mlir::stablehlo::Mul(x, one_third);
   mlir::MlirOp mid_grad_factor = mlir::stablehlo::Add(self_over_three, half);
-  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(grad_output, mid_grad_factor);
+  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(grad, mid_grad_factor);
 
-  mlir::MlirOp res2 =
-      mlir::stablehlo::Select(cond_greater, grad_output, mid_grad);
-  return mlir::stablehlo::Select(cond_less, zero, res2);
+  mlir::MlirOp res2 = mlir::stablehlo::Select(cond_greater, grad, mid_grad);
+  mlir::MlirOp result = mlir::stablehlo::Select(cond_less, zero, res2);
+  return CastIfNeeded(result, out_dtype);
 }
 
 }  // namespace
@@ -128,25 +133,15 @@ at::Tensor& AtenHardswish_(at::Tensor& self) {
 at::Tensor AtenHardswishBackward(const at::Tensor& grad_output,
                                  const at::Tensor& self) {
   TT_KERNEL(OpName::kHardswishBackward, _, (grad_output, self), {
-    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+    const at::ScalarType promoted_type = at::result_type(grad_output, self);
+    TT_CHECK_THROW(at::isFloatingType(promoted_type), error::kInvalidArgument)
         << "expected the input dtype to be floating point, got "
-        << ToString(self.scalar_type());
-    TT_ASSIGN_OR_THROW(const auto output_mlir_type,
-                       ConvertTo<mlir::ElementType>(self.scalar_type()));
+        << ToString(promoted_type);
     TT_ASSIGN_OR_THROW(
-        auto result, (DispatchOp<2>(
-                         [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-                             -> absl::StatusOr<mlir::MlirOp> {
-                           auto& [grad_output_op, self_op] = inputs;
-                           return BuildHardswishBackwardShlo(grad_output_op,
-                                                             self_op);
-                         },
-                         {grad_output, self},
-                         /*options=*/
-                         {.out_dtype = output_mlir_type,
-                          .out_dims = self.sizes(),
-                          .op_param_cache_keys = OpParamCacheKeys::Empty()})));
-    return MakeTensor(std::move(result));
+        at::Tensor result,
+        BinaryOp(grad_output, self, BuildHardswishBackwardShlo,
+                 {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
+    return result;
   });
 }
 

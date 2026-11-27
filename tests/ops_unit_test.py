@@ -10725,6 +10725,127 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="self_broadcast",
+          grad_data=[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+          self_data=[[-4.0, 0.5, 4.0]],
+      ),
+      dict(
+          testcase_name="grad_output_broadcast",
+          grad_data=[[2.0, -1.5, 3.0]],
+          self_data=[[-4.0, 0.5, 4.0], [-3.0, 1.5, 3.0]],
+      ),
+      dict(
+          testcase_name="multidimensional",
+          grad_data=[[1.0], [2.0]],
+          self_data=[[-4.0, 0.0, 4.0]],
+      ),
+      dict(
+          testcase_name="grad_scalar_broadcast",
+          grad_data=2.0,
+          self_data=[[-4.0, -1.0, 1.0], [0.0, 2.0, 4.0]],
+      ),
+      dict(
+          testcase_name="self_scalar_broadcast",
+          grad_data=[[-4.0, -1.0, 1.0], [0.0, 2.0, 4.0]],
+          self_data=1.5,
+      ),
+      dict(
+          testcase_name="empty_broadcast",
+          grad_data=torch.empty((0, 3), dtype=torch.float32),
+          self_data=[[-4.0, 0.5, 4.0]],
+      ),
+  )
+  def test_hardswish_backward_broadcast(self, grad_data, self_data):
+    """Tests hardswish_backward with broadcastable shapes."""
+
+    def compute(device):
+      grad_output = (
+          grad_data.to(device)
+          if isinstance(grad_data, torch.Tensor)
+          else torch.tensor(grad_data, dtype=torch.float32, device=device)
+      )
+      self_tensor = torch.tensor(self_data, dtype=torch.float32, device=device)
+      return torch.ops.aten.hardswish_backward(grad_output, self_tensor)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_hardswish_backward_out_broadcast(self):
+    """Tests hardswish_backward.out with broadcastable shapes."""
+
+    def compute(device):
+      grad_output = torch.tensor(
+          [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device=device
+      )
+      self_tensor = torch.tensor([[-4.0, 0.5, 4.0]], device=device)
+      out = torch.empty((2, 3), dtype=torch.float32, device=device)
+      torch.ops.aten.hardswish_backward.out(grad_output, self_tensor, out=out)
+      out_resizable = torch.empty((0,), dtype=torch.float32, device=device)
+      torch.ops.aten.hardswish_backward.out(
+          grad_output, self_tensor, out=out_resizable
+      )
+      return out, out_resizable
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="f32_bf16",
+          grad_dtype=torch.float32,
+          self_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="bf16_f32",
+          grad_dtype=torch.bfloat16,
+          self_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="f16_bf16",
+          grad_dtype=torch.float16,
+          self_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="i32_f32",
+          grad_dtype=torch.int32,
+          self_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="f32_i32",
+          grad_dtype=torch.float32,
+          self_dtype=torch.int32,
+      ),
+      dict(
+          testcase_name="bool_f32",
+          grad_dtype=torch.bool,
+          self_dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="bf16_bf16",
+          grad_dtype=torch.bfloat16,
+          self_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="f16_f16",
+          grad_dtype=torch.float16,
+          self_dtype=torch.float16,
+      ),
+  )
+  def test_hardswish_backward_mixed_dtype(self, grad_dtype, self_dtype):
+    """Tests hardswish_backward with mixed dtypes and broadcasting."""
+
+    def compute(device):
+      if grad_dtype == torch.bool:
+        grad_output = torch.tensor([[True], [False]], device=device)
+      else:
+        grad_output = torch.tensor([[1], [2]], dtype=grad_dtype, device=device)
+      self_tensor = torch.tensor(
+          [[-4, -3, -1, 0, 2, 3, 4]], dtype=self_dtype, device=device
+      )
+      return torch.ops.aten.hardswish_backward(grad_output, self_tensor)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_default_dtype_consistent(self):
     """Tests the torch_tpu respects the default dtype."""
     with set_default_dtype(torch.float32):
