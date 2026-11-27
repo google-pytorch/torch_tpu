@@ -25,6 +25,7 @@
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -40,6 +41,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
+#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/rng_utils.h"
 #include "csrc/ops/topk/topk.h"
 #include "csrc/ops/uniform/uniform.h"
@@ -151,6 +153,9 @@ Dimensions GetOutputDimensions(const at::Tensor& self, int64_t num_samples) {
 
 absl::Status ValidateInputs(const at::Tensor& self, int64_t num_samples,
                             bool replacement) {
+  TT_RET_CHECK(IsPrivateUse1Device(self), error::kInvalidArgument)
+      << "expected input tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << self.device();
   TT_RET_CHECK(IsFloatingPoint(self), error::kInvalidArgument)
       << "expected the input dtype to be floating-point, got "
       << ToString(self.scalar_type());
@@ -165,6 +170,10 @@ absl::Status ValidateInputs(const at::Tensor& self, int64_t num_samples,
                error::kInvalidArgument)
       << "expected the number of samples to be <= " << self.size(-1)
       << " (population size) when replacement is disabled, got " << num_samples;
+
+  const bool has_zero_rows = self.dim() == 2 && self.size(0) == 0;
+  TT_RET_CHECK(has_zero_rows || self.size(-1) > 0, error::kInvalidArgument)
+      << "expected the number of categories to be > 0, got 0";
 
   TT_RET_CHECK(!IsLowPrecisionFloat(self), error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
@@ -198,30 +207,38 @@ NAryMlirOpBuilder<2, 1> GetMultinomialFunctional(int64_t num_samples,
 at::Tensor AtenMultinomial(const at::Tensor& self, int64_t num_samples,
                            bool replacement,
                            c10::optional<at::Generator> generator) {
-  TT_KERNEL(OpName::kMultinomial, param_keys,
-            (self, num_samples, replacement, generator), {
-              TT_THROW_IF_ERROR(ValidateInputs(self, num_samples, replacement));
-              TT_ASSIGN_OR_THROW(const RngUsage usage,
-                                 GetRngUsage(self, num_samples, replacement));
+  TT_KERNEL(
+      OpName::kMultinomial, param_keys,
+      (self, num_samples, replacement, generator), {
+        TT_THROW_IF_ERROR(ValidateInputs(self, num_samples, replacement));
+        const Dimensions out_dims = GetOutputDimensions(self, num_samples);
+        if (self.dim() == 2 && self.size(0) == 0) {
+          TT_ASSIGN_OR_THROW(
+              at::Tensor out,
+              MakeEmptyTensor(out_dims, at::ScalarType::Long, self.device()));
+          return out;
+        }
+        TT_ASSIGN_OR_THROW(const RngUsage usage,
+                           GetRngUsage(self, num_samples, replacement));
 
-              TT_ASSIGN_OR_THROW(auto* gen, GetDeviceGeneratorImpl(generator));
-              // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
-              std::scoped_lock<std::mutex> lock(gen->mutex_);
-              const at::Tensor rng_input_state = gen->DeviceStateTensor();
+        TT_ASSIGN_OR_THROW(auto* gen, GetDeviceGeneratorImpl(generator));
+        // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
+        std::scoped_lock<std::mutex> lock(gen->mutex_);
+        const at::Tensor rng_input_state = gen->DeviceStateTensor();
 
-              TT_ASSIGN_OR_THROW(
-                  DeviceBufferRef result_buf,
-                  (DispatchOp<2, 1>(
-                      GetMultinomialFunctional(num_samples, replacement),
-                      {self, rng_input_state},
-                      {.out_dtype = mlir::ElementType::I64,
-                       .out_dims = GetOutputDimensions(self, num_samples),
-                       .op_param_cache_keys = std::move(param_keys)})));
+        TT_ASSIGN_OR_THROW(
+            DeviceBufferRef result_buf,
+            (DispatchOp<2, 1>(
+                GetMultinomialFunctional(num_samples, replacement),
+                {self, rng_input_state},
+                {.out_dtype = mlir::ElementType::I64,
+                 .out_dims = out_dims,
+                 .op_param_cache_keys = std::move(param_keys)})));
 
-              TT_THROW_IF_ERROR(gen->AdvanceDeviceStateTensor(
-                  usage.num_elements, usage.bit_width));
-              return MakeTensor(std::move(result_buf));
-            });
+        TT_THROW_IF_ERROR(
+            gen->AdvanceDeviceStateTensor(usage.num_elements, usage.bit_width));
+        return MakeTensor(std::move(result_buf));
+      });
 }
 
 at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
@@ -232,8 +249,16 @@ at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
       OpName::kMultinomialOut, param_keys,
       (self, num_samples, replacement, generator, out), {
         TT_THROW_IF_ERROR(ValidateInputs(self, num_samples, replacement));
+        TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+            << "expected output tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
         TT_THROW_IF_ERROR(ValidateOutDtype(out, at::ScalarType::Long,
                                            /*allow_out_dtype_cast=*/false));
+        const Dimensions out_dims = GetOutputDimensions(self, num_samples);
+        if (self.dim() == 2 && self.size(0) == 0) {
+          TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_dims));
+          return out;
+        }
         TT_ASSIGN_OR_THROW(const RngUsage usage,
                            GetRngUsage(self, num_samples, replacement));
 
@@ -246,7 +271,7 @@ at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
             GetMultinomialFunctional(num_samples, replacement),
             {self, rng_input_state}, out,
             {.out_dtype = mlir::ElementType::I64,
-             .out_dims = GetOutputDimensions(self, num_samples),
+             .out_dims = out_dims,
              .op_param_cache_keys = std::move(param_keys)})));
 
         TT_THROW_IF_ERROR(
