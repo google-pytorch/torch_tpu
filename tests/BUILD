@@ -985,7 +985,7 @@ torch_tpu_py_test(
     args = [
         "--test_categories=unique",
         # No sample limit, so @also_run_static checks that a dynamic kernel
-        # served test_unique, which sets its own sample limit.
+        # served test_unique.
     ],
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",

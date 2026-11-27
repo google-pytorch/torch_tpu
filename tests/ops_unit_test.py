@@ -29010,6 +29010,55 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     self.assert_close_tpu_vs_cpu(test_fn)
 
   @parameterized.named_parameters(
+      dict(testcase_name="float32", dtype=torch.float32),
+      dict(testcase_name="bfloat16", dtype=torch.bfloat16),
+      dict(testcase_name="float16", dtype=torch.float16),
+  )
+  def test_sort_neg_nan_and_signed_zero(self, dtype):
+    """Tests -NaN placement and stable -0.0/+0.0 tie-breaking in sort/msort."""
+    neg_nan = torch.copysign(torch.tensor(float("nan")), torch.tensor(-1.0))
+    input_tensor = torch.tensor(
+        [1.0, neg_nan.item(), -2.0, float("-inf"), float("inf"), float("nan")],
+        dtype=dtype,
+    )
+    for descending in (False, True):
+      with self.subTest(case="neg_nan", descending=descending):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, descending=descending: torch.sort(
+                input_tensor.to(device), stable=True, descending=descending
+            )
+        )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.msort(input_tensor.to(device))
+    )
+
+    for zero_values, descending in (
+        ([0.0, -0.0, 0.0], False),
+        ([-0.0, 0.0, -0.0], True),
+    ):
+      signed_zeros = torch.tensor(zero_values, dtype=dtype)
+      with self.subTest(case="signed_zero", descending=descending):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, signed_zeros=signed_zeros, descending=descending: (
+                torch.sort(
+                    signed_zeros.to(device), stable=True, descending=descending
+                )[1]
+            )
+        )
+
+  def test_unique2_neg_nan(self):
+    """Tests torch.unique -NaN placement at the end."""
+    neg_nan = torch.copysign(
+        torch.tensor(float("nan")), torch.tensor(-1.0)
+    ).item()
+    x_nan = torch.tensor([neg_nan, 2.0, 1.0, 2.0], dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.unique(
+            x_nan.to(device), return_inverse=True, return_counts=True
+        )
+    )
+
+  @parameterized.named_parameters(
       dict(
           testcase_name="float4_e2m1fn_x2",
           dtype=torch.float4_e2m1fn_x2,

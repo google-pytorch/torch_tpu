@@ -4585,20 +4585,9 @@ class TestOps(op_testing.OpInfoTestBase):
         # PjRtBuffer for a 0D ATen inverse_indices output tensor.
         skip_if=lambda _variant, op_input: (
             not op_testing._CHECK_DYNAMISM.value
-            and (
-                (
-                    not op_input.kwargs.get("sorted", True)
-                    and op_input.kwargs.get("dim") is None
-                )
-                or (
-                    op_input.input_value.ndim == 0
-                    and op_input.kwargs.get("return_inverse", False)
-                )
-            )
+            and op_input.input_value.ndim == 0
+            and op_input.kwargs.get("return_inverse", False)
         ),
-        # Override _OSS_SAMPLE_LIMIT (5) since the first 13 golden samples have
-        # sorted=False and are filtered out by skip_if.
-        max_samples_per_op_dtype=20,
     )
 
   def test_unique_consecutive(self):
