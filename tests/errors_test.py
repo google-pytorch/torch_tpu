@@ -9261,13 +9261,65 @@ Supported combinations for non-constant padding:
       torch.linalg.lu_factor_ex(a, out=out)
 
   def test_linalg_lu_factor_ex_singular_check_errors(self):
-    a = torch.zeros(3, 3, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""torch.linalg.lu_factor_ex: U[1,1] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
-        gpu="""torch.linalg.lu_factor_ex: U[1,1] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
-    ):
-      torch.linalg.lu_factor_ex(a, check_errors=True)
+    with self.subTest("2d_zero_f32"):
+      a = torch.zeros(3, 3, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""torch.linalg.lu_factor_ex: U[1,1] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+          gpu="""torch.linalg.lu_factor_ex: U[1,1] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+      ):
+        torch.linalg.lu_factor_ex(a, check_errors=True)
+
+    with self.subTest("3d_batched_mixed_f32"):
+      a = torch.stack([
+          torch.eye(3, dtype=torch.float32, device=et.device()),
+          torch.diag(
+              torch.tensor(
+                  [2.0, 0.0, 3.0], dtype=torch.float32, device=et.device()
+              )
+          ),
+      ])
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""torch.linalg.lu_factor_ex: (Batch element 1): U[2,2] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+          gpu="""torch.linalg.lu_factor_ex: (Batch element 1): U[2,2] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+      ):
+        torch.linalg.lu_factor_ex(a, check_errors=True)
+
+    with self.subTest("3d_batched_mixed_c64"):
+      a = torch.stack([
+          torch.eye(3, dtype=torch.complex64, device=et.device()),
+          torch.diag(
+              torch.tensor(
+                  [1.0 + 1.0j, 0.0 + 0.0j, 2.0 - 1.0j],
+                  dtype=torch.complex64,
+                  device=et.device(),
+              )
+          ),
+      ])
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""torch.linalg.lu_factor_ex: (Batch element 1): U[2,2] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+          gpu="""torch.linalg.lu_factor_ex: (Batch element 1): U[2,2] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+      ):
+        torch.linalg.lu_factor_ex(a, check_errors=True)
+
+    with self.subTest("rect_3x5_singular_f32"):
+      a = torch.tensor(
+          [
+              [2.0, 0.0, 0.0, 1.0, 0.0],
+              [0.0, 0.0, 0.0, 0.0, 0.0],
+              [0.0, 0.0, 3.0, 0.0, 1.0],
+          ],
+          dtype=torch.float32,
+          device=et.device(),
+      )
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""torch.linalg.lu_factor_ex: U[2,2] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+          gpu="""torch.linalg.lu_factor_ex: U[2,2] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+      ):
+        torch.linalg.lu_factor_ex(a, check_errors=True)
 
   def test_linalg_lu_factor_ex_invalid_inputs(self):
     a = torch.eye(3, device=et.device(), dtype=torch.float32)
