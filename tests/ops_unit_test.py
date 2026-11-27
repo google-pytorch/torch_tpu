@@ -1572,7 +1572,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   def test_complex_abs_precision(self):
     for dtype in [torch.complex64, torch.complex128]:
-      vals = [1e30, 1e-35]
+      vals = [1e30, 1e38, 1e-35]
 
       for val in vals:
         input_tensor = torch.tensor([complex(val, val)], dtype=dtype)
@@ -1581,6 +1581,38 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           return torch.abs(input_tensor.to(device))
 
         self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.parameters(torch.complex64, torch.complex128)
+  def test_complex_abs_inf_and_nan(self, dtype):
+    z = torch.tensor(
+        [
+            complex(float("inf"), float("inf")),
+            complex(float("-inf"), float("-inf")),
+            complex(float("inf"), float("-inf")),
+            complex(float("inf"), float("nan")),
+            complex(float("nan"), float("-inf")),
+            complex(1.0, float("nan")),
+            complex(0.0, 0.0),
+        ],
+        dtype=dtype,
+    )
+    self.assert_close_tpu_vs_cpu(lambda device: torch.abs(z.to(device)))
+
+  @parameterized.parameters(torch.complex64, torch.complex128)
+  def test_complex_sgn_large_magnitude(self, dtype):
+    z = torch.tensor(
+        [
+            3e30 + 4e30j,
+            -3e30 + 4e30j,
+            1e38 + 1e38j,
+            1e-35 + 1e-35j,
+            0.0 + 0.0j,
+            complex(float("inf"), 1.0),
+            complex(float("nan"), 1.0),
+        ],
+        dtype=dtype,
+    )
+    self.assert_close_tpu_vs_cpu(lambda device: torch.sgn(z.to(device)))
 
   def test_gelu_exact_negative_tail_precision_float32(self):
     """Tests exact gelu and its gradient in float32 for negative inputs.

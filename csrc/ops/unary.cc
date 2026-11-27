@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 
 #include "absl/functional/function_ref.h"
@@ -43,6 +44,21 @@ namespace torch_tpu {
 namespace stablehlo = mlir::stablehlo;
 
 namespace {
+
+// Computes an exact power-of-2 scale (`2^-32` when `denom > 2^64`, else `1.0`)
+// so `denom * scale` stays well below `2^126`. Without scaling, `Div(a, b)`
+// on TPUs that lower division via `a * reciprocal(b)` flushes `1 / b` to zero
+// for `b > 2^126` (affecting both float32 and DF64-emulated float64).
+[[nodiscard]] mlir::MlirOp LargeDenomReciprocalScale(mlir::MlirOp denom) {
+  constexpr double kLargeDenomThreshold = 0x1p64;
+  constexpr double kLargeDenomScale = 0x1p-32;
+  mlir::MlirOp threshold = MakeConstantLike(denom, kLargeDenomThreshold);
+  mlir::MlirOp scale_down = MakeConstantLike(denom, kLargeDenomScale);
+  mlir::MlirOp one = MakeConstantLike(denom, 1.0);
+  mlir::MlirOp is_large = mlir::stablehlo::Compare(
+      denom, threshold, mlir::stablehlo::ComparisonDirection::GT);
+  return mlir::stablehlo::Select(is_large, scale_down, one);
+}
 
 absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
                                   mlir::ElementType default_dtype) {
@@ -176,13 +192,26 @@ absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input) {
                         ApplyBroadcastIfNeeded(one, max_abs));
     auto safe_max = mlir::stablehlo::Select(is_zero, one_b, max_abs_b2);
 
-    auto ratio = mlir::stablehlo::Div(min_abs, safe_max);
+    mlir::MlirOp scale = LargeDenomReciprocalScale(safe_max);
+    mlir::MlirOp scaled_min = mlir::stablehlo::Mul(min_abs, scale);
+    mlir::MlirOp scaled_max = mlir::stablehlo::Mul(safe_max, scale);
+    auto ratio = mlir::stablehlo::Div(scaled_min, scaled_max);
     auto ratio_sq = mlir::stablehlo::Mul(ratio, ratio);
     TT_ASSIGN_OR_RETURN((auto [one_b_ratio, ratio_sq_b]),
                         ApplyBroadcastIfNeeded(one, ratio_sq));
     auto sum_sq = mlir::stablehlo::Add(one_b_ratio, ratio_sq_b);
     auto sqrt_sum_sq = mlir::stablehlo::Sqrt(sum_sq);
     auto res = mlir::stablehlo::Mul(max_abs, sqrt_sum_sq);
+
+    // Match IEEE-754 hypot(±inf, y) == +inf even when y is ±inf or NaN.
+    mlir::MlirOp pos_inf =
+        MakeConstantLike(res, std::numeric_limits<double>::infinity());
+    mlir::MlirOp is_inf_x = mlir::stablehlo::Compare(
+        abs_x, pos_inf, mlir::stablehlo::ComparisonDirection::EQ);
+    mlir::MlirOp is_inf_y = mlir::stablehlo::Compare(
+        abs_y, pos_inf, mlir::stablehlo::ComparisonDirection::EQ);
+    mlir::MlirOp any_inf = mlir::stablehlo::Or(is_inf_x, is_inf_y);
+    res = mlir::stablehlo::Select(any_inf, pos_inf, res);
 
     // PyTorch returns real result for abs(complex).
     // The output type should be the base float type.
@@ -399,13 +428,20 @@ absl::StatusOr<mlir::MlirOp> BuildSgnShlo(mlir::MlirOp input) {
     mlir::MlirOp one_real = MakeConstantLike(abs_op, 1.0);
     mlir::MlirOp safe_abs = mlir::stablehlo::Select(is_zero, one_real, abs_op);
 
-    // stablehlo::Div requires same types for all operands.
-    // Convert safe_abs (real) to complex.
-    mlir::MlirOp zero_imag = MakeConstantLike(safe_abs, 0.0);
-    mlir::MlirOp safe_abs_complex =
-        mlir::stablehlo::Complex(safe_abs, zero_imag);
-
-    mlir::MlirOp div_res = mlir::stablehlo::Div(input, safe_abs_complex);
+    // Divide real and imaginary components directly by real `safe_abs` so
+    // complex division does not overflow `|z|^2` for large finite magnitudes.
+    // Scale numerator and denominator by an exact power of 2 when `safe_abs`
+    // is large so TPU reciprocal-based division does not flush `1 / safe_abs`
+    // to zero.
+    mlir::MlirOp real_in = mlir::stablehlo::Real(input);
+    mlir::MlirOp imag_in = mlir::stablehlo::Imag(input);
+    mlir::MlirOp scale = LargeDenomReciprocalScale(safe_abs);
+    mlir::MlirOp scaled_real = mlir::stablehlo::Mul(real_in, scale);
+    mlir::MlirOp scaled_imag = mlir::stablehlo::Mul(imag_in, scale);
+    mlir::MlirOp scaled_abs = mlir::stablehlo::Mul(safe_abs, scale);
+    mlir::MlirOp real_part = mlir::stablehlo::Div(scaled_real, scaled_abs);
+    mlir::MlirOp imag_part = mlir::stablehlo::Div(scaled_imag, scaled_abs);
+    mlir::MlirOp div_res = mlir::stablehlo::Complex(real_part, imag_part);
 
     return mlir::stablehlo::Select(is_zero, zero_complex, div_res);
   }
