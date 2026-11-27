@@ -565,6 +565,77 @@ def _get_gru_inputs():
   return x, h0, params
 
 
+def _call_fused_optimizer(
+    op_kind: str,
+    params: list[torch.Tensor],
+    grads: list[torch.Tensor],
+    state1: list[torch.Tensor],
+    state2: list[torch.Tensor],
+    steps: list[torch.Tensor],
+    lr: float | torch.Tensor | None = None,
+    **kwargs: Any,
+) -> None:
+  """Calls an in-place fused optimizer op with default hyperparameters.
+
+  Args:
+    op_kind: One of "adam", "adamw", "adagrad", or "sgd".
+    params: The parameters to update.
+    grads: The gradients of `params`.
+    state1: The first state buffers: `exp_avgs` for Adam and AdamW, `state_sums`
+      for Adagrad. Unused by SGD.
+    state2: The `exp_avg_sqs` buffers of Adam and AdamW. Unused otherwise.
+    steps: The `state_steps` tensors. Unused by SGD.
+    lr: The learning rate. A tensor selects the `tensor_lr` overload. Defaults
+      to the learning rate that the optimizer's Python class defaults to.
+    **kwargs: Other arguments to forward, such as `grad_scale` and `found_inf`.
+  """
+  overload = "tensor_lr" if isinstance(lr, torch.Tensor) else "default"
+  if op_kind in ("adam", "adamw"):
+    getattr(getattr(torch.ops.aten, f"_fused_{op_kind}_"), overload)(
+        params,
+        grads,
+        state1,
+        state2,
+        [],
+        steps,
+        lr=1e-3 if lr is None else lr,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0,
+        eps=1e-8,
+        amsgrad=False,
+        maximize=False,
+        **kwargs,
+    )
+  elif op_kind == "adagrad":
+    getattr(torch.ops.aten._fused_adagrad_, overload)(
+        params,
+        grads,
+        state1,
+        steps,
+        lr=0.1 if lr is None else lr,
+        lr_decay=0.0,
+        weight_decay=0.0,
+        eps=1e-10,
+        maximize=False,
+        **kwargs,
+    )
+  else:
+    getattr(torch.ops.aten._fused_sgd_, overload)(
+        params,
+        grads,
+        [],
+        weight_decay=0.0,
+        momentum=0.0,
+        lr=0.1 if lr is None else lr,
+        dampening=0.0,
+        nesterov=False,
+        maximize=False,
+        is_first_step=False,
+        **kwargs,
+    )
+
+
 def _get_scaled_grouped_mm_v2_invalid_scaling_gpu_msg(
     *,
     recipe_a: str = "RowWise",
@@ -20398,6 +20469,721 @@ Note: this function is intended to be used with the output produced by torch.lin
           nesterov=False,
           maximize=False,
           is_first_step=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="adam_default_grads",
+          is_adamw=False,
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adam_default_grads_idx1",
+          is_adamw=False,
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=1,
+      ),
+      dict(
+          testcase_name="adam_default_exp_avgs",
+          is_adamw=False,
+          use_tensor_lr=False,
+          bad_arg="exp_avgs",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adam_default_exp_avg_sqs",
+          is_adamw=False,
+          use_tensor_lr=False,
+          bad_arg="exp_avg_sqs",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adam_default_max_exp_avg_sqs",
+          is_adamw=False,
+          use_tensor_lr=False,
+          bad_arg="max_exp_avg_sqs",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adam_tensor_lr_grads",
+          is_adamw=False,
+          use_tensor_lr=True,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adamw_default_grads",
+          is_adamw=True,
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adamw_default_grads_idx1",
+          is_adamw=True,
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=1,
+      ),
+      dict(
+          testcase_name="adamw_default_exp_avgs",
+          is_adamw=True,
+          use_tensor_lr=False,
+          bad_arg="exp_avgs",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adamw_default_exp_avg_sqs",
+          is_adamw=True,
+          use_tensor_lr=False,
+          bad_arg="exp_avg_sqs",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adamw_default_max_exp_avg_sqs",
+          is_adamw=True,
+          use_tensor_lr=False,
+          bad_arg="max_exp_avg_sqs",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="adamw_tensor_lr_grads",
+          is_adamw=True,
+          use_tensor_lr=True,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+  )
+  def test_fused_adam_mismatched_tensor_shape(
+      self, is_adamw, use_tensor_lr, bad_arg, bad_idx
+  ):
+    device = et.device()
+    num_tensors = bad_idx + 1
+    params = [torch.ones(4, device=device) for _ in range(num_tensors)]
+    grads = [torch.ones(4, device=device) for _ in range(num_tensors)]
+    exp_avgs = [torch.zeros(4, device=device) for _ in range(num_tensors)]
+    exp_avg_sqs = [torch.zeros(4, device=device) for _ in range(num_tensors)]
+    amsgrad = bad_arg == "max_exp_avg_sqs"
+    max_exp_avg_sqs = (
+        [torch.zeros(4, device=device) for _ in range(num_tensors)]
+        if amsgrad
+        else []
+    )
+    steps = [
+        torch.tensor(1.0, dtype=torch.float32, device=device)
+        for _ in range(num_tensors)
+    ]
+    bad_tensor = torch.ones(2, device=device)
+    if bad_arg == "grads":
+      grads[bad_idx] = bad_tensor
+    elif bad_arg == "exp_avgs":
+      exp_avgs[bad_idx] = bad_tensor
+    elif bad_arg == "exp_avg_sqs":
+      exp_avg_sqs[bad_idx] = bad_tensor
+    else:
+      max_exp_avg_sqs[bad_idx] = bad_tensor
+
+    op_prefix = "fused_adamw_" if is_adamw else "fused_adam_"
+    if is_adamw:
+      op = (
+          torch.ops.aten._fused_adamw_.tensor_lr
+          if use_tensor_lr
+          else torch.ops.aten._fused_adamw_.default
+      )
+    else:
+      op = (
+          torch.ops.aten._fused_adam_.tensor_lr
+          if use_tensor_lr
+          else torch.ops.aten._fused_adam_.default
+      )
+    lr = torch.tensor(1e-3, device=device) if use_tensor_lr else 1e-3
+    gpu_msg = (
+        """params, grads, exp_avgs, exp_avg_sqs, and max_exp_avg_sqs must have same dtype, device, and layout"""
+        if amsgrad
+        else """params, grads, exp_avgs, and exp_avg_sqs must have same dtype, device, and layout"""
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_prefix}(): expected {bad_arg}[{bad_idx}] to have shape [4], got [2]""",
+        gpu=gpu_msg,
+    ):
+      op(
+          params,
+          grads,
+          exp_avgs,
+          exp_avg_sqs,
+          max_exp_avg_sqs,
+          steps,
+          lr=lr,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.0,
+          eps=1e-8,
+          amsgrad=amsgrad,
+          maximize=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="default_grads",
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="default_grads_idx1",
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=1,
+      ),
+      dict(
+          testcase_name="default_state_sums",
+          use_tensor_lr=False,
+          bad_arg="state_sums",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="tensor_lr_grads",
+          use_tensor_lr=True,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="tensor_lr_state_sums",
+          use_tensor_lr=True,
+          bad_arg="state_sums",
+          bad_idx=0,
+      ),
+  )
+  def test_fused_adagrad_mismatched_tensor_shape(
+      self, use_tensor_lr, bad_arg, bad_idx
+  ):
+    device = et.device()
+    num_tensors = bad_idx + 1
+    params = [torch.ones(4, device=device) for _ in range(num_tensors)]
+    grads = [torch.ones(4, device=device) for _ in range(num_tensors)]
+    state_sums = [torch.zeros(4, device=device) for _ in range(num_tensors)]
+    steps = [
+        torch.tensor(1.0, dtype=torch.float32, device=device)
+        for _ in range(num_tensors)
+    ]
+    bad_tensor = torch.ones(2, device=device)
+    if bad_arg == "grads":
+      grads[bad_idx] = bad_tensor
+    else:
+      state_sums[bad_idx] = bad_tensor
+
+    op = (
+        torch.ops.aten._fused_adagrad_.tensor_lr
+        if use_tensor_lr
+        else torch.ops.aten._fused_adagrad_.default
+    )
+    lr = torch.tensor(0.1, device=device) if use_tensor_lr else 0.1
+    gpu_msg = (
+        """params and grads must have same dtype, device, and layout"""
+        if use_tensor_lr
+        else """params, grads, and state_sums must have same dtype, device, and layout"""
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fused_adagrad_(): expected {bad_arg}[{bad_idx}] to have shape [4], got [2]""",
+        gpu=gpu_msg,
+    ):
+      op(
+          params,
+          grads,
+          state_sums,
+          steps,
+          lr=lr,
+          lr_decay=0.0,
+          weight_decay=0.0,
+          eps=1e-10,
+          maximize=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="default_grads",
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="default_grads_idx1",
+          use_tensor_lr=False,
+          bad_arg="grads",
+          bad_idx=1,
+      ),
+      dict(
+          testcase_name="default_momentum_buffer_list",
+          use_tensor_lr=False,
+          bad_arg="momentum_buffer_list",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="tensor_lr_grads",
+          use_tensor_lr=True,
+          bad_arg="grads",
+          bad_idx=0,
+      ),
+      dict(
+          testcase_name="tensor_lr_momentum_buffer_list",
+          use_tensor_lr=True,
+          bad_arg="momentum_buffer_list",
+          bad_idx=0,
+      ),
+  )
+  def test_fused_sgd_mismatched_tensor_shape(
+      self, use_tensor_lr, bad_arg, bad_idx
+  ):
+    device = et.device()
+    num_tensors = bad_idx + 1
+    params = [torch.ones(4, device=device) for _ in range(num_tensors)]
+    grads = [torch.ones(4, device=device) for _ in range(num_tensors)]
+    has_momentum = bad_arg == "momentum_buffer_list"
+    momentum_buffers = (
+        [torch.zeros(4, device=device) for _ in range(num_tensors)]
+        if has_momentum
+        else []
+    )
+    bad_tensor = torch.ones(2, device=device)
+    if bad_arg == "grads":
+      grads[bad_idx] = bad_tensor
+    else:
+      momentum_buffers[bad_idx] = bad_tensor
+
+    op = (
+        torch.ops.aten._fused_sgd_.tensor_lr
+        if use_tensor_lr
+        else torch.ops.aten._fused_sgd_.default
+    )
+    lr = torch.tensor(0.1, device=device) if use_tensor_lr else 0.1
+    momentum = 0.9 if has_momentum else 0.0
+    gpu_msg = (
+        """Expected at::native::check_fast_path_restrictions( {params, grads, momentum_buffer_list}) to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)"""
+        if has_momentum
+        else """Expected at::native::check_fast_path_restrictions({params, grads}) to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)"""
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fused_sgd_(): expected {bad_arg}[{bad_idx}] to have shape [4], got [2]""",
+        gpu=gpu_msg,
+    ):
+      op(
+          params,
+          grads,
+          momentum_buffers,
+          weight_decay=0.0,
+          momentum=momentum,
+          lr=lr,
+          dampening=0.0,
+          nesterov=False,
+          maximize=False,
+          is_first_step=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="adam_grad_bf16",
+          is_adamw=False,
+          case="grad_bf16",
+      ),
+      dict(
+          testcase_name="adam_grad_bf16_mixed_state",
+          is_adamw=False,
+          case="grad_bf16_mixed_state",
+      ),
+      dict(
+          testcase_name="adam_exp_avg_sq_mismatch",
+          is_adamw=False,
+          case="exp_avg_sq_mismatch",
+      ),
+      dict(
+          testcase_name="adam_max_exp_avg_sq_mismatch",
+          is_adamw=False,
+          case="max_exp_avg_sq_mismatch",
+      ),
+      dict(
+          testcase_name="adam_unsupported_mixed_fp16_state",
+          is_adamw=False,
+          case="unsupported_mixed_fp16_state",
+      ),
+      dict(
+          testcase_name="adam_heterogeneous_self",
+          is_adamw=False,
+          case="heterogeneous_self",
+      ),
+      dict(
+          testcase_name="adamw_grad_bf16",
+          is_adamw=True,
+          case="grad_bf16",
+      ),
+      dict(
+          testcase_name="adamw_grad_bf16_mixed_state",
+          is_adamw=True,
+          case="grad_bf16_mixed_state",
+      ),
+      dict(
+          testcase_name="adamw_exp_avg_sq_mismatch",
+          is_adamw=True,
+          case="exp_avg_sq_mismatch",
+      ),
+      dict(
+          testcase_name="adamw_max_exp_avg_sq_mismatch",
+          is_adamw=True,
+          case="max_exp_avg_sq_mismatch",
+      ),
+      dict(
+          testcase_name="adamw_unsupported_mixed_fp16_state",
+          is_adamw=True,
+          case="unsupported_mixed_fp16_state",
+      ),
+      dict(
+          testcase_name="adamw_heterogeneous_self",
+          is_adamw=True,
+          case="heterogeneous_self",
+      ),
+  )
+  def test_fused_adam_mismatched_tensor_dtype(self, is_adamw, case):
+    device = et.device()
+    op_prefix = "fused_adamw_" if is_adamw else "fused_adam_"
+    mp_label = (
+        "Mixed-precision fused AdamW"
+        if is_adamw
+        else "Mixed-precision fused Adam"
+    )
+    op = (
+        torch.ops.aten._fused_adamw_.default
+        if is_adamw
+        else torch.ops.aten._fused_adam_.default
+    )
+    amsgrad = False
+    max_exp_avg_sqs = []
+    steps = [torch.tensor(1.0, dtype=torch.float32, device=device)]
+
+    if case == "grad_bf16":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.bfloat16, device=device)]
+      exp_avgs = [torch.zeros(4, dtype=torch.float32, device=device)]
+      exp_avg_sqs = [torch.zeros(4, dtype=torch.float32, device=device)]
+      tpu_msg = f"""{op_prefix}(): expected grads[0] to have dtype float32, got bfloat16"""
+      gpu_msg = """params, grads, exp_avgs, and exp_avg_sqs must have same dtype, device, and layout"""
+    elif case == "grad_bf16_mixed_state":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.bfloat16, device=device)]
+      exp_avgs = [torch.zeros(4, dtype=torch.bfloat16, device=device)]
+      exp_avg_sqs = [torch.zeros(4, dtype=torch.bfloat16, device=device)]
+      tpu_msg = f"""{op_prefix}(): expected grads[0] to have dtype float32, got bfloat16"""
+      gpu_msg = f"""{mp_label} requires float32 grads, got BFloat16"""
+    elif case == "exp_avg_sq_mismatch":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.float32, device=device)]
+      exp_avgs = [torch.zeros(4, dtype=torch.float32, device=device)]
+      exp_avg_sqs = [torch.zeros(4, dtype=torch.bfloat16, device=device)]
+      tpu_msg = f"""{op_prefix}(): expected exp_avg_sqs[0] to have dtype float32, got bfloat16"""
+      gpu_msg = """params, grads, exp_avgs, and exp_avg_sqs must have same dtype, device, and layout"""
+    elif case == "max_exp_avg_sq_mismatch":
+      amsgrad = True
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.float32, device=device)]
+      exp_avgs = [torch.zeros(4, dtype=torch.bfloat16, device=device)]
+      exp_avg_sqs = [torch.zeros(4, dtype=torch.bfloat16, device=device)]
+      max_exp_avg_sqs = [torch.zeros(4, dtype=torch.float32, device=device)]
+      tpu_msg = f"""{op_prefix}(): expected max_exp_avg_sqs[0] to have dtype bfloat16, got float32"""
+      gpu_msg = f"""{mp_label} requires bfloat16 max_exp_avg_sqs, got Float"""
+    elif case == "unsupported_mixed_fp16_state":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.float32, device=device)]
+      exp_avgs = [torch.zeros(4, dtype=torch.float16, device=device)]
+      exp_avg_sqs = [torch.zeros(4, dtype=torch.float16, device=device)]
+      tpu_msg = f"""{op_prefix}(): expected exp_avgs[0] to have dtype float32 (or mixed precision float32/bfloat16), got float16"""
+      gpu_msg = f"""{mp_label} requires bfloat16 optimizer states, got Half"""
+    else:
+      params = [
+          torch.ones(4, dtype=torch.float32, device=device),
+          torch.ones(4, dtype=torch.bfloat16, device=device),
+      ]
+      grads = [
+          torch.ones(4, dtype=torch.float32, device=device),
+          torch.ones(4, dtype=torch.bfloat16, device=device),
+      ]
+      exp_avgs = [
+          torch.zeros(4, dtype=torch.float32, device=device),
+          torch.zeros(4, dtype=torch.bfloat16, device=device),
+      ]
+      exp_avg_sqs = [
+          torch.zeros(4, dtype=torch.float32, device=device),
+          torch.zeros(4, dtype=torch.bfloat16, device=device),
+      ]
+      steps = [
+          torch.tensor(1.0, dtype=torch.float32, device=device),
+          torch.tensor(1.0, dtype=torch.float32, device=device),
+      ]
+      tpu_msg = f"""{op_prefix}(): expected self[1] to have dtype float32, got bfloat16"""
+      gpu_msg = """params, grads, exp_avgs, and exp_avg_sqs must have same dtype, device, and layout"""
+
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      op(
+          params,
+          grads,
+          exp_avgs,
+          exp_avg_sqs,
+          max_exp_avg_sqs,
+          steps,
+          lr=1e-3,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.0,
+          eps=1e-8,
+          amsgrad=amsgrad,
+          maximize=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="grad_bf16", case="grad_bf16"),
+      dict(testcase_name="state_sums_bf16", case="state_sums_bf16"),
+      dict(testcase_name="heterogeneous_self", case="heterogeneous_self"),
+  )
+  def test_fused_adagrad_mismatched_tensor_dtype(self, case):
+    device = et.device()
+    if case == "grad_bf16":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.bfloat16, device=device)]
+      state_sums = [torch.zeros(4, dtype=torch.float32, device=device)]
+      steps = [torch.tensor(1.0, dtype=torch.float32, device=device)]
+      tpu_msg = """fused_adagrad_(): expected grads[0] to have dtype float32, got bfloat16"""
+    elif case == "state_sums_bf16":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.float32, device=device)]
+      state_sums = [torch.zeros(4, dtype=torch.bfloat16, device=device)]
+      steps = [torch.tensor(1.0, dtype=torch.float32, device=device)]
+      tpu_msg = """fused_adagrad_(): expected state_sums[0] to have dtype float32, got bfloat16"""
+    else:
+      params = [
+          torch.ones(4, dtype=torch.float32, device=device),
+          torch.ones(4, dtype=torch.bfloat16, device=device),
+      ]
+      grads = [
+          torch.ones(4, dtype=torch.float32, device=device),
+          torch.ones(4, dtype=torch.bfloat16, device=device),
+      ]
+      state_sums = [
+          torch.zeros(4, dtype=torch.float32, device=device),
+          torch.zeros(4, dtype=torch.bfloat16, device=device),
+      ]
+      steps = [
+          torch.tensor(1.0, dtype=torch.float32, device=device),
+          torch.tensor(1.0, dtype=torch.float32, device=device),
+      ]
+      tpu_msg = """fused_adagrad_(): expected self[1] to have dtype float32, got bfloat16"""
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu="""params, grads, and state_sums must have same dtype, device, and layout""",
+    ):
+      torch.ops.aten._fused_adagrad_.default(
+          params,
+          grads,
+          state_sums,
+          steps,
+          lr=0.1,
+          lr_decay=0.0,
+          weight_decay=0.0,
+          eps=1e-10,
+          maximize=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="grad_bf16", case="grad_bf16"),
+      dict(testcase_name="momentum_buffer_bf16", case="momentum_buffer_bf16"),
+      dict(testcase_name="heterogeneous_self", case="heterogeneous_self"),
+  )
+  def test_fused_sgd_mismatched_tensor_dtype(self, case):
+    device = et.device()
+    has_momentum = case == "momentum_buffer_bf16"
+    momentum = 0.9 if has_momentum else 0.0
+    if case == "grad_bf16":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.bfloat16, device=device)]
+      momentum_buffers = []
+      tpu_msg = """fused_sgd_(): expected grads[0] to have dtype float32, got bfloat16"""
+    elif case == "momentum_buffer_bf16":
+      params = [torch.ones(4, dtype=torch.float32, device=device)]
+      grads = [torch.ones(4, dtype=torch.float32, device=device)]
+      momentum_buffers = [torch.zeros(4, dtype=torch.bfloat16, device=device)]
+      tpu_msg = """fused_sgd_(): expected momentum_buffer_list[0] to have dtype float32, got bfloat16"""
+    else:
+      params = [
+          torch.ones(4, dtype=torch.float32, device=device),
+          torch.ones(4, dtype=torch.bfloat16, device=device),
+      ]
+      grads = [
+          torch.ones(4, dtype=torch.float32, device=device),
+          torch.ones(4, dtype=torch.bfloat16, device=device),
+      ]
+      momentum_buffers = []
+      tpu_msg = """fused_sgd_(): expected self[1] to have dtype float32, got bfloat16"""
+
+    gpu_msg = (
+        """Expected at::native::check_fast_path_restrictions( {params, grads, momentum_buffer_list}) to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)"""
+        if has_momentum
+        else """Expected at::native::check_fast_path_restrictions({params, grads}) to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)"""
+    )
+
+    with et.assert_raises_message(RuntimeError, tpu=tpu_msg, gpu=gpu_msg):
+      torch.ops.aten._fused_sgd_.default(
+          params,
+          grads,
+          momentum_buffers,
+          weight_decay=0.0,
+          momentum=momentum,
+          lr=0.1,
+          dampening=0.0,
+          nesterov=False,
+          maximize=False,
+          is_first_step=False,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="adam_lr", op_kind="adam", arg_name="lr"),
+      dict(
+          testcase_name="adam_grad_scale", op_kind="adam", arg_name="grad_scale"
+      ),
+      dict(
+          testcase_name="adam_found_inf", op_kind="adam", arg_name="found_inf"
+      ),
+      dict(testcase_name="adamw_lr", op_kind="adamw", arg_name="lr"),
+      dict(
+          testcase_name="adamw_grad_scale",
+          op_kind="adamw",
+          arg_name="grad_scale",
+      ),
+      dict(
+          testcase_name="adamw_found_inf", op_kind="adamw", arg_name="found_inf"
+      ),
+      dict(testcase_name="adagrad_lr", op_kind="adagrad", arg_name="lr"),
+      dict(
+          testcase_name="adagrad_grad_scale",
+          op_kind="adagrad",
+          arg_name="grad_scale",
+      ),
+      dict(
+          testcase_name="adagrad_found_inf",
+          op_kind="adagrad",
+          arg_name="found_inf",
+      ),
+      dict(testcase_name="sgd_lr", op_kind="sgd", arg_name="lr"),
+      dict(
+          testcase_name="sgd_grad_scale", op_kind="sgd", arg_name="grad_scale"
+      ),
+      dict(testcase_name="sgd_found_inf", op_kind="sgd", arg_name="found_inf"),
+  )
+  def test_fused_optimizer_complex_scalar_tensor(self, op_kind, arg_name):
+    device = et.device()
+    params = [torch.ones(4, dtype=torch.float32, device=device)]
+    grads = [torch.ones(4, dtype=torch.float32, device=device)]
+    state1 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    state2 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    steps = [torch.tensor(1.0, dtype=torch.float32, device=device)]
+    bad_scalar = torch.tensor(1.0 + 0.0j, dtype=torch.complex64, device=device)
+    grad_scale = bad_scalar if arg_name == "grad_scale" else None
+    found_inf = bad_scalar if arg_name == "found_inf" else None
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fused_{op_kind}_(): expected {arg_name} to have a floating-point dtype, got complex64""",
+        gpu="""expected scalar type Float but found ComplexFloat""",
+    ):
+      _call_fused_optimizer(
+          op_kind,
+          params,
+          grads,
+          state1,
+          state2,
+          steps,
+          lr=bad_scalar if arg_name == "lr" else None,
+          grad_scale=grad_scale,
+          found_inf=found_inf,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="adam_grads_cpu", op_kind="adam", bad_arg="grads"),
+      dict(
+          testcase_name="adam_grad_scale_cpu",
+          op_kind="adam",
+          bad_arg="grad_scale",
+      ),
+      dict(testcase_name="adamw_grads_cpu", op_kind="adamw", bad_arg="grads"),
+      dict(
+          testcase_name="adamw_grad_scale_cpu",
+          op_kind="adamw",
+          bad_arg="grad_scale",
+      ),
+      dict(
+          testcase_name="adagrad_grads_cpu", op_kind="adagrad", bad_arg="grads"
+      ),
+      dict(
+          testcase_name="adagrad_grad_scale_cpu",
+          op_kind="adagrad",
+          bad_arg="grad_scale",
+      ),
+      dict(testcase_name="sgd_grads_cpu", op_kind="sgd", bad_arg="grads"),
+      dict(
+          testcase_name="sgd_grad_scale_cpu",
+          op_kind="sgd",
+          bad_arg="grad_scale",
+      ),
+  )
+  def test_fused_optimizer_mismatched_device(self, op_kind, bad_arg):
+    device = et.device()
+    params = [torch.ones(4, dtype=torch.float32, device=device)]
+    grads = [
+        torch.ones(
+            4,
+            dtype=torch.float32,
+            device="cpu" if bad_arg == "grads" else device,
+        )
+    ]
+    state1 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    state2 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    steps = [torch.tensor(1.0, dtype=torch.float32, device=device)]
+    lr_t = torch.tensor(1e-3, dtype=torch.float32, device=device)
+    grad_scale = (
+        torch.tensor(1.0, dtype=torch.float32, device="cpu")
+        if bad_arg == "grad_scale"
+        else None
+    )
+    tpu_target = "grads[0]" if bad_arg == "grads" else "grad_scale"
+    if bad_arg == "grad_scale":
+      gpu_msg = """grad_scale must be on the same GPU device as the params"""
+    elif op_kind in ("adam", "adamw"):
+      gpu_msg = """params, grads, exp_avgs, and exp_avg_sqs must have same dtype, device, and layout"""
+    elif op_kind == "adagrad":
+      gpu_msg = """params and grads must have same dtype, device, and layout"""
+    else:
+      gpu_msg = """Expected at::native::check_fast_path_restrictions({params, grads}) to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)"""
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fused_{op_kind}_(): expected {tpu_target} to be on tpu, got cpu""",
+        gpu=gpu_msg,
+    ):
+      _call_fused_optimizer(
+          op_kind,
+          params,
+          grads,
+          state1,
+          state2,
+          steps,
+          lr=lr_t,
+          grad_scale=grad_scale,
       )
 
   def test_fused_moving_avg_obs_fq_helper_invalid_quant_min_max(self):

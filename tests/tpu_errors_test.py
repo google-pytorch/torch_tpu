@@ -101,6 +101,77 @@ def _ensure_ao_ops_registered() -> None:
     )
 
 
+def _call_fused_optimizer(
+    op_kind: str,
+    params: list[torch.Tensor],
+    grads: list[torch.Tensor],
+    state1: list[torch.Tensor],
+    state2: list[torch.Tensor],
+    steps: list[torch.Tensor],
+    lr: float | torch.Tensor | None = None,
+    **kwargs: Any,
+) -> None:
+  """Calls an in-place fused optimizer op with default hyperparameters.
+
+  Args:
+    op_kind: One of "adam", "adamw", "adagrad", or "sgd".
+    params: The parameters to update.
+    grads: The gradients of `params`.
+    state1: The first state buffers: `exp_avgs` for Adam and AdamW, `state_sums`
+      for Adagrad. Unused by SGD.
+    state2: The `exp_avg_sqs` buffers of Adam and AdamW. Unused otherwise.
+    steps: The `state_steps` tensors. Unused by SGD.
+    lr: The learning rate. A tensor selects the `tensor_lr` overload. Defaults
+      to the learning rate that the optimizer's Python class defaults to.
+    **kwargs: Other arguments to forward, such as `grad_scale` and `found_inf`.
+  """
+  overload = "tensor_lr" if isinstance(lr, torch.Tensor) else "default"
+  if op_kind in ("adam", "adamw"):
+    getattr(getattr(torch.ops.aten, f"_fused_{op_kind}_"), overload)(
+        params,
+        grads,
+        state1,
+        state2,
+        [],
+        steps,
+        lr=1e-3 if lr is None else lr,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0,
+        eps=1e-8,
+        amsgrad=False,
+        maximize=False,
+        **kwargs,
+    )
+  elif op_kind == "adagrad":
+    getattr(torch.ops.aten._fused_adagrad_, overload)(
+        params,
+        grads,
+        state1,
+        steps,
+        lr=0.1 if lr is None else lr,
+        lr_decay=0.0,
+        weight_decay=0.0,
+        eps=1e-10,
+        maximize=False,
+        **kwargs,
+    )
+  else:
+    getattr(torch.ops.aten._fused_sgd_, overload)(
+        params,
+        grads,
+        [],
+        weight_decay=0.0,
+        momentum=0.0,
+        lr=0.1 if lr is None else lr,
+        dampening=0.0,
+        nesterov=False,
+        maximize=False,
+        is_first_step=False,
+        **kwargs,
+    )
+
+
 class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
   """Tests error messages on TPU."""
 
@@ -3363,6 +3434,113 @@ module {
           eps=1e-10,
           maximize=False,
       )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="adam_state_steps",
+          op_kind="adam",
+          arg_name="state_steps",
+      ),
+      dict(testcase_name="adam_lr", op_kind="adam", arg_name="lr"),
+      dict(
+          testcase_name="adam_grad_scale", op_kind="adam", arg_name="grad_scale"
+      ),
+      dict(
+          testcase_name="adam_found_inf", op_kind="adam", arg_name="found_inf"
+      ),
+      dict(
+          testcase_name="adamw_state_steps",
+          op_kind="adamw",
+          arg_name="state_steps",
+      ),
+      dict(testcase_name="adamw_lr", op_kind="adamw", arg_name="lr"),
+      dict(
+          testcase_name="adamw_grad_scale",
+          op_kind="adamw",
+          arg_name="grad_scale",
+      ),
+      dict(
+          testcase_name="adamw_found_inf", op_kind="adamw", arg_name="found_inf"
+      ),
+      dict(
+          testcase_name="adagrad_state_steps",
+          op_kind="adagrad",
+          arg_name="state_steps",
+      ),
+      dict(testcase_name="adagrad_lr", op_kind="adagrad", arg_name="lr"),
+      dict(
+          testcase_name="adagrad_grad_scale",
+          op_kind="adagrad",
+          arg_name="grad_scale",
+      ),
+      dict(
+          testcase_name="adagrad_found_inf",
+          op_kind="adagrad",
+          arg_name="found_inf",
+      ),
+      dict(testcase_name="sgd_lr", op_kind="sgd", arg_name="lr"),
+      dict(
+          testcase_name="sgd_grad_scale", op_kind="sgd", arg_name="grad_scale"
+      ),
+      dict(testcase_name="sgd_found_inf", op_kind="sgd", arg_name="found_inf"),
+  )
+  @et.why_tpu_only(
+      "GPU does not validate that state_steps, lr, grad_scale, or found_inf "
+      "have numel == 1 and silently reads element 0."
+  )
+  def test_fused_optimizer_non_scalar_step_or_scale(self, op_kind, arg_name):
+    device = et.device()
+    params = [torch.ones(4, dtype=torch.float32, device=device)]
+    grads = [torch.ones(4, dtype=torch.float32, device=device)]
+    state1 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    state2 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    bad_scalar = torch.ones(2, dtype=torch.float32, device=device)
+    steps = [
+        bad_scalar
+        if arg_name == "state_steps"
+        else torch.tensor(1.0, dtype=torch.float32, device=device)
+    ]
+    grad_scale = bad_scalar if arg_name == "grad_scale" else None
+    found_inf = bad_scalar if arg_name == "found_inf" else None
+    target_name = "state_steps[0]" if arg_name == "state_steps" else arg_name
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fused_{op_kind}_(): expected {target_name} to be a 1-element tensor, got shape [2]""",
+    ):
+      _call_fused_optimizer(
+          op_kind,
+          params,
+          grads,
+          state1,
+          state2,
+          steps,
+          lr=bad_scalar if arg_name == "lr" else None,
+          grad_scale=grad_scale,
+          found_inf=found_inf,
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="adam", op_kind="adam"),
+      dict(testcase_name="adamw", op_kind="adamw"),
+      dict(testcase_name="adagrad", op_kind="adagrad"),
+  )
+  @et.why_tpu_only(
+      "GPU reinterprets state_steps bytes as float* without validating dtype."
+  )
+  def test_fused_optimizer_complex_state_steps(self, op_kind):
+    device = et.device()
+    params = [torch.ones(4, dtype=torch.float32, device=device)]
+    grads = [torch.ones(4, dtype=torch.float32, device=device)]
+    state1 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    state2 = [torch.zeros(4, dtype=torch.float32, device=device)]
+    steps = [torch.tensor(1.0 + 0.0j, dtype=torch.complex64, device=device)]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fused_{op_kind}_(): expected state_steps[0] to have a real numeric dtype, got complex64""",
+    ):
+      _call_fused_optimizer(op_kind, params, grads, state1, state2, steps)
 
   @et.why_tpu_only(
       "Custom op sparse_dense_matmul_grad_with_adagrad is TPU only."

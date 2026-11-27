@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -26,11 +27,14 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty_like.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -493,9 +497,56 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildAdamShlo(
   return results;
 }
 
-// Validates that all input tensor state lists have matching lengths,
-// floating-point dtypes, uniform device placement, and identical shapes across
-// corresponding lists.
+enum class ScalarTensorDtype { kFloatingPoint, kRealNumeric };
+
+// Validates that every tensor in `tensors` resides on TPU, matches the shape of
+// the corresponding parameter tensor in `self`, and has `expected_dtype`.
+absl::Status ValidateMatchingTensorList(at::TensorList self,
+                                        at::TensorList tensors,
+                                        const at::ScalarType expected_dtype,
+                                        const std::string_view list_name) {
+  for (size_t i = 0; i < self.size(); ++i) {
+    TT_RET_CHECK(IsPrivateUse1Device(tensors[i]), error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << tensors[i].device();
+    TT_RET_CHECK(tensors[i].sizes() == self[i].sizes(), error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to have shape "
+        << ToString(self[i].sizes()) << ", got "
+        << ToString(tensors[i].sizes());
+    TT_RET_CHECK(tensors[i].scalar_type() == expected_dtype,
+                 error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to have dtype "
+        << ToString(expected_dtype) << ", got "
+        << ToString(tensors[i].scalar_type());
+  }
+  return absl::OkStatus();
+}
+
+// Validates that a scalar optimizer tensor resides on TPU, has exactly one
+// element, and satisfies the required dtype constraint.
+absl::Status ValidateScalarTensor(const at::Tensor& tensor,
+                                  const std::string_view name,
+                                  const ScalarTensorDtype expected_dtype) {
+  TT_RET_CHECK(IsPrivateUse1Device(tensor), error::kInvalidArgument)
+      << "expected " << name << " to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << tensor.device();
+  TT_RET_CHECK(tensor.numel() == 1, error::kInvalidArgument)
+      << "expected " << name << " to be a 1-element tensor, got shape "
+      << ToString(tensor.sizes());
+  if (expected_dtype == ScalarTensorDtype::kFloatingPoint) {
+    TT_RET_CHECK(IsFloatingPoint(tensor), error::kInvalidArgument)
+        << "expected " << name << " to have a floating-point dtype, got "
+        << ToString(tensor.scalar_type());
+  } else {
+    TT_RET_CHECK(IsFloatingPoint(tensor) || IsInteger(tensor),
+                 error::kInvalidArgument)
+        << "expected " << name << " to have a real numeric dtype, got "
+        << ToString(tensor.scalar_type());
+  }
+  return absl::OkStatus();
+}
+
+// Validates that all input tensor state lists have matching lengths.
 void ValidateAdamTensorListSizes(at::TensorList self, at::TensorList grads,
                                  at::TensorList exp_avgs,
                                  at::TensorList exp_avg_sqs,
@@ -522,6 +573,54 @@ void ValidateAdamTensorListSizes(at::TensorList self, at::TensorList grads,
            "self, got "
         << max_exp_avg_sqs.size();
   }
+}
+
+// Validates per-tensor devices, shapes, dtypes, and scalar optimizer inputs.
+absl::Status ValidateAdamPerTensorInputs(
+    at::TensorList self, at::TensorList grads, at::TensorList exp_avgs,
+    at::TensorList exp_avg_sqs, at::TensorList max_exp_avg_sqs,
+    at::TensorList state_steps, const at::Tensor& lr_tensor,
+    const std::optional<at::Tensor>& grad_scale,
+    const std::optional<at::Tensor>& found_inf, const bool amsgrad) {
+  const at::ScalarType param_dtype = self[0].scalar_type();
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, self, param_dtype, "self"));
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, grads, param_dtype, "grads"));
+
+  const at::ScalarType state_dtype = exp_avgs[0].scalar_type();
+  const bool is_valid_state_dtype =
+      state_dtype == param_dtype ||
+      (param_dtype == at::kFloat && state_dtype == at::kBFloat16) ||
+      (param_dtype == at::kBFloat16 && state_dtype == at::kFloat);
+  TT_RET_CHECK(is_valid_state_dtype, error::kInvalidArgument)
+      << "expected exp_avgs[0] to have dtype " << ToString(param_dtype)
+      << " (or mixed precision float32/bfloat16), got "
+      << ToString(state_dtype);
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, exp_avgs, state_dtype, "exp_avgs"));
+  TT_RETURN_IF_ERROR(ValidateMatchingTensorList(self, exp_avg_sqs, state_dtype,
+                                                "exp_avg_sqs"));
+  if (amsgrad) {
+    TT_RETURN_IF_ERROR(ValidateMatchingTensorList(
+        self, max_exp_avg_sqs, state_dtype, "max_exp_avg_sqs"));
+  }
+  for (size_t i = 0; i < state_steps.size(); ++i) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(
+        state_steps[i], absl::StrCat("state_steps[", i, "]"),
+        ScalarTensorDtype::kRealNumeric));
+  }
+  TT_RETURN_IF_ERROR(
+      ValidateScalarTensor(lr_tensor, "lr", ScalarTensorDtype::kFloatingPoint));
+  if (grad_scale.has_value() && grad_scale->defined()) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(*grad_scale, "grad_scale",
+                                            ScalarTensorDtype::kFloatingPoint));
+  }
+  if (found_inf.has_value() && found_inf->defined()) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(*found_inf, "found_inf",
+                                            ScalarTensorDtype::kFloatingPoint));
+  }
+  return absl::OkStatus();
 }
 
 Indices BuildAdamDonatedIndices(size_t num_tensors, bool amsgrad,
@@ -595,6 +694,9 @@ void DispatchAdam(
 
   ValidateAdamTensorListSizes(self, grads, exp_avgs, exp_avg_sqs,
                               max_exp_avg_sqs, state_steps, amsgrad);
+  TT_THROW_IF_ERROR(ValidateAdamPerTensorInputs(
+      self, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps,
+      lr_tensor, grad_scale, found_inf, amsgrad));
 
   // Pre-allocate output vector capacities to eliminate dynamic reallocation
   // overhead.

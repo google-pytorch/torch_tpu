@@ -326,6 +326,35 @@ class FusedSgdTest(TorchTpuVsCpuTestBase):
     )
     self.assert_close_tpu_vs_cpu(run_fn, rtol=rtol, atol=atol)
 
+  def test_fused_sgd_1d_scalar_tensors(self):
+    """Tests _fused_sgd_ with 1-D 1-element lr, grad_scale, and found_inf."""
+
+    def run_fn(device):
+      p = torch.tensor([1.0, 2.0], dtype=torch.float32, device=device)
+      g = torch.tensor([0.2, -0.4], dtype=torch.float32, device=device)
+      mb = torch.tensor([0.01, 0.02], dtype=torch.float32, device=device)
+      lr = torch.tensor([0.01], dtype=torch.float32, device=device)
+      grad_scale = torch.tensor([2.0], dtype=torch.float32, device=device)
+      found_inf = torch.tensor([0.0], dtype=torch.float32, device=device)
+
+      torch.ops.aten._fused_sgd_.tensor_lr(
+          [p],
+          [g],
+          [mb],
+          weight_decay=0.01,
+          momentum=0.9,
+          lr=lr,
+          dampening=0.1,
+          nesterov=False,
+          maximize=False,
+          is_first_step=False,
+          grad_scale=grad_scale,
+          found_inf=found_inf,
+      )
+      return p, g, mb
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
 
 if __name__ == "__main__":
   absltest.main()

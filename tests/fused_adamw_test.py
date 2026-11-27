@@ -541,6 +541,40 @@ class FusedAdamWTest(TorchTpuVsCpuTestBase):
         run_fn, atol=1e-3 if dtype == torch.float16 else 1e-5, rtol=1e-2
     )
 
+  def test_fused_adamw_1d_scalar_tensors(self):
+    """Tests _fused_adamw_ with 1-D 1-element step, lr, grad_scale, found_inf."""
+
+    def run_fn(device):
+      p = torch.tensor([1.0, 2.0], dtype=torch.float32, device=device)
+      g = torch.tensor([0.2, -0.4], dtype=torch.float32, device=device)
+      ea = torch.tensor([0.01, 0.02], dtype=torch.float32, device=device)
+      eas = torch.tensor([0.001, 0.002], dtype=torch.float32, device=device)
+      step = torch.tensor([1.0], dtype=torch.float32, device=device)
+      lr = torch.tensor([0.001], dtype=torch.float32, device=device)
+      grad_scale = torch.tensor([2.0], dtype=torch.float32, device=device)
+      found_inf = torch.tensor([0.0], dtype=torch.float32, device=device)
+
+      torch.ops.aten._fused_adamw_.tensor_lr(
+          [p],
+          [g],
+          [ea],
+          [eas],
+          [],
+          [step],
+          lr=lr,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+          grad_scale=grad_scale,
+          found_inf=found_inf,
+      )
+      return p, g, ea, eas
+
+    self.assert_close_tpu_vs_cpu(run_fn)
+
   def test_fused_adamw_buffer_donation(self):
     """Tests MLIR buffer donation annotations and runtime buffer invalidation."""
     # TODO: b/576318333 - Re-enable once torch.compile of _fused_adamw_ passes

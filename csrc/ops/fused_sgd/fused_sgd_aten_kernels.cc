@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -26,11 +27,13 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty_like.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -91,6 +94,23 @@ struct OneParamResult {
   std::optional<mlir::MlirOp> grad;
   std::optional<mlir::MlirOp> momentum_buffer;
 };
+
+// Reshapes a 1-element scalar MLIR operation to a 0-D tensor if its rank is
+// greater than 0.
+mlir::MlirOp ReshapeScalarTo0DIfNeeded(mlir::MlirOp op) {
+  if (GetTensorTypeOrDie(op).getRank() > 0) {
+    return mlir::stablehlo::Reshape(op, {});
+  }
+  return op;
+}
+
+// Reshapes an optional 1-element scalar MLIR operation to a 0-D tensor if
+// defined and its rank is greater than 0.
+void ReshapeOptionalScalarTo0DIfNeeded(std::optional<mlir::MlirOp>& op) {
+  if (op.has_value()) {
+    *op = ReshapeScalarTo0DIfNeeded(*op);
+  }
+}
 
 // Reverts parameter, gradient, and moment tensors to pre-step values if inf/nan
 // occurred.
@@ -189,6 +209,9 @@ absl::StatusOr<OneParamResult> BuildSgdStepForOneParam(
         mlir::stablehlo::ConvertElementType(*momentum_buffer, comp_type);
   }
   lr = mlir::stablehlo::ConvertElementType(lr, comp_type);
+  lr = ReshapeScalarTo0DIfNeeded(lr);
+  ReshapeOptionalScalarTo0DIfNeeded(grad_scale);
+  ReshapeOptionalScalarTo0DIfNeeded(found_inf);
   weight_decay = mlir::stablehlo::ConvertElementType(weight_decay, comp_type);
   momentum = mlir::stablehlo::ConvertElementType(momentum, comp_type);
   dampening = mlir::stablehlo::ConvertElementType(dampening, comp_type);
@@ -407,6 +430,45 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildSgdShlo(
                            num_tensors, momentum_mode, grad_scale_mode);
 }
 
+// Validates that every tensor in `tensors` resides on TPU, matches the shape of
+// the corresponding parameter tensor in `self`, and has `expected_dtype`.
+absl::Status ValidateMatchingTensorList(at::TensorList self,
+                                        at::TensorList tensors,
+                                        const at::ScalarType expected_dtype,
+                                        const std::string_view list_name) {
+  for (size_t i = 0; i < self.size(); ++i) {
+    TT_RET_CHECK(IsPrivateUse1Device(tensors[i]), error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << tensors[i].device();
+    TT_RET_CHECK(tensors[i].sizes() == self[i].sizes(), error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to have shape "
+        << ToString(self[i].sizes()) << ", got "
+        << ToString(tensors[i].sizes());
+    TT_RET_CHECK(tensors[i].scalar_type() == expected_dtype,
+                 error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to have dtype "
+        << ToString(expected_dtype) << ", got "
+        << ToString(tensors[i].scalar_type());
+  }
+  return absl::OkStatus();
+}
+
+// Validates that a scalar optimizer tensor resides on TPU, has exactly one
+// element, and has a floating-point dtype.
+absl::Status ValidateScalarTensor(const at::Tensor& tensor,
+                                  const std::string_view name) {
+  TT_RET_CHECK(IsPrivateUse1Device(tensor), error::kInvalidArgument)
+      << "expected " << name << " to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << tensor.device();
+  TT_RET_CHECK(tensor.numel() == 1, error::kInvalidArgument)
+      << "expected " << name << " to be a 1-element tensor, got shape "
+      << ToString(tensor.sizes());
+  TT_RET_CHECK(IsFloatingPoint(tensor), error::kInvalidArgument)
+      << "expected " << name << " to have a floating-point dtype, got "
+      << ToString(tensor.scalar_type());
+  return absl::OkStatus();
+}
+
 // Validates that gradient and momentum buffer lists match the parameter tensor
 // list in size.
 void ValidateSgdTensorListSizes(at::TensorList self, at::TensorList grads,
@@ -424,6 +486,33 @@ void ValidateSgdTensorListSizes(at::TensorList self, at::TensorList grads,
            "as self, got "
         << momentum_buffer_list.size();
   }
+}
+
+// Validates per-tensor devices, shapes, dtypes, and scalar optimizer inputs.
+absl::Status ValidateSgdPerTensorInputs(
+    at::TensorList self, at::TensorList grads,
+    at::TensorList momentum_buffer_list, const at::Tensor& lr_tensor,
+    const std::optional<at::Tensor>& grad_scale,
+    const std::optional<at::Tensor>& found_inf,
+    const MomentumMode momentum_mode, const GradScaleMode grad_scale_mode,
+    const FoundInfMode found_inf_mode) {
+  const at::ScalarType param_dtype = self[0].scalar_type();
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, self, param_dtype, "self"));
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, grads, param_dtype, "grads"));
+  if (momentum_mode == MomentumMode::kEnabled) {
+    TT_RETURN_IF_ERROR(ValidateMatchingTensorList(
+        self, momentum_buffer_list, param_dtype, "momentum_buffer_list"));
+  }
+  TT_RETURN_IF_ERROR(ValidateScalarTensor(lr_tensor, "lr"));
+  if (grad_scale_mode == GradScaleMode::kEnabled) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(*grad_scale, "grad_scale"));
+  }
+  if (found_inf_mode == FoundInfMode::kEnabled) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(*found_inf, "found_inf"));
+  }
+  return absl::OkStatus();
 }
 
 // Validates that momentum buffers are provided iff momentum is non-zero,
@@ -598,6 +687,9 @@ void DispatchSgd(at::TensorList self, at::TensorList grads,
   const FoundInfMode found_inf_mode = GetFoundInfMode(found_inf);
 
   ValidateSgdTensorListSizes(self, grads, momentum_buffer_list, momentum_mode);
+  TT_THROW_IF_ERROR(ValidateSgdPerTensorInputs(
+      self, grads, momentum_buffer_list, lr_tensor, grad_scale, found_inf,
+      momentum_mode, grad_scale_mode, found_inf_mode));
   SetSgdParamCacheKeys(param_keys, momentum_mode, grad_scale_mode,
                        found_inf_mode);
 

@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -26,11 +27,14 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty_like.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -68,6 +72,55 @@ FoundInfMode GetFoundInfMode(const std::optional<at::Tensor>& found_inf) {
              : FoundInfMode::kDisabled;
 }
 
+enum class ScalarTensorDtype { kFloatingPoint, kRealNumeric };
+
+// Validates that every tensor in `tensors` resides on TPU, matches the shape of
+// the corresponding parameter tensor in `self`, and has `expected_dtype`.
+absl::Status ValidateMatchingTensorList(at::TensorList self,
+                                        at::TensorList tensors,
+                                        const at::ScalarType expected_dtype,
+                                        const std::string_view list_name) {
+  for (size_t i = 0; i < self.size(); ++i) {
+    TT_RET_CHECK(IsPrivateUse1Device(tensors[i]), error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << tensors[i].device();
+    TT_RET_CHECK(tensors[i].sizes() == self[i].sizes(), error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to have shape "
+        << ToString(self[i].sizes()) << ", got "
+        << ToString(tensors[i].sizes());
+    TT_RET_CHECK(tensors[i].scalar_type() == expected_dtype,
+                 error::kInvalidArgument)
+        << "expected " << list_name << "[" << i << "] to have dtype "
+        << ToString(expected_dtype) << ", got "
+        << ToString(tensors[i].scalar_type());
+  }
+  return absl::OkStatus();
+}
+
+// Validates that a scalar optimizer tensor resides on TPU, has exactly one
+// element, and satisfies the required dtype constraint.
+absl::Status ValidateScalarTensor(const at::Tensor& tensor,
+                                  const std::string_view name,
+                                  const ScalarTensorDtype expected_dtype) {
+  TT_RET_CHECK(IsPrivateUse1Device(tensor), error::kInvalidArgument)
+      << "expected " << name << " to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << tensor.device();
+  TT_RET_CHECK(tensor.numel() == 1, error::kInvalidArgument)
+      << "expected " << name << " to be a 1-element tensor, got shape "
+      << ToString(tensor.sizes());
+  if (expected_dtype == ScalarTensorDtype::kFloatingPoint) {
+    TT_RET_CHECK(IsFloatingPoint(tensor), error::kInvalidArgument)
+        << "expected " << name << " to have a floating-point dtype, got "
+        << ToString(tensor.scalar_type());
+  } else {
+    TT_RET_CHECK(IsFloatingPoint(tensor) || IsInteger(tensor),
+                 error::kInvalidArgument)
+        << "expected " << name << " to have a real numeric dtype, got "
+        << ToString(tensor.scalar_type());
+  }
+  return absl::OkStatus();
+}
+
 // Validates that param, grad, state sum, and step lists have matching sizes.
 void ValidateAdagradTensorListSizes(at::TensorList self, at::TensorList grads,
                                     at::TensorList state_sums,
@@ -81,6 +134,38 @@ void ValidateAdagradTensorListSizes(at::TensorList self, at::TensorList grads,
   TT_CHECK_THROW(self.size() == state_steps.size(), error::kInvalidArgument)
       << "expected state_steps to have size " << self.size() << ", got "
       << state_steps.size();
+}
+
+// Validates per-tensor devices, shapes, dtypes, and scalar optimizer inputs.
+absl::Status ValidateAdagradPerTensorInputs(
+    at::TensorList self, at::TensorList grads, at::TensorList state_sums,
+    at::TensorList state_steps, const at::Tensor& lr_tensor,
+    const std::optional<at::Tensor>& grad_scale,
+    const std::optional<at::Tensor>& found_inf,
+    const GradScaleMode grad_scale_mode, const FoundInfMode found_inf_mode) {
+  const at::ScalarType param_dtype = self[0].scalar_type();
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, self, param_dtype, "self"));
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, grads, param_dtype, "grads"));
+  TT_RETURN_IF_ERROR(
+      ValidateMatchingTensorList(self, state_sums, param_dtype, "state_sums"));
+  for (size_t i = 0; i < state_steps.size(); ++i) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(
+        state_steps[i], absl::StrCat("state_steps[", i, "]"),
+        ScalarTensorDtype::kRealNumeric));
+  }
+  TT_RETURN_IF_ERROR(
+      ValidateScalarTensor(lr_tensor, "lr", ScalarTensorDtype::kFloatingPoint));
+  if (grad_scale_mode == GradScaleMode::kEnabled) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(*grad_scale, "grad_scale",
+                                            ScalarTensorDtype::kFloatingPoint));
+  }
+  if (found_inf_mode == FoundInfMode::kEnabled) {
+    TT_RETURN_IF_ERROR(ValidateScalarTensor(*found_inf, "found_inf",
+                                            ScalarTensorDtype::kFloatingPoint));
+  }
+  return absl::OkStatus();
 }
 
 // Records gradient scaling and inf check flags into operation cache keys.
@@ -127,6 +212,23 @@ struct OneParamResult {
   std::optional<mlir::MlirOp> grad;
   mlir::MlirOp state_sum;
 };
+
+// Reshapes a 1-element scalar MLIR operation to a 0-D tensor if its rank is
+// greater than 0.
+mlir::MlirOp ReshapeScalarTo0DIfNeeded(mlir::MlirOp op) {
+  if (GetTensorTypeOrDie(op).getRank() > 0) {
+    return mlir::stablehlo::Reshape(op, {});
+  }
+  return op;
+}
+
+// Reshapes an optional 1-element scalar MLIR operation to a 0-D tensor if
+// defined and its rank is greater than 0.
+void ReshapeOptionalScalarTo0DIfNeeded(std::optional<mlir::MlirOp>& op) {
+  if (op.has_value()) {
+    *op = ReshapeScalarTo0DIfNeeded(*op);
+  }
+}
 
 // Reverts param, grad, and state sum to previous values if found_inf is true.
 absl::StatusOr<OneParamResult> ApplyFoundInfRevert(
@@ -204,7 +306,11 @@ absl::StatusOr<OneParamResult> BuildAdagradStepForOneParam(
   grad = mlir::stablehlo::ConvertElementType(grad, comp_type);
   state_sum = mlir::stablehlo::ConvertElementType(state_sum, comp_type);
   step = mlir::stablehlo::ConvertElementType(step, comp_type);
+  step = ReshapeScalarTo0DIfNeeded(step);
   lr = mlir::stablehlo::ConvertElementType(lr, comp_type);
+  lr = ReshapeScalarTo0DIfNeeded(lr);
+  ReshapeOptionalScalarTo0DIfNeeded(grad_scale);
+  ReshapeOptionalScalarTo0DIfNeeded(found_inf);
   lr_decay = mlir::stablehlo::ConvertElementType(lr_decay, comp_type);
   weight_decay = mlir::stablehlo::ConvertElementType(weight_decay, comp_type);
   eps = mlir::stablehlo::ConvertElementType(eps, comp_type);
@@ -492,6 +598,9 @@ void DispatchAdagrad(
   const FoundInfMode found_inf_mode = GetFoundInfMode(found_inf);
 
   ValidateAdagradTensorListSizes(self, grads, state_sums, state_steps);
+  TT_THROW_IF_ERROR(ValidateAdagradPerTensorInputs(
+      self, grads, state_sums, state_steps, lr_tensor, grad_scale, found_inf,
+      grad_scale_mode, found_inf_mode));
   SetAdagradParamCacheKeys(param_keys, grad_scale_mode, found_inf_mode);
 
   // Gather input tensors, output dtypes, and shape dimensions for dispatch.
