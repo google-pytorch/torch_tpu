@@ -25346,6 +25346,119 @@ class IndexReduceErrorTest(et.ErrorTestBase):
     ):
       torch.index_reduce(self_t, 0, index, source, "prod", out=out)
 
+  def test_native_group_norm_non_float_input(self):
+    x_int = torch.ones(2, 4, 4, 4, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected input dtype to be floating point, got int32""",
+        gpu=""""GroupNormKernelImpl" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.native_group_norm(x_int, None, None, 2, 4, 16, 2, 1e-5)
+
+  def test_native_group_norm_negative_batch(self):
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected batch size to be >= 0, got -1""",
+        gpu="""Trying to create tensor with negative dimension -1: [-1, 2]""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, -1, 4, 16, 2, 1e-5)
+
+  def test_native_group_norm_zero_channels(self):
+    x_zero_c = torch.empty(2, 0, 4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected number of channels to be greater than 0, got 0""",
+        gpu="""Expected number of channels to be greater than 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm(x_zero_c, None, None, 2, 0, 16, 2, 1e-5)
+
+  def test_native_group_norm_zero_hw(self):
+    x_zero_hw = torch.empty(2, 4, 0, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected HxW to be greater than 0, got 0""",
+        gpu="""Expected HxW to be greater than 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm(x_zero_hw, None, None, 2, 4, 0, 2, 1e-5)
+
+  def test_native_group_norm_zero_groups(self):
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected num groups to be greater than 0, got 0""",
+        gpu="""Expected num groups to be greater than 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 4, 16, 0, 1e-5)
+
+  def test_native_group_norm_channels_not_divisible_by_groups(self):
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected number of channels to be divisible by num_groups (3), got 4""",
+        gpu="""Expected number of channels in input to be divisible by num_groups, but got input of shape [2, 4, 4, 4] and num_groups=3""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 4, 16, 3, 1e-5)
+
+  def test_native_group_norm_input_numel_mismatch(self):
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected input to have 64 elements, got 128""",
+        gpu="""Expected X.numel() == N * C * HxW to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 4, 8, 2, 1e-5)
+
+  def test_native_group_norm_bad_weight_shape(self):
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    bad_w = torch.ones(3, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected weight to be a 1D tensor of size 4, got [3]""",
+        gpu="""Expected weight to be a vector of size equal to the number of channels in input, but got weight of shape [3] and input of shape [2, 4, 4, 4]""",
+    ):
+      torch.ops.aten.native_group_norm(x, bad_w, None, 2, 4, 16, 2, 1e-5)
+
+  def test_native_group_norm_bad_bias_shape(self):
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    bad_b = torch.ones(3, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected bias to be a 1D tensor of size 4, got [3]""",
+        gpu="""Expected bias to be a vector of size equal to the number of channels in input, but got bias of shape [3] and input of shape [2, 4, 4, 4]""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, bad_b, 2, 4, 16, 2, 1e-5)
+
+  def test_native_group_norm_mixed_dtype_non_half_input(self):
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    w_bf16 = torch.ones(4, dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected float16 or bfloat16 input for mixed-dtype group_norm, got float32""",
+        gpu="""mixed dtype (CPU): expect parameter to have scalar type of Float""",
+    ):
+      torch.ops.aten.native_group_norm(x, w_bf16, None, 2, 4, 16, 2, 1e-5)
+
+  def test_native_group_norm_mixed_dtype_bad_weight(self):
+    x_bf16 = torch.ones(2, 4, 4, 4, dtype=torch.bfloat16, device=et.device())
+    w_f64 = torch.ones(4, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected weight dtype to be float32 for mixed-dtype group_norm, got float64""",
+        gpu="""mixed dtype (CPU): expect parameter to have scalar type of Float""",
+    ):
+      torch.ops.aten.native_group_norm(x_bf16, w_f64, None, 2, 4, 16, 2, 1e-5)
+
+  def test_native_group_norm_mixed_dtype_bad_bias(self):
+    x_bf16 = torch.ones(2, 4, 4, 4, dtype=torch.bfloat16, device=et.device())
+    b_f64 = torch.ones(4, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected bias dtype to be float32 for mixed-dtype group_norm, got float64""",
+        gpu="""mixed dtype (CPU): expect parameter to have scalar type of Float""",
+    ):
+      torch.ops.aten.native_group_norm(x_bf16, None, b_f64, 2, 4, 16, 2, 1e-5)
+
 
 class SparseCooAddSubErrorTest(et.ErrorTestBase):
 

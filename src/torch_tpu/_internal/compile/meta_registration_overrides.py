@@ -26,6 +26,34 @@ from torch._subclasses import fake_tensor
 
 _meta_lib: torch.library.Library | None = None
 
+_LOW_PRECISION_FLOATS: frozenset[torch.dtype] = frozenset(
+    d
+    for name in (
+        "float8_e4m3fn",
+        "float8_e4m3fnuz",
+        "float8_e5m2",
+        "float8_e5m2fnuz",
+        "float8_e8m0fnu",
+        "float4_e2m1fn_x2",
+    )
+    if (d := getattr(torch, name, None)) is not None
+)
+
+
+def _format_dtype(dtype: torch.dtype) -> str:
+  return str(dtype).removeprefix("torch.")
+
+
+def _effective_device(tensor: torch.Tensor) -> torch.device:
+  maybe_get_fake_device = getattr(fake_tensor, "maybe_get_fake_device", None)
+  if maybe_get_fake_device is not None:
+    fake_device = maybe_get_fake_device(tensor)
+    if fake_device is not None:
+      return fake_device
+  elif isinstance(tensor, fake_tensor.FakeTensor):
+    return tensor.fake_device
+  return tensor.device
+
 
 @decompositions.out_wrapper(exact_dtype=True)
 def _addmm_dtype_meta(
@@ -260,6 +288,416 @@ def _patch_fused_dropout_meta(meta_lib: torch.library.Library) -> None:
   # pylint: enable=protected-access
 
 
+# Upstream PyTorch's `torch._refs.native_group_norm` Meta kernel casts `mean`
+# and `rstd` to `input.dtype`, crashes on `N == 0` integral inputs and 1D
+# inputs, and returns non-contiguous `channels_last` strides, whereas
+# `AtenNativeGroupNorm` returns contiguous outputs with `mean`/`rstd` in the
+# resolved stat dtype. Override Meta on TPU to match `AtenNativeGroupNorm`.
+def _native_group_norm_tpu_meta(
+    input: torch.Tensor,  # pylint: disable=redefined-builtin
+    weight: torch.Tensor | None,
+    bias: torch.Tensor | None,
+    N: int,
+    C: int,
+    HxW: int,
+    group: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  """TPU Meta implementation matching `AtenNativeGroupNorm`."""
+  # pylint: disable=protected-access
+  for tensor in (input, weight, bias):
+    if tensor is not None:
+      dtype_str = _format_dtype(tensor.dtype)
+      torch._check(
+          tensor.dtype not in _LOW_PRECISION_FLOATS,
+          lambda dtype_str=dtype_str: (
+              f"native_group_norm(): not implemented for {dtype_str}"
+          ),
+      )
+  torch._check(
+      N >= 0,
+      lambda: f"native_group_norm(): expected batch size to be >= 0, got {N}",
+  )
+  if not input.is_floating_point():
+    input_dtype_str = _format_dtype(input.dtype)
+    torch._check(
+        N == 0,
+        lambda: (
+            "native_group_norm(): expected input dtype to be floating point,"
+            f" got {input_dtype_str}"
+        ),
+    )
+  torch._check(
+      C > 0,
+      lambda: (
+          "native_group_norm(): expected number of channels to be greater than"
+          f" 0, got {C}"
+      ),
+  )
+  torch._check(
+      HxW > 0,
+      lambda: (
+          f"native_group_norm(): expected HxW to be greater than 0, got {HxW}"
+      ),
+  )
+  torch._check(
+      group > 0,
+      lambda: (
+          "native_group_norm(): expected num groups to be greater than 0,"
+          f" got {group}"
+      ),
+  )
+  torch._check(
+      C % group == 0,
+      lambda: (
+          "native_group_norm(): expected number of channels to be divisible by"
+          f" num_groups ({group}), got {C}"
+      ),
+  )
+  torch._check(
+      input.numel() == N * C * HxW,
+      lambda: (
+          f"native_group_norm(): expected input to have {N * C * HxW} elements,"
+          f" got {input.numel()}"
+      ),
+  )
+  if weight is not None:
+    torch._check(
+        weight.ndim == 1 and weight.numel() == C,
+        lambda: (
+            "native_group_norm(): expected weight to be a 1D tensor of size"
+            f" {C}, got {list(weight.shape)}"
+        ),
+    )
+  if bias is not None:
+    torch._check(
+        bias.ndim == 1 and bias.numel() == C,
+        lambda: (
+            f"native_group_norm(): expected bias to be a 1D tensor of size {C},"
+            f" got {list(bias.shape)}"
+        ),
+    )
+  has_mixed = (weight is not None and weight.dtype != input.dtype) or (
+      bias is not None and bias.dtype != input.dtype
+  )
+  if has_mixed:
+    input_dtype_str = _format_dtype(input.dtype)
+    torch._check(
+        input.dtype in (torch.float16, torch.bfloat16),
+        lambda: (
+            "native_group_norm(): expected float16 or bfloat16 input for"
+            f" mixed-dtype group_norm, got {input_dtype_str}"
+        ),
+    )
+    if weight is not None:
+      weight_dtype_str = _format_dtype(weight.dtype)
+      torch._check(
+          weight.dtype == torch.float32,
+          lambda: (
+              "native_group_norm(): expected weight dtype to be float32 for"
+              f" mixed-dtype group_norm, got {weight_dtype_str}"
+          ),
+      )
+    if bias is not None:
+      bias_dtype_str = _format_dtype(bias.dtype)
+      torch._check(
+          bias.dtype == torch.float32,
+          lambda: (
+              "native_group_norm(): expected bias dtype to be float32 for"
+              f" mixed-dtype group_norm, got {bias_dtype_str}"
+          ),
+      )
+  stat_dtype = input.dtype
+  if weight is not None and weight.dtype != input.dtype:
+    stat_dtype = weight.dtype
+  elif bias is not None and bias.dtype != input.dtype:
+    stat_dtype = bias.dtype
+  # pylint: enable=protected-access
+  return (
+      torch.empty_like(input, memory_format=torch.contiguous_format),
+      input.new_empty((N, group), dtype=stat_dtype),
+      input.new_empty((N, group), dtype=stat_dtype),
+  )
+
+
+def _patch_native_group_norm_meta(meta_lib: torch.library.Library) -> None:
+  """Patches `aten.native_group_norm` default and out Meta kernels."""
+  # pylint: disable=protected-access
+  default_op = torch.ops.aten.native_group_norm.default
+  out_op = torch.ops.aten.native_group_norm.out
+  meta_key = torch._C.DispatchKey.Meta
+  upstream_decomp = _decomp.decomposition_table.get(default_op)
+  upstream_meta = default_op.py_kernels.get(meta_key)
+  upstream_out_decomp = _decomp.decomposition_table.get(out_op)
+  upstream_out_meta = out_op.py_kernels.get(meta_key)
+
+  def _native_group_norm_meta(
+      input: torch.Tensor,  # pylint: disable=redefined-builtin
+      weight: torch.Tensor | None,
+      bias: torch.Tensor | None,
+      N: int,
+      C: int,
+      HxW: int,
+      group: int,
+      eps: float,
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if _meta_registrations.device_hint(input) == "tpu":
+      return _native_group_norm_tpu_meta(input, weight, bias, N, C, HxW, group)
+    if upstream_meta is not None:
+      return upstream_meta(input, weight, bias, N, C, HxW, group, eps)
+    if upstream_decomp is not None:
+      return upstream_decomp(input, weight, bias, N, C, HxW, group, eps)
+    raise NotImplementedError(
+        "No upstream implementation for native_group_norm on device"
+        f" {input.device}"
+    )
+
+  def _native_group_norm_out_meta(
+      input: torch.Tensor,  # pylint: disable=redefined-builtin
+      weight: torch.Tensor | None,
+      bias: torch.Tensor | None,
+      N: int,
+      C: int,
+      HxW: int,
+      group: int,
+      eps: float,
+      *,
+      out0: torch.Tensor,
+      out1: torch.Tensor,
+      out2: torch.Tensor,
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if _meta_registrations.device_hint(input) == "tpu":
+      out0_device = _effective_device(out0)
+      out1_device = _effective_device(out1)
+      out2_device = _effective_device(out2)
+      torch._check(
+          out0_device.type == "tpu"
+          and out1_device.type == "tpu"
+          and out2_device.type == "tpu",
+          lambda: (
+              "native_group_norm(): expected all output tensors to be on tpu,"
+              f" got {out0_device}, {out1_device}, and {out2_device}"
+          ),
+      )
+      y, mean, rstd = _native_group_norm_tpu_meta(
+          input, weight, bias, N, C, HxW, group
+      )
+      for out_tensor, expected in ((out0, y), (out1, mean), (out2, rstd)):
+        exp_str = _format_dtype(expected.dtype)
+        got_str = _format_dtype(out_tensor.dtype)
+        torch._check(
+            out_tensor.dtype == expected.dtype,
+            lambda exp_str=exp_str, got_str=got_str: (
+                "native_group_norm(): expected the output dtype to be"
+                f" {exp_str}, got {got_str}"
+            ),
+        )
+        out_tensor.resize_(expected.shape)
+      return (out0, out1, out2)
+    if upstream_out_meta is not None:
+      return upstream_out_meta(
+          input,
+          weight,
+          bias,
+          N,
+          C,
+          HxW,
+          group,
+          eps,
+          out0=out0,
+          out1=out1,
+          out2=out2,
+      )
+    if upstream_out_decomp is not None:
+      return upstream_out_decomp(
+          input,
+          weight,
+          bias,
+          N,
+          C,
+          HxW,
+          group,
+          eps,
+          out0=out0,
+          out1=out1,
+          out2=out2,
+      )
+    y, mean, rstd = _native_group_norm_meta(
+        input, weight, bias, N, C, HxW, group, eps
+    )
+    for out_tensor, result in ((out0, y), (out1, mean), (out2, rstd)):
+      out_tensor.resize_(result.shape)
+      out_tensor.copy_(result)
+    return (out0, out1, out2)
+
+  op_to_fn: tuple[tuple[Any, Callable[..., Any]], ...] = (
+      (default_op, _native_group_norm_meta),
+      (out_op, _native_group_norm_out_meta),
+  )
+  for op, fn in op_to_fn:
+    _decomp.meta_table[op] = fn
+    if hasattr(torch._C, "_fake_dispatch_register_meta"):
+      schema = op._schema
+      torch._C._fake_dispatch_register_meta(schema.name, schema.overload_name)
+    op.py_kernels.pop(meta_key, None)
+    meta_lib.impl(op, fn, allow_override=True)
+    op.py_impl(meta_key)(fn)
+  # pylint: enable=protected-access
+
+
+# Upstream PyTorch's `native_group_norm_backward` decomposition is decorated
+# with `@pw_cast_for_opmath`, which promotes all returned outputs (including
+# `d_input`) to `float32` whenever `mean`/`rstd` or `weight` are `float32`,
+# whereas `AtenNativeGroupNormBackward` returns `d_input` in `input.dtype` and
+# `d_weight`/`d_bias` in `weight.dtype` if `weight` is provided else
+# `mean.dtype`. Override Meta on TPU so `aot_autograd` FakeTensors match the
+# compiled TPU backward output dtypes.
+def _native_group_norm_backward_tpu_meta(
+    grad_out: torch.Tensor,
+    input: torch.Tensor,  # pylint: disable=redefined-builtin
+    mean: torch.Tensor,
+    rstd: torch.Tensor,
+    weight: torch.Tensor | None,
+    N: int,
+    C: int,
+    HxW: int,
+    group: int,
+    output_mask: list[bool],
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+  """TPU Meta implementation matching `AtenNativeGroupNormBackward`."""
+  # pylint: disable=protected-access
+  for tensor in (grad_out, input, mean, rstd, weight):
+    if tensor is not None:
+      dtype_str = _format_dtype(tensor.dtype)
+      torch._check(
+          tensor.dtype not in _LOW_PRECISION_FLOATS,
+          lambda dtype_str=dtype_str: (
+              f"native_group_norm_backward(): not implemented for {dtype_str}"
+          ),
+      )
+  torch._check(
+      grad_out.numel() == N * C * HxW,
+      lambda: (
+          "native_group_norm_backward(): expected grad_out to have"
+          f" {N * C * HxW} elements, got {grad_out.numel()}"
+      ),
+  )
+  torch._check(
+      input.numel() == N * C * HxW,
+      lambda: (
+          "native_group_norm_backward(): expected input to have"
+          f" {N * C * HxW} elements, got {input.numel()}"
+      ),
+  )
+  torch._check(
+      grad_out.shape == input.shape,
+      lambda: (
+          "native_group_norm_backward(): expected grad_out and input to have"
+          f" the same dimensions, got grad_out size {list(grad_out.shape)},"
+          f" input size {list(input.shape)}"
+      ),
+  )
+  torch._check(
+      mean.shape == (N, group),
+      lambda: (
+          "native_group_norm_backward(): expected mean to have shape"
+          f" [{N}, {group}], got {list(mean.shape)}"
+      ),
+  )
+  torch._check(
+      mean.shape == rstd.shape,
+      lambda: (
+          "native_group_norm_backward(): expected mean and rstd to have the"
+          f" same shape, got mean size {list(mean.shape)} and rstd size"
+          f" {list(rstd.shape)}"
+      ),
+  )
+  torch._check(
+      group > 0,
+      lambda: (
+          "native_group_norm_backward(): expected num groups to be greater than"
+          f" 0, got {group}"
+      ),
+  )
+  torch._check(
+      C % group == 0,
+      lambda: (
+          "native_group_norm_backward(): expected number of channels to be"
+          f" divisible by num_groups ({group}), got {C}"
+      ),
+  )
+  if weight is not None:
+    torch._check(
+        weight.numel() == C,
+        lambda: (
+            f"native_group_norm_backward(): expected weight to have {C}"
+            f" elements, got {weight.numel()}"
+        ),
+    )
+  # pylint: enable=protected-access
+  dparam_dtype = weight.dtype if weight is not None else mean.dtype
+  d_input = (
+      torch.empty_like(input, memory_format=torch.contiguous_format)
+      if output_mask[0]
+      else None
+  )
+  d_weight = (
+      input.new_empty((C,), dtype=dparam_dtype) if output_mask[1] else None
+  )
+  d_bias = input.new_empty((C,), dtype=dparam_dtype) if output_mask[2] else None
+  return (d_input, d_weight, d_bias)
+
+
+def _patch_native_group_norm_backward_meta(
+    meta_lib: torch.library.Library,
+) -> None:
+  """Patches `aten.native_group_norm_backward` default Meta kernel."""
+  # pylint: disable=protected-access
+  default_op = torch.ops.aten.native_group_norm_backward.default
+  meta_key = torch._C.DispatchKey.Meta
+  upstream_decomp = _decomp.decomposition_table.get(default_op)
+  upstream_meta = default_op.py_kernels.get(meta_key)
+
+  def _native_group_norm_backward_meta(
+      grad_out: torch.Tensor,
+      input: torch.Tensor,  # pylint: disable=redefined-builtin
+      mean: torch.Tensor,
+      rstd: torch.Tensor,
+      weight: torch.Tensor | None,
+      N: int,
+      C: int,
+      HxW: int,
+      group: int,
+      output_mask: list[bool],
+  ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    if _meta_registrations.device_hint(input) == "tpu":
+      return _native_group_norm_backward_tpu_meta(
+          grad_out, input, mean, rstd, weight, N, C, HxW, group, output_mask
+      )
+    if upstream_meta is not None:
+      return upstream_meta(
+          grad_out, input, mean, rstd, weight, N, C, HxW, group, output_mask
+      )
+    if upstream_decomp is not None:
+      return upstream_decomp(
+          grad_out, input, mean, rstd, weight, N, C, HxW, group, output_mask
+      )
+    raise NotImplementedError(
+        "No upstream implementation for native_group_norm_backward on device"
+        f" {input.device}"
+    )
+
+  _decomp.meta_table[default_op] = _native_group_norm_backward_meta
+  if hasattr(torch._C, "_fake_dispatch_register_meta"):
+    schema = default_op._schema
+    torch._C._fake_dispatch_register_meta(schema.name, schema.overload_name)
+  default_op.py_kernels.pop(meta_key, None)
+  meta_lib.impl(
+      default_op, _native_group_norm_backward_meta, allow_override=True
+  )
+  default_op.py_impl(meta_key)(_native_group_norm_backward_meta)
+  # pylint: enable=protected-access
+
+
 def register() -> None:
   """Registers TPU Meta kernel overrides."""
   global _meta_lib
@@ -270,3 +708,5 @@ def register() -> None:
   _patch_addmm_dtype_meta(_meta_lib)
   _patch_bmm_dtype_meta(_meta_lib)
   _patch_fused_dropout_meta(_meta_lib)
+  _patch_native_group_norm_meta(_meta_lib)
+  _patch_native_group_norm_backward_meta(_meta_lib)

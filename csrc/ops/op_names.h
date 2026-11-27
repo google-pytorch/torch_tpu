@@ -617,7 +617,9 @@ enum class OpName {
   kNativeBatchNormOut,
   kNativeDropout,
   kNativeDropoutBackward,
+  kNativeGroupNorm,
   kNativeGroupNormBackward,
+  kNativeGroupNormOut,
   kNativeLayerNorm,
   kNativeLayerNormBackward,
   kNativeMultiHeadAttention,
@@ -2104,8 +2106,12 @@ ToString(  // NOLINT(google-readability-function-size)
       return "native_dropout";
     case OpName::kNativeDropoutBackward:
       return "native_dropout_backward";
+    case OpName::kNativeGroupNorm:
+      return "native_group_norm";
     case OpName::kNativeGroupNormBackward:
       return "native_group_norm_backward";
+    case OpName::kNativeGroupNormOut:
+      return "native_group_norm.out";
     case OpName::kNativeLayerNorm:
       return "native_layer_norm";
     case OpName::kNativeLayerNormBackward:

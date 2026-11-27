@@ -502,6 +502,11 @@ REGISTRATION_OVERRIDES = frozenset([
     # masked_fill_.
     'masked_fill.Scalar',
     'masked_fill.Tensor',
+    # native_group_norm and native_group_norm.out are registered to provide a
+    # native StableHLO lowering with FP32 accumulation and mixed-dtype stat
+    # dtypes on TPU, overriding the default PyTorch decomposition.
+    'native_group_norm',
+    'native_group_norm.out',
     'native_layer_norm',  # pending removal
     # new_full, new_ones, new_zeros, ones, and ones_like are registered
     # directly to lower to a single StableHLO constant instead of the composite
