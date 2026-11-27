@@ -28057,7 +28057,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     """
     x = torch.tensor([1.5, 2.5], dtype=torch.float64, device="tpu")
     torch.accelerator.synchronize()
-    for n in (1, 2, 3, 4):
+    for n in (1, 2, 3, 4, 20):
       with self.subTest(n=n):
         with execution_mode.set_eager_mode(
             execution_mode.EagerMode.DEFER_AND_FUSE
@@ -28072,7 +28072,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   def test_polygamma_reflection_and_higher_order(self) -> None:
     """Verifies polygamma(n >= 1) outputs for x < 0 reflection and n = 4."""
     values = [-1.5, 0.5, 1.5, 2.5]
-    # float32 pi / 2 ULP rounding in cot(pi * x) scales by 16 * pi^5 at n = 4.
     # CPU trigamma(double) truncates after B_6 (error ~1.5e-9); n=1 uses 2e-9.
     cases = (
         (1, torch.float32, None, None),
@@ -28091,6 +28090,180 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             rtol=rtol,
             atol=atol,
         )
+
+  @parameterized.named_parameters(
+      (
+          "n20_f32",
+          20,
+          torch.float32,
+          (-0.75, -0.5, -0.25, -1.25, 0.5, 1.5),
+          5e-5,
+          None,
+      ),
+      (
+          "n20_f64",
+          20,
+          torch.float64,
+          (-0.75, -0.5, -0.25, -1.25, 0.5, 1.5),
+          1e-11,
+          None,
+      ),
+      (
+          "n21_f32",
+          21,
+          torch.float32,
+          (-10.5, -1.5, -0.5, -0.25, 0.5, 1.5),
+          5e-5,
+          None,
+      ),
+      (
+          "n21_f64",
+          21,
+          torch.float64,
+          (-10.5, -1.5, -0.5, -0.25, 0.5, 1.5),
+          1e-11,
+          None,
+      ),
+      ("n50_f32", 50, torch.float32, (-0.25, -0.5, 0.5, 1.5), None, None),
+      ("n50_f64_finite", 50, torch.float64, (10.0, 20.0), 1e-10, None),
+      ("n100_f64_finite", 100, torch.float64, (30.0, 50.0), 1e-10, None),
+  )
+  def test_polygamma_high_order_vs_cpu(
+      self,
+      n: int,
+      dtype: torch.dtype,
+      values: Sequence[float],
+      rtol: float | None,
+      atol: float | None,
+  ) -> None:
+    """Verifies high-order polygamma vs CPU without cotangent divergence."""
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.polygamma(
+            n, to(torch.tensor(values, dtype=dtype), device=device)
+        ),
+        rtol=rtol,
+        atol=atol,
+    )
+
+  @parameterized.named_parameters(
+      ("n20_f32", 20, torch.float32, (-0.5, -1.5, -10.5), 5e-5),
+      ("n20_f64", 20, torch.float64, (-0.5, -1.5, -10.5), 1e-11),
+      ("n50_f64", 50, torch.float64, (-10.5,), 1e-10),
+  )
+  def test_polygamma_even_negative_half_integers(
+      self,
+      n: int,
+      dtype: torch.dtype,
+      values: Sequence[float],
+      rtol: float,
+  ) -> None:
+    """Verifies exact reflection symmetry at negative half-integers for even n.
+
+    For even n and half-integer x = -k - 0.5, psi^(n)(x) == psi^(n)(1 - x).
+    Upstream PyTorch CPU suffers catastrophic cancellation in (-0.5)^-(n+1) +
+    (0.5)^-(n+1) for x <= -1.5, so compare TPU against CPU at 1 - x > 0.
+    """
+    neg_half = torch.tensor(values, dtype=dtype)
+    expected = torch.polygamma(n, 1.0 - neg_half)
+    actual = torch.polygamma(n, neg_half.tpu()).cpu()
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=actual,
+        rtol=rtol,
+    )
+
+  @parameterized.named_parameters(
+      (
+          "n50_f64_overflow",
+          50,
+          (-0.25, -0.5, 0.5, 1.5),
+          (float("inf"), float("-inf"), float("-inf"), float("-inf")),
+      ),
+      (
+          "n100_f64_overflow",
+          100,
+          (1.5, 2.5, 10.0),
+          (float("-inf"), float("-inf"), float("-inf")),
+      ),
+      ("n200_f64_sum_overflow", 200, (47.15,), (float("-inf"),)),
+  )
+  def test_polygamma_high_order_df64_signed_overflow(
+      self,
+      n: int,
+      values: Sequence[float],
+      expected_values: Sequence[float],
+  ) -> None:
+    """Verifies DF64 overflows produce signed infinities rather than NaN."""
+    x_tpu = torch.tensor(values, dtype=torch.float64, device="tpu")
+    actual = torch.polygamma(n, x_tpu).cpu()
+    expected = torch.tensor(expected_values, dtype=torch.float64)
+    self.assert_close(golden_result=expected, torch_tpu_result=actual)
+
+  @parameterized.named_parameters(
+      ("n200_f32", 200, torch.float32),
+      ("n200_f64", 200, torch.float64),
+      ("n_2p31_f32", 1 << 31, torch.float32),
+      ("n_2p31_f64", 1 << 31, torch.float64),
+      ("n_2p32p1_f32", (1 << 32) + 1, torch.float32),
+      ("n_2p32p1_f64", (1 << 32) + 1, torch.float64),
+  )
+  def test_polygamma_large_64bit_n(
+      self,
+      n: int,
+      dtype: torch.dtype,
+  ) -> None:
+    """Verifies large 64-bit n avoids crashes, hangs, and 32-bit truncation."""
+    values = [
+        -10.5,
+        -1.5,
+        -1.0,
+        -0.75,
+        -0.5,
+        -0.25,
+        0.0,
+        0.5,
+        1.5,
+        float("inf"),
+        float("-inf"),
+        float("nan"),
+    ]
+    pos_inf = float("inf")
+    neg_inf = float("-inf")
+    nan = float("nan")
+    if n % 2 == 0:
+      expected_values = [
+          neg_inf,
+          neg_inf,
+          neg_inf,
+          neg_inf,
+          neg_inf,
+          pos_inf,
+          neg_inf,
+          neg_inf,
+          neg_inf,
+          nan,
+          neg_inf,
+          nan,
+      ]
+    else:
+      expected_values = [
+          pos_inf,
+          pos_inf,
+          pos_inf,
+          pos_inf,
+          pos_inf,
+          pos_inf,
+          pos_inf,
+          pos_inf,
+          pos_inf,
+          nan,
+          pos_inf,
+          nan,
+      ]
+    x_tpu = torch.tensor(values, dtype=dtype, device="tpu")
+    actual = torch.polygamma(n, x_tpu).cpu()
+    expected = torch.tensor(expected_values, dtype=dtype)
+    self.assert_close(golden_result=expected, torch_tpu_result=actual)
 
   def test_masked_softmax(self):
     def test_fn(device):
