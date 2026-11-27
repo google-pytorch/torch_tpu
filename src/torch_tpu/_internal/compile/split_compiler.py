@@ -998,23 +998,24 @@ class _SnapshotState:
   example_inputs: Sequence[InputType]
   is_fwd: bool
   module_name: str | None
+  # Stores `(is_pinned_host, _tpu_device_layout)` for each input in
+  # `example_inputs` when pickled. `GraphPickler` does not preserve custom
+  # attributes on `FakeTensor`s.
+  input_metadata: tuple[tuple[bool, Any], ...] = ()
 
 
 def _pickle_graph(state: _SnapshotState) -> bytes:
   """Pickles `state` with `GraphPickler`."""
+  input_metadata = []
   for example_input in state.example_inputs:
     if isinstance(example_input, torch.Generator):
       # Export-mode TPU generators abort in C++ when `get_state()` is called.
       raise pickle.PicklingError("Cannot pickle a graph with generator inputs.")
-    # TODO: b/590227168 - Support pinned-host and custom-layout inputs.
-    # `GraphPickler` does not preserve custom attributes on `FakeTensor`s.
-    if (
-        compiler.is_pinned_host_tensor(example_input)
-        or getattr(example_input, "_tpu_device_layout", None) is not None
-    ):
-      raise pickle.PicklingError(
-          "Cannot pickle a graph with pinned-host or custom-layout inputs."
-      )
+    input_metadata.append((
+        compiler.is_pinned_host_tensor(example_input),
+        getattr(example_input, "_tpu_device_layout", None),
+    ))
+  state = dataclasses.replace(state, input_metadata=tuple(input_metadata))
   # Default `_ops_filter_safe` only allows `aten`/`fbgemm` and rejects
   # `_c10d_functional` and `tpu` collectives. `ops_filter=None` pickles any
   # `torch.ops.*` op by dotted name (must be registered before `loads`).
@@ -1040,6 +1041,15 @@ class _RecompileFn:
         raise pickle.UnpicklingError(
             f"Expected _SnapshotState, got {type(state).__name__}."
         )
+      for example_input, (is_pinned_host, layout) in zip(
+          state.example_inputs, state.input_metadata, strict=True
+      ):
+        if not isinstance(example_input, torch.Tensor):
+          continue
+        if is_pinned_host:
+          example_input._is_pinned_host = True  # pylint: disable=protected-access
+        if layout is not None:
+          example_input._tpu_device_layout = layout  # pylint: disable=protected-access
       graph_module = state.graph_module
     else:
       state = self._state
