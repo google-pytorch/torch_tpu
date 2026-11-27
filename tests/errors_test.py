@@ -7967,14 +7967,14 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""addmv(): expected the dtype of alpha to be neither complex nor bool, got complex128""",
+        tpu="""addmv(): expected non-complex dtype for alpha with non-complex inputs, got complex128""",
         gpu="""value cannot be converted to type float without overflow""",
     ):
       torch.addmv(*args, alpha=1j)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""addmv(): expected the dtype of beta to be neither complex nor bool, got complex128""",
+        tpu="""addmv(): expected non-complex dtype for beta with non-complex inputs, got complex128""",
         gpu="""value cannot be converted to type float without overflow""",
     ):
       torch.addmv(*args, beta=1j)
