@@ -188,6 +188,8 @@ class DeviceModuleBase(
     _ = tensor.item()  # Materialize to trigger initialization
 
     self.assertTrue(self.device_module.is_initialized())
+    # PyTorch reads the private `_initialized`, e.g. in torch.utils.checkpoint.
+    self.assertTrue(self.device_module._initialized)
     self.assertGreater(torch.accelerator.device_count(), 0)
 
   def test_dump_on_miss(self):
