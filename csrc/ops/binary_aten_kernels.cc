@@ -539,15 +539,18 @@ absl::StatusOr<DivOpOptions> GetDivOpBuilder(
 
 absl::Status ValidateFloorDivideInputs(const at::Tensor& self,
                                        const at::Tensor& other) {
-  TT_RET_CHECK(!IsComplex(self) && !IsBool(self), error::kInvalidArgument)
-      << "expected dtype of the first argument to be neither complex nor "
-         "bool, got "
+  TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
+      << "expected the dtype of the first argument not to be complex, got "
       << ToString(self.scalar_type());
 
-  TT_RET_CHECK(!IsComplex(other) && !IsBool(other), error::kInvalidArgument)
-      << "expected dtype of the second argument to be neither complex nor "
-         "bool, got "
+  TT_RET_CHECK(!IsComplex(other), error::kInvalidArgument)
+      << "expected the dtype of the second argument not to be complex, got "
       << ToString(other.scalar_type());
+
+  const at::ScalarType result_type = at::result_type(self, other);
+  TT_RET_CHECK(!IsBool(result_type), error::kInvalidArgument)
+      << "expected the promoted dtype of the inputs not to be bool, got "
+      << ToString(result_type);
 
   return absl::OkStatus();
 }
@@ -1511,8 +1514,7 @@ at::Tensor& AtenFmodTensorOut(const at::Tensor& self, const at::Tensor& other,
     TT_CHECK_THROW(!self.is_complex() && !other.is_complex(),
                    error::kInvalidArgument)
         << "complex dtypes are not supported";
-    TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
-                       other.scalar_type() != at::ScalarType::Bool,
+    TT_CHECK_THROW(at::result_type(self, other) != at::ScalarType::Bool,
                    error::kInvalidArgument)
         << "boolean dtypes are not supported";
 
