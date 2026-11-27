@@ -16008,6 +16008,48 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         alpha=3.0,
     )
 
+  @parameterized.named_parameters(
+      # float16 cannot represent 16 * 100 * 100 = 160000 (its maximum is 65504).
+      dict(
+          testcase_name="float16_product_above_dtype_max",
+          dtype=torch.float16,
+          batch1=[[[100.0] * 16] * 2],
+          batch2=[[[100.0] * 2] * 16],
+      ),
+      # bfloat16 rounds 256 * 1 + 1 * 1 = 257 to 256.
+      dict(
+          testcase_name="bfloat16_product_not_representable",
+          dtype=torch.bfloat16,
+          batch1=[[[256.0, 1.0]]],
+          batch2=[[[1.0], [1.0]]],
+      ),
+  )
+  def test_bmm_float32_out_dtype_accumulates_in_float32(
+      self,
+      dtype: torch.dtype,
+      batch1: Sequence[Sequence[Sequence[float]]],
+      batch2: Sequence[Sequence[Sequence[float]]],
+  ):
+    """torch.bmm() of 16-bit floats into float32 should accumulate in float32."""
+    batch1_cpu = torch.tensor(batch1, dtype=dtype)
+    batch2_cpu = torch.tensor(batch2, dtype=dtype)
+    # CPU has no kernel for out_dtype. Every case is exact in float32, so the
+    # float32 product of the same values is what CUDA returns.
+    expected = torch.bmm(batch1_cpu.float(), batch2_cpu.float())
+
+    for has_out in (False, True):
+      with self.subTest(has_out=has_out):
+        out = None
+        if has_out:
+          out = torch.empty(expected.shape, dtype=torch.float32, device="tpu")
+        result = torch.bmm(
+            batch1_cpu.to("tpu"),
+            batch2_cpu.to("tpu"),
+            out_dtype=torch.float32,
+            out=out,
+        )
+        self.assert_close(golden_result=expected, torch_tpu_result=result.cpu())
+
   def test_elu_backward_is_result(self):
     """Tests torch.ops.aten.elu_backward with is_result=True and negative values."""
     grad_output = torch.tensor([-1.0, 2.0, -3.0], dtype=torch.float32)
