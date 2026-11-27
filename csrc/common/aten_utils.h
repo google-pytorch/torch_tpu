@@ -252,6 +252,16 @@ bool operator==(const HashableScalar& lhs, const HashableScalar& rhs);
 absl::StatusOr<bool> CanCastScalarWithoutOverflow(const at::Scalar& scalar,
                                                   at::ScalarType scalar_type);
 
+// Casts `scalar` to `target_dtype` using PyTorch tensor-cast semantics
+// (overflowing out-of-range floats to ±inf and wrapping out-of-range integers)
+// so that `PromoteScalar` / `MakeConstant` do not throw checked-conversion
+// overflow errors when matching upstream
+// `scalar_to_tensor(s).to(target_dtype)`. Symbolic, boolean, complex, and
+// same-dtype scalars, floating-point scalars cast to an integral dtype, and
+// unsupported target dtypes are returned unchanged.
+[[nodiscard]] at::Scalar CastScalarToDtype(const at::Scalar& scalar,
+                                           at::ScalarType target_dtype);
+
 // Make c10::Scalar hashable for absl containers. This encodes both the target
 // type and host value of the scalar.
 template <typename H>

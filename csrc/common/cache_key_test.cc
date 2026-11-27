@@ -15,6 +15,7 @@
 #include "csrc/common/cache_key.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -67,6 +68,16 @@ TEST(OpParamCacheKeys, SetParamScalar) {
   TT_ASSERT_OK_AND_ASSIGN(auto params,
                           *OpParamCacheKeysBuilder().SetParam("foo", scalar));
   EXPECT_THAT(params, ElementsAre(Pair("foo", FingerprintCat("int64", 123))));
+}
+
+TEST(OpParamCacheKeys, SetParamUInt64ScalarAboveInt64Range) {
+  const at::Scalar scalar(std::numeric_limits<uint64_t>::max());
+  TT_ASSERT_OK_AND_ASSIGN(auto params,
+                          *OpParamCacheKeysBuilder().SetParam("foo", scalar));
+  EXPECT_THAT(params,
+              ElementsAre(Pair(
+                  "foo", FingerprintCat(
+                             "uint64", std::numeric_limits<uint64_t>::max()))));
 }
 
 TEST(OpParamCacheKeys, SetParamMaybePromotedScalar_Promoted) {

@@ -64,6 +64,9 @@ absl::StatusOr<FingerprintType> EncodeParamCacheKey(const at::Scalar value) {
   FingerprintType typed_value_fp = 0;
   if (value.isFloatingPoint()) {
     typed_value_fp = EncodeParamCacheKey(value.toDouble());
+  } else if (value.type() == at::ScalarType::UInt64) {
+    // Unsigned values above the `int64` range don't fit in `toLong()`.
+    typed_value_fp = EncodeParamCacheKey(value.toUInt64());
   } else if (value.isIntegral(/*include_bool=*/false)) {
     typed_value_fp = EncodeParamCacheKey(value.toLong());
   } else if (value.isBoolean()) {

@@ -55,20 +55,7 @@
 namespace torch_tpu {
 namespace {
 
-absl::Status ValidateInputAndBoundaries(const at::Tensor& self,
-                                        const at::Tensor& boundaries) {
-  // Reject booleans for non-empty inputs to keep consistent with CUDA impl
-  // in aten/src/ATen/native/cuda/Bucketization.cu, which short-circuits and
-  // returns success for empty inputs before dispatching on the input dtype.
-  TT_RET_CHECK(self.numel() == 0 || self.scalar_type() != at::kBool,
-               error::kPythonNotImplementedError)
-      << "not implemented for " << ToString(self.scalar_type());
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType dtype,
-                      ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
-      << "expected self to be non-complex, got "
-      << ToString(self.scalar_type());
-
+absl::Status ValidateBoundaries(const at::Tensor& boundaries) {
   TT_ASSIGN_OR_RETURN(const mlir::ElementType boundaries_dtype,
                       ConvertTo<mlir::ElementType>(boundaries.scalar_type()));
   TT_RET_CHECK(!IsComplex(boundaries_dtype), error::kInvalidArgument)
@@ -79,6 +66,16 @@ absl::Status ValidateInputAndBoundaries(const at::Tensor& self,
       << ")";
 
   return absl::OkStatus();
+}
+
+absl::Status ValidateInputAndBoundaries(const at::Tensor& self,
+                                        const at::Tensor& boundaries) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
+      << "expected self to be non-complex, got "
+      << ToString(self.scalar_type());
+  return ValidateBoundaries(boundaries);
 }
 
 struct BroadcastResult {
@@ -191,14 +188,20 @@ ReturnType DispatchBucketize(const at::Tensor& self,
                              bool right, OpParamCacheKeys param_keys,
                              OpDispatcherFn&& dispatch_fn) {
   TT_RETURN_IF_ERROR(ValidateInputAndBoundaries(self, boundaries));
+  const at::ScalarType common_aten_dtype = at::result_type(self, boundaries);
+  // Reject booleans for non-empty inputs to keep consistent with CUDA impl
+  // in aten/src/ATen/native/cuda/Bucketization.cu, which short-circuits and
+  // returns success for empty inputs before dispatching on the common dtype.
+  TT_RET_CHECK(self.numel() == 0 || common_aten_dtype != at::kBool,
+               error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(common_aten_dtype);
   TT_ASSIGN_OR_RETURN(const at::Tensor tpu_self,
                       MoveToTpuIfNeeded(self, boundaries));
   TT_ASSIGN_OR_RETURN(const at::Tensor tpu_boundaries,
                       MoveToTpuIfNeeded(boundaries, self));
 
-  TT_ASSIGN_OR_RETURN(
-      const auto common_dtype,
-      ConvertTo<mlir::ElementType>(at::result_type(self, boundaries)));
+  TT_ASSIGN_OR_RETURN(const auto common_dtype,
+                      ConvertTo<mlir::ElementType>(common_aten_dtype));
   const auto out_dtype =
       out_int32 ? mlir::ElementType::I32 : mlir::ElementType::I64;
   auto op_builder = [common_dtype, out_dtype,
@@ -267,8 +270,12 @@ at::Tensor AtenBucketizeScalar(const at::Scalar& self,
   auto promoted_self = PromoteScalar(self);
   TT_KERNEL(OpName::kBucketizeScalar, param_keys,
             (promoted_self, boundaries, out_int32, right), {
-              TT_ASSIGN_OR_THROW(at::Tensor self_tensor,
-                                 promoted_self.GetTensor());
+              // Validate `boundaries` before promoting `self` against its
+              // dtype.
+              TT_THROW_IF_ERROR(ValidateBoundaries(boundaries));
+              TT_ASSIGN_OR_THROW(
+                  at::Tensor self_tensor,
+                  promoted_self.GetTensor(at::result_type(boundaries, self)));
               TT_ASSIGN_OR_THROW(DeviceBufferRef result_buffer,
                                  Bucketize(self_tensor, boundaries, out_int32,
                                            right, std::move(param_keys)));

@@ -161,8 +161,11 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
 
   TT_ASSIGN_OR_RETURN(auto op_param_cache_keys,
                       TT_MAKE_OP_PARAM_CACHE_KEYS(scalar));
+  // Cast the scalar like the tensor cast of the variable mode above does, so
+  // that out-of-range values overflow or wrap instead of failing the checked
+  // conversion in MakeConstant.
   auto op_builder =
-      [scalar, scalar_element_type](
+      [scalar = CastScalarToDtype(scalar, scalar_type), scalar_element_type](
           mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
     return MakeConstant(builder, scalar, scalar_element_type);
   };

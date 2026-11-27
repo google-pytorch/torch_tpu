@@ -16,6 +16,11 @@
 
 #include "csrc/common/aten_utils.h"
 
+#include <cmath>
+#include <cstdint>
+#include <limits>
+
+#include "ATen/core/ATen_fwd.h"
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/DimVector.h"
@@ -24,6 +29,8 @@
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch/headeronly/util/BFloat16.h"
+#include "torch/headeronly/util/complex.h"
 
 namespace torch_tpu {
 namespace {
@@ -128,6 +135,92 @@ TEST(AtenUtilsTest, InferComputationDtypeIntegralAndUnsigned) {
                             InferComputationDtype(elem_type));
     EXPECT_EQ(comp_type, elem_type);
   }
+}
+
+TEST(AtenUtilsTest, CastScalarToDtypeHandlesRoundingOverflowAndWrapping) {
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(1.1), at::ScalarType::Float).toDouble(),
+      static_cast<double>(static_cast<float>(1.1)));
+  EXPECT_TRUE(std::isinf(
+      CastScalarToDtype(at::Scalar(1e5), at::ScalarType::Half).toDouble()));
+  EXPECT_GT(CastScalarToDtype(at::Scalar(1e5), at::ScalarType::Half).toDouble(),
+            0.0);
+  EXPECT_TRUE(std::isinf(
+      CastScalarToDtype(at::Scalar(-1e5), at::ScalarType::Half).toDouble()));
+  EXPECT_LT(
+      CastScalarToDtype(at::Scalar(-1e5), at::ScalarType::Half).toDouble(),
+      0.0);
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(1e40), at::ScalarType::Float).toDouble(),
+      std::numeric_limits<double>::infinity());
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(-1e40), at::ScalarType::Float).toDouble(),
+      -std::numeric_limits<double>::infinity());
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(1e40), at::ScalarType::BFloat16).toDouble(),
+      std::numeric_limits<double>::infinity());
+  // Values beyond the `float` range round to nearest: `FLT_MAX` below half a
+  // unit in the last place, infinity from there on.
+  constexpr double kFloatMax = std::numeric_limits<float>::max();
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(0x1.fffffe8p+127), at::ScalarType::Float)
+          .toDouble(),
+      kFloatMax);
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(-0x1.fffffe8p+127), at::ScalarType::Float)
+          .toDouble(),
+      -kFloatMax);
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(0x1.ffffffp+127), at::ScalarType::Float)
+          .toDouble(),
+      std::numeric_limits<double>::infinity());
+  EXPECT_TRUE(std::isnan(
+      CastScalarToDtype(at::Scalar(std::numeric_limits<double>::quiet_NaN()),
+                        at::ScalarType::Half)
+          .toDouble()));
+  EXPECT_EQ(CastScalarToDtype(at::Scalar(int64_t{1000}), at::ScalarType::Char)
+                .toLong(),
+            -24);
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(int64_t{-1}), at::ScalarType::Byte).toLong(),
+      255);
+  EXPECT_TRUE(
+      CastScalarToDtype(at::Scalar(true), at::ScalarType::Float).isBoolean());
+  // `at::Scalar` stores unsigned values up to `INT64_MAX` as `int64`, so cast
+  // a larger one to exercise `uint64` scalars.
+  constexpr uint64_t kAboveInt64Max = (uint64_t{1} << 63) + 70000;
+  ASSERT_EQ(at::Scalar(kAboveInt64Max).type(), at::ScalarType::UInt64);
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(kAboveInt64Max), at::ScalarType::UInt16)
+          .toLong(),
+      4464);
+  EXPECT_EQ(CastScalarToDtype(at::Scalar(kAboveInt64Max), at::ScalarType::Long)
+                .toLong(),
+            std::numeric_limits<int64_t>::min() + 70000);
+  EXPECT_EQ(CastScalarToDtype(at::Scalar(int64_t{-1}), at::ScalarType::UInt32)
+                .toLong(),
+            int64_t{std::numeric_limits<uint32_t>::max()});
+  EXPECT_EQ(CastScalarToDtype(at::Scalar(int64_t{-1}), at::ScalarType::UInt64)
+                .toUInt64(),
+            std::numeric_limits<uint64_t>::max());
+  EXPECT_EQ(CastScalarToDtype(at::Scalar(int64_t{100000}), at::ScalarType::Half)
+                .toDouble(),
+            std::numeric_limits<double>::infinity());
+  // Floating-point scalars aren't cast to integral dtypes.
+  EXPECT_EQ(CastScalarToDtype(at::Scalar(1e40), at::ScalarType::Int).toDouble(),
+            1e40);
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(1.1), at::ScalarType::BFloat16).toDouble(),
+      static_cast<double>(c10::BFloat16(1.1)));
+  EXPECT_TRUE(CastScalarToDtype(at::Scalar(c10::complex<double>(1.0, 2.0)),
+                                at::ScalarType::Float)
+                  .isComplex());
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(3.5), at::ScalarType::Double).toDouble(),
+      3.5);
+  EXPECT_EQ(
+      CastScalarToDtype(at::Scalar(int64_t{5}), at::ScalarType::Bool).toLong(),
+      5);
 }
 
 }  // namespace
