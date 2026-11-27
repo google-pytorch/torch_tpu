@@ -1715,6 +1715,81 @@ class LstmOpTest(seed_test_utils.RepeatableTest):
           msg=f"{name}.grad is truncated to bf16",
       )
 
+  @parameterized.named_parameters(
+      # The fused backward applies the inter-layer dropout layer by layer for
+      # seq_len < kLstmUnrollFactor (8) and bidirectional LSTMs, and in a layer
+      # wavefront over chunks of kLstmUnrollFactor plus remainder steps
+      # otherwise.
+      ("static", False, 4, False),
+      ("wavefront", False, 9, False),
+      ("bidir_static", True, 4, False),
+      ("bidir_chunked", True, 9, False),
+      ("compiled_wavefront", False, 9, True),
+  )
+  def test_full_dropout_train_parity(
+      self, bidirectional: bool, seq_len: int, compiled: bool
+  ):
+    """Verifies aten::lstm.input with dropout=1.0 in train mode against CPU.
+
+    Full dropout zeroes the input of every layer but the first, so the op is
+    deterministic and no gradient flows through the dropped activations.
+    """
+    num_layers = 3
+    num_directions = 2 if bidirectional else 1
+    cpu_lstm, tpu_lstm = self._create_models(
+        input_size=8,
+        hidden_size=12,
+        num_layers=num_layers,
+        bias=True,
+        batch_first=False,
+        dtype=torch.float32,
+        bidirectional=bidirectional,
+    )
+    state_shape = (num_layers * num_directions, 2, 12)
+    # The input and the initial hidden and cell states.
+    leaves_ref = [
+        torch.randn(seq_len, 2, 8, requires_grad=True),
+        torch.randn(state_shape, requires_grad=True),
+        torch.randn(state_shape, requires_grad=True),
+    ]
+    leaves = [t.detach().to("tpu").requires_grad_(True) for t in leaves_ref]
+
+    def lstm(inp, h0, c0, params):
+      return torch.ops.aten.lstm.input(
+          inp,
+          [h0, c0],
+          params,
+          True,
+          num_layers,
+          1.0,
+          True,
+          bidirectional,
+          False,
+      )
+
+    fn = torch.compile(lstm) if compiled else lstm
+    outs = fn(*leaves, list(tpu_lstm.parameters()))
+    sum(out.sum() for out in outs).backward()
+    outs_ref = lstm(*leaves_ref, list(cpu_lstm.parameters()))
+    sum(out.sum() for out in outs_ref).backward()
+
+    tol = 5e-3
+    for out, out_ref in zip(outs, outs_ref, strict=True):
+      assert_close(out.cpu(), out_ref, atol=tol, rtol=tol)
+    for leaf, leaf_ref in zip(leaves, leaves_ref, strict=True):
+      assert_close(leaf.grad.cpu(), leaf_ref.grad, atol=tol, rtol=tol)
+    for (name, cpu_p), (_, tpu_p) in zip(
+        cpu_lstm.named_parameters(), tpu_lstm.named_parameters(), strict=True
+    ):
+      self.assertIsNotNone(tpu_p.grad, msg=f"Missing grad for {name}")
+      assert_close(tpu_p.grad.cpu(), cpu_p.grad, atol=5e-2, rtol=5e-2)
+    # Without gradients, the op runs the forward kernel that caches no
+    # activations.
+    with torch.no_grad():
+      outs_no_grad = fn(*leaves, list(tpu_lstm.parameters()))
+    for out, out_ref in zip(outs_no_grad, outs_ref, strict=True):
+      assert_close(out.cpu(), out_ref, atol=tol, rtol=tol)
+
   def test_torch_compile_loss_root_inference_mode_and_recompiles(self):
     """Verifies compiled LSTM backward, recompiles and inference_mode."""
     torch._dynamo.reset()
