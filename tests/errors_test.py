@@ -25022,6 +25022,122 @@ class IndexReduceErrorTest(et.ErrorTestBase):
     ):
       torch.index_reduce(self_t, 0, index, source, "prod", out=out)
 
+  def test_nll_loss_backward_invalid_total_weight_and_grad_output(self):
+    t = torch.randn(3, 4, device=et.device(), dtype=torch.float32)
+    target = torch.tensor([0, 1, 2], device=et.device(), dtype=torch.long)
+    grad_scalar = torch.tensor(1.0, device=et.device(), dtype=torch.float32)
+    grad_input = torch.empty_like(t)
+    bad_total_weight = torch.ones(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss_backward(): expected total_weight to be a single element tensor, got [2] (2 elements)""",
+        gpu="""expected total_weight to be a  single element tensor, got: [2] (2 elements)""",
+    ):
+      torch.ops.aten.nll_loss_backward.grad_input(
+          grad_scalar,
+          t,
+          target,
+          None,
+          1,
+          -100,
+          bad_total_weight,
+          grad_input=grad_input,
+      )
+
+    good_total_weight = torch.tensor(
+        3.0, device=et.device(), dtype=torch.float32
+    )
+    bad_grad_mean = torch.ones(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss_backward(): expected a single element grad_output tensor, got [2]""",
+        gpu="""Expected a single element grad_output tensor, but got: [2]""",
+    ):
+      torch.ops.aten.nll_loss_backward.grad_input(
+          bad_grad_mean,
+          t,
+          target,
+          None,
+          1,
+          -100,
+          good_total_weight,
+          grad_input=grad_input,
+      )
+
+    bad_grad_rank = torch.ones(1, 1, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss_backward(): expected a single element grad_output tensor, got [1, 1]""",
+        gpu="""Expected a single element grad_output tensor, but got: [1, 1]""",
+    ):
+      torch.ops.aten.nll_loss_backward.grad_input(
+          bad_grad_rank,
+          t,
+          target,
+          None,
+          1,
+          -100,
+          good_total_weight,
+          grad_input=grad_input,
+      )
+
+    bad_grad_none = torch.ones(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss_backward(): expected grad_output shape to match target shape [3], got [2]""",
+        gpu="""Expected a tensor of dimension 1 and tensor.size[0] == 3 but got: dimension 1 and tensor.size[0] = 2""",
+    ):
+      torch.ops.aten.nll_loss_backward.grad_input(
+          bad_grad_none,
+          t,
+          target,
+          None,
+          0,
+          -100,
+          good_total_weight,
+          grad_input=grad_input,
+      )
+
+    t2d = torch.randn(1, 3, 2, 2, device=et.device(), dtype=torch.float32)
+    target2d = torch.zeros(1, 2, 2, device=et.device(), dtype=torch.long)
+    grad_input2d = torch.empty_like(t2d)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss2d_backward(): expected total_weight to be a single element tensor, got [2] (2 elements)""",
+        gpu="""expected total_weight to be a single element tensor, got: [2] (2 elements)""",
+    ):
+      torch.ops.aten.nll_loss2d_backward(
+          grad_scalar, t2d, target2d, None, 1, -100, bad_total_weight
+      )
+
+    bad_grad2d_none = torch.ones(
+        1, 2, 3, device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss2d_backward(): expected grad_output shape to match target shape [1, 2, 2], got [1, 2, 3]""",
+        gpu="""grad_output sizes don't match target sizes: target [1, 2, 2], grad_output [1, 2, 3]""",
+    ):
+      torch.ops.aten.nll_loss2d_backward(
+          bad_grad2d_none, t2d, target2d, None, 0, -100, good_total_weight
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss2d_backward(): expected grad_output shape to match target shape [1, 2, 2], got [1, 2, 3]""",
+        gpu="""grad_output sizes don't match target sizes: target [1, 2, 2], grad_output [1, 2, 3]""",
+    ):
+      torch.ops.aten.nll_loss2d_backward.grad_input(
+          bad_grad2d_none,
+          t2d,
+          target2d,
+          None,
+          0,
+          -100,
+          good_total_weight,
+          grad_input=grad_input2d,
+      )
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)

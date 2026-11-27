@@ -48,6 +48,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"
+#include "torch/csrc/autograd/function_hook.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -125,6 +126,29 @@ absl::Status ValidateNllLossNdShapes(const at::Tensor& self,
       << "expected the shapes of the input [N, C, d1, ..., dk] and the "
          "target [N, d1, ..., dk] (k >= 1) to match, got input: "
       << ToString(self.sizes()) << ", target: " << ToString(target.sizes());
+  return absl::OkStatus();
+}
+
+absl::Status ValidateNllLossBackwardInputs(const at::Tensor& grad_output,
+                                           const at::Tensor& self,
+                                           const at::Tensor& target,
+                                           const at::Tensor& total_weight,
+                                           int64_t reduction) {
+  TT_RET_CHECK(total_weight.numel() == 1, error::kInvalidArgument)
+      << "expected total_weight to be a single element tensor, got "
+      << ToString(total_weight.sizes()) << " (" << total_weight.numel()
+      << " elements)";
+  if (reduction == at::Reduction::None && self.dim() >= 2) {
+    TT_RET_CHECK(grad_output.sizes() == target.sizes(), error::kInvalidArgument)
+        << "expected grad_output shape to match target shape "
+        << ToString(target.sizes()) << ", got "
+        << ToString(grad_output.sizes());
+  } else {
+    TT_RET_CHECK(grad_output.dim() <= 1 && grad_output.numel() == 1,
+                 error::kInvalidArgument)
+        << "expected a single element grad_output tensor, got "
+        << ToString(grad_output.sizes());
+  }
   return absl::OkStatus();
 }
 
@@ -343,6 +367,8 @@ at::Tensor NllLossBackwardKernel(const at::Tensor& grad_output,
               TT_THROW_IF_ERROR(ValidateNllLossCommon(
                   self, target, sanitized_weight, reduction));
               TT_THROW_IF_ERROR(ValidateNllLossNdShapes(self, target));
+              TT_THROW_IF_ERROR(ValidateNllLossBackwardInputs(
+                  grad_output, self, target, total_weight, reduction));
               TT_ASSIGN_OR_THROW(
                   auto grad_input_buf,
                   DispatchNllLossBackwardBuffer(
@@ -490,6 +516,8 @@ at::Tensor& AtenNllLossBackwardGradInput(
         TT_THROW_IF_ERROR(
             ValidateNllLossCommon(self, target, sanitized_weight, reduction));
         TT_THROW_IF_ERROR(ValidateNllLoss1dOr2dShapes(self, target));
+        TT_THROW_IF_ERROR(ValidateNllLossBackwardInputs(
+            grad_output, self, target, total_weight, reduction));
         TT_THROW_IF_ERROR(DispatchNllLossBackwardOut(
             grad_output, self, target, sanitized_weight, reduction,
             ignore_index, total_weight, grad_input, std::move(param_keys)));
@@ -518,6 +546,8 @@ at::Tensor AtenNllLoss2dBackward(const at::Tensor& grad_output,
               TT_THROW_IF_ERROR(ValidateNllLossCommon(
                   self, target, sanitized_weight, reduction));
               TT_THROW_IF_ERROR(ValidateNllLoss2dForwardShapes(self, target));
+              TT_THROW_IF_ERROR(ValidateNllLossBackwardInputs(
+                  grad_output, self, target, total_weight, reduction));
               TT_ASSIGN_OR_THROW(
                   auto grad_input_buf,
                   DispatchNllLossBackwardBuffer(
@@ -546,6 +576,8 @@ at::Tensor& AtenNllLoss2dBackwardGradInput(
         TT_THROW_IF_ERROR(
             ValidateNllLossCommon(self, target, sanitized_weight, reduction));
         TT_THROW_IF_ERROR(ValidateNllLoss2dForwardShapes(self, target));
+        TT_THROW_IF_ERROR(ValidateNllLossBackwardInputs(
+            grad_output, self, target, total_weight, reduction));
         TT_THROW_IF_ERROR(DispatchNllLossBackwardOut(
             grad_output, self, target, sanitized_weight, reduction,
             ignore_index, total_weight, grad_input, std::move(param_keys)));
