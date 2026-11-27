@@ -424,14 +424,12 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNorm(
 
   } else {
     // Inference mode.
-    mlir::MlirOp running_mean =
-        running_mean_opt
-            ? *running_mean_opt
-            : MakeConstant(builder, 0.0, input_dtype, {num_features});
-    mlir::MlirOp running_variance =
-        running_variance_opt
-            ? *running_variance_opt
-            : MakeConstant(builder, 1.0, input_dtype, {num_features});
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Validated before calling builder.
+        running_mean_opt.has_value() && running_variance_opt.has_value(),
+        error::kInternal)
+        << "running_mean and running_var must be provided when training=False";
+    mlir::MlirOp running_mean = *running_mean_opt;
+    mlir::MlirOp running_variance = *running_variance_opt;
 
     // Promotion to accumulation precision.
     input = mlir::stablehlo::ConvertElementType(input, acc_dtype);

@@ -2056,6 +2056,8 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
             dtype=torch.float32,
             device=self.device,
         )
+        running_mean = torch.zeros(1, dtype=torch.float32, device=self.device)
+        running_var = torch.ones(1, dtype=torch.float32, device=self.device)
         save_mean = torch.empty(1, dtype=torch.float32, device=self.device)
         save_invstd = torch.empty(1, dtype=torch.float32, device=self.device)
         v = inp.view_as(inp)
@@ -2063,8 +2065,8 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
             inp,
             None,
             None,
-            None,
-            None,
+            running_mean,
+            running_var,
             False,
             0.1,
             1e-5,
