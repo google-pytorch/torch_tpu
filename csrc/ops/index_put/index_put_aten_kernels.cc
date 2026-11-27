@@ -449,10 +449,7 @@ absl::StatusOr<Dimensions> GetIndexBroadcastShape(
     } else {
       TT_ASSIGN_OR_RETURN(
           broadcast_shape, InferSize(broadcast_shape, index_tensor.sizes()),
-          _.SetPrepend() << "expected index tensors to be broadcastable, got "
-                         << "index tensor shape " << index_tensor.sizes()
-                         << " and broadcast shape ["
-                         << absl::StrJoin(broadcast_shape, ", ") << "]: ");
+          _.SetPrepend() << "failed to broadcast index tensors: ");
     }
   }
   return broadcast_shape;

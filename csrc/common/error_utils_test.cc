@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdlib>
 #include <fstream>
 #include <ios>
@@ -75,7 +76,7 @@ static const auto kInitShowCppContext = []() {
   return 0;
 }();
 
-// Matches a callback that throws a TtError whose .what)
+// Matches a callback that throws a TtError whose .what()
 // matches the given message string matcher.
 MATCHER_P(ThrowsTtError, msg_matcher,
           "throws a TtError with a message that (ignoring backtrace) " +
@@ -1488,6 +1489,11 @@ class ErrorMessageGuidelinesTest : public testing::Test {
 using ErrorMessageGuidelinesDeathTest = ErrorMessageGuidelinesTest;
 using ErrorMessageGuidelinesPassTest = ErrorMessageGuidelinesTest;
 
+constexpr std::array<internal::ErrorSentinel, 2> kErrorSentinels = {
+    internal::kXlaErrorSentinel,
+    internal::kPyTorchErrorSentinel,
+};
+
 // Throws a c10::Error with `message` as its error message.
 //
 // It does so by using the error macros that are supposed to be used by operator
@@ -1582,15 +1588,49 @@ TEST_F(ErrorMessageGuidelinesDeathTest, StartsWithOpName) {
       HasSubstr("not start with an op name"));
 }
 
-TEST_F(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
-  // Missing space before.
-  EXPECT_DEATH(
-      ThrowWithMessage("context  -- the XLA compiler failed with: error"),
-      HasSubstr("spaces before the XLA compiler error sentinel"));
-  // More than 1 space before.
-  EXPECT_DEATH(
-      ThrowWithMessage("context -- the XLA compiler failed with:  error"),
-      HasSubstr("spaces after the XLA compiler error sentinel"));
+TEST_F(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingErrorSentinel) {
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    // Extra space before.
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("context ", sentinel.marker, "error")),
+        HasSubstr(absl::StrCat("spaces before the ", sentinel.source,
+                               " error sentinel")));
+    // Extra space after.
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("context", sentinel.marker, " error")),
+        HasSubstr(absl::StrCat("spaces after the ", sentinel.source,
+                               " error sentinel")));
+    // Trailing spaces-only after the sentinel reports exact count instead of
+    // npos.
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("context", sentinel.marker, "  ")),
+        HasSubstr(absl::StrCat("Expected no spaces after the ", sentinel.source,
+                               " error sentinel \"", sentinel.marker,
+                               "\" (it already ends with one), got 2.")));
+  }
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest, EmptyExternalErrorAfterSentinel) {
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_DEATH(ThrowWithMessage(absl::StrCat("context", sentinel.marker)),
+                 HasSubstr("must not be empty"));
+    EXPECT_DEATH(
+        ThrowWithMessage(absl::StrCat("context", sentinel.marker, "\n")),
+        HasSubstr("must not be empty"));
+  }
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       ViolationBeforeEarliestOfMultipleSentinels) {
+  for (const internal::ErrorSentinel& first : kErrorSentinels) {
+    for (const internal::ErrorSentinel& second : kErrorSentinels) {
+      EXPECT_DEATH(ThrowWithMessage(
+                       absl::StrCat("Invalid context", first.marker, "error",
+                                    second.marker, "nested error")),
+                   HasSubstr(absl::StrCat("After removing the ", first.source,
+                                          " error:")));
+    }
+  }
 }
 
 TEST_F(ErrorMessageGuidelinesDeathTest, ContainsStableHloTypeName) {
@@ -1823,61 +1863,75 @@ TEST_F(ErrorMessageGuidelinesDeathTest, MultipleViolations) {
                      HasSubstr("StableHLO type names")));
 }
 
-void ThrowWithContextForXlaError(const std::string_view context,
-                                 const std::string_view xla_error_message) {
-  TT_KERNEL(OpName::kAdd, _,
-            (IgnoreInCacheKey(context, "test"),
-             IgnoreInCacheKey(xla_error_message, "test")),
-            {
-              const absl::StatusOr<int> status = TT_ERROR(error::kInternal)
-                                                 << xla_error_message;
-              TT_ASSIGN_OR_THROW(int y, std::move(status),
-                                 _.SetPrepend()
-                                     << context << kXlaCompilerFailedWith);
-              static_cast<void>(y);
-            });
+void ThrowWithContextForExternalError(
+    const std::string_view context, const std::string_view sentinel,
+    const std::string_view external_error_message) {
+  TT_KERNEL(
+      OpName::kAdd, _,
+      (IgnoreInCacheKey(context, "test"), IgnoreInCacheKey(sentinel, "test"),
+       IgnoreInCacheKey(external_error_message, "test")),
+      {
+        const absl::StatusOr<int> status = TT_ERROR(error::kInternal)
+                                           << external_error_message;
+        TT_ASSIGN_OR_THROW(int y, std::move(status),
+                           _.SetPrepend() << context << sentinel);
+        static_cast<void>(y);
+      });
 }
 
-TEST_F(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnXlaError) {
-  EXPECT_THROW(ThrowWithContextForXlaError(
-                   /* context= */ "the task has failed",
-                   /* xla_error_message= */ "the dtype cannot be f32"),
-               c10::Error);
+TEST_F(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnExternalError) {
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_THROW(ThrowWithContextForExternalError(
+                     /* context= */ "the task has failed", sentinel.marker,
+                     /* external_error_message= */ "the dtype cannot be f32"),
+                 c10::Error);
+  }
 }
 
-TEST_F(ErrorMessageGuidelinesPassTest, LegacyScalarTypeNameOnXlaError) {
-  // The XLA compiler error is not under our control, so it may contain legacy
+TEST_F(ErrorMessageGuidelinesPassTest, LegacyScalarTypeNameOnExternalError) {
+  // External errors are not under our control, so they may contain legacy
   // c10::ScalarType names.
-  EXPECT_THROW(ThrowWithContextForXlaError(
-                   /* context= */ "the task has failed",
-                   /* xla_error_message= */ "the dtype cannot be Float"),
-               c10::Error);
-}
-
-TEST_F(ErrorMessageGuidelinesDeathTest, LegacyScalarTypeNameBeforeXlaError) {
-  EXPECT_DEATH(ThrowWithContextForXlaError(
-                   /* context= */ "failed to compile Float tensor",
-                   /* xla_error_message= */ "unknown error"),
-               HasSubstr("Replace 'Float' with 'float32'"));
-}
-
-TEST_F(ErrorMessageGuidelinesPassTest,
-       TorchPrefixedOrQuotedDtypeNameOnXlaError) {
-  // The XLA compiler error is not under our control, so it may contain
-  // decorated dtype names.
-  EXPECT_THROW(
-      ThrowWithContextForXlaError(
-          /* context= */ "the task has failed",
-          /* xla_error_message= */ "the dtype cannot be 'torch.int32'"),
-      c10::Error);
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_THROW(ThrowWithContextForExternalError(
+                     /* context= */ "the task has failed", sentinel.marker,
+                     /* external_error_message= */ "the dtype cannot be Float"),
+                 c10::Error);
+  }
 }
 
 TEST_F(ErrorMessageGuidelinesDeathTest,
-       TorchPrefixedOrQuotedDtypeNameBeforeXlaError) {
-  EXPECT_DEATH(ThrowWithContextForXlaError(
-                   /* context= */ "failed to compile 'int32' tensor",
-                   /* xla_error_message= */ "unknown error"),
-               HasSubstr("Replace 'int32' with int32"));
+       LegacyScalarTypeNameBeforeExternalError) {
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_DEATH(
+        ThrowWithContextForExternalError(
+            /* context= */ "failed to compile Float tensor", sentinel.marker,
+            /* external_error_message= */ "unknown error"),
+        HasSubstr("Replace 'Float' with 'float32'"));
+  }
+}
+
+TEST_F(ErrorMessageGuidelinesPassTest,
+       TorchPrefixedOrQuotedDtypeNameOnExternalError) {
+  // External errors are not under our control, so they may contain decorated
+  // dtype names.
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_THROW(
+        ThrowWithContextForExternalError(
+            /* context= */ "the task has failed", sentinel.marker,
+            /* external_error_message= */ "the dtype cannot be 'torch.int32'"),
+        c10::Error);
+  }
+}
+
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       TorchPrefixedOrQuotedDtypeNameBeforeExternalError) {
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_DEATH(
+        ThrowWithContextForExternalError(
+            /* context= */ "failed to compile 'int32' tensor", sentinel.marker,
+            /* external_error_message= */ "unknown error"),
+        HasSubstr("Replace 'int32' with int32"));
+  }
 }
 
 TEST_F(ErrorMessageGuidelinesPassTest, TorchDtypeNames) {
@@ -1921,41 +1975,55 @@ TEST_F(ErrorMessageGuidelinesPassTest,
                c10::Error);
 }
 
-TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityOnXlaError) {
-  // The XLA compiler error is not under our control, so its dimensionality
-  // format is not checked.
-  EXPECT_THROW(ThrowWithContextForXlaError(
-                   /* context= */ "failed to compile 2D convolution",
-                   /* xla_error_message= */ "expected 2-dimensional input"),
-               c10::Error);
+TEST_F(ErrorMessageGuidelinesPassTest, DimensionalityOnExternalError) {
+  // External errors are not under our control, so their dimensionality format
+  // is not checked.
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_THROW(
+        ThrowWithContextForExternalError(
+            /* context= */ "failed to compile 2D convolution", sentinel.marker,
+            /* external_error_message= */ "expected 2-dimensional input"),
+        c10::Error);
+  }
 }
 
 TEST_F(ErrorMessageGuidelinesDeathTest,
-       NumericDimensionalityNotWrittenAsNDBeforeXlaError) {
-  EXPECT_DEATH(ThrowWithContextForXlaError(
-                   /* context= */ "failed to compile 2-D convolution",
-                   /* xla_error_message= */ "error"),
-               HasSubstr("After removing the XLA compiler error: The error "
-                         "message must write the dimensionality"));
+       NumericDimensionalityNotWrittenAsNDBeforeExternalError) {
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_DEATH(
+        ThrowWithContextForExternalError(
+            /* context= */ "failed to compile 2-D convolution", sentinel.marker,
+            /* external_error_message= */ "error"),
+        HasSubstr(absl::StrCat("After removing the ", sentinel.source,
+                               " error: The error message must write the "
+                               "dimensionality")));
+  }
 }
 
-TEST_F(ErrorMessageGuidelinesPassTest, NonAlphaNumTrailingCharOnXlaError) {
-  // The XLA compiler error is not under our control, so its last character is
-  // not checked.
-  EXPECT_THROW(ThrowWithContextForXlaError(
-                   /* context= */ "the task has failed",
-                   /* xla_error_message= */ "the dtype is invalid."),
-               c10::Error);
+TEST_F(ErrorMessageGuidelinesPassTest, NonAlphaNumTrailingCharOnExternalError) {
+  // External errors are not under our control, so their last character is not
+  // checked.
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_THROW(ThrowWithContextForExternalError(
+                     /* context= */ "the task has failed", sentinel.marker,
+                     /* external_error_message= */ "the dtype is invalid."),
+                 c10::Error);
+  }
 }
 
-TEST_F(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingCharBeforeXlaError) {
+TEST_F(ErrorMessageGuidelinesDeathTest,
+       NonAlphaNumTrailingCharBeforeExternalError) {
   // The last character of the TorchTPU part of the message is checked, even if
-  // an XLA compiler error follows.
-  EXPECT_DEATH(ThrowWithContextForXlaError(
-                   /* context= */ "the task has failed.",
-                   /* xla_error_message= */ "error"),
-               HasSubstr("After removing the XLA compiler error: The error "
-                         "message must end with either an alpha-numeric"));
+  // an external error follows.
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_DEATH(
+        ThrowWithContextForExternalError(
+            /* context= */ "the task has failed.", sentinel.marker,
+            /* external_error_message= */ "error"),
+        HasSubstr(absl::StrCat("After removing the ", sentinel.source,
+                               " error: The error message must end with either "
+                               "an alpha-numeric")));
+  }
 }
 
 TEST_F(ErrorMessageGuidelinesDeathTest,
@@ -1968,27 +2036,50 @@ TEST_F(ErrorMessageGuidelinesDeathTest,
 }
 
 TEST_F(ErrorMessageGuidelinesDeathTest,
-       NonAlphaNumTrailingCharAfterContextPrefixAndBeforeXlaError) {
-  // Violations found after removing both the context prefixes and the XLA
-  // compiler error are labeled as such.
-  EXPECT_DEATH(
-      ThrowWithContextForXlaError(
-          /* context= */ "failed to compile: the task has failed.",
-          /* xla_error_message= */ "error"),
-      HasSubstr("After removing all context prefixes and the XLA compiler "
-                "error: The error message must end with either an "
-                "alpha-numeric"));
+       NonAlphaNumTrailingCharAfterContextPrefixAndBeforeExternalError) {
+  // Violations found after removing both the context prefixes and the external
+  // error are labeled as such.
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_DEATH(
+        ThrowWithContextForExternalError(
+            /* context= */ "failed to compile: the task has failed.",
+            sentinel.marker,
+            /* external_error_message= */ "error"),
+        HasSubstr(absl::StrCat("After removing all context prefixes and the ",
+                               sentinel.source,
+                               " error: The error message must end with either "
+                               "an alpha-numeric")));
+  }
 }
 
-TEST_F(ErrorMessageGuidelinesPassTest, UppercaseStartAndNewlineOnXlaError) {
-  // The XLA compiler error is passed through verbatim, so it may start with an
+TEST_F(ErrorMessageGuidelinesPassTest,
+       UppercaseStartAndNewlineOnExternalError) {
+  // External errors are passed through verbatim, so they may start with an
   // uppercase letter or end with a newline.
-  EXPECT_THROW(ThrowWithContextForXlaError(
-                   /* context= */ "failed to initialize the PjRt client",
-                   /* xla_error_message= */ "TPU initialization failed\n"),
-               c10::Error);
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_THROW(ThrowWithContextForExternalError(
+                     /* context= */ "failed to initialize the PjRt client",
+                     sentinel.marker,
+                     /* external_error_message= */
+                     "TPU initialization failed\n"),
+                 c10::Error);
+  }
 }
 
+TEST_F(ErrorMessageGuidelinesPassTest, MultipleErrorSentinels) {
+  // Nested or repeated sentinels inside external error text are ignored after
+  // the earliest sentinel.
+  for (const internal::ErrorSentinel& first : kErrorSentinels) {
+    for (const internal::ErrorSentinel& second : kErrorSentinels) {
+      EXPECT_THROW(ThrowWithContextForExternalError(
+                       /* context= */ "failed to run op", first.marker,
+                       /* external_error_message= */
+                       absl::StrCat("Non-negative Float error", second.marker,
+                                    "Nested f32 error.")),
+                   c10::Error);
+    }
+  }
+}
 TEST_F(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
   EXPECT_THROW(ThrowWithMessage("expected 3D tensor, got 2D"), c10::Error);
   // Valid format after a single context prefix.
@@ -2012,23 +2103,30 @@ TEST_F(ErrorMessageGuidelinesPassTest, GreaterThanOrEqualToZero) {
                c10::Error);
 }
 
-TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeOnXlaError) {
-  // The XLA compiler error is not under our control, so it may contain
+TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeOnExternalError) {
+  // External errors are not under our control, so they may contain
   // "non-negative".
-  EXPECT_THROW(ThrowWithContextForXlaError(
-                   /* context= */ "the task has failed",
-                   /* xla_error_message= */ "the dim must be non-negative"),
-               c10::Error);
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_THROW(
+        ThrowWithContextForExternalError(
+            /* context= */ "the task has failed", sentinel.marker,
+            /* external_error_message= */ "the dim must be non-negative"),
+        c10::Error);
+  }
 }
 
-TEST_F(ErrorMessageGuidelinesDeathTest, NonNegativeBeforeXlaError) {
-  // The TorchTPU part of the message is checked, even if an XLA compiler error
+TEST_F(ErrorMessageGuidelinesDeathTest, NonNegativeBeforeExternalError) {
+  // The TorchTPU part of the message is checked, even if an external error
   // follows.
-  EXPECT_DEATH(ThrowWithContextForXlaError(
-                   /* context= */ "the dim must be non-negative",
-                   /* xla_error_message= */ "error"),
-               HasSubstr("After removing the XLA compiler error: The error "
-                         "message must not contain \"non-negative\""));
+  for (const internal::ErrorSentinel& sentinel : kErrorSentinels) {
+    EXPECT_DEATH(
+        ThrowWithContextForExternalError(
+            /* context= */ "the dim must be non-negative", sentinel.marker,
+            /* external_error_message= */ "error"),
+        HasSubstr(absl::StrCat("After removing the ", sentinel.source,
+                               " error: The error message must not contain "
+                               "\"non-negative\"")));
+  }
 }
 
 TEST_F(ErrorMessageGuidelinesPassTest, NonNegativeInsideIdentifier) {
@@ -2196,40 +2294,57 @@ TEST_F(ErrorMessageGuidelinesPassTest, ParenthesesInMessage) {
   EXPECT_THROW(ThrowWithMessage("select dimension must be >= 0"), c10::Error);
 }
 
-TEST(AdaptExternalErrorMessage, KeepsAllowedUppercaseStartingWords) {
-  EXPECT_EQ(AdaptExternalErrorMessage("TorchTPU does not support this"),
-            "TorchTPU does not support this");
-  EXPECT_EQ(AdaptExternalErrorMessage("PjRt client is not initialized."),
-            "PjRt client is not initialized");
-  EXPECT_EQ(AdaptExternalErrorMessage("XLA: compilation failed"),
-            "XLA: compilation failed");
-  EXPECT_EQ(AdaptExternalErrorMessage("XLA"), "XLA");
+TEST(WrapExternalErrorTest, PyTorchError) {
+  c10::Error c10_err({"fn", "file.cc", 1}, "Float dim must be non-negative.");
+  c10_err.add_context("while expanding tensors");
+  const absl::Status status =
+      WrapPyTorchError(c10_err, error::kInvalidArgument,
+                       /* context= */ "failed to infer broadcast shape");
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_EQ(status.message(),
+            absl::StrCat("failed to infer broadcast shape",
+                         internal::kPyTorchErrorSentinel.marker,
+                         c10_err.what_without_backtrace()));
 }
 
-TEST(AdaptExternalErrorMessage,
-     LowercasesAllowedUppercaseWordPrefixOfLongerWord) {
-  EXPECT_EQ(AdaptExternalErrorMessage("XLAB is not supported"),
-            "xLAB is not supported");
-  EXPECT_EQ(AdaptExternalErrorMessage("PjRtClient is not initialized"),
-            "pjRtClient is not initialized");
-  EXPECT_EQ(AdaptExternalErrorMessage("TorchTPUs are not supported"),
-            "torchTPUs are not supported");
-  EXPECT_EQ(AdaptExternalErrorMessage("XLA_FLAGS is not set"),
-            "xLA_FLAGS is not set");
+TEST(WrapExternalErrorTest, PyTorchErrorEmptyMessage) {
+  const c10::Error c10_err({"fn", "file.cc", 1}, "  \n\t ");
+  const absl::Status status =
+      WrapPyTorchError(c10_err, error::kInvalidArgument,
+                       /* context= */ "failed to infer broadcast shape");
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_EQ(status.message(),
+            "failed to infer broadcast shape: no PyTorch error message was "
+            "provided");
 }
 
-TEST(WrapXlaErrorTest, PassesMessageThroughVerbatim) {
+TEST(WrapExternalErrorDeathTest, PyTorchErrorRejectsOkStatusCode) {
+  const c10::Error c10_err({"fn", "file.cc", 1}, "invalid tensor");
+  EXPECT_DEATH(WrapPyTorchError(c10_err, error::kOk, /* context= */ "failed")
+                   .IgnoreError(),
+               HasSubstr("error::kOk"));
+}
+
+TEST(WrapExternalErrorTest, XlaError) {
   const absl::Status status = WrapXlaError(
       absl::Status(error::kInternal, "TPU initialization failed.\n"),
       /* context= */ "failed to initialize the PjRt client");
   EXPECT_EQ(status.code(), error::kInternal);
   EXPECT_EQ(status.message(),
-            "failed to initialize the PjRt client -- the XLA compiler failed "
-            "with: TPU initialization failed.\n");
+            absl::StrCat("failed to initialize the PjRt client",
+                         internal::kXlaErrorSentinel.marker,
+                         "TPU initialization failed."));
+  EXPECT_TRUE(WrapXlaError(absl::OkStatus(), /* context= */ "context").ok());
 }
 
-TEST(WrapXlaErrorTest, ReturnsOkStatusUnchanged) {
-  EXPECT_TRUE(WrapXlaError(absl::OkStatus(), "context").ok());
+TEST(WrapExternalErrorTest, XlaErrorEmptyMessage) {
+  const absl::Status status =
+      WrapXlaError(absl::Status(error::kInternal, " \n "),
+                   /* context= */ "failed to initialize the PjRt client");
+  EXPECT_EQ(status.code(), error::kInternal);
+  EXPECT_EQ(status.message(),
+            "failed to initialize the PjRt client: no XLA compiler error "
+            "message was provided");
 }
 
 TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {

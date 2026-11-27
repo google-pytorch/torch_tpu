@@ -47,6 +47,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/mlir_error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/python_context.h"
@@ -1003,17 +1004,6 @@ absl::StatusOr<stablehlo::Dimensions> InferBroadcastDimensions(
   return result;
 }
 
-std::string ConsumeMlirDiagnostics(
-    mlir::BaseScopedDiagnosticHandler& diag_handler) {
-  // A non-OK status is always UNKNOWN with the diagnostics as its message, so
-  // the status code carries no information.
-  const absl::Status status = diag_handler.ConsumeStatus();
-  if (status.ok()) {
-    return "no MLIR diagnostic was reported";
-  }
-  return AdaptExternalErrorMessage(status.message());
-}
-
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, absl::Span<const int64_t> shape) {
   ABSL_VLOG(1) << "[BroadcastIfNeeded] input: " << input.ToString()
@@ -1059,7 +1049,8 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
   }
   TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
                error::kInvalidArgument)
-      << "failed to broadcast tensor: " << ConsumeMlirDiagnostics(diag_handler);
+      << ConsumeMlirDiagnostics(diag_handler,
+                                /* context= */ "failed to broadcast tensor");
   return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
 }
 
@@ -1082,7 +1073,8 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
 
   TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
                error::kInvalidArgument)
-      << "failed to broadcast tensor: " << ConsumeMlirDiagnostics(diag_handler);
+      << ConsumeMlirDiagnostics(diag_handler,
+                                /* context= */ "failed to broadcast tensor");
   return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
 }
 
@@ -1107,8 +1099,8 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
       first_op.getBuilder().getOpBuilder(), values);
   TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
                error::kInvalidArgument)
-      << "failed to broadcast tensors: "
-      << ConsumeMlirDiagnostics(diag_handler);
+      << ConsumeMlirDiagnostics(diag_handler,
+                                /* context= */ "failed to broadcast tensors");
   mlir::SmallVector<mlir::Value> broadcasted_values =
       std::move(*broadcasted_values_or_fail);
   std::vector<mlir::MlirOp> result;

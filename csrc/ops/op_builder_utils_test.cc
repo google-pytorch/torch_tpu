@@ -51,9 +51,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
-#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Value.h"
@@ -67,7 +65,6 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "xla/mlir/utils/error_util.h"
 
 namespace torch_tpu {
 namespace {
@@ -478,6 +475,8 @@ TEST(OpBuilderUtils, InferSize_Broadcastable_Check) {
   ASSERT_FALSE(result.ok());
   EXPECT_EQ(result.status().code(), error::kInvalidArgument);
   EXPECT_THAT(result.status().message(),
+              HasSubstr(internal::kPyTorchErrorSentinel.marker));
+  EXPECT_THAT(result.status().message(),
               testing::HasSubstr("must match the size of tensor"));
 }
 
@@ -597,26 +596,6 @@ void ExpectRaisedAsC10Error(const absl::Status& status) {
   EXPECT_THROW(TranslateToC10ErrorAndThrow(error), c10::Error);
 }
 
-TEST(ConsumeMlirDiagnostics, NoDiagnostic) {
-  mlir::MLIRContext context;
-  mlir::BaseScopedDiagnosticHandler diag_handler(&context);
-
-  EXPECT_EQ(ConsumeMlirDiagnostics(diag_handler),
-            "no MLIR diagnostic was reported");
-}
-
-TEST(ConsumeMlirDiagnostics, AdaptsDiagnostic) {
-  mlir::MLIRContext context;
-  mlir::BaseScopedDiagnosticHandler diag_handler(&context);
-  mlir::emitError(mlir::UnknownLoc::get(&context), "Something went wrong.");
-
-  const std::string message = ConsumeMlirDiagnostics(diag_handler);
-
-  // The trailing newline and period of the diagnostic are removed.
-  EXPECT_THAT(message, EndsWith("error: Something went wrong"));
-  EXPECT_TRUE(diag_handler.ok());  // The diagnostic was consumed.
-}
-
 TEST(BroadcastIfNeeded, Failure) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::MlirBuilder& builder = op_builder_utils_builder.get();
@@ -624,9 +603,11 @@ TEST(BroadcastIfNeeded, Failure) {
   mlir::MlirOp op = MakeConstant(builder, 5, op_builder.getI32Type(), {2});
   mlir::stablehlo::Dimensions target_shape = {{3}};
   auto result = BroadcastIfNeeded(op, target_shape);
-  EXPECT_THAT(result.status(),
-              StatusIs(error::kInvalidArgument,
-                       HasSubstr("failed to broadcast tensor: ")));
+  EXPECT_THAT(
+      result.status(),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr(absl::StrCat("failed to broadcast tensor",
+                                      internal::kXlaErrorSentinel.marker))));
   ExpectRaisedAsC10Error(result.status());
 }
 

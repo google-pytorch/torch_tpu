@@ -30,11 +30,10 @@
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
-#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/util/ArrayRef.h"  // IWYU pragma: keep for at::IntArrayRef
 #include "c10/util/Exception.h"
@@ -42,6 +41,8 @@
 #include "csrc/common/dimension_types.h"  // IWYU pragma: export
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/python_context.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/IR/Attributes.h"
@@ -53,7 +54,6 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -62,7 +62,6 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
-#include "xla/mlir/utils/error_util.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -84,15 +83,31 @@ namespace internal {
 
 // The base case:
 template <typename Dims1, typename Dims2>
-[[nodiscard]] auto InferSizeImpl(const Dims1& a, const Dims2& b) {
-  return at::infer_size(GetDims(a), GetDims(b));  // AT_INFER_SIZE_OK
+absl::StatusOr<Dimensions> InferSizeImpl(const Dims1& a, const Dims2& b) {
+  const at::IntArrayRef dims_a = GetDims(a);
+  const at::IntArrayRef dims_b = GetDims(b);
+  try {
+    return CopyIntVector(at::infer_size(dims_a, dims_b));  // AT_INFER_SIZE_OK
+  } catch (const ::c10::Error& e) {
+    // at::infer_size() just threw e, whose what() always includes a C++
+    // backtrace. We don't want that, as we are already adding the C++
+    // backtrace (if requested by the user) when we eventually turn this Status
+    // error into a Python exception. Therefore we use
+    // what_without_backtrace() via WrapPyTorchError().
+    return WrapPyTorchError(
+        e, error::kInvalidArgument,
+        /* context= */
+        absl::StrCat("could not infer broadcast shape for shapes ",
+                     ToString(dims_a), " and ", ToString(dims_b)));
+  }
 }
 
 // The recursive case:
 template <typename Dims1, typename Dims2, typename Dims3, typename... Dims>
-[[nodiscard]] auto InferSizeImpl(const Dims1& a, const Dims2& b, const Dims3& c,
-                                 const Dims&... rest) {
-  return InferSizeImpl(InferSizeImpl(a, b), GetDims(c), rest...);
+absl::StatusOr<Dimensions> InferSizeImpl(const Dims1& a, const Dims2& b,
+                                         const Dims3& c, const Dims&... rest) {
+  TT_ASSIGN_OR_RETURN(const Dimensions first_two, InferSizeImpl(a, b));
+  return InferSizeImpl(first_two, c, rest...);
 }
 
 }  // namespace internal
@@ -106,17 +121,7 @@ template <typename Dims1, typename Dims2, typename Dims3, typename... Dims>
 // absl::Span) or an at::Tensor.
 template <typename... Dims>
 absl::StatusOr<Dimensions> InferSize(const Dims&... dims) {
-  try {
-    return CopyIntVector(internal::InferSizeImpl(dims...));
-  } catch (const ::c10::Error& e) {
-    // at::infer_size() just threw e, whose what() always includes a C++
-    // backtrace. We don't want that, as we are already adding the C++ backtrace
-    // (if requested by the user) when we eventually turn this Status error into
-    // a Python exception. Therefore we just use what_without_backtrace() from
-    // e.
-    return TT_ERROR(error::kInvalidArgument)
-           << AdaptExternalErrorMessage(e.what_without_backtrace());
-  }
+  return internal::InferSizeImpl(dims...);
 }
 
 // Sentinel value for the number of inputs/outputs when it is not known at
@@ -611,11 +616,6 @@ std::vector<mlir::MlirOp> GetRuntimeSizes(
 // Flattens the input tensor to a single dimension.
 // Supports bounded dynamic flatten.
 mlir::MlirOp Flatten(mlir::MlirOp input);
-
-// Consumes the diagnostics of `diag_handler` and returns them formatted for an
-// error message. Never returns an empty string.
-std::string ConsumeMlirDiagnostics(
-    mlir::BaseScopedDiagnosticHandler& diag_handler);
 
 // Applies Numpy's broadcasting rules, if needed. See
 // https://numpy.org/devdocs//user/basics.broadcasting.html#broadcastable-arrays

@@ -55,7 +55,7 @@ TEST(PipelineTest, RunOptimizationPassesFailsOnInvalidModule) {
   EXPECT_THAT(
       RunTorchTpuOptimizationPasses(*module, &context),
       StatusIs(error::kInternal,
-               HasSubstr("Failed to run custom MLIR optimization passes")));
+               HasSubstr("failed to run custom MLIR optimization passes")));
 }
 
 }  // namespace

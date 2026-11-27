@@ -40,6 +40,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
+#include "csrc/common/mlir_error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/SmallVector.h"
@@ -130,8 +131,9 @@ absl::Status ValidateAndEraseShapeAssertions(mlir::ModuleOp module) {
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=MLIR pass error not reachable by user
                  // input.
       mlir::succeeded(pm.run(module)), error::kInternal)
-      << "failed to validate shape assertions, with MLIR error: "
-      << diag_handler.ConsumeStatus().message();
+      << ConsumeMlirDiagnostics(
+             diag_handler,
+             /* context= */ "failed to validate shape assertions");
 
   return absl::OkStatus();
 }
@@ -240,8 +242,9 @@ absl::Status SpecializeCustomMlirKernel(
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=MLIR pass error not reachable by user
                  // input.
       mlir::succeeded(pm.run(custom_kernel)), error::kInternal)
-      << "failed to specialize custom kernel, with MLIR error: "
-      << diag_handler.ConsumeStatus().message();
+      << ConsumeMlirDiagnostics(
+             diag_handler,
+             /* context= */ "failed to specialize custom kernel");
 
   return absl::OkStatus();
 }

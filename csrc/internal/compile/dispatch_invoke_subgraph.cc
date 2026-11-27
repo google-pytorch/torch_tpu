@@ -40,6 +40,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
+#include "csrc/common/mlir_error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -539,8 +540,9 @@ absl::StatusOr<DynamicMlirOpResults> BuildInvokeSubgraph(
           serialized_mlir, mlir::ParserConfig{&builder.getContext()});
   ABSL_CHECK(parsed_module.get() != nullptr)  // CRASH_OK=serialized_mlir was
                                               // serialized from a valid module.
-      << "failed to parse serialized subgraph module: "
-      << ConsumeMlirDiagnostics(diag_handler);
+      << ConsumeMlirDiagnostics(
+             diag_handler,
+             /* context= */ "failed to parse serialized subgraph module");
 
   mlir::func::FuncOp parsed_main =
       parsed_module->lookupSymbol<mlir::func::FuncOp>("main");

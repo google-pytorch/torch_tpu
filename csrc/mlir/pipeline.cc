@@ -21,6 +21,7 @@
 #include "absl/status/status.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/mlir_error_utils.h"
 #include "csrc/mlir/instrumentation.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
@@ -91,8 +92,9 @@ absl::Status RunTorchTpuOptimizationPasses(mlir::ModuleOp module,
   mlir::BaseScopedDiagnosticHandler diag_handler(context);
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by pipeline_test.
       mlir::succeeded(pm.run(module)), error::kInternal)
-      << "Failed to run custom MLIR optimization passes: "
-      << diag_handler.ConsumeStatus().message();
+      << ConsumeMlirDiagnostics(
+             diag_handler,
+             /* context= */ "failed to run custom MLIR optimization passes");
   return absl::OkStatus();
 }
 
