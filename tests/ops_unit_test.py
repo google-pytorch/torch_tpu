@@ -22155,6 +22155,17 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  def test_rms_norm_empty_normalized_dim_float(self):
+    """Tests rms_norm and _fused_rms_norm_backward with M > 0, N == 0."""
+    x = torch.zeros(2, 0, dtype=torch.float32, device="tpu").requires_grad_()
+    w = torch.zeros(0, dtype=torch.float32, device="tpu").requires_grad_()
+    out = torch.nn.functional.rms_norm(x, (0,), weight=w, eps=1e-5)
+    self.assertEqual(out.shape, (2, 0))
+    self.assertEqual(out.dtype, torch.float32)
+    out.backward(torch.zeros_like(out))
+    self.assertEqual(x.grad.shape, (2, 0))
+    self.assertEqual(w.grad.shape, (0,))
+
   def test_rms_norm_non_contiguous(self):
     """Tests nn.functional.rms_norm with non-contiguous strided inputs."""
 
@@ -22192,6 +22203,40 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       return out, x.grad, w.grad
 
     self.assert_close_tpu_vs_cpu(fn, rtol=1e-2, atol=1e-2)
+
+  @parameterized.parameters(torch.bfloat16, torch.float16)
+  def test_rms_norm_low_precision_weight_accumulation(self, dtype):
+    """Tests bf16/fp16 rms_norm multiplies by weight in float32 before downcast."""
+    torch.manual_seed(0)
+    x_cpu = torch.randn(16, 64, dtype=dtype)
+    w_cpu = torch.randn(64, dtype=dtype) * 3.0
+    eps = 1e-5
+
+    x_f32 = x_cpu.float()
+    w_f32 = w_cpu.float()
+    rstd_ref = torch.rsqrt(x_f32.pow(2).mean(-1, keepdim=True) + eps)
+    y_ref = ((x_f32 * rstd_ref) * w_f32).to(dtype)
+    y_premature_downcast = ((x_f32 * rstd_ref).to(dtype).float() * w_f32).to(
+        dtype
+    )
+    # Guard that the test inputs distinguish float32 accumulation from premature
+    # downcast before weight multiplication.
+    self.assertFalse(torch.equal(y_ref, y_premature_downcast))
+
+    x_tpu = x_cpu.to("tpu")
+    w_tpu = w_cpu.to("tpu")
+    y_tpu_fn = torch.nn.functional.rms_norm(x_tpu, [64], w_tpu, eps).cpu()
+    y_tpu_fused, _ = torch.ops.aten._fused_rms_norm(x_tpu, [64], w_tpu, eps)
+    y_tpu_fused = y_tpu_fused.cpu()
+
+    self.assertEqual(y_tpu_fn.dtype, dtype)
+    self.assertEqual(y_tpu_fused.dtype, dtype)
+    # Every mismatch vs premature downcast should match the f32-accumulated ref.
+    diff_mask = y_ref != y_premature_downcast
+    self.assertTrue(torch.equal(y_tpu_fn[diff_mask], y_ref[diff_mask]))
+    self.assertTrue(torch.equal(y_tpu_fused[diff_mask], y_ref[diff_mask]))
+    utils.assert_close(y_tpu_fn, y_ref, rtol=1e-2, atol=1e-2)
+    utils.assert_close(y_tpu_fused, y_ref, rtol=1e-2, atol=1e-2)
 
   def test_rms_norm_inference_no_grad_and_default_eps(self):
     """Tests nn.functional.rms_norm 1-output inference path and default eps=None."""

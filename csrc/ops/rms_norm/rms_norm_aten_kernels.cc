@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -36,12 +37,15 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
 #include "c10/core/DispatchKeySet.h"
 #include "c10/core/GradMode.h"
+#include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/core/impl/LocalDispatchKeySet.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/const_tensor.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -79,17 +83,41 @@ double GetRmsNormEpsilon(std::optional<double> eps,
   return static_cast<double>(std::numeric_limits<float>::epsilon());
 }
 
+[[nodiscard]] bool IsBatchEmpty(const c10::SymIntArrayRef batch_sizes) {
+  return absl::c_any_of(batch_sizes,
+                        [](const c10::SymInt& dim) { return dim == 0; });
+}
+
+// Computes the expected `rstd` shape for `input_sizes` given
+// `normalized_shape_dims` trailing normalized dimensions.
+// Precondition: `normalized_shape_dims <= input_sizes.size()`.
+[[nodiscard]] Dimensions ComputeRstdShape(const at::IntArrayRef input_sizes,
+                                          const size_t normalized_shape_dims) {
+  Dimensions rstd_shape;
+  rstd_shape.reserve(input_sizes.size());
+  const size_t batch_dims = input_sizes.size() - normalized_shape_dims;
+  for (size_t i = 0; i < batch_dims; ++i) {
+    rstd_shape.push_back(input_sizes[i]);
+  }
+  rstd_shape.resize(input_sizes.size(), 1);
+  return rstd_shape;
+}
+
+// Validates that `tensor` resides on `expected_device`.
+absl::Status ValidateTensorOnDevice(const at::Tensor& tensor,
+                                    const c10::Device& expected_device,
+                                    const std::string_view name) {
+  TT_RET_CHECK(tensor.device() == expected_device, error::kInvalidArgument)
+      << "expected " << name << " to be on " << expected_device.str()
+      << ", got " << tensor.device().str();
+  return absl::OkStatus();
+}
+
 // Takes ConstTensor so that the validation neither throws on nor specializes
 // the symbolic shapes of the FakeTensors that torch.compile traces with.
 absl::Status ValidateRmsNormInputs(const ConstTensor& input,
                                    at::IntArrayRef normalized_shape,
                                    const std::optional<ConstTensor>& weight) {
-  const bool input_is_empty = input.sym_numel() == 0;
-  TT_RET_CHECK(input_is_empty || input.is_floating_point(),
-               error::kInvalidArgument)
-      << "expected the input dtype to be floating point, got "
-      << ToString(input.scalar_type());
-
   TT_RET_CHECK(!normalized_shape.empty(), error::kInvalidArgument)
       << "the normalized shape must have >= 1 dimensions";
 
@@ -108,16 +136,25 @@ absl::Status ValidateRmsNormInputs(const ConstTensor& input,
       << ToString(normalized_shape) << ", got input of shape "
       << ToString(input_sizes);
 
+  // Upstream _fused_rms_norm_cuda skips RmsNormKernelImpl (and its dtype
+  // dispatch check) only when M == 0 (empty batch dimensions), not when M > 0
+  // and N == 0 (empty normalized dimensions). Short-circuit on floating-point
+  // dtypes first so symbolic batch dims of FakeTensors are never guarded.
+  const c10::SymIntArrayRef batch_sizes =
+      input_sizes.slice(0, input_ndim - normalized_ndim);
+  TT_RET_CHECK(input.is_floating_point() || IsBatchEmpty(batch_sizes),
+               error::kInvalidArgument)
+      << "expected the input dtype to be floating point, got "
+      << ToString(input.scalar_type());
+
   if (weight.has_value() && weight->defined()) {
-    // Upstream _fused_rms_norm_cuda skips RmsNormKernelImpl (and its dtype
-    // dispatch check) when M == 0 (input.numel() == 0) and dtypes match, which
-    // ops_test exercises for bool/int32/int64 in subtest4. However, never allow
-    // mixed-dtype non-floating-point weight (e.g. empty float input with int32
-    // weight).
-    TT_RET_CHECK(
-        weight->is_floating_point() ||
-            (input_is_empty && weight->scalar_type() == input.scalar_type()),
-        error::kInvalidArgument)
+    // Allow non-floating-point weight only when M == 0 and dtypes match (which
+    // ops_test exercises for bool/int32/int64), never mixed-dtype
+    // non-floating-point weight (e.g. empty float input with int32 weight).
+    TT_RET_CHECK(weight->is_floating_point() ||
+                     (weight->scalar_type() == input.scalar_type() &&
+                      IsBatchEmpty(batch_sizes)),
+                 error::kInvalidArgument)
         << "expected the weight dtype to be floating point, got "
         << ToString(weight->scalar_type());
     TT_ASSIGN_OR_RETURN(const c10::SymIntArrayRef weight_sizes,
@@ -128,6 +165,50 @@ absl::Status ValidateRmsNormInputs(const ConstTensor& input,
         << ToString(normalized_shape) << ", got weight of shape "
         << ToString(weight_sizes);
   }
+
+  return absl::OkStatus();
+}
+
+absl::Status ValidateRmsNormBackwardInputs(
+    const at::Tensor& grad_out, const at::Tensor& input,
+    const at::IntArrayRef normalized_shape, const at::Tensor& rstd,
+    const std::optional<at::Tensor>& weight) {
+  TT_RETURN_IF_ERROR(ValidateRmsNormInputs(input, normalized_shape, weight));
+
+  TT_RET_CHECK(IsPrivateUse1Device(input), error::kInvalidArgument)
+      << "expected input to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << input.device().str();
+  const c10::Device expected_device = input.device();
+  TT_RETURN_IF_ERROR(
+      ValidateTensorOnDevice(grad_out, expected_device, "grad_out"));
+  TT_RETURN_IF_ERROR(ValidateTensorOnDevice(rstd, expected_device, "rstd"));
+  if (weight.has_value() && weight->defined()) {
+    TT_RETURN_IF_ERROR(
+        ValidateTensorOnDevice(*weight, expected_device, "weight"));
+  }
+
+  TT_RET_CHECK(grad_out.sizes() == input.sizes(), error::kInvalidArgument)
+      << "expected grad_out to have the same shape as input "
+      << ToString(input.sizes()) << ", got " << ToString(grad_out.sizes());
+  TT_RET_CHECK(grad_out.scalar_type() == input.scalar_type(),
+               error::kInvalidArgument)
+      << "expected grad_out dtype to match input dtype "
+      << ToString(input.scalar_type()) << ", got "
+      << ToString(grad_out.scalar_type());
+
+  const Dimensions expected_rstd_shape =
+      ComputeRstdShape(input.sizes(), normalized_shape.size());
+  TT_RET_CHECK(absl::c_equal(rstd.sizes(), expected_rstd_shape),
+               error::kInvalidArgument)
+      << "expected rstd to have shape " << ToString(expected_rstd_shape)
+      << ", got " << ToString(rstd.sizes());
+
+  const c10::ScalarType expected_rstd_dtype =
+      ToAccumulateType(input.scalar_type());
+  TT_RET_CHECK(rstd.scalar_type() == expected_rstd_dtype,
+               error::kInvalidArgument)
+      << "expected rstd dtype to be " << ToString(expected_rstd_dtype)
+      << ", got " << ToString(rstd.scalar_type());
 
   return absl::OkStatus();
 }
@@ -321,18 +402,12 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNorm(
 
         const size_t normalized_shape_dims = normalized_shape.size();
         const auto input_sizes = input.sizes();
-        const int64_t input_dims = input.dim();
 
         // The StableHLO reduction op will remove all normalized dimensions, but
         // PyTorch expects the dimensions to be retained as size 1. Return rstd
         // with these singleton dimensions.
-        Dimensions rstd_buffer_shape;
-        for (int i = 0; i < input_dims - normalized_shape_dims; ++i) {
-          rstd_buffer_shape.push_back(input_sizes[i]);
-        }
-        for (int i = input_dims - normalized_shape_dims; i < input_dims; ++i) {
-          rstd_buffer_shape.push_back(1);
-        }
+        const Dimensions rstd_buffer_shape =
+            ComputeRstdShape(input_sizes, normalized_shape_dims);
 
         if (input.numel() == 0) {
           TT_ASSIGN_OR_THROW(at::Tensor out,
@@ -410,8 +485,8 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNormBackward(
   TT_KERNEL(
       OpName::kFusedRmsNormBackward, param_keys,
       (grad_out, input, normalized_shape, rstd, weight, output_mask), {
-        TT_THROW_IF_ERROR(
-            ValidateRmsNormInputs(input, normalized_shape, weight));
+        TT_THROW_IF_ERROR(ValidateRmsNormBackwardInputs(
+            grad_out, input, normalized_shape, rstd, weight));
 
         // PyTorch's autograd engine passes an output_mask where output_mask[0]
         // indicates if grad_input is required and output_mask[1] indicates if

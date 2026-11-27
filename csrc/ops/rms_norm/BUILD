@@ -55,6 +55,7 @@ torch_tpu_cc_library(
         ":rms_norm",
         "//csrc/common:aten_utils",
         "//csrc/common:const_tensor",
+        "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

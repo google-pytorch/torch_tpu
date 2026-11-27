@@ -10936,6 +10936,214 @@ Note: this function is intended to be used with the output produced by torch.lin
           output_mask=[True, False],
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int64",
+          dtype=torch.int64,
+          tpu_dtype="int64",
+          gpu_dtype="Long",
+      ),
+      dict(
+          testcase_name="bool",
+          dtype=torch.bool,
+          tpu_dtype="bool",
+          gpu_dtype="Bool",
+      ),
+      dict(
+          testcase_name="int32",
+          dtype=torch.int32,
+          tpu_dtype="int32",
+          gpu_dtype="Int",
+      ),
+  )
+  def test_rms_norm_empty_normalized_dim_unsupported_dtypes(
+      self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
+  ):
+    inp = torch.zeros(2, 0, device=et.device(), dtype=dtype)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""fused_rms_norm(): expected the input dtype to be floating point, got {tpu_dtype}""",
+        gpu=f""""LayerNormKernelImpl" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.ops.aten._fused_rms_norm(inp, [0], None, 1e-5)
+
+  def test_rms_norm_1d_empty_normalized_dim_int64(self):
+    inp = torch.zeros(0, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm(): expected the input dtype to be floating point, got int64""",
+        gpu=""""LayerNormKernelImpl" not implemented for 'Long'""",
+    ):
+      torch.ops.aten._fused_rms_norm(inp, [0], None, 1e-5)
+
+  def test_rms_norm_functional_empty_normalized_dim_int64(self):
+    inp = torch.zeros(2, 0, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""rms_norm(): expected the input dtype to be floating point, got int64""",
+        gpu=""""LayerNormKernelImpl" not implemented for 'Long'""",
+    ):
+      torch.nn.functional.rms_norm(inp, [0], None, 1e-5)
+
+  def test_rms_norm_empty_normalized_dim_weight_int(self):
+    inp = torch.zeros(2, 0, device=et.device(), dtype=torch.float32)
+    weight = torch.zeros(0, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm(): expected the weight dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      torch.ops.aten._fused_rms_norm(inp, [0], weight, 1e-5)
+
+  def test_rms_norm_backward_grad_out_shape_mismatch(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    grad_out = torch.randn(2, 8, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected grad_out to have the same shape as input [2, 4], got [2, 8]""",
+        gpu=re.compile(r".*dY\.numel\(\) == M \* N.*"),
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd, None, [True, False]
+      )
+
+  def test_rms_norm_backward_grad_out_dtype_mismatch(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    grad_out = torch.ones(2, 4, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected grad_out dtype to match input dtype float32, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd, None, [True, False]
+      )
+
+  def test_rms_norm_backward_rstd_shape_mismatch(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(3, 1, device=et.device())
+    grad_out = torch.randn(2, 4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected rstd to have shape [2, 1], got [3, 1]""",
+        gpu=re.compile(r".*rstd\.numel\(\) == M.*"),
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd, None, [True, False]
+      )
+
+  def test_rms_norm_backward_rstd_dtype_mismatch(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device(), dtype=torch.int64)
+    grad_out = torch.randn(2, 4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected rstd dtype to be float32, got int64""",
+        gpu="""expected scalar type Float but found Long""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd, None, [True, False]
+      )
+
+  def test_rms_norm_backward_weight_shape_mismatch(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    grad_out = torch.randn(2, 4, device=et.device())
+    weight = torch.ones(8, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected weight to be of same shape as normalized_shape [4], got weight of shape [8]""",
+        gpu="""Expected weight to be of same shape as normalized_shape, but got weight of shape [8] and normalized_shape = [4]""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd, weight, [True, True]
+      )
+
+  def test_rms_norm_backward_weight_int(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    grad_out = torch.randn(2, 4, device=et.device())
+    weight = torch.ones(4, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected the weight dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd, weight, [True, True]
+      )
+
+  def test_rms_norm_backward_input_shape_mismatch(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    grad_out = torch.randn(2, 4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected input trailing dimensions to match normalized_shape [8], got input of shape [2, 4]""",
+        gpu="""Given normalized_shape=[8], expected input with shape [*, 8], but got input of size[2, 4]""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [8], rstd, None, [True, False]
+      )
+
+  def test_rms_norm_backward_cpu_tensor(self):
+    inp = torch.randn(2, 4, device=et.device())
+    rstd = torch.ones(2, 1, device=et.device())
+    grad_out = torch.randn(2, 4, device=et.device())
+    inp_cpu = torch.randn(2, 4, device="cpu")
+    grad_out_cpu = torch.randn(2, 4, device="cpu")
+    rstd_cpu = torch.ones(2, 1, device="cpu")
+    weight_cpu = torch.ones(4, device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected input to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got input is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA___fused_rms_norm_backward)""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp_cpu, [4], rstd, None, [True, False]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected grad_out to be on tpu:0, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got input is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA___fused_rms_norm_backward)""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out_cpu, inp, [4], rstd, None, [True, False]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected rstd to be on tpu:0, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got rstd is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA___fused_rms_norm_backward)""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd_cpu, None, [True, False]
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected weight to be on tpu:0, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got weight is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA___fused_rms_norm_backward)""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd, weight_cpu, [True, True]
+      )
+
   def test_hardswish_unsupported_dtype(self):
     t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(

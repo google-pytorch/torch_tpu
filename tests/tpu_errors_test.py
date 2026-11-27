@@ -5828,6 +5828,22 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
     ):
       torch.nn.functional.rms_norm(x_empty, (8,), weight=w_int, eps=1e-5)
 
+  @et.why_tpu_only(
+      "Upstream CUDA _fused_rms_norm_backward only checks rstd.numel() == M and"
+      " accepts flattened 1D rstd."
+  )
+  def test_rms_norm_backward_rstd_wrong_rank(self):
+    inp = torch.randn(2, 4, device=et.device())
+    grad_out = torch.randn(2, 4, device=et.device())
+    rstd_1d = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm_backward(): expected rstd to have shape [2, 1], got [2]""",
+    ):
+      torch.ops.aten._fused_rms_norm_backward(
+          grad_out, inp, [4], rstd_1d, None, [True, False]
+      )
+
 
 def _tensor_too_large_for_the_device() -> torch.Tensor:
   """Returns a tensor that runs out of memory when it is materialized."""
