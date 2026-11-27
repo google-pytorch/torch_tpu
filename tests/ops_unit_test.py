@@ -9049,6 +9049,37 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             )
         )
 
+  @parameterized.named_parameters(
+      ("3d_inplace_overwrite", (2, 3, 4), False, False),
+      ("3d_inplace_accumulate", (2, 3, 4), True, False),
+      ("3d_out_of_place", (2, 3, 4), False, True),
+      ("4d_middle_and_last", (2, 3, 4, 5), False, False),
+      ("4d_middle_and_last_accumulate", (2, 3, 4, 5), True, False),
+  )
+  def test_index_put_non_contiguous_dims(self, shape, accumulate, out_of_place):
+    x = torch.arange(math.prod(shape), dtype=torch.float32).reshape(shape)
+    if len(shape) == 3:
+      indices = [torch.tensor([0, 1]), None, torch.tensor([1, 3])]
+      values = torch.tensor([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]])
+    else:
+      indices = [None, torch.tensor([0, 2]), None, torch.tensor([1, 4])]
+      values = torch.arange(1, 17, dtype=torch.float32).reshape(2, 2, 4)
+
+    def run(device):
+      tensor = x.clone().to(device)
+      dev_indices = [
+          idx.to(device) if idx is not None else None for idx in indices
+      ]
+      dev_values = values.to(device)
+      if out_of_place:
+        return torch.ops.aten.index_put(
+            tensor, dev_indices, dev_values, accumulate
+        )
+      torch.ops.aten.index_put_(tensor, dev_indices, dev_values, accumulate)
+      return tensor
+
+    self.assert_close_tpu_vs_cpu(run)
+
   def test_is_nonzero(self):
     def assert_is_nonzero_equal_on_cpu_vs_tpu(tensor: torch.Tensor):
       cpu_result = torch.is_nonzero(tensor.to("cpu"))

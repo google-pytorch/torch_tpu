@@ -14,6 +14,7 @@
 
 #include "csrc/ops/index_put/index_put_aten_kernels.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -23,8 +24,6 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/nonzero.h"
-#include "ATen/ops/permute.h"
-#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -63,9 +62,19 @@ namespace {
 
 namespace stablehlo = mlir::stablehlo;
 
+// Returns whether `indexed_dims` are consecutive dimensions in ascending order.
+bool AreIndicesContiguous(absl::Span<const int64_t> indexed_dims) {
+  for (size_t i = 1; i < indexed_dims.size(); ++i) {
+    if (indexed_dims[i] != indexed_dims[i - 1] + 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
 absl::StatusOr<mlir::MlirOp> ApplyScatter(
     mlir::MlirOp self, mlir::ArrayRef<mlir::MlirOp> indices,
-    const int64_t index_start_dim, const int64_t index_end_dim,
+    absl::Span<const int64_t> indexed_dims,
     const Dimensions& index_broadcast_shape, mlir::MlirOp values,
     const Dimensions& values_broadcast_shape, const bool accumulate) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
@@ -83,16 +92,16 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
     }
   }
 
-  for (int i = 0; i < indices.size(); ++i) {
+  for (size_t i = 0; i < indices.size(); ++i) {
     mlir::MlirOp index = indices[i];
     mlir::RankedTensorType index_type = GetTensorTypeOrDie(index);
-    ABSL_VLOG(1) << "[BuildIndexPutShlo] index dim:" << index_start_dim + i
+    ABSL_VLOG(1) << "[BuildIndexPutShlo] index dim:" << indexed_dims[i]
                  << " before broadcast: " << debugString(index_type);
     TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op catches this error
                           // first before dispatching.
         index, BroadcastIfNeeded(index, index_broadcast_shape));
     index_type = GetTensorTypeOrDie(index);
-    ABSL_VLOG(1) << "[BuildIndexPutShlo] index " << index_start_dim + i
+    ABSL_VLOG(1) << "[BuildIndexPutShlo] index " << indexed_dims[i]
                  << " after broadcast: " << debugString(index_type);
 
     // TODO: b/551808363 - Consider downcasting to i32 when we can statically
@@ -122,30 +131,18 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
   // Calculate update_window_dims, inserted_window_dims and
   // scatter_dims_to_operand_dims.
   //
-  // update_window_dims: dimensions in values corresponding to the slice
-  // The shape of values is expected to be broadcastable to the shape:
-  // slice shape before indexing (S_before) + indexing broadcast shape (B) +
-  // slice shape after indexing (S_after) = (S_before + B + S_after)
+  // update_window_dims: dimensions in values corresponding to the unindexed
+  // dimensions of self (in ascending order). When indexed_dims are contiguous,
+  // values broadcasts to (S_before + B + S_after); when non-contiguous, PyTorch
+  // places B at the front followed by all unindexed dimensions in ascending
+  // order: (B + S_unindexed).
   //
-  // inserted_window_dims: dimensions in self not part of the update window
-  // and used for indexing into self.
+  // inserted_window_dims: sorted dimensions in self that are indexed into.
   //
-  // scatter_dims_to_operand_dims: this maps the elements of the scatter_indices
-  // tensor to the dimensions in self used for indexing into self. These will be
-  // indexed dims as there is a 1:1 mapping between the elements of the
-  // scatter_indices tensor and the dimensions in self used for indexing into
-  // self.
+  // scatter_dims_to_operand_dims: maps each element of scatter_indices's
+  // index_vector_dim to the corresponding indexed dimension of self.
   //
-  // Example 1: (no slice before indexing)
-  //   self: tensor<5x5xi64>, indexed dims: [0]
-  //   scatter_indices: tensor<2x1xi64> B: (2,)
-  //   values: tensor<2x5xi64>.  B: (2,), S_after: (5)
-  //
-  //   update_window_dims: [1]
-  //   inserted_window_dims: [0]
-  //   scatter_dims_to_operand_dims: [0]
-  //
-  // Example 2: (slice before and after indexing)
+  // Example 1: (contiguous, slice before and after indexing)
   //   self: tensor<5x5x5xi64>, indexed dims: [1]
   //   scatter_indices: tensor<2x1xi64> B: (2,)
   //   values: tensor<5x2x5xi64>.  S_before: (5,), B: (2,), S_after: (5,)
@@ -154,29 +151,34 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
   //   inserted_window_dims: [1]
   //   scatter_dims_to_operand_dims: [1]
   //
-
-  Dimensions update_window_dims;  // dimensions in values corresponding to the
-                                  // slice shape
-  // Sliced dimensions before indexed dimensions
-  for (int64_t dim = 0; dim < index_start_dim; ++dim) {
-    update_window_dims.push_back(dim);
+  // Example 2: (non-contiguous indexed dims)
+  //   self: tensor<4x5x6x7xi64>, indexed dims: [1, 3]
+  //   scatter_indices: tensor<2x2xi64> B: (2,)
+  //   values: tensor<2x4x6xi64>.  B: (2,), S_unindexed: (4, 6)
+  //
+  //   update_window_dims: [1, 2]
+  //   inserted_window_dims: [1, 3]
+  //   scatter_dims_to_operand_dims: [1, 3]
+  const int64_t num_unindexed =
+      self_type.getRank() - static_cast<int64_t>(indexed_dims.size());
+  const int64_t insertion_index =
+      AreIndicesContiguous(indexed_dims) ? indexed_dims.front() : 0;
+  Dimensions update_window_dims;
+  update_window_dims.reserve(num_unindexed);
+  for (int64_t i = 0; i < insertion_index; ++i) {
+    update_window_dims.push_back(i);
   }
-  // Sliced dimensions after indexed dimensions
-  int64_t dim_after_indexing = index_start_dim + index_broadcast_shape.size();
-  for (int64_t dim = index_end_dim + 1; dim < self_type.getRank(); ++dim) {
-    update_window_dims.push_back(dim_after_indexing++);
+  for (int64_t i = insertion_index; i < num_unindexed; ++i) {
+    update_window_dims.push_back(i + index_broadcast_shape.size());
   }
-  for (int64_t i = 0; i < update_window_dims.size(); ++i) {
+  for (size_t i = 0; i < update_window_dims.size(); ++i) {
     ABSL_VLOG(1) << "[BuildIndexPutShlo] update_window_dims[" << i
                  << "]: " << update_window_dims[i];
   }
 
-  Dimensions inserted_window_dims;  // dimensions in self that are indexed into
-  for (int64_t dim = index_start_dim; dim <= index_end_dim; ++dim) {
-    inserted_window_dims.push_back(dim);
-  }
+  Dimensions inserted_window_dims(indexed_dims.begin(), indexed_dims.end());
 
-  // scatter_dims_to_operand_dims is the same as inserted_window_dims
+  // scatter_dims_to_operand_dims is the same as inserted_window_dims.
   Dimensions scatter_dims_to_operand_dims = inserted_window_dims;
 
   mlir::RankedTensorType values_type = GetTensorTypeOrDie(values);
@@ -286,33 +288,25 @@ absl::StatusOr<mlir::MlirOp> ApplySelect(mlir::MlirOp self, mlir::MlirOp mask,
 // Parameters:
 //   self: The 'self' tensor to be updated.
 //   indices: An ArrayRef containing the index tensors.
-//   index_start_dim: The starting dimension in self indexed by the index
-//                  tensors. Index tensors must be contiguous in self starting
-//                  at index_start_dim.
-//   index_end_dim: The ending dimension in self indexed by the index tensors.
-//                  Index tensors must be contiguous in self ending at
-//                  index_end_dim.
+//   indexed_dims: Sorted dimensions in self indexed by the index tensors (may
+//                 be non-contiguous).
 //   index_broadcast_shape: A Dimensions vector representing the common shape
 //                          that all index tensors are broadcastable to.
 //   values: The 'values' tensor providing the updates.
 //   values_broadcast_shape: A Dimensions vector representing the shape to
 //                           which the input 'values' tensor is broadcastable
-//                           to. This shape is formed by concatenating
-//                           `index_broadcast_shape` with the sizes of any
-//                           unindexed dimensions of 'self', in their original
-//                           relative order.
+//                           to.
 //   accumulate: A boolean flag. If true, the elements from the 'values' tensor
 //               are added to the existing elements in the 'self' tensor at the
 //               indexed locations. If false, the elements are overwritten.
 //
 absl::StatusOr<mlir::MlirOp> BuildIndexPutShlo(
     mlir::MlirOp self, mlir::ArrayRef<mlir::MlirOp> indices,
-    const int64_t index_start_dim, const int64_t index_end_dim,
+    absl::Span<const int64_t> indexed_dims,
     const Dimensions& index_broadcast_shape, mlir::MlirOp values,
     const Dimensions& values_broadcast_shape, const bool accumulate) {
-  return ApplyScatter(self, indices, index_start_dim, index_end_dim,
-                      index_broadcast_shape, values, values_broadcast_shape,
-                      accumulate);
+  return ApplyScatter(self, indices, indexed_dims, index_broadcast_shape,
+                      values, values_broadcast_shape, accumulate);
 }
 
 // Builds StableHLO operations to implement the semantics of index_put operation
@@ -383,41 +377,6 @@ absl::StatusOr<std::vector<IndexEntry>> ConvertBooleanIndicesToPositional(
   return positional_entries;
 }
 
-// Returns whether `entries` index consecutive dimensions of `self`, in order.
-bool AreIndicesContiguous(absl::Span<const IndexEntry> entries) {
-  for (int64_t i = 1; i < entries.size(); ++i) {
-    if (entries[i].indexed_dim != entries[i - 1].indexed_dim + 1) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// Moves the dimensions of `self` indexed by the integer index `entries` to the
-// front of the tensor, in the order they are indexed, and updates the
-// `indexed_dim` of `entries` to match.
-//
-// For example, if 'self' is (4, 5, 6, 7) and the indexed dimensions are {1, 3},
-// the result will be (5, 7, 4, 6), and the indexed dimensions become {0, 1}.
-//
-at::Tensor MoveIndicesToFront(const at::Tensor& self,
-                              std::vector<IndexEntry>& entries) {
-  absl::InlinedVector<bool, 6> is_dim_indexed(self.dim(), false);
-  Indices permutation;
-  permutation.reserve(self.dim());
-  for (int64_t i = 0; i < entries.size(); ++i) {
-    is_dim_indexed[entries[i].indexed_dim] = true;
-    permutation.push_back(entries[i].indexed_dim);
-    entries[i].indexed_dim = i;
-  }
-  for (int64_t dim = 0; dim < self.dim(); ++dim) {
-    if (!is_dim_indexed[dim]) {
-      permutation.push_back(dim);
-    }
-  }
-  return at::permute(self, permutation);
-}
-
 // Computes the common broadcast shape of the tensors in the 'indices' list.
 //
 // All tensors within the input 'indices' list are broadcast against each other
@@ -460,51 +419,54 @@ absl::StatusOr<Dimensions> GetIndexBroadcastShape(
 
 // Computes the shape that the values tensor is broadcastable to.
 //
-// This shape is formed by concatenating:
-// 1. The common broadcast shape of all index tensors (let this be 'B').
-// 2. The sizes of the dimensions of the 'self' tensor that were NOT indexed
-//    by the indices, taken in their original ascending order.
-//
-// The indexed dimensions of 'self' must all be contiguous.
+// When `indexed_dims` are contiguous, `index_broadcast_shape` replaces the
+// indexed dimensions in place. When non-contiguous, PyTorch places
+// `index_broadcast_shape` at the front, followed by all unindexed dimensions of
+// `self` in their original ascending order.
 //
 // As an example:
 //  self tensor has shape (10, 20, 30, 40) rank=4
-//  indices is (idx0, idx1) for indexing dims 1 and 2 respectively
-//    idx0 is shape (2, 1)
-//    idx1 is shape (1, 5)
-//  1. The 'indices' broadcast shape 'B' is (2, 5).
-//  2. Unindexed dimensions of 'self' are {0, 3}.
-//
-//  The shape of the view being indexed is (10, 2, 5, 40).
-//  The 'values' tensor must be broadcastable to this shape (10, 2, 5, 40).
-//
-//
+//  indices is (idx0, idx1) with broadcast shape B = (2, 5):
+//  - contiguous indexed_dims = {1, 2} -> values broadcast shape (10, 2, 5, 40)
+//  - non-contiguous indexed_dims = {1, 3} -> values broadcast shape (2, 5, 10,
+//  30)
 absl::StatusOr<Dimensions> GetValuesBroadcastShape(
-    const at::Tensor& self, const at::Tensor& values,
-    const Dimensions& index_broadcast_shape, int64_t index_start_dim,
-    int64_t index_end_dim) {
-  ABSL_CHECK(  // CRASH_OK=start should be less than or equal to end
-      index_start_dim >= 0 && index_start_dim <= index_end_dim)
-      << "[IndexPut] index_start_dim: " << index_start_dim
-      << " must be less than or equal to index_end_dim: " << index_end_dim;
-  ABSL_CHECK(  // CRASH_OK=end should be less than rank of self
-      index_end_dim >= 0 && index_end_dim < self.dim())
-      << "[IndexPut] index_end_dim: " << index_end_dim
-      << " must be less than the rank of self: " << self.dim();
+    at::IntArrayRef self_sizes, const at::Tensor& values,
+    const Dimensions& index_broadcast_shape,
+    absl::Span<const int64_t> indexed_dims) {
+  const int64_t self_rank = static_cast<int64_t>(self_sizes.size());
+  ABSL_CHECK(  // CRASH_OK=IndexPut checks positional_entries is non-empty
+      !indexed_dims.empty())
+      << "[IndexPut] indexed_dims must not be empty";
+  ABSL_CHECK(  // CRASH_OK=ParseIndexEntries produces valid ascending dims
+      indexed_dims.front() >= 0 && indexed_dims.back() < self_rank)
+      << "[IndexPut] indexed_dims out of range for self rank " << self_rank;
 
+  Dimensions unindexed_sizes;
+  unindexed_sizes.reserve(self_rank - indexed_dims.size());
+  for (int64_t dim = 0, idx = 0; dim < self_rank; ++dim) {
+    if (idx < static_cast<int64_t>(indexed_dims.size()) &&
+        indexed_dims[idx] == dim) {
+      ++idx;
+    } else {
+      unindexed_sizes.push_back(self_sizes[dim]);
+    }
+  }
+
+  const int64_t insertion_index =
+      AreIndicesContiguous(indexed_dims) ? indexed_dims.front() : 0;
   Dimensions values_broadcast_shape;
-  // Sliced dimensions before indexed dimensions.
-  for (int64_t dim = 0; dim < index_start_dim; ++dim) {
-    values_broadcast_shape.push_back(self.sizes()[dim]);
-  }
-  // Index tensors broadcast shape.
-  for (int64_t i = 0; i < index_broadcast_shape.size(); ++i) {
-    values_broadcast_shape.push_back(index_broadcast_shape[i]);
-  }
-  // Sliced dimensions after indexed dimensions.
-  for (int64_t dim = index_end_dim + 1; dim < self.dim(); ++dim) {
-    values_broadcast_shape.push_back(self.sizes()[dim]);
-  }
+  values_broadcast_shape.reserve(unindexed_sizes.size() +
+                                 index_broadcast_shape.size());
+  values_broadcast_shape.insert(values_broadcast_shape.end(),
+                                unindexed_sizes.begin(),
+                                unindexed_sizes.begin() + insertion_index);
+  values_broadcast_shape.insert(values_broadcast_shape.end(),
+                                index_broadcast_shape.begin(),
+                                index_broadcast_shape.end());
+  values_broadcast_shape.insert(values_broadcast_shape.end(),
+                                unindexed_sizes.begin() + insertion_index,
+                                unindexed_sizes.end());
 
   ABSL_VLOG(1) << "[IndexPut] values broadcast shape: ("
                << absl::StrJoin(values_broadcast_shape, ", ") << ")";
@@ -581,8 +543,9 @@ absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
                       at::Tensor& out) {
   TT_ASSIGN_OR_RETURN(std::vector<IndexEntry> positional_entries,
                       ConvertBooleanIndicesToPositional(self, entries));
+  Indices indexed_dims = GetIndexedDims(positional_entries);
   ABSL_VLOG(1) << "[IndexPut] indexed_dims: "
-               << absl::StrJoin(GetIndexedDims(positional_entries), ", ");
+               << absl::StrJoin(indexed_dims, ", ");
 
   TT_RETURN_IF_ERROR(
       ResolveNegativeIndices(absl::MakeSpan(positional_entries), self.sizes()));
@@ -593,26 +556,15 @@ absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
   TT_RET_CHECK(!positional_entries.empty(), error::kInvalidArgument)
       << "indices must be specified";
 
-  if (!AreIndicesContiguous(positional_entries)) {
-    self = MoveIndicesToFront(self, positional_entries);
-    out = self;
-    ABSL_VLOG(1) << "[IndexPut] self after moving indices to front: "
-                 << self.sizes();
-  }
-  const int64_t index_start_dim = positional_entries.front().indexed_dim;
-  const int64_t index_end_dim = positional_entries.back().indexed_dim;
-
   TT_ASSIGN_OR_RETURN(Dimensions index_broadcast_shape,
                       GetIndexBroadcastShape(positional_entries));
   ABSL_VLOG(1) << "[IndexPut] indices broadcast shape: ("
-               << absl::StrJoin(index_broadcast_shape, ", ")
-               << "), index_start_dim: " << index_start_dim
-               << ", index_end_dim: " << index_end_dim;
+               << absl::StrJoin(index_broadcast_shape, ", ") << ")";
 
   TT_ASSIGN_OR_RETURN(
       Dimensions values_broadcast_shape,
-      GetValuesBroadcastShape(self, values, index_broadcast_shape,
-                              index_start_dim, index_end_dim));
+      GetValuesBroadcastShape(self.sizes(), values, index_broadcast_shape,
+                              indexed_dims));
   ABSL_VLOG(1) << "[IndexPut] values broadcast shape: ("
                << absl::StrJoin(values_broadcast_shape, ", ") << ")";
 
@@ -624,13 +576,14 @@ absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
   }
   all_tensors.push_back(values);
 
+  const at::IntArrayRef indexed_dims_ref(indexed_dims);
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op creates cache keys
                         // successfully.
       auto param_keys,
-      TT_MAKE_OP_PARAM_CACHE_KEYS(index_start_dim, index_end_dim, accumulate));
+      TT_MAKE_OP_PARAM_CACHE_KEYS(indexed_dims_ref, accumulate));
 
   auto index_op_builder =
-      [index_start_dim = index_start_dim, index_end_dim = index_end_dim,
+      [indexed_dims = std::move(indexed_dims),
        index_broadcast_shape = std::move(index_broadcast_shape),
        values_broadcast_shape = std::move(values_broadcast_shape), accumulate](
           absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
@@ -641,9 +594,9 @@ absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
         auto self_op = inputs[0];
         auto values_op = inputs[inputs.size() - 1];
         auto indices_op = inputs.subspan(1, inputs.size() - 2);
-        return BuildIndexPutShlo(self_op, indices_op, index_start_dim,
-                                 index_end_dim, index_broadcast_shape,
-                                 values_op, values_broadcast_shape, accumulate);
+        return BuildIndexPutShlo(self_op, indices_op, indexed_dims,
+                                 index_broadcast_shape, values_op,
+                                 values_broadcast_shape, accumulate);
       };
 
   TT_ASSIGN_OR_RETURN(const auto elem_type,
