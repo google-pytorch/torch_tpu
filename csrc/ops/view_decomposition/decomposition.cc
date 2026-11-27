@@ -411,32 +411,37 @@ SlicePrimitive BuildHeadSliceToViewWindow(const StridedLayout& head_layout,
 // the bitcast is real() or imag(), then tail_layout is also updated in-place
 // to reflect the relative view on the real or imaginary components.
 // Returns the (real) element type after the complex-to-real bitcast.
-mlir::ElementType MaybeAddComplexToRealBitcast(
+[[nodiscard]] mlir::ElementType MaybeAddComplexToRealBitcast(
     ViewSequence& result, StridedLayout& head_layout,
-    const mlir::ElementType contiguous_base_dtype, StridedLayout& tail_layout) {
+    const mlir::ElementType contiguous_base_dtype, StridedLayout& tail_layout,
+    const mlir::ElementType view_dtype) {
   if (contiguous_base_dtype != mlir::ElementType::COMPLEXF32 &&
       contiguous_base_dtype != mlir::ElementType::COMPLEXF64) {
     // Base type is not complex, no complex-to-real bitcast is needed.
     return contiguous_base_dtype;
   }
   // Base is complex, we need to convert it to real-valued floats.
-  ComplexElementType complex_element_type =
+  const ComplexElementType complex_element_type =
       contiguous_base_dtype == mlir::ElementType::COMPLEXF32
           ? ComplexElementType::kComplexFloat
           : ComplexElementType::kComplexDouble;
-  mlir::ElementType real_element_type =
+  const mlir::ElementType real_element_type =
       complex_element_type == ComplexElementType::kComplexFloat
           ? mlir::ElementType::F32
           : mlir::ElementType::F64;
 
   // Check if we can apply this as "real()" or "imag()".
-  bool is_half_of_complex = true;
-  for (const auto& dim : tail_layout.strided_dims) {
-    if (dim.stride % 2 != 0) {
-      is_half_of_complex = false;
-      break;
-    }
-  }
+  // Strides and storage_offset in tail_layout are in units of view_dtype, so
+  // even strides correspond to selecting only the real or imaginary half only
+  // when view_dtype is a non-complex type matching real_element_type's
+  // bitwidth.
+  const bool is_half_of_complex =
+      !IsComplex(view_dtype) &&
+      TorchEquivalentBitwidth(view_dtype) ==
+          TorchEquivalentBitwidth(real_element_type) &&
+      absl::c_all_of(tail_layout.strided_dims, [](const StridedDimension& dim) {
+        return dim.stride % 2 == 0;
+      });
 
   if (!is_half_of_complex) {
     // Output view includes both real and imaginary components of the base.
@@ -629,8 +634,8 @@ ViewSequence BuildHeadBitcast(StridedLayout& head_layout,
   // The worst case is complex-to-real, real-to-real, and view_as_complex,
   // which can happen with a ComplexFloat <-> ComplexDouble cast.
   ViewSequence result;
-  mlir::ElementType head_real_element_type = MaybeAddComplexToRealBitcast(
-      result, head_layout, contiguous_base_dtype, tail_layout);
+  const mlir::ElementType head_real_element_type = MaybeAddComplexToRealBitcast(
+      result, head_layout, contiguous_base_dtype, tail_layout, view_dtype);
   mlir::ElementType view_real_element_type = MaybeAddRealToRealBitcast(
       result, head_layout, head_real_element_type, tail_layout, view_dtype);
   MaybeAddViewAsComplex(result, head_layout, view_real_element_type,

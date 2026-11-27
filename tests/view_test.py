@@ -39,6 +39,34 @@ def setUpModule():
   print(f"Torch initial seed: {torch.initial_seed()}")
 
 
+# TPU emulates float64 with a pair of float32 values, which can't hold every
+# float64 bit pattern. These components are exactly representable that way and
+# still have nonzero bits in both 32-bit halves and in the low 16 bits, so views
+# of complex128 as narrower dtypes compare nonzero data.
+_COMPLEX128_VALUES = (
+    complex(1 + 2**-25 + 2**-40, 2 + 2**-24 + 2**-39),
+    complex(3 + 2**-24 + 2**-38, 4 + 2**-23 + 2**-37),
+)
+
+# When complex64 is bitcast to float64 or complex128 on TPU v5e, XLA's DF64
+# emulation splits each 64-bit float into a pair of float32 limbs. Real parts
+# in [2.0, 4.0) have binary32 exponent 128 (zero low exponent bits), which
+# keeps the reinterpreted float64's lower 29 mantissa bits within 23
+# significant bits so every element round-trips bit-exactly in both current
+# DF64 emulation and libtpu 0.0.50's BitcastI64ToF64 while keeping every byte
+# nonzero.
+_COMPLEX64_FOR_F64_VALUES = (
+    2.13 + 2.45j,
+    2.23 + 3.45j,
+    2.33 + 4.56j,
+    2.43 + 5.67j,
+    2.53 + 6.78j,
+    2.63 + 7.89j,
+    2.73 + 8.91j,
+    2.83 + 9.12j,
+)
+
+
 @dataclasses.dataclass(frozen=True)
 class TensorLayout:
   """Represents the view-specific layout of a strided tensor."""
@@ -1338,6 +1366,245 @@ class ComplexViewsTest(LayoutTest):
     y_tpu.mul_(2.0)
     self._assert_same_layout(x_cpu, x_tpu)
     utils.assert_close(x_cpu, x_tpu.cpu())
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="complex64_slice_0_to_int64",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t[:1].view(torch.int64),
+      ),
+      dict(
+          testcase_name="complex64_slice_1_to_int64",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t[1:2].view(torch.int64),
+      ),
+      dict(
+          testcase_name="complex64_single_elem_to_int64",
+          base_values=[1.23 + 2.45j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int64),
+      ),
+      dict(
+          testcase_name="complex64_scalar_to_int64",
+          base_values=1.23 + 2.45j,
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int64),
+      ),
+      dict(
+          testcase_name="complex64_even_stride_to_int64",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j, 5.12 + 6.34j, 7.56 + 8.78j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int64)[::2],
+      ),
+      dict(
+          testcase_name="complex64_even_stride_offset1_to_int64",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j, 5.12 + 6.34j, 7.56 + 8.78j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int64)[1::2],
+      ),
+      dict(
+          testcase_name="complex64_slice_to_float64",
+          base_values=list(_COMPLEX64_FOR_F64_VALUES[:2]),
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t[:1].view(torch.float64),
+      ),
+      dict(
+          testcase_name="complex64_single_elem_to_float64",
+          base_values=list(_COMPLEX64_FOR_F64_VALUES[:1]),
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.float64),
+      ),
+      dict(
+          testcase_name="complex64_even_stride_to_float64",
+          base_values=list(_COMPLEX64_FOR_F64_VALUES[:4]),
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.float64)[::2],
+      ),
+      dict(
+          testcase_name="complex64_even_stride_to_int16",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int16)[::2],
+      ),
+      dict(
+          testcase_name="complex64_single_elem_even_stride_to_int16",
+          base_values=[1.23 + 2.45j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int16)[::2],
+      ),
+      dict(
+          testcase_name="complex64_single_elem_slice_to_int16",
+          base_values=[1.23 + 2.45j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int16)[:1],
+      ),
+      dict(
+          testcase_name="complex64_single_elem_even_stride_to_int8",
+          base_values=[1.23 + 2.45j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int8)[::2],
+      ),
+      dict(
+          testcase_name="complex64_single_elem_even_stride_to_bool",
+          base_values=[1.23 + 2.45j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.bool)[::2],
+      ),
+      dict(
+          testcase_name="complex64_to_complex128_single_elem",
+          base_values=list(_COMPLEX64_FOR_F64_VALUES[:2]),
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.complex128),
+      ),
+      dict(
+          testcase_name="complex64_to_complex128_even_stride",
+          base_values=list(_COMPLEX64_FOR_F64_VALUES),
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.complex128)[::2],
+      ),
+      dict(
+          testcase_name="complex64_to_float32_full",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.float32),
+      ),
+      dict(
+          testcase_name="complex64_to_float32_real_half",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.float32)[::2],
+      ),
+      dict(
+          testcase_name="complex64_to_float32_imag_half",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.float32)[1::2],
+      ),
+      dict(
+          testcase_name="complex64_to_int32_full",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int32),
+      ),
+      dict(
+          testcase_name="complex64_to_int32_real_half",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int32)[::2],
+      ),
+      dict(
+          testcase_name="complex64_to_int32_imag_half",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.int32)[1::2],
+      ),
+      dict(
+          testcase_name="complex128_to_complex64_slice_0",
+          base_values=[_COMPLEX128_VALUES[0], _COMPLEX128_VALUES[1]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.complex64)[:1],
+      ),
+      dict(
+          testcase_name="complex128_to_complex64_even_stride",
+          base_values=[_COMPLEX128_VALUES[0], _COMPLEX128_VALUES[1]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.complex64)[::2],
+      ),
+      dict(
+          testcase_name="complex128_to_complex64_even_stride_offset1",
+          base_values=[_COMPLEX128_VALUES[0], _COMPLEX128_VALUES[1]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.complex64)[1::2],
+      ),
+      dict(
+          testcase_name="complex128_to_float64_real_half",
+          base_values=[_COMPLEX128_VALUES[0], _COMPLEX128_VALUES[1]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.float64)[::2],
+      ),
+      dict(
+          testcase_name="complex128_to_int64_imag_half",
+          base_values=[_COMPLEX128_VALUES[0], _COMPLEX128_VALUES[1]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.int64)[1::2],
+      ),
+      dict(
+          testcase_name="complex128_even_stride_to_float32",
+          base_values=[_COMPLEX128_VALUES[0], _COMPLEX128_VALUES[1]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.float32)[::2],
+      ),
+      dict(
+          testcase_name="complex128_single_elem_even_stride_to_int32",
+          base_values=[_COMPLEX128_VALUES[0]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.int32)[::2],
+      ),
+      dict(
+          testcase_name="complex64_slice_0_to_int64_expand",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t[:1].view(torch.int64).expand(4),
+      ),
+      dict(
+          testcase_name="complex64_to_float32_slice_0",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.float32)[:1],
+      ),
+      dict(
+          testcase_name="complex64_to_float32_slice_1",
+          base_values=[1.23 + 2.45j, 3.67 + 4.89j],
+          base_dtype=torch.complex64,
+          view_fn=lambda t: t.view(torch.float32)[1:2],
+      ),
+      dict(
+          testcase_name="complex128_single_elem_even_stride_to_int16",
+          base_values=[_COMPLEX128_VALUES[0]],
+          base_dtype=torch.complex128,
+          view_fn=lambda t: t.view(torch.int16)[::2],
+      ),
+  )
+  def test_complex_view_dtype_bitcast(self, base_values, base_dtype, view_fn):
+    x_cpu = torch.tensor(base_values, dtype=base_dtype, device="cpu")
+    y_cpu = view_fn(x_cpu)
+    if (
+        base_dtype == torch.complex128
+        and y_cpu.dtype != torch.float64
+        and (ver := utils.libtpu_version()) is not None
+        and ver < (0, 0, 51)
+    ):
+      self.skipTest(
+          "complex128 bitcast to non-float64 requires libtpu >= 0.0.51"
+      )
+
+    x_tpu = x_cpu.to(self.tpu_device)
+    y_tpu = view_fn(x_tpu)
+
+    self._assert_same_layout(y_cpu, y_tpu)
+    utils.assert_close(y_tpu.cpu(), y_cpu, rtol=0, atol=0)
+    utils.assert_close(y_tpu.clone().cpu(), y_cpu, rtol=0, atol=0)
+
+  def test_complex64_view_int64_mutations(self):
+    x_cpu = torch.tensor([1.0 + 2.0j, 3.0 + 4.0j], dtype=torch.complex64)
+    x_tpu = x_cpu.to(self.tpu_device)
+
+    y_cpu = x_cpu[:1].view(torch.int64)
+    y_tpu = x_tpu[:1].view(torch.int64)
+    self._assert_same_layout(y_cpu, y_tpu)
+    utils.assert_close(y_tpu.cpu(), y_cpu, rtol=0, atol=0)
+
+    x_cpu.mul_(2.0)
+    x_tpu.mul_(2.0)
+    self._assert_same_layout(y_cpu, y_tpu)
+    utils.assert_close(y_tpu.cpu(), y_cpu, rtol=0, atol=0)
+
+    y_cpu.add_(1)
+    y_tpu.add_(1)
+    self._assert_same_layout(x_cpu, x_tpu)
+    utils.assert_close(x_tpu.cpu(), x_cpu, rtol=0, atol=0)
 
 
 class UnfoldTest(LayoutTest):

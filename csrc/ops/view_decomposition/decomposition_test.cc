@@ -51,6 +51,8 @@
 namespace torch_tpu {
 namespace {
 
+using ::testing::Contains;
+
 // Validates that applying the view sequence to the contiguous base shape
 // produces the desired view layout. Returns an error if it does not.
 absl::Status ValidateViewSequence(
@@ -491,6 +493,181 @@ TEST(DecomposeIntoViewSequence, TensorCFloatToCDouble) {
   mlir::ElementType view_dtype = mlir::ElementType::COMPLEXF64;
   DecompositionTest(contiguous_base_shape, view_layout, contiguous_base_dtype,
                     view_dtype);
+}
+
+TEST(DecomposeIntoViewSequence, CFloatSingleElementAndSliceTo64BitReal) {
+  for (const mlir::ElementType view_dtype :
+       {mlir::ElementType::I64, mlir::ElementType::UI64,
+        mlir::ElementType::F64}) {
+    // base[:1].view(view_dtype) and base[1:2].view(view_dtype) on a 2-element
+    // complex64 base.
+    DecompositionTest({2},
+                      StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                    .storage_offset = 0},
+                      mlir::ElementType::COMPLEXF32, view_dtype);
+    DecompositionTest({2},
+                      StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                    .storage_offset = 1},
+                      mlir::ElementType::COMPLEXF32, view_dtype);
+
+    // 1-element complex64 base viewed as 64-bit real.
+    DecompositionTest({1},
+                      StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                    .storage_offset = 0},
+                      mlir::ElementType::COMPLEXF32, view_dtype);
+
+    // 0-D scalar complex64 base viewed as 64-bit real.
+    DecompositionTest({},
+                      StridedLayout{.strided_dims = {}, .storage_offset = 0},
+                      mlir::ElementType::COMPLEXF32, view_dtype);
+  }
+}
+
+TEST(DecomposeIntoViewSequence, CFloatEvenStrideTo64BitReal) {
+  for (const mlir::ElementType view_dtype :
+       {mlir::ElementType::I64, mlir::ElementType::F64}) {
+    // base.view(view_dtype)[::2] and [1::2] on a 4-element complex64 base.
+    DecompositionTest({4},
+                      StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                    .storage_offset = 0},
+                      mlir::ElementType::COMPLEXF32, view_dtype);
+    DecompositionTest({4},
+                      StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                    .storage_offset = 1},
+                      mlir::ElementType::COMPLEXF32, view_dtype);
+  }
+}
+
+TEST(DecomposeIntoViewSequence, CFloatEvenStrideAndSingleElemToNarrowReal) {
+  // base.view(int16)[::2] on 2-element and 1-element complex64 bases.
+  DecompositionTest({2},
+                    StridedLayout{.strided_dims = {{.size = 4, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF32, mlir::ElementType::I16);
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF32, mlir::ElementType::I16);
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                  .storage_offset = 1},
+                    mlir::ElementType::COMPLEXF32, mlir::ElementType::I16);
+  // Single-element narrow slice.
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF32, mlir::ElementType::I16);
+  // 8-bit and bool views with even strides.
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 4, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF32, mlir::ElementType::I8);
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 4, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF32, mlir::ElementType::PRED);
+}
+
+TEST(DecomposeIntoViewSequence, CFloatToCDoubleSingleElementAndEvenStride) {
+  // 2-element complex64 base viewed as 1-element complex128.
+  DecompositionTest({2},
+                    StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF32,
+                    mlir::ElementType::COMPLEXF64);
+  // 4-element complex64 base sliced and viewed as complex128 with offset.
+  DecompositionTest({4},
+                    StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                  .storage_offset = 1},
+                    mlir::ElementType::COMPLEXF32,
+                    mlir::ElementType::COMPLEXF64);
+  // Even-strided complex128 view of complex64 base.
+  DecompositionTest({8},
+                    StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF32,
+                    mlir::ElementType::COMPLEXF64);
+}
+
+TEST(DecomposeIntoViewSequence, CDoubleSingleElementAndEvenStrideViews) {
+  // complex128 -> complex64: same bitwidth as F64 real component, but complex.
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF64,
+                    mlir::ElementType::COMPLEXF32);
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                  .storage_offset = 1},
+                    mlir::ElementType::COMPLEXF64,
+                    mlir::ElementType::COMPLEXF32);
+  DecompositionTest({2},
+                    StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF64,
+                    mlir::ElementType::COMPLEXF32);
+  DecompositionTest({2},
+                    StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                  .storage_offset = 1},
+                    mlir::ElementType::COMPLEXF64,
+                    mlir::ElementType::COMPLEXF32);
+
+  // complex128 -> narrower real dtypes with even strides or size-1 dims.
+  DecompositionTest({2},
+                    StridedLayout{.strided_dims = {{.size = 4, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF64, mlir::ElementType::F32);
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 2, .stride = 2}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF64, mlir::ElementType::I32);
+  DecompositionTest({1},
+                    StridedLayout{.strided_dims = {{.size = 1, .stride = 1}},
+                                  .storage_offset = 0},
+                    mlir::ElementType::COMPLEXF64, mlir::ElementType::I16);
+}
+
+TEST(DecomposeIntoViewSequence, ComplexHalfBitwidthUsesRealOrImagBitcast) {
+  struct HalfBitwidthCase {
+    mlir::ElementType base_dtype;
+    mlir::ElementType view_dtype;
+    ComplexElementType expected_complex_type;
+  };
+  // Same-bitwidth real views with even strides should still use kReal / kImag.
+  for (const HalfBitwidthCase& test_case : {
+           HalfBitwidthCase{mlir::ElementType::COMPLEXF32,
+                            mlir::ElementType::F32,
+                            ComplexElementType::kComplexFloat},
+           HalfBitwidthCase{mlir::ElementType::COMPLEXF32,
+                            mlir::ElementType::I32,
+                            ComplexElementType::kComplexFloat},
+           HalfBitwidthCase{mlir::ElementType::COMPLEXF64,
+                            mlir::ElementType::F64,
+                            ComplexElementType::kComplexDouble},
+           HalfBitwidthCase{mlir::ElementType::COMPLEXF64,
+                            mlir::ElementType::I64,
+                            ComplexElementType::kComplexDouble},
+       }) {
+    for (const int64_t offset : {0, 1}) {
+      const StridedLayout view_layout = {
+          .strided_dims = {{.size = 2, .stride = 2}},
+          .storage_offset = offset,
+      };
+      DecompositionTest({2}, view_layout, test_case.base_dtype,
+                        test_case.view_dtype);
+      TT_ASSERT_OK_AND_ASSIGN(
+          ViewSequence sequence,
+          DecomposeIntoViewSequence({2}, test_case.base_dtype, view_layout,
+                                    test_case.view_dtype));
+      const ComplexToRealBitcast expected_bitcast = {
+          .complex_element_type = test_case.expected_complex_type,
+          .bitcast_type = offset == 0 ? ComplexToRealBitcastType::kReal
+                                      : ComplexToRealBitcastType::kImag,
+      };
+      EXPECT_THAT(sequence, Contains(ViewPrimitive(expected_bitcast)))
+          << ToString(sequence);
+    }
+  }
 }
 
 TEST(DecomposeIntoViewSequence, MultiStepAsStridedAndBitcast) {
