@@ -537,17 +537,20 @@ absl::StatusOr<DivOpOptions> GetDivOpBuilder(
          << "unsupported mode for div: '" << mode.value() << "'";
 }
 
-absl::Status ValidateFloorDivideInputs(const at::Tensor& self,
-                                       const at::Tensor& other) {
-  TT_RET_CHECK(!IsComplex(self) && !IsBool(self), error::kInvalidArgument)
-      << "expected dtype of the first argument to be neither complex nor "
-         "bool, got "
+absl::Status ValidateRoundedDivInputs(const at::Tensor& self,
+                                      const at::Tensor& other) {
+  TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
+      << "expected the dtype of the first argument not to be complex, got "
       << ToString(self.scalar_type());
 
-  TT_RET_CHECK(!IsComplex(other) && !IsBool(other), error::kInvalidArgument)
-      << "expected dtype of the second argument to be neither complex nor "
-         "bool, got "
+  TT_RET_CHECK(!IsComplex(other), error::kInvalidArgument)
+      << "expected the dtype of the second argument not to be complex, got "
       << ToString(other.scalar_type());
+
+  const at::ScalarType result_type = at::result_type(self, other);
+  TT_RET_CHECK(!IsBool(result_type), error::kInvalidArgument)
+      << "expected the promoted dtype of the inputs not to be bool, got "
+      << ToString(result_type);
 
   return absl::OkStatus();
 }
@@ -846,6 +849,9 @@ absl::StatusOr<at::Tensor> AddReluScalarHelper(
 absl::Status DivOutMode(const at::Tensor& self, const at::Tensor& other,
                         std::optional<std::string_view> mode, at::Tensor& out) {
   TT_ASSIGN_OR_RETURN(auto div_opts, GetDivOpBuilder(mode));
+  if (mode.has_value()) {
+    TT_RETURN_IF_ERROR(ValidateRoundedDivInputs(self, other));
+  }
   return BinaryOpOut(
       self, other, out, std::move(div_opts.op_builder),
       {.force_float_inputs = !mode.has_value(),
@@ -1478,7 +1484,7 @@ at::Tensor& AtenEqTensorOut(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor AtenFloorDivide(const at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kFloorDivide, _, (self, other), {
-    TT_THROW_IF_ERROR(ValidateFloorDivideInputs(self, other));
+    TT_THROW_IF_ERROR(ValidateRoundedDivInputs(self, other));
     TT_ASSIGN_OR_THROW(auto div_opts, GetDivOpOptionsFloorMode());
     TT_ASSIGN_OR_THROW(auto result,
                        BinaryOp(self, other, std::move(div_opts.op_builder),
@@ -1491,7 +1497,6 @@ at::Tensor AtenFloorDivide(const at::Tensor& self, const at::Tensor& other) {
 at::Tensor& AtenFloorDivideOut(const at::Tensor& self, const at::Tensor& other,
                                at::Tensor& out) {
   TT_KERNEL(OpName::kFloorDivideOut, _, (self, other, out), {
-    TT_THROW_IF_ERROR(ValidateFloorDivideInputs(self, other));
     TT_THROW_IF_ERROR(DivOutMode(self, other, "floor", out));
     return out;
   });
@@ -1499,7 +1504,6 @@ at::Tensor& AtenFloorDivideOut(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& AtenFloorDivide_Tensor(at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kFloorDivide_Tensor, _, (self, other), {
-    TT_THROW_IF_ERROR(ValidateFloorDivideInputs(self, other));
     TT_THROW_IF_ERROR(DivOutMode(self, other, "floor", self));
     return self;
   });
@@ -1511,8 +1515,7 @@ at::Tensor& AtenFmodTensorOut(const at::Tensor& self, const at::Tensor& other,
     TT_CHECK_THROW(!self.is_complex() && !other.is_complex(),
                    error::kInvalidArgument)
         << "complex dtypes are not supported";
-    TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
-                       other.scalar_type() != at::ScalarType::Bool,
+    TT_CHECK_THROW(at::result_type(self, other) != at::ScalarType::Bool,
                    error::kInvalidArgument)
         << "boolean dtypes are not supported";
 
@@ -1754,6 +1757,7 @@ at::Tensor& AtenLtTensorOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor& AtenMaximumOut(const at::Tensor& self, const at::Tensor& other,
                            at::Tensor& out) {
   TT_KERNEL(OpName::kMaximumOut, _, (self, other, out), {
+    TT_THROW_IF_ERROR(ValidateInputsNotComplex(self, other));
     TT_THROW_IF_ERROR(
         BinaryOpOut(self, other, out, BuildMaximumShlo,
                     {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
@@ -1764,6 +1768,7 @@ at::Tensor& AtenMaximumOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor& AtenMinimumOut(const at::Tensor& self, const at::Tensor& other,
                            at::Tensor& out) {
   TT_KERNEL(OpName::kMinimumOut, _, (self, other, out), {
+    TT_THROW_IF_ERROR(ValidateInputsNotComplex(self, other));
     TT_THROW_IF_ERROR(
         BinaryOpOut(self, other, out, BuildMinimumShlo,
                     {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
