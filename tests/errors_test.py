@@ -737,12 +737,23 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
   def test_triu_insufficient_dims(self):
     """Tests that triu with insufficient dims fails with expected error."""
-    t = torch.ones(1, device=et.device(), dtype=torch.float32)
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""triu: input tensor must have at least 2 dimensions""",
+    for t in (
+        torch.tensor(42, device=et.device(), dtype=torch.float32),
+        torch.ones(1, device=et.device(), dtype=torch.float32),
     ):
-      torch.triu(t, 1)
+      with self.subTest(ndim=t.dim()):
+        out = torch.empty((2, 2), device=et.device(), dtype=torch.float32)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""triu: input tensor must have at least 2 dimensions""",
+        ):
+          torch.triu(t, 1)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""triu(): expected input to have at least 2 dimensions, got {t.dim()}""",
+            gpu="""triu: input tensor must have at least 2 dimensions""",
+        ):
+          torch.triu(t, 1, out=out)
 
   def test_col2im_unsupported_integer_dtype(self):
     """Tests that col2im with integer dtype fails with expected error."""
@@ -1314,12 +1325,23 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
   def test_tril_insufficient_dims(self):
     """Tests that tril with insufficient dims fails with expected error."""
-    t = torch.tensor(42, device=et.device(), dtype=torch.float32)
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""tril: input tensor must have at least 2 dimensions""",
+    for t in (
+        torch.tensor(42, device=et.device(), dtype=torch.float32),
+        torch.ones(1, device=et.device(), dtype=torch.float32),
     ):
-      torch.tril(t, 0)
+      with self.subTest(ndim=t.dim()):
+        out = torch.empty((2, 2), device=et.device(), dtype=torch.float32)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""tril: input tensor must have at least 2 dimensions""",
+        ):
+          torch.tril(t, 0)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu=f"""tril(): expected input to have at least 2 dimensions, got {t.dim()}""",
+            gpu="""tril: input tensor must have at least 2 dimensions""",
+        ):
+          torch.tril(t, 0, out=out)
 
   def test_linalg_solve_triangular_non_sq_failure(self):
     """Tests that linalg.solve_triangular() fails with less than 2 dimensions."""

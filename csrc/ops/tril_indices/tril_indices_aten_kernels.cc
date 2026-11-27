@@ -16,6 +16,7 @@
 
 #include "csrc/ops/tril_indices/tril_indices_aten_kernels.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -69,11 +70,12 @@ absl::StatusOr<mlir::MlirOp> BuildTrilIndicesShlo(mlir::MlirBuilder& builder,
   // Create a constant for the offset and broadcast it to (row, col).
   mlir::MlirOp offset_op = MakeConstantLike(iota_row, offset);
 
-  // Calculate `i + offset` and compare `j <= i + offset` to get the boolean
-  // mask.
-  auto i_plus_offset = mlir::stablehlo::Add(iota_row, offset_op);
-  auto mask = mlir::stablehlo::Compare(
-      iota_col, i_plus_offset, mlir::stablehlo::ComparisonDirection::LE);
+  // Calculate `j - i` and compare `j - i <= offset` to get the boolean mask.
+  // Computing `j - i` avoids signed int64 overflow when `offset` is near
+  // INT64_MAX.
+  mlir::MlirOp col_minus_row = mlir::stablehlo::Subtract(iota_col, iota_row);
+  mlir::MlirOp mask = mlir::stablehlo::Compare(
+      col_minus_row, offset_op, mlir::stablehlo::ComparisonDirection::LE);
 
   // Reuse the BuildNonzeroShlo function to get the coordinates of non-zero
   // values.
@@ -116,7 +118,12 @@ at::Tensor AtenTrilIndices(int64_t row, int64_t col, int64_t offset,
 
         at::native::check_args(row, col, layout_opt);
 
-        const int64_t tril_size = at::native::get_tril_size(row, col, offset);
+        // Clamp `offset` to `[-row, col - 1]` so `at::native::get_tril_size`
+        // does not overflow `1 + offset` or `row + offset` on extreme offsets.
+        const int64_t clamped_offset =
+            (row > 0 && col > 0) ? std::clamp(offset, -row, col - 1) : 0;
+        const int64_t tril_size =
+            at::native::get_tril_size(row, col, clamped_offset);
         if (tril_size > 0) {
           // PyTorch CUDA only dispatches int32 and int64 when tril_size > 0;
           // zero-size outputs bypass kernel dispatch on CUDA.
