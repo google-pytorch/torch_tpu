@@ -19,15 +19,22 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/log/absl_check.h"
+#include "absl/numeric/int128.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "llvm/Support/MathExtras.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -65,6 +72,41 @@ absl::StatusOr<BatchInput> CreateBatchInput(mlir::MlirOp input,
   return BatchInput{input, num_dims};
 }
 
+namespace {
+
+enum class EmptyAttrPolicy {
+  kReject,
+  kAllow,
+};
+
+std::string FormatExpectedAttrLength(const int64_t spatial_dim_count,
+                                     const EmptyAttrPolicy empty_policy) {
+  if (empty_policy == EmptyAttrPolicy::kAllow) {
+    return spatial_dim_count == 1
+               ? "0 or 1 elements"
+               : absl::StrCat("0, 1, or ", spatial_dim_count, " elements");
+  }
+  return spatial_dim_count == 1
+             ? "1 element"
+             : absl::StrCat("1 or ", spatial_dim_count, " elements");
+}
+
+absl::Status ValidatePoolingAttrLength(const at::IntArrayRef attr,
+                                       const std::string_view name,
+                                       const int64_t spatial_dim_count,
+                                       const EmptyAttrPolicy empty_policy) {
+  const bool valid =
+      (empty_policy == EmptyAttrPolicy::kAllow && attr.empty()) ||
+      attr.size() == 1 || attr.size() == static_cast<size_t>(spatial_dim_count);
+  TT_RET_CHECK(valid, error::kInvalidArgument)
+      << "expected " << name << " to have "
+      << FormatExpectedAttrLength(spatial_dim_count, empty_policy) << ", got "
+      << attr.size();
+  return absl::OkStatus();
+}
+
+}  // namespace
+
 // Expands the attribute to match the dim size.
 absl::StatusOr<Dimensions> ExpandAttribute(const Dimensions& values,
                                            const int64_t dim) {
@@ -72,12 +114,12 @@ absl::StatusOr<Dimensions> ExpandAttribute(const Dimensions& values,
     return Dimensions(dim, values[0]);
   }
 
-  Dimensions expanded_values = values;
-  ABSL_CHECK_EQ(values.size(), dim)  // CRASH_OK
-      << "the attribute was not expanded correctly to match the dim size"
-      << ", got expanded values size " << expanded_values.size()
-      << " and expected dim size " << dim;
-  return expanded_values;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Validated in GetPoolingOutputSize.
+      values.size() == static_cast<size_t>(dim), error::kInvalidArgument)
+      << "expected pooling attribute to have "
+      << FormatExpectedAttrLength(dim, EmptyAttrPolicy::kReject) << ", got "
+      << values.size();
+  return values;
 }
 
 // Removes the batch dimension if it doesn't have it at the beginning.
@@ -322,26 +364,57 @@ ReduceWindowAttributes GetReduceWindowAttributes(
 
 namespace {
 
-int64_t GetSingleDim(const int64_t in, const int64_t i,
-                     at::IntArrayRef kernel_size, at::IntArrayRef stride,
-                     at::IntArrayRef padding, at::IntArrayRef dilation,
-                     const bool ceil_mode) {
-  const int64_t k = kernel_size.size() == 1 ? kernel_size[0] : kernel_size[i];
-  const int64_t s =
-      stride.empty() ? k : (stride.size() == 1 ? stride[0] : stride[i]);
-  const int64_t p = padding.size() == 1 ? padding[0] : padding[i];
-  const int64_t d = dilation.size() == 1 ? dilation[0] : dilation[i];
-  const int64_t numerator = in + 2 * p - d * (k - 1) - 1;
-
-  if (!ceil_mode) {
-    return numerator / s + 1;
-  }
-
-  const int64_t out = (numerator + s - 1) / s + 1;
-  if ((out - 1) * s >= in + p) {
-    return out - 1;
+absl::int128 GetSingleDim(const int64_t in, const int64_t k_eff,
+                          const int64_t s, const int64_t p,
+                          const bool ceil_mode) {
+  // Caller guarantees 0 <= 2 * p <= k_eff <= INT64_MAX and s > 0, so
+  // `numerator` is in [-INT64_MAX, INT64_MAX] and cannot overflow int64_t.
+  const int64_t numerator = in + (2 * p - k_eff);
+  const int64_t quotient = ceil_mode ? llvm::divideCeilSigned(numerator, s)
+                                     : llvm::divideFloorSigned(numerator, s);
+  absl::int128 out = absl::int128(quotient) + 1;
+  if (ceil_mode && (out - 1) * s >= absl::int128(in) + p) {
+    --out;
   }
   return out;
+}
+
+absl::StatusOr<int64_t> ValidateAndComputeSpatialOutputDim(
+    const int64_t in, const int64_t dim_index, at::IntArrayRef kernel_size,
+    at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
+    const bool ceil_mode) {
+  const int64_t k =
+      kernel_size.size() == 1 ? kernel_size[0] : kernel_size[dim_index];
+  const int64_t s =
+      stride.empty() ? k : (stride.size() == 1 ? stride[0] : stride[dim_index]);
+  const int64_t p = padding.size() == 1 ? padding[0] : padding[dim_index];
+  const int64_t d = dilation.size() == 1 ? dilation[0] : dilation[dim_index];
+  TT_RET_CHECK(k > 0, error::kInvalidArgument)
+      << "expected kernel_size to be greater than zero, got " << k;
+  TT_RET_CHECK(s > 0, error::kInvalidArgument)
+      << "expected stride to be greater than zero, got " << s;
+  TT_RET_CHECK(d > 0, error::kInvalidArgument)
+      << "expected dilation to be greater than zero, got " << d;
+  TT_RET_CHECK(p >= 0, error::kInvalidArgument)
+      << "expected padding to be >= 0, got " << p;
+  TT_RET_CHECK(p <= k / 2, error::kInvalidArgument)
+      << "expected padding to be at most half of kernel_size, got padding=" << p
+      << " and kernel_size=" << k;
+
+  const absl::int128 k_eff_i128 = absl::int128(d) * (k - 1) + 1;
+  TT_RET_CHECK(k_eff_i128 <= std::numeric_limits<int64_t>::max(),
+               error::kInvalidArgument)
+      << "expected effective kernel size to fit in int64, got kernel_size=" << k
+      << " and dilation=" << d;
+  const int64_t k_eff = static_cast<int64_t>(k_eff_i128);
+
+  const absl::int128 out = GetSingleDim(in, k_eff, s, p, ceil_mode);
+  TT_RET_CHECK(out >= 1 && out <= std::numeric_limits<int64_t>::max(),
+               error::kInvalidArgument)
+      << "calculated output size (" << out << ") is "
+      << (out < 1 ? "too small" : "too large") << " for input size " << in
+      << " at spatial dim " << dim_index;
+  return static_cast<int64_t>(out);
 }
 
 }  // namespace
@@ -358,6 +431,15 @@ absl::StatusOr<Dimensions> GetPoolingOutputSize(
       << spatial_dim_count + 2 << "D (batch mode) tensor for input, got "
       << dims_num << "D tensor";
 
+  TT_RETURN_IF_ERROR(ValidatePoolingAttrLength(
+      kernel_size, "kernel_size", spatial_dim_count, EmptyAttrPolicy::kReject));
+  TT_RETURN_IF_ERROR(ValidatePoolingAttrLength(
+      stride, "stride", spatial_dim_count, EmptyAttrPolicy::kAllow));
+  TT_RETURN_IF_ERROR(ValidatePoolingAttrLength(
+      padding, "padding", spatial_dim_count, EmptyAttrPolicy::kReject));
+  TT_RETURN_IF_ERROR(ValidatePoolingAttrLength(
+      dilation, "dilation", spatial_dim_count, EmptyAttrPolicy::kReject));
+
   // If (N, C, ...), spatial starts at 2. If (C, ...), starts at 1.
   const int64_t spatial_start_index =
       (dims_num == spatial_dim_count + 2) ? 2 : 1;
@@ -368,10 +450,10 @@ absl::StatusOr<Dimensions> GetPoolingOutputSize(
 
   // Calculates Spatial Dims (D, H, W).
   for (int i = 0; i < spatial_dim_count; ++i) {
-    const int64_t in = input_size[spatial_start_index + i];
-    const int64_t out =
-        GetSingleDim(in, i, kernel_size, stride, padding, dilation, ceil_mode);
-    output_size[spatial_start_index + i] = std::max<int64_t>(out, 1);
+    TT_ASSIGN_OR_RETURN(output_size[spatial_start_index + i],
+                        ValidateAndComputeSpatialOutputDim(
+                            input_size[spatial_start_index + i], i, kernel_size,
+                            stride, padding, dilation, ceil_mode));
   }
   return output_size;
 }

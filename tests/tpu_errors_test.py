@@ -7064,6 +7064,20 @@ class InternalApiTpuErrorsTest(et.TpuOnlyErrorTestBase):
       ):
         pass
 
+  @et.why_tpu_only(
+      "torch.ops.tpu._max_pool2d_backward is a TPU-only internal op."
+  )
+  def test_tpu_max_pool2d_backward_invalid_stride(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    grad_out = torch.ones(1, 1, 2, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_pool2d_backward(): expected stride to be greater than zero, got 0""",
+    ):
+      torch.ops.tpu._max_pool2d_backward(
+          grad_out, inp, [2, 2], [0, 0], [0, 0], [1, 1], False
+      )
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
