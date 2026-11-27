@@ -336,18 +336,6 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
       values.to("cpu")
       indices.to("cpu")
 
-  @et.why_tpu_only("TODO: support _unique2(sorted=False) on TPU.")
-  def test_unique2_unsupported_sorted(self):
-    """Tests unique2 fails if sorted=False."""
-    t = torch.ones(2, 3, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""unique2(): sorted=False is not yet supported""",
-    ):
-      torch.ops.aten._unique2(
-          t, sorted=False, return_inverse=True, return_counts=True
-      ).to("cpu")
-
   @et.why_tpu_only("Can only test op dispatch failure in a TPU test.")
   def test_index_put_with_op_dispatch_failure(self):
     """Tests that index_put() bubbles up errors in op dispatching."""

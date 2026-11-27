@@ -22,6 +22,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -42,15 +43,47 @@ SortShloOutputs BuildSortShlo(mlir::MlirOp input_op, bool stable, int64_t dim,
       stablehlo::IotaLike(input_op, dim, mlir::ElementType::I64);
   auto comparator = [input_type, descending](mlir::RegionBuilder& rb) {
     mlir::OpBuilder& op_builder = rb.getOpBuilder();
-    std::optional<llvm::StringRef> compare_type = std::nullopt;
-    if (mlir::isa<mlir::FloatType>(input_type.getElementType())) {
-      compare_type = "TOTALORDER";
+    const mlir::Type elem_type = input_type.getElementType();
+    if (!mlir::isa<mlir::FloatType>(elem_type)) {
+      stablehlo::buildSortComparisonBody(
+          {elem_type, op_builder.getI64Type()},
+          descending ? stablehlo::ComparisonDirection::GT
+                     : stablehlo::ComparisonDirection::LT,
+          /*compare_type=*/std::nullopt, &rb.getRegion(), &op_builder);
+      return;
     }
-    stablehlo::buildSortComparisonBody(
-        {input_type.getElementType(), op_builder.getI64Type()},
-        descending ? stablehlo::ComparisonDirection::GT
-                   : stablehlo::ComparisonDirection::LT,
-        compare_type, &rb.getRegion(), &op_builder);
+    // Use IEEE FLOAT comparison (so -0.0 == +0.0 for stable sort tie-breaking)
+    // and order all NaNs (regardless of sign bit) after +inf, matching PyTorch
+    // CPU and CUDA semantics.
+    const mlir::RankedTensorType val_type =
+        mlir::RankedTensorType::get({}, elem_type);
+    const mlir::RankedTensorType idx_type =
+        mlir::RankedTensorType::get({}, op_builder.getI64Type());
+    mlir::MlirOp lhs = mlir::Argument(rb, val_type);
+    mlir::MlirOp rhs = mlir::Argument(rb, val_type);
+    // Index arguments are required by the Sort comparator signature, though
+    // comparison only inspects the value arguments.
+    mlir::Argument(rb, idx_type);
+    mlir::Argument(rb, idx_type);
+
+    mlir::MlirOp cmp =
+        stablehlo::Compare(lhs, rhs,
+                           descending ? stablehlo::ComparisonDirection::GT
+                                      : stablehlo::ComparisonDirection::LT);
+    mlir::MlirOp lhs_is_nan =
+        stablehlo::Compare(lhs, lhs, stablehlo::ComparisonDirection::NE);
+    mlir::MlirOp rhs_is_nan =
+        stablehlo::Compare(rhs, rhs, stablehlo::ComparisonDirection::NE);
+    mlir::MlirOp nan_wins;
+    if (descending) {
+      mlir::MlirOp not_rhs_is_nan = stablehlo::Not(rhs_is_nan);
+      nan_wins = stablehlo::And(lhs_is_nan, not_rhs_is_nan);
+    } else {
+      mlir::MlirOp not_lhs_is_nan = stablehlo::Not(lhs_is_nan);
+      nan_wins = stablehlo::And(not_lhs_is_nan, rhs_is_nan);
+    }
+    mlir::MlirOp result = stablehlo::Or(cmp, nan_wins);
+    stablehlo::Return(rb, {result});
   };
   auto outputs =
       stablehlo::Sort(builder, {input_op, indices}, comparator, dim, stable);
