@@ -31440,6 +31440,23 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  @parameterized.named_parameters(
+      dict(testcase_name="complex64", dtype=torch.complex64),
+      dict(testcase_name="complex128", dtype=torch.complex128),
+  )
+  def test_isnan_complex(self, dtype):
+    vals = [
+        complex(float("nan"), 0.0),
+        complex(0.0, float("nan")),
+        complex(float("nan"), float("nan")),
+        complex(1.0, 2.0),
+        complex(float("inf"), 0.0),
+        complex(0.0, float("-inf")),
+    ]
+    z_cpu = torch.tensor(vals, dtype=dtype)
+    z_tpu = z_cpu.to("tpu")
+    utils.assert_close(torch.isnan(z_tpu).cpu(), torch.isnan(z_cpu))
+
 
 if __name__ == "__main__":
   absltest.main()

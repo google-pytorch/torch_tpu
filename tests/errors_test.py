@@ -25022,6 +25022,61 @@ class IndexReduceErrorTest(et.ErrorTestBase):
     ):
       torch.index_reduce(self_t, 0, index, source, "prod", out=out)
 
+  @parameterized.named_parameters(
+      (
+          "isposinf_complex64",
+          torch.isposinf,
+          "isposinf",
+          torch.complex64,
+          "complex64",
+      ),
+      (
+          "isposinf_complex128",
+          torch.isposinf,
+          "isposinf",
+          torch.complex128,
+          "complex128",
+      ),
+      (
+          "isneginf_complex64",
+          torch.isneginf,
+          "isneginf",
+          torch.complex64,
+          "complex64",
+      ),
+      (
+          "isneginf_complex128",
+          torch.isneginf,
+          "isneginf",
+          torch.complex128,
+          "complex128",
+      ),
+  )
+  def test_isposinf_isneginf_complex(self, op_fn, op_name, dtype, tpu_dtype):
+    z = torch.tensor(
+        [complex(float("inf"), 0.0)], dtype=dtype, device=et.device()
+    )
+    # Upstream TORCH_META_FUNC(isposinf/isneginf) switched from TORCH_CHECK
+    # (RuntimeError) to TORCH_CHECK_TYPE (TypeError) in PyTorch 2.15.
+    upstream_err_type = (
+        TypeError if utils.get_torch_version() >= (2, 15) else RuntimeError
+    )
+    with et.assert_raises_message(
+        upstream_err_type,
+        tpu=f"""{op_name} does not support complex inputs.""",
+        gpu=f"""{op_name} does not support complex inputs.""",
+    ):
+      op_fn(z)
+
+    out = torch.empty((1,), dtype=torch.bool, device=et.device())
+    out_err_type = upstream_err_type if et.is_on_gpu() else RuntimeError
+    with et.assert_raises_message(
+        out_err_type,
+        tpu=f"""{op_name}(): expected the input dtype not to be complex, got {tpu_dtype}""",
+        gpu=f"""{op_name} does not support complex inputs.""",
+    ):
+      op_fn(z, out=out)
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
