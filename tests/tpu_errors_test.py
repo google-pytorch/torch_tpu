@@ -572,6 +572,20 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       x[:, ::2].cpu()
 
+  @et.why_tpu_only(
+      "Pinned google3 PyTorch predates PR #205864 shell-dtype TensorIterator"
+      " validation on GPU; move to errors_test.py once PyTorch >= PR #205864."
+  )
+  def test_add_out_float4_e2m1fn_x2_cast_raises(self):
+    """Tests that casting an op result into a float4_e2m1fn_x2 out tensor fails."""
+    lhs = torch.ones(4, device=et.device())
+    out = torch.empty(4, dtype=torch.float4_e2m1fn_x2, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""add(): casting from float32 to float4_e2m1fn_x2 is not supported""",
+    ):
+      torch.add(lhs, 1, out=out)
+
   @parameterized.named_parameters(
       ("bool_bool", False, True, "bool", "bool"),
       ("int_bool", 0, True, "int64", "bool"),
