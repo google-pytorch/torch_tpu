@@ -94,7 +94,7 @@ csrc/ops/bucketize/bucketize_aten_kernels.cc: {remaining: 0, total: 5, infeasibl
 csrc/ops/cat/cat.cc: {remaining: 0, total: 2, infeasible: 2}
 csrc/ops/cat/cat_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 4}
 csrc/ops/channel_shuffle/channel_shuffle_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
-csrc/ops/clamp/clamp_aten_kernels.cc: {remaining: 0, total: 1, infeasible: 0}
+csrc/ops/clamp/clamp_aten_kernels.cc: {remaining: 0, total: 4, infeasible: 0}
 csrc/ops/col2im/col2im_aten_kernels.cc: {remaining: 0, total: 16, infeasible: 0}
 csrc/ops/constant_pad/constant_pad_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/convolution/convolution.cc: {remaining: 0, total: 2, infeasible: 1}

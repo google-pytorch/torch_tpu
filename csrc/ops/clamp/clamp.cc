@@ -51,15 +51,20 @@ absl::StatusOr<mlir::MlirOp> BuildClampShlo(mlir::MlirOp input,
     max = max_;
   }
 
-  mlir::MlirOp res;
-  if (min && max) {
-    res = mlir::stablehlo::Clamp(*min, input, *max);
-  } else if (min) {
-    res = mlir::stablehlo::Max(input, *min);
-  } else if (max) {
-    res = mlir::stablehlo::Min(input, *max);
-  } else {
-    res = input;
+  // Lower two-sided clamp as Min(Max(input, min), max) rather than
+  // stablehlo::Clamp:
+  // 1. XLA TPU's VclampFloat folds constant bounds with max <= min directly to
+  //    max, dropping NaN elements in `input`, whereas Min(Max(x, min), max)
+  //    preserves IEEE NaN propagation (while still fusing to hardware vclamp
+  //    when min < max).
+  // 2. stablehlo::Max / Min preserve bounded dynamic dimensions, unlike
+  //    stablehlo::Clamp.
+  mlir::MlirOp res = input;
+  if (min) {
+    res = mlir::stablehlo::Max(res, *min);
+  }
+  if (max) {
+    res = mlir::stablehlo::Min(res, *max);
   }
 
   return res;
