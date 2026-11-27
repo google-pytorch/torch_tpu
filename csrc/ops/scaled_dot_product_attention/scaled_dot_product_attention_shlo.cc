@@ -16,6 +16,7 @@
 
 #include "csrc/ops/scaled_dot_product_attention/scaled_dot_product_attention_shlo.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -102,11 +103,11 @@ enum class SdpaPromotionType {
 };
 
 // Determine exactly where type promotion should happen inside the attn module.
-// For half-precision inputs (BF16/FP16), we promote only softmax and dP
-// gradient scaling to FP32 for numerical stability (matching CUDA
-// FlashAttention contract), keeping all matrix multiplications in native half
-// precision on TPU MXUs. If allow_half_precision_reduction_math is true, no
-// promotion is performed.
+// For BF16, we promote only softmax and dP gradient scaling to FP32 for
+// numerical stability (matching CUDA FlashAttention contract), keeping all
+// matrix multiplications in native BF16 on TPU MXUs. For FP16, we promote the
+// whole module to FP32 so Q @ K^T does not overflow FP16 max (65504.0). If
+// allow_half_precision_reduction_math is true, no promotion is performed.
 SdpaPromotionType GetSdpaPromotionType(
     mlir::MlirOp query, mlir::MlirOp /*key*/,
     bool allow_half_precision_reduction_math) {
@@ -115,8 +116,10 @@ SdpaPromotionType GetSdpaPromotionType(
   }
 
   const auto element_type = GetTensorTypeOrDie(query).getElementType();
-  const bool is_half_precision = element_type.isF16() || element_type.isBF16();
-  if (is_half_precision) {
+  if (element_type.isF16()) {
+    return SdpaPromotionType::kWholeModule;
+  }
+  if (element_type.isBF16()) {
     return SdpaPromotionType::kSoftmaxOnly;
   }
 
@@ -186,20 +189,12 @@ absl::StatusOr<mlir::MlirOp> ComputeScaledAttentionLogits(
 // attention inputs.
 absl::Status ValidateAttentionInputs(mlir::MlirOp query, mlir::MlirOp key,
                                      mlir::MlirOp value) {
-  const int64_t query_rank = GetTensorTypeOrDie(query).getRank();
   // The head count and head dim are used as concrete values below (e.g. the
   // GQA ratio and the default scale), so they must be static. Only batch and
   // sequence dimensions may be bounded dynamic.
   for (mlir::MlirOp input : {query, key, value}) {
     const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
     const int64_t input_rank = type.getRank();
-    if (input_rank < 3 || input_rank != query_rank) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "expected query, key and value "
-                "to have the same rank >= 3, got "
-             << query_rank << ", " << GetTensorTypeOrDie(key).getRank()
-             << " and " << GetTensorTypeOrDie(value).getRank();
-    }
     if (type.isDynamicDim(input_rank - 1) ||
         type.isDynamicDim(input_rank - 3)) {
       return TT_ERROR(error::kInvalidArgument)
@@ -823,12 +818,55 @@ BuildScaledDotProductAttentionBackward(absl::Span<mlir::MlirOp> inputs,
 // Reduced-precision floats (F16/BF16 and narrower) execute natively in single-
 // pass MXU precision; XLA's online-softmax Mosaic lowering rejects non-DEFAULT
 // contract precision on non-F32 operands (matching CreateFlashAttnConfig).
+// When F16 is promoted to F32 via kWholeModule, delegate to
+// GetAndAddPrecisionTo so F32 matmul precision settings are respected.
 mlir::stablehlo::Precision GetSdpaDotPrecision(
-    const mlir::ElementType element_type, OpParamCacheKeys& param_keys) {
-  if (XlaEquivalentBitwidth(element_type) < 32) {
+    const mlir::ElementType element_type,
+    bool allow_half_precision_reduction_math, OpParamCacheKeys& param_keys) {
+  const bool promoted_f16_to_f32 = element_type == mlir::ElementType::F16 &&
+                                   !allow_half_precision_reduction_math;
+  if (!promoted_f16_to_f32 && XlaEquivalentBitwidth(element_type) < 32) {
     return mlir::stablehlo::Precision::DEFAULT;  // EXPLICIT_PRECISION_OK=sdpa
   }
   return GetAndAddPrecisionTo(param_keys);
+}
+
+// Broadcasts leading batch dimensions of 3D/4D `query`, `key`, and `value` so
+// all three share the same rank and batch dimension before SHLO dispatch.
+absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
+BroadcastBatchDims3D4D(const at::Tensor& query, const at::Tensor& key,
+                       const at::Tensor& value) {
+  const int64_t min_rank = std::min({query.dim(), key.dim(), value.dim()});
+  const int64_t out_rank = std::max({query.dim(), key.dim(), value.dim()});
+  const bool same_batch_dims = query.dim() == key.dim() &&
+                               query.dim() == value.dim() && min_rank >= 3 &&
+                               query.sizes().slice(0, out_rank - 3) ==
+                                   key.sizes().slice(0, out_rank - 3) &&
+                               query.sizes().slice(0, out_rank - 3) ==
+                                   value.sizes().slice(0, out_rank - 3);
+  if (same_batch_dims) {
+    return std::make_tuple(query, key, value);
+  }
+  if (min_rank < 3 || out_rank != 4) {
+    return TT_ERROR(error::kInvalidArgument)
+           << "expected query, key and value to have matching batch dims with "
+              "rank >= 3 or broadcastable 3D/4D ranks, got "
+           << query.dim() << ", " << key.dim() << " and " << value.dim();
+  }
+  TT_ASSIGN_OR_RETURN(const Dimensions batch_dims,
+                      InferSize(query.sizes().slice(0, query.dim() - 3),
+                                key.sizes().slice(0, key.dim() - 3),
+                                value.sizes().slice(0, value.dim() - 3)));
+  const int64_t batch_size = batch_dims[0];
+  auto expand_to_4d = [batch_size](const at::Tensor& t) -> at::Tensor {
+    if (t.dim() == 4 && t.size(0) == batch_size) {
+      return t;
+    }
+    at::Tensor t4 = t.dim() == 3 ? t.unsqueeze(0) : t;
+    return t4.expand({batch_size, t4.size(1), t4.size(2), t4.size(3)});
+  };
+  return std::make_tuple(expand_to_4d(query), expand_to_4d(key),
+                         expand_to_4d(value));
 }
 
 }  // namespace
@@ -840,13 +878,15 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
     OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(query.scalar_type()));
+  TT_ASSIGN_OR_RETURN((auto [b_query, b_key, b_value]),
+                      BroadcastBatchDims3D4D(query, key, value));
 
-  const int64_t rank = query.dim();
-  Dimensions out_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
-  out_dims.push_back(value.sizes().back());
-  Dimensions lse_dims = CopyIntVector(query.sizes().slice(0, rank - 1));
-  const mlir::stablehlo::Precision precision =
-      GetSdpaDotPrecision(out_dtype, param_keys);
+  const int64_t rank = b_query.dim();
+  Dimensions out_dims = CopyIntVector(b_query.sizes().slice(0, rank - 1));
+  out_dims.push_back(b_value.sizes().back());
+  Dimensions lse_dims = CopyIntVector(b_query.sizes().slice(0, rank - 1));
+  const mlir::stablehlo::Precision precision = GetSdpaDotPrecision(
+      out_dtype, allow_half_precision_reduction_math, param_keys);
   auto op_builder =
       [is_causal, scale, allow_half_precision_reduction_math, precision](
           absl::Span<mlir::MlirOp> inputs,
@@ -856,7 +896,7 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
         precision);
   };
 
-  std::vector<at::Tensor> inputs = {query, key, value};
+  std::vector<at::Tensor> inputs = {b_query, b_key, b_value};
   if (attn_bias.has_value() && attn_bias->defined() && attn_bias->numel() > 0) {
     inputs.push_back(*attn_bias);
   }
@@ -877,7 +917,7 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
   // traced by torch.compile (e.g. merging heads) are also valid in eager mode.
   TT_ASSIGN_OR_RETURN(at::Tensor view_out,
                       ContiguousToView(std::move(results[0]),
-                                       MatchingLayoutStrides(query, out_dims),
+                                       MatchingLayoutStrides(b_query, out_dims),
                                        /*target_storage_offset=*/0));
   return FusedAttentionResults{.output = std::move(view_out),
                                .logsumexp = std::move(logsumexp)};
@@ -891,16 +931,18 @@ ScaledDotProductFusedAttentionShloBackward(
     bool allow_half_precision_reduction_math, OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(query.scalar_type()));
+  TT_ASSIGN_OR_RETURN((auto [b_query, b_key, b_value]),
+                      BroadcastBatchDims3D4D(query, key, value));
 
-  const int rank = query.ndimension();
-  const int batch_size = get_batch_size(query.sizes());
-  const int64_t num_head_q = query.size(rank - 3);
-  const int64_t num_head_kv = key.size(rank - 3);
-  const int64_t seq_len_q = query.size(rank - 2);
-  const int64_t seq_len_kv = key.size(rank - 2);
-  const int64_t head_dim = query.size(rank - 1);
-  const mlir::stablehlo::Precision precision =
-      GetSdpaDotPrecision(out_dtype, param_keys);
+  const int rank = b_query.ndimension();
+  const int batch_size = get_batch_size(b_query.sizes());
+  const int64_t num_head_q = b_query.size(rank - 3);
+  const int64_t num_head_kv = b_key.size(rank - 3);
+  const int64_t seq_len_q = b_query.size(rank - 2);
+  const int64_t seq_len_kv = b_key.size(rank - 2);
+  const int64_t head_dim = b_query.size(rank - 1);
+  const mlir::stablehlo::Precision precision = GetSdpaDotPrecision(
+      out_dtype, allow_half_precision_reduction_math, param_keys);
 
   auto op_builder =
       [rank, batch_size, is_causal, scale, num_head_q, num_head_kv, seq_len_q,
@@ -912,7 +954,7 @@ ScaledDotProductFusedAttentionShloBackward(
             allow_half_precision_reduction_math, precision);
       };
 
-  std::vector<at::Tensor> inputs = {grad_out, query, key, value, sum_exp};
+  std::vector<at::Tensor> inputs = {grad_out, b_query, b_key, b_value, sum_exp};
   if (attn_bias.defined() && attn_bias.numel() > 0) {
     inputs.push_back(attn_bias);
   }
@@ -922,7 +964,7 @@ ScaledDotProductFusedAttentionShloBackward(
       (DispatchOp<kDynamicSize, 3>(
           std::move(op_builder), inputs,
           {.out_dtypes = {out_dtype, out_dtype, out_dtype},
-           .out_dims_list = {query.sizes(), key.sizes(), value.sizes()},
+           .out_dims_list = {b_query.sizes(), b_key.sizes(), b_value.sizes()},
            .op_param_cache_keys = std::move(param_keys)})));
 
   // Artificially create a simulated DataPtr to prevent the result node from
@@ -935,12 +977,21 @@ ScaledDotProductFusedAttentionShloBackward(
 
   // Return the gradients with the strides of the meta function, which
   // allocates them with `torch.empty_like`.
+  auto make_strided_grad =
+      [](DeviceBufferRef result, const at::Tensor& expanded,
+         const at::Tensor& orig) -> absl::StatusOr<at::Tensor> {
+    if (orig.dim() != expanded.dim() ||
+        (orig.dim() == 4 && orig.size(0) != expanded.size(0))) {
+      return MakeTensor(std::move(result))
+          .sum(/*dim=*/0, /*keepdim=*/orig.dim() == 4);
+    }
+    return ContiguousToView(std::move(result), EmptyLikeStrides(orig),
+                            /*target_storage_offset=*/0);
+  };
   TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_query,
-                      ContiguousToView(results[0], EmptyLikeStrides(query),
-                                       /*target_storage_offset=*/0));
+                      make_strided_grad(results[0], b_query, query));
   TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_key,
-                      ContiguousToView(results[1], EmptyLikeStrides(key),
-                                       /*target_storage_offset=*/0));
+                      make_strided_grad(results[1], b_key, key));
 
   // It's okay if the materialization happens during the third
   // ContiguousToView; all other necessary tensors have already been created, so
@@ -948,8 +999,7 @@ ScaledDotProductFusedAttentionShloBackward(
   std::move(cleanup).Invoke();
 
   TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_value,
-                      ContiguousToView(results[2], EmptyLikeStrides(value),
-                                       /*target_storage_offset=*/0));
+                      make_strided_grad(results[2], b_value, value));
   return std::make_tuple(strided_grad_query, strided_grad_key,
                          strided_grad_value);
 }

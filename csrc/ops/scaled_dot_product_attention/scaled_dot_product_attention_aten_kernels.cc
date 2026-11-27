@@ -105,11 +105,20 @@ bool IsSupportedFlashAttentionShape(
 
   bool has_batch = query.ndimension() >= 4 &&
                    get_batch_size(query.sizes()) >= min_batch_size;
+  if (!has_batch) {
+    return false;
+  }
+  bool matching_batch_dims = query.ndimension() == key.ndimension() &&
+                             query.ndimension() == value.ndimension() &&
+                             query.sizes().slice(0, query.ndimension() - 3) ==
+                                 key.sizes().slice(0, key.ndimension() - 3) &&
+                             query.sizes().slice(0, query.ndimension() - 3) ==
+                                 value.sizes().slice(0, value.ndimension() - 3);
   bool valid_head_dim =
       (query.size(query.ndimension() - 1) < min_block_size ||
        query.size(query.ndimension() - 1) % min_block_size == 0);
 
-  return has_batch && valid_head_dim;
+  return matching_batch_dims && valid_head_dim;
 }
 
 // Returns true if StableHLO SDPA should be preferred over the FlashAttention
@@ -248,16 +257,17 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         bool overrideable_enabled = ctx.userEnabledOverrideableSDP();
         bool shlo_enabled = math_enabled || overrideable_enabled;
 
-        bool consistent_ranks = query.ndimension() == key.ndimension() &&
-                                query.ndimension() == value.ndimension();
-        bool has_batch = query.ndimension() >= 4;
+        bool valid_shlo_ranks =
+            query.ndimension() >= 3 && query.ndimension() <= 4 &&
+            key.ndimension() >= 3 && key.ndimension() <= 4 &&
+            value.ndimension() >= 3 && value.ndimension() <= 4;
         bool has_dropout = dropout_p != 0.0;
         bool valid_flash_dropout = dropout_p >= 0.0 && dropout_p < 1.0;
         bool mask_requires_grad =
             c10::GradMode::is_enabled() && attn_mask.has_value() &&
             attn_mask->defined() && attn_mask->requires_grad();
         bool is_floating_type = c10::isFloatingType(query.scalar_type());
-        bool shlo_supported = consistent_ranks && has_batch && !has_dropout &&
+        bool shlo_supported = valid_shlo_ranks && !has_dropout &&
                               is_floating_type && !mask_requires_grad;
 
         if (flash_enabled) {
@@ -266,7 +276,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                query.scalar_type() == at::ScalarType::BFloat16);
           if (supported_flash_dtype &&
               IsSupportedFlashAttentionShape(query, key, value, attn_mask) &&
-              consistent_ranks && valid_flash_dropout && !mask_requires_grad) {
+              valid_flash_dropout && !mask_requires_grad) {
             // The SHLO implementation is faster for short sequences. Prefer it
             // unless SDPA is restricted to the flash backend.
             if (shlo_enabled && shlo_supported &&
@@ -324,7 +334,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                 "- inputs are not complex (current: ",
                 query.scalar_type(),
                 ")\n"
-                "- inputs have the same rank (query: ",
+                "- inputs have rank 3 or 4 (query: ",
                 query.ndimension(), ", key: ", key.ndimension(),
                 ", value: ", value.ndimension(),
                 ")\n"
@@ -399,6 +409,10 @@ AtenScaledDotProductFusedAttentionOverrideableBackward(
     const at::Tensor& cum_seq_k, at::SymInt max_q, at::SymInt max_k,
     double dropout_p, bool is_causal, const at::Tensor& philox_seed,
     const at::Tensor& philox_offset, std::optional<double> scale) {
+  if (!grad_out.defined()) {
+    return std::make_tuple(at::Tensor(), at::Tensor(), at::Tensor(),
+                           at::Tensor());
+  }
   TT_KERNEL(
       OpName::kScaledDotProductFusedAttentionOverrideableBackward, param_keys,
       (grad_out, query, key, value, attn_bias,

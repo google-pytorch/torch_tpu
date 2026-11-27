@@ -26333,6 +26333,128 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         sim = torch.nn.functional.cosine_similarity(cpu, tpu.cpu(), dim=-1)
         self.assertGreater(sim.mean().item(), 0.9999)
 
+  @parameterized.named_parameters(
+      ("zero_value_head_dim", 0, 0, False),
+      ("zero_qk_head_dim_transposed", 0, 4, True),
+      ("zero_all_head_dim_transposed", 0, 0, True),
+  )
+  def test_sdpa_zero_head_dim_strided(
+      self, qk_head_dim: int, v_head_dim: int, transpose: bool
+  ):
+    """Verifies zero-element SDPA forward/backward and stride preservation."""
+    device = torch.device("tpu")
+    if transpose:
+      q = (
+          torch.empty((1, 8, 4, qk_head_dim), device=device)
+          .transpose(1, 2)
+          .requires_grad_()
+      )
+      k = (
+          torch.empty((1, 8, 4, qk_head_dim), device=device)
+          .transpose(1, 2)
+          .requires_grad_()
+      )
+      v = (
+          torch.randn((1, 8, 4, v_head_dim), device=device)
+          .transpose(1, 2)
+          .requires_grad_()
+      )
+    else:
+      q = torch.empty((1, 4, 8, qk_head_dim), device=device, requires_grad=True)
+      k = torch.empty((1, 4, 8, qk_head_dim), device=device, requires_grad=True)
+      v = torch.randn((1, 4, 8, v_head_dim), device=device, requires_grad=True)
+
+    with torch.nn.attention.sdpa_kernel(
+        torch.nn.attention.SDPBackend.OVERRIDEABLE
+    ):
+      out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+      grad_out = torch.randn_like(out)
+      out.backward(grad_out)
+
+    self.assertEqual(out.shape, (1, 4, 8, v_head_dim))
+    self.assertEqual(q.grad.shape, q.shape)
+    self.assertEqual(k.grad.shape, k.shape)
+    self.assertEqual(v.grad.shape, v.shape)
+    self.assertEqual(q.grad.stride(), torch.empty_like(q).stride())
+    self.assertEqual(k.grad.stride(), torch.empty_like(k).stride())
+    self.assertEqual(v.grad.stride(), torch.empty_like(v).stride())
+
+  @parameterized.named_parameters(
+      ("4d_q_broadcast", (1, 4, 4, 64), (2, 4, 16, 64)),
+      ("3d_kv_broadcast", (2, 4, 4, 64), (4, 16, 64)),
+  )
+  def test_sdpa_broadcast_batch_dims_backward(self, q_shape, kv_shape):
+    """Verifies backward gradient reductions for 3D/4D broadcast batch dims."""
+    torch.manual_seed(0)
+    q_cpu = torch.randn(q_shape, requires_grad=True)
+    k_cpu = torch.randn(kv_shape, requires_grad=True)
+    v_cpu = torch.randn(kv_shape, requires_grad=True)
+    out_cpu = torch.nn.functional.scaled_dot_product_attention(
+        q_cpu, k_cpu, v_cpu
+    )
+    grad_out_cpu = torch.randn_like(out_cpu)
+    out_cpu.backward(grad_out_cpu)
+
+    q_tpu = q_cpu.detach().to("tpu").requires_grad_()
+    k_tpu = k_cpu.detach().to("tpu").requires_grad_()
+    v_tpu = v_cpu.detach().to("tpu").requires_grad_()
+    with torch.nn.attention.sdpa_kernel(
+        torch.nn.attention.SDPBackend.OVERRIDEABLE
+    ):
+      out_tpu = torch.nn.functional.scaled_dot_product_attention(
+          q_tpu, k_tpu, v_tpu
+      )
+      out_tpu.backward(grad_out_cpu.to("tpu"))
+
+    self.assertEqual(out_tpu.shape, out_cpu.shape)
+    self.assertEqual(q_tpu.grad.shape, q_cpu.grad.shape)
+    self.assertEqual(k_tpu.grad.shape, k_cpu.grad.shape)
+    self.assertEqual(v_tpu.grad.shape, v_cpu.grad.shape)
+    self.assert_close(
+        golden_result=out_cpu,
+        torch_tpu_result=out_tpu.cpu(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+    self.assert_close(
+        golden_result=q_cpu.grad,
+        torch_tpu_result=q_tpu.grad.cpu(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+    self.assert_close(
+        golden_result=k_cpu.grad,
+        torch_tpu_result=k_tpu.grad.cpu(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+    self.assert_close(
+        golden_result=v_cpu.grad,
+        torch_tpu_result=v_tpu.grad.cpu(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+  def test_sdpa_2d_inputs_with_flash_enabled(self):
+    """Verifies 2D inputs fall back cleanly when FlashAttention is enabled."""
+    torch.manual_seed(0)
+    q_cpu = torch.randn(8, 32)
+    k_cpu = torch.randn(16, 32)
+    v_cpu = torch.randn(16, 32)
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q_cpu, k_cpu, v_cpu
+    )
+    actual = torch.nn.functional.scaled_dot_product_attention(
+        q_cpu.to("tpu"), k_cpu.to("tpu"), v_cpu.to("tpu")
+    )
+    self.assertEqual(actual.shape, expected.shape)
+    self.assert_close(
+        golden_result=expected,
+        torch_tpu_result=actual.cpu(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
   def test_scaled_dot_product_attention_dropout(self):
     """Verifies FlashAttention dropout rate and 1/(1-p) scaling."""
     batch_size, num_heads, seq_len, head_dim = 2, 4, 128, 128

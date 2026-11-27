@@ -165,6 +165,20 @@ def _patch_sdpa_meta(meta_lib: torch.library.Library) -> None:
                   f"or be 1 for broadcasting, but got {bias_s_kv}"
               ),
           )
+      if (
+          key.dim() in (3, 4)
+          and value.dim() in (3, 4)
+          and (
+              query.shape[:-3] != key.shape[:-3]
+              or query.shape[:-3] != value.shape[:-3]
+          )
+      ):
+        batch_shape = torch.broadcast_shapes(
+            query.shape[:-3], key.shape[:-3], value.shape[:-3]
+        )
+        query = query.expand(*batch_shape, *query.shape[-3:])
+        key = key.expand(*batch_shape, *key.shape[-3:])
+        value = value.expand(*batch_shape, *value.shape[-3:])
     return upstream_meta(
         query,
         key,

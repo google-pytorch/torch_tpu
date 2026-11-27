@@ -1798,9 +1798,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           tpu="""scaled_dot_product_fused_attention_overrideable(): expected at most one batch dim not equal to 1 when a batch dim is dynamic, got shape [4, 3, 4, 16, 32]""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
-        torch.nn.functional.scaled_dot_product_attention(
+        torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
             query, key, value
-        ).cpu()
+        )[0].cpu()
 
   @et.why_tpu_only(
       "Tests internal _scaled_dot_product_fused_attention_overrideable SHLO"
@@ -1809,13 +1809,13 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test_scaled_dot_product_fused_attention_overrideable_mismatched_rank(
       self,
   ):
-    query = torch.ones(2, 4, 16, 32, device=et.device())
-    key = torch.ones(4, 16, 32, device=et.device())
-    value = torch.ones(2, 4, 16, 32, device=et.device())
+    query = torch.ones(2, 3, 4, 16, 32, device=et.device())
+    key = torch.ones(3, 4, 16, 32, device=et.device())
+    value = torch.ones(2, 3, 4, 16, 32, device=et.device())
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scaled_dot_product_fused_attention_overrideable(): expected query, key and value to have the same rank >= 3, got 4, 3 and 4""",
+        tpu="""scaled_dot_product_fused_attention_overrideable(): expected query, key and value to have matching batch dims with rank >= 3 or broadcastable 3D/4D ranks, got 5, 4 and 5""",
     ):
       # cpu() is needed because the error is triggered inside the op builder.
       torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
