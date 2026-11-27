@@ -33,6 +33,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -56,6 +57,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Region.h"
 #include "mlir/IR/Types.h"
+#include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -518,12 +520,8 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolBackwardShlo(
 
   const mlir::Type element_type = input_shape.getElementType();
 
-  // STEP 5. Initialize init_value (0.0)
-  mlir::Attribute val_attr =
-      builder.getOpBuilder().getFloatAttr(element_type, 0.0);
-  mlir::DenseElementsAttr init_value_attr = mlir::DenseElementsAttr::get(
-      mlir::RankedTensorType::get({}, element_type), val_attr);
-  mlir::MlirOp init_value = mlir::stablehlo::Constant(builder, init_value_attr);
+  // STEP 5. Initialize init_value (0)
+  mlir::MlirOp init_value = MakeScalarConstant(builder, 0.0, element_type);
 
   // STEP 6. Region Builders for Select and Scatter
   auto select_body = [element_type](mlir::RegionBuilder& body) {
@@ -543,9 +541,30 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolBackwardShlo(
                        op_builder, loc, lhs_value, rhs_value,
                        mlir::stablehlo::ComparisonDirection::GE)
                        .getResult();
+    mlir::Value select_pred = ge_pred;
+    if (mlir::isa<mlir::FloatType>(element_type)) {
+      // Match PyTorch CPU/CUDA NaN propagation (`(val > maxval) ||
+      // isnan(val)`): NaN beats finite values and the last NaN in a window wins
+      // on ties
+      // (`(lhs >= rhs) || (lhs_is_nan && !rhs_is_nan)`).
+      auto lhs_is_nan = mlir::stablehlo::CompareOp::create(
+                            op_builder, loc, lhs_value, lhs_value,
+                            mlir::stablehlo::ComparisonDirection::NE)
+                            .getResult();
+      auto rhs_not_nan = mlir::stablehlo::CompareOp::create(
+                             op_builder, loc, rhs_value, rhs_value,
+                             mlir::stablehlo::ComparisonDirection::EQ)
+                             .getResult();
+      auto nan_lhs_wins = mlir::stablehlo::AndOp::create(
+                              op_builder, loc, lhs_is_nan, rhs_not_nan)
+                              .getResult();
+      select_pred =
+          mlir::stablehlo::OrOp::create(op_builder, loc, ge_pred, nan_lhs_wins)
+              .getResult();
+    }
 
     mlir::stablehlo::ReturnOp::create(op_builder, loc,
-                                      mlir::ValueRange{ge_pred});
+                                      mlir::ValueRange{select_pred});
   };
 
   auto scatter_body = [element_type](mlir::RegionBuilder& body) {
@@ -598,6 +617,10 @@ absl::StatusOr<DeviceBufferRef> BuildMaxPoolBackwardGradInputNd(
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode,
     int64_t spatial_dim_count, OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(GetPoolingOutputSize(self.sizes(), kernel_size, stride,
+                                          padding, dilation, ceil_mode,
+                                          spatial_dim_count)
+                         .status());
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
 
@@ -763,6 +786,12 @@ absl::Status BuildMaxPoolWithIndicesOutNd(
       const Dimensions output_size,
       GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding, dilation,
                            ceil_mode, spatial_dim_count));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RET_CHECK(indices.scalar_type() == at::ScalarType::Long,
+               error::kInvalidArgument)
+      << "expected indices dtype to be int64, got "
+      << ToString(indices.scalar_type());
   TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, output_size));
   TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(indices, output_size));
   TT_ASSIGN_OR_RETURN(auto element_type,
@@ -835,6 +864,16 @@ absl::Status BuildMaxPoolWithIndicesBackwardGradInputNd(
     at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode,
     const at::Tensor& indices, at::Tensor& grad_input,
     int64_t spatial_dim_count, OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(GetPoolingOutputSize(self.sizes(), kernel_size, stride,
+                                          padding, dilation, ceil_mode,
+                                          spatial_dim_count)
+                         .status());
+  TT_RETURN_IF_ERROR(ValidateOutDtype(grad_input, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RET_CHECK(indices.scalar_type() == at::ScalarType::Long,
+               error::kInvalidArgument)
+      << "expected indices dtype to be int64, got "
+      << ToString(indices.scalar_type());
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
 
@@ -851,7 +890,7 @@ absl::Status BuildMaxPoolWithIndicesBackwardGradInputNd(
 
   DispatchOpOptions<1> options = {
       .out_dtype = output_dtype,
-      .out_dims = grad_input.sizes(),
+      .out_dims = self.sizes(),
       .op_param_cache_keys = std::move(param_keys),
   };
   return DispatchOpOut<3>(std::move(op_builder), {grad_output, self, indices},

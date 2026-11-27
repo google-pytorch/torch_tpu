@@ -597,6 +597,9 @@ absl::StatusOr<at::Tensor> BuildAvgPoolOutNd(
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& out,
     int64_t spatial_dim_count, OpParamCacheKeys param_keys) {
+  TT_RET_CHECK(!divisor_override.has_value() || divisor_override.value() != 0,
+               error::kInvalidArgument)
+      << "expected divisor_override to be non-zero, got 0";
   TT_ASSIGN_OR_RETURN(
       const Dimensions output_size,
       GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
@@ -624,6 +627,13 @@ absl::StatusOr<at::Tensor> BuildAvgPoolBackwardGradInputNd(
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& grad_input,
     int64_t spatial_dim_count, OpParamCacheKeys param_keys) {
+  TT_RET_CHECK(!divisor_override.has_value() || divisor_override.value() != 0,
+               error::kInvalidArgument)
+      << "expected divisor_override to be non-zero, got 0";
+  TT_RETURN_IF_ERROR(GetPoolingOutputSize(self.sizes(), kernel_size, stride,
+                                          padding, at::IntArrayRef({1}),
+                                          ceil_mode, spatial_dim_count)
+                         .status());
   TT_RETURN_IF_ERROR(ValidateOutDtype(grad_input, self.scalar_type(),
                                       /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(const auto output_dtype,

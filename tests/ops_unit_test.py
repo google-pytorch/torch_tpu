@@ -31440,6 +31440,116 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="1d_single_nan",
+          shape=(1, 1, 4),
+          fn=torch.nn.functional.max_pool1d,
+          nan_indices=(0,),
+      ),
+      dict(
+          testcase_name="2d_single_nan",
+          shape=(1, 1, 2, 2),
+          fn=torch.nn.functional.max_pool2d,
+          nan_indices=(0,),
+      ),
+      dict(
+          testcase_name="3d_single_nan",
+          shape=(1, 1, 2, 2, 2),
+          fn=torch.nn.functional.max_pool3d,
+          nan_indices=(0,),
+      ),
+      dict(
+          testcase_name="1d_multi_nan",
+          shape=(1, 1, 4),
+          fn=torch.nn.functional.max_pool1d,
+          nan_indices=(0, 1),
+      ),
+      dict(
+          testcase_name="2d_multi_nan",
+          shape=(1, 1, 2, 2),
+          fn=torch.nn.functional.max_pool2d,
+          nan_indices=(0, 1),
+      ),
+      dict(
+          testcase_name="3d_multi_nan",
+          shape=(1, 1, 2, 2, 2),
+          fn=torch.nn.functional.max_pool3d,
+          nan_indices=(0, 1),
+      ),
+  )
+  def test_max_pool_nan_backward(self, shape, fn, nan_indices):
+    base = torch.arange(
+        1,
+        torch.tensor(shape).prod().item() + 1,
+        dtype=torch.float32,
+    ).reshape(shape)
+    for idx in nan_indices:
+      base.view(-1)[idx] = float("nan")
+    x_cpu = base.clone().requires_grad_(True)
+    fn(x_cpu, kernel_size=2, stride=2).sum().backward()
+    x_tpu = base.to("tpu").requires_grad_(True)
+    fn(x_tpu, kernel_size=2, stride=2).sum().backward()
+    utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="2d",
+          shape=(1, 1, 4, 4),
+          spatial_dims=2,
+          fwd_op=torch.ops.aten.max_pool2d_with_indices,
+          bwd_op=torch.ops.aten.max_pool2d_with_indices_backward,
+          bwd_grad_input_op=torch.ops.aten.max_pool2d_with_indices_backward.grad_input,
+      ),
+      dict(
+          testcase_name="3d",
+          shape=(1, 1, 4, 4, 4),
+          spatial_dims=3,
+          fwd_op=torch.ops.aten.max_pool3d_with_indices,
+          bwd_op=torch.ops.aten.max_pool3d_with_indices_backward,
+          bwd_grad_input_op=torch.ops.aten.max_pool3d_with_indices_backward.grad_input,
+      ),
+  )
+  def test_max_pool_with_indices_backward_empty_grad_input(
+      self, shape, spatial_dims, fwd_op, bwd_op, bwd_grad_input_op
+  ):
+    kernel_size = [2] * spatial_dims
+    stride = [2] * spatial_dims
+    padding = [0] * spatial_dims
+    dilation = [1] * spatial_dims
+
+    x_cpu = torch.randn(shape, dtype=torch.float32)
+    out_cpu, idx_cpu = fwd_op(
+        x_cpu, kernel_size, stride, padding, dilation, False
+    )
+    grad_out_cpu = torch.randn_like(out_cpu)
+    expected_gi = bwd_op(
+        grad_out_cpu,
+        x_cpu,
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        False,
+        idx_cpu,
+    )
+    x_tpu = x_cpu.to("tpu")
+    grad_input = torch.empty(0, device="tpu", dtype=torch.float32)
+    ret = bwd_grad_input_op(
+        grad_out_cpu.to("tpu"),
+        x_tpu,
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        False,
+        idx_cpu.to("tpu"),
+        grad_input=grad_input,
+    )
+    self.assertIs(ret, grad_input)
+    self.assertEqual(grad_input.shape, x_tpu.shape)
+    utils.assert_close(grad_input.cpu(), expected_gi)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -25023,5 +25023,366 @@ class IndexReduceErrorTest(et.ErrorTestBase):
       torch.index_reduce(self_t, 0, index, source, "prod", out=out)
 
 
+class PoolingErrorTest(et.ErrorTestBase):
+  """Tests for pooling parameter and dtype validation errors."""
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="zero_stride",
+          input_shape=(1, 1, 4, 4),
+          kernel_size=2,
+          stride=0,
+          padding=0,
+          tpu="""max_pool2d(): expected stride to be greater than zero, got 0""",
+          gpu="""stride should not be zero""",
+      ),
+      dict(
+          testcase_name="zero_kernel_size",
+          input_shape=(1, 1, 4, 4),
+          kernel_size=0,
+          stride=1,
+          padding=0,
+          tpu="""max_pool2d(): expected kernel_size to be greater than zero, got 0""",
+          gpu="""kernel size should be greater than zero, but got kH: 0 kW: 0""",
+      ),
+      dict(
+          testcase_name="negative_padding",
+          input_shape=(1, 1, 4, 4),
+          kernel_size=2,
+          stride=1,
+          padding=-1,
+          tpu="""max_pool2d(): expected padding to be >= 0, got -1""",
+          gpu="""pad must be non-negative, but got pad: -1""",
+      ),
+      dict(
+          testcase_name="padding_exceeds_half_kernel",
+          input_shape=(1, 1, 4, 4),
+          kernel_size=2,
+          stride=1,
+          padding=2,
+          tpu="""max_pool2d(): expected padding to be at most half of kernel_size, got padding=2 and kernel_size=2""",
+          gpu="""pad should be at most half of effective kernel size, but got pad=2, kernel_size=2 and dilation=1""",
+      ),
+      dict(
+          testcase_name="output_size_too_small",
+          input_shape=(1, 1, 2, 2),
+          kernel_size=3,
+          stride=2,
+          padding=0,
+          tpu="""max_pool2d(): calculated output size (0) is too small for input size 2 at spatial dim 0""",
+          gpu="""Given input size: (1x2x2). Calculated output size: (1x0x0). Output size is too small""",
+      ),
+  )
+  def test_max_pool2d_invalid_params(
+      self,
+      input_shape,
+      kernel_size,
+      stride,
+      padding,
+      tpu,
+      gpu,
+  ):
+    inp = torch.ones(*input_shape, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(RuntimeError, tpu=tpu, gpu=gpu):
+      torch.nn.functional.max_pool2d(
+          inp, kernel_size=kernel_size, stride=stride, padding=padding
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="zero_dilation",
+          kernel_size=[2, 2],
+          stride=[1, 1],
+          padding=[0, 0],
+          dilation=[0, 0],
+          tpu="""max_pool2d_with_indices(): expected dilation to be greater than zero, got 0""",
+          gpu="""dilation should be greater than zero, but got dilationH: 0 dilationW: 0""",
+      ),
+      dict(
+          testcase_name="effective_kernel_size_overflow",
+          kernel_size=[4, 4],
+          stride=[1, 1],
+          padding=[0, 0],
+          dilation=[1 << 62, 1 << 62],
+          tpu="""max_pool2d_with_indices(): expected effective kernel size to fit in int64, got kernel_size=4 and dilation=4611686018427387904""",
+          gpu="""value cannot be converted to type int without overflow""",
+      ),
+      dict(
+          testcase_name="invalid_kernel_size_length",
+          kernel_size=[2, 2, 2],
+          stride=[2, 2],
+          padding=[0, 0],
+          dilation=[1, 1],
+          tpu="""max_pool2d_with_indices(): expected kernel_size to have 1 or 2 elements, got 3""",
+          gpu="""max_pool2d: kernel_size must either be a single int, or a tuple of two ints""",
+      ),
+      dict(
+          testcase_name="invalid_stride_length",
+          kernel_size=[2, 2],
+          stride=[2, 2, 2],
+          padding=[0, 0],
+          dilation=[1, 1],
+          tpu="""max_pool2d_with_indices(): expected stride to have 0, 1, or 2 elements, got 3""",
+          gpu="""max_pool2d: stride must either be omitted, a single int, or a tuple of two ints""",
+      ),
+      dict(
+          testcase_name="invalid_padding_length",
+          kernel_size=[2, 2],
+          stride=[2, 2],
+          padding=[0, 0, 0],
+          dilation=[1, 1],
+          tpu="""max_pool2d_with_indices(): expected padding to have 1 or 2 elements, got 3""",
+          gpu="""max_pool2d: padding must either be a single int, or a tuple of two ints""",
+      ),
+      dict(
+          testcase_name="empty_padding",
+          kernel_size=[2, 2],
+          stride=[2, 2],
+          padding=[],
+          dilation=[1, 1],
+          tpu="""max_pool2d_with_indices(): expected padding to have 1 or 2 elements, got 0""",
+          gpu="""max_pool2d: padding must either be a single int, or a tuple of two ints""",
+      ),
+      dict(
+          testcase_name="invalid_dilation_length",
+          kernel_size=[2, 2],
+          stride=[2, 2],
+          padding=[0, 0],
+          dilation=[1, 1, 1],
+          tpu="""max_pool2d_with_indices(): expected dilation to have 1 or 2 elements, got 3""",
+          gpu="""max_pool2d: dilation must be either a single int, or a tuple of two ints""",
+      ),
+      dict(
+          testcase_name="empty_dilation",
+          kernel_size=[2, 2],
+          stride=[2, 2],
+          padding=[0, 0],
+          dilation=[],
+          tpu="""max_pool2d_with_indices(): expected dilation to have 1 or 2 elements, got 0""",
+          gpu="""max_pool2d: dilation must be either a single int, or a tuple of two ints""",
+      ),
+  )
+  def test_max_pool2d_with_indices_out_invalid_params(
+      self,
+      kernel_size,
+      stride,
+      padding,
+      dilation,
+      tpu,
+      gpu,
+  ):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 2, 2, device=et.device(), dtype=torch.float32)
+    indices = torch.empty(1, 1, 2, 2, device=et.device(), dtype=torch.long)
+    with et.assert_raises_message(RuntimeError, tpu=tpu, gpu=gpu):
+      torch.ops.aten.max_pool2d_with_indices.out(
+          inp,
+          kernel_size,
+          stride,
+          padding,
+          dilation,
+          False,
+          out=out,
+          indices=indices,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="invalid_out_dtype",
+          out_dtype=torch.float64,
+          indices_dtype=torch.long,
+          tpu="""max_pool2d_with_indices(): expected the output dtype to be float32, got float64""",
+          gpu="""Expected out tensor to have dtype float, but got double instead""",
+      ),
+      dict(
+          testcase_name="invalid_indices_dtype",
+          out_dtype=torch.float32,
+          indices_dtype=torch.int32,
+          tpu="""max_pool2d_with_indices(): expected indices dtype to be int64, got int32""",
+          gpu="""Expected out tensor to have dtype long, but got int instead""",
+      ),
+  )
+  def test_max_pool2d_with_indices_out_invalid_dtypes(
+      self,
+      out_dtype,
+      indices_dtype,
+      tpu,
+      gpu,
+  ):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 2, 2, device=et.device(), dtype=out_dtype)
+    indices = torch.empty(1, 1, 2, 2, device=et.device(), dtype=indices_dtype)
+    with et.assert_raises_message(RuntimeError, tpu=tpu, gpu=gpu):
+      torch.ops.aten.max_pool2d_with_indices.out(
+          inp,
+          [2, 2],
+          [2, 2],
+          [0, 0],
+          [1, 1],
+          False,
+          out=out,
+          indices=indices,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="invalid_grad_input_dtype",
+          grad_input_dtype=torch.float64,
+          indices_dtype=torch.long,
+          tpu="""max_pool2d_with_indices_backward(): expected the output dtype to be float32, got float64""",
+          gpu="""Expected out tensor to have dtype float, but got double instead""",
+      ),
+      dict(
+          testcase_name="invalid_indices_dtype",
+          grad_input_dtype=torch.float32,
+          indices_dtype=torch.int32,
+          tpu="""max_pool2d_with_indices_backward(): expected indices dtype to be int64, got int32""",
+          gpu="""expected scalar type Long but found Int""",
+      ),
+  )
+  def test_max_pool2d_with_indices_backward_invalid_dtypes(
+      self,
+      grad_input_dtype,
+      indices_dtype,
+      tpu,
+      gpu,
+  ):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out_ok, idx_ok = torch.ops.aten.max_pool2d_with_indices(
+        inp, [2, 2], [2, 2], [0, 0], [1, 1], False
+    )
+    grad_out = torch.ones_like(out_ok)
+    indices = idx_ok.to(indices_dtype)
+    grad_input = torch.empty(
+        1, 1, 4, 4, device=et.device(), dtype=grad_input_dtype
+    )
+    with et.assert_raises_message(RuntimeError, tpu=tpu, gpu=gpu):
+      torch.ops.aten.max_pool2d_with_indices_backward.grad_input(
+          grad_out,
+          inp,
+          [2, 2],
+          [2, 2],
+          [0, 0],
+          [1, 1],
+          False,
+          indices,
+          grad_input=grad_input,
+      )
+
+  def test_avg_pool2d_out_zero_divisor_override(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 2, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""avg_pool2d(): expected divisor_override to be non-zero, got 0""",
+        gpu="""divisor must be not zero""",
+    ):
+      torch.ops.aten.avg_pool2d.out(
+          inp,
+          [2, 2],
+          [2, 2],
+          [0, 0],
+          False,
+          True,
+          0,
+          out=out,
+      )
+
+  def test_avg_pool2d_backward_zero_divisor_override(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    grad_out = torch.ones(1, 1, 2, 2, device=et.device(), dtype=torch.float32)
+    grad_input = torch.empty(
+        1, 1, 4, 4, device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""avg_pool2d_backward(): expected divisor_override to be non-zero, got 0""",
+        gpu="""divisor must be not zero""",
+    ):
+      torch.ops.aten.avg_pool2d_backward.grad_input(
+          grad_out,
+          inp,
+          [2, 2],
+          [2, 2],
+          [0, 0],
+          False,
+          True,
+          0,
+          grad_input=grad_input,
+      )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="invalid_kernel_size_length",
+          kernel_size=[2, 2],
+          stride=[2],
+          tpu="""avg_pool1d(): expected kernel_size to have 1 element, got 2""",
+          gpu="""avg_pool1d() argument 'kernel_size' should contain one int (got 2)""",
+      ),
+      dict(
+          testcase_name="invalid_stride_length",
+          kernel_size=[2],
+          stride=[2, 2],
+          tpu="""avg_pool1d(): expected stride to have 0 or 1 elements, got 2""",
+          gpu="""avg_pool1d() argument 'stride' should contain one int (got 2)""",
+      ),
+  )
+  def test_avg_pool1d_invalid_param_lengths(
+      self, kernel_size, stride, tpu, gpu
+  ):
+    inp = torch.ones(1, 1, 4, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(RuntimeError, tpu=tpu, gpu=gpu):
+      torch.ops.aten.avg_pool1d(inp, kernel_size, stride, [0], False, True)
+
+  def test_avg_pool2d_backward_invalid_stride(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    grad_out = torch.ones(1, 1, 2, 2, device=et.device(), dtype=torch.float32)
+    grad_input = torch.empty(
+        1, 1, 4, 4, device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""avg_pool2d_backward(): expected stride to be greater than zero, got 0""",
+        gpu="""stride should not be zero""",
+    ):
+      torch.ops.aten.avg_pool2d_backward.grad_input(
+          grad_out,
+          inp,
+          [2, 2],
+          [0, 0],
+          [0, 0],
+          False,
+          True,
+          None,
+          grad_input=grad_input,
+      )
+
+  def test_max_pool2d_with_indices_backward_invalid_stride(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out_ok, idx_ok = torch.ops.aten.max_pool2d_with_indices(
+        inp, [2, 2], [2, 2], [0, 0], [1, 1], False
+    )
+    grad_out = torch.ones_like(out_ok)
+    grad_input = torch.empty(
+        1, 1, 4, 4, device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max_pool2d_with_indices_backward(): expected stride to be greater than zero, got 0""",
+        gpu="""stride should not be zero""",
+    ):
+      torch.ops.aten.max_pool2d_with_indices_backward.grad_input(
+          grad_out,
+          inp,
+          [2, 2],
+          [0, 0],
+          [0, 0],
+          [1, 1],
+          False,
+          idx_ok,
+          grad_input=grad_input,
+      )
+
+
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
