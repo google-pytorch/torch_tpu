@@ -26333,6 +26333,52 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         sim = torch.nn.functional.cosine_similarity(cpu, tpu.cpu(), dim=-1)
         self.assertGreater(sim.mean().item(), 0.9999)
 
+  @parameterized.named_parameters(
+      ("zero_value_head_dim", 0, 0, False),
+      ("zero_qk_head_dim_transposed", 0, 4, True),
+      ("zero_all_head_dim_transposed", 0, 0, True),
+  )
+  def test_sdpa_zero_head_dim_strided(
+      self, qk_head_dim: int, v_head_dim: int, transpose: bool
+  ):
+    """Verifies zero-element SDPA forward/backward and stride preservation."""
+    device = torch.device("tpu")
+    if transpose:
+      q = (
+          torch.empty((1, 8, 4, qk_head_dim), device=device)
+          .transpose(1, 2)
+          .requires_grad_()
+      )
+      k = (
+          torch.empty((1, 8, 4, qk_head_dim), device=device)
+          .transpose(1, 2)
+          .requires_grad_()
+      )
+      v = (
+          torch.randn((1, 8, 4, v_head_dim), device=device)
+          .transpose(1, 2)
+          .requires_grad_()
+      )
+    else:
+      q = torch.empty((1, 4, 8, qk_head_dim), device=device, requires_grad=True)
+      k = torch.empty((1, 4, 8, qk_head_dim), device=device, requires_grad=True)
+      v = torch.randn((1, 4, 8, v_head_dim), device=device, requires_grad=True)
+
+    with torch.nn.attention.sdpa_kernel(
+        torch.nn.attention.SDPBackend.OVERRIDEABLE
+    ):
+      out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+      grad_out = torch.randn_like(out)
+      out.backward(grad_out)
+
+    self.assertEqual(out.shape, (1, 4, 8, v_head_dim))
+    self.assertEqual(q.grad.shape, q.shape)
+    self.assertEqual(k.grad.shape, k.shape)
+    self.assertEqual(v.grad.shape, v.shape)
+    self.assertEqual(q.grad.stride(), torch.empty_like(q).stride())
+    self.assertEqual(k.grad.stride(), torch.empty_like(k).stride())
+    self.assertEqual(v.grad.stride(), torch.empty_like(v).stride())
+
   def test_scaled_dot_product_attention_dropout(self):
     """Verifies FlashAttention dropout rate and 1/(1-p) scaling."""
     batch_size, num_heads, seq_len, head_dim = 2, 4, 128, 128
