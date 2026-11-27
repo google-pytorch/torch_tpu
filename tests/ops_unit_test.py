@@ -31440,6 +31440,107 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_fused_moving_avg_obs_fq_helper_empty_and_uninitialized(self):
+    # Empty input must skip min/max observation without corrupting running stats
+    # to +/-inf or NaN, while still respecting fake_quant_on for scale/zp.
+    cases = [
+        ((0,), False, [1.0], [2.0], [2.0 / 255.0], [0]),
+        ((0, 2), False, [-1.0], [3.0], [4.0 / 255.0], [64]),
+        (
+            (2, 0),
+            True,
+            [-1.0, 1.0],
+            [3.0, 2.0],
+            [4.0 / 255.0, 2.0 / 255.0],
+            [64, 0],
+        ),
+    ]
+    for shape, per_row, init_rmin, init_rmax, exp_scale, exp_zp in cases:
+      for fq_val in (0, 1):
+        x_tpu = torch.empty(shape, dtype=torch.float32, device="tpu")
+        obs_on = torch.tensor([1], dtype=torch.int64, device="tpu")
+        fq_on = torch.tensor([fq_val], dtype=torch.int64, device="tpu")
+        rmin = torch.tensor(init_rmin, dtype=torch.float32, device="tpu")
+        rmax = torch.tensor(init_rmax, dtype=torch.float32, device="tpu")
+        init_scale = [0.5] * len(init_rmin)
+        init_zp = [0] * len(init_rmin)
+        scale = torch.tensor(init_scale, dtype=torch.float32, device="tpu")
+        zp = torch.tensor(init_zp, dtype=torch.int32, device="tpu")
+        out, mask = torch._fused_moving_avg_obs_fq_helper(
+            x_tpu,
+            obs_on,
+            fq_on,
+            rmin,
+            rmax,
+            scale,
+            zp,
+            0.01,
+            0,
+            255,
+            0,
+            per_row,
+            False,
+        )
+        self.assertEqual(out.shape, shape)
+        self.assertEqual(mask.shape, shape)
+        self.assertEqual(mask.dtype, torch.bool)
+        utils.assert_close(rmin.cpu(), torch.tensor(init_rmin))
+        utils.assert_close(rmax.cpu(), torch.tensor(init_rmax))
+        if fq_val:
+          utils.assert_close(scale.cpu(), torch.tensor(exp_scale))
+          utils.assert_close(zp.cpu(), torch.tensor(exp_zp, dtype=torch.int32))
+        else:
+          utils.assert_close(scale.cpu(), torch.tensor(init_scale))
+          utils.assert_close(zp.cpu(), torch.tensor(init_zp, dtype=torch.int32))
+
+    # Uninitialized [0] running_min/running_max + [1] scale/zp in per-channel mode.
+    x_cpu = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+    rmin_cpu = torch.empty(0, dtype=torch.float32)
+    rmax_cpu = torch.empty(0, dtype=torch.float32)
+    scale_cpu = torch.tensor([1.0], dtype=torch.float32)
+    zp_cpu = torch.tensor([0], dtype=torch.int32)
+    out_cpu, mask_cpu = torch._fused_moving_avg_obs_fq_helper(
+        x_cpu,
+        torch.tensor([1], dtype=torch.int64),
+        torch.tensor([1], dtype=torch.int64),
+        rmin_cpu,
+        rmax_cpu,
+        scale_cpu,
+        zp_cpu,
+        0.01,
+        0,
+        255,
+        0,
+        True,
+        False,
+    )
+
+    rmin_tpu = torch.empty(0, dtype=torch.float32, device="tpu")
+    rmax_tpu = torch.empty(0, dtype=torch.float32, device="tpu")
+    scale_tpu = torch.tensor([1.0], dtype=torch.float32, device="tpu")
+    zp_tpu = torch.tensor([0], dtype=torch.int32, device="tpu")
+    out_tpu, mask_tpu = torch._fused_moving_avg_obs_fq_helper(
+        x_cpu.to("tpu"),
+        torch.tensor([1], dtype=torch.int64, device="tpu"),
+        torch.tensor([1], dtype=torch.int64, device="tpu"),
+        rmin_tpu,
+        rmax_tpu,
+        scale_tpu,
+        zp_tpu,
+        0.01,
+        0,
+        255,
+        0,
+        True,
+        False,
+    )
+    utils.assert_close(out_tpu.cpu(), out_cpu)
+    utils.assert_close(mask_tpu.cpu(), mask_cpu)
+    utils.assert_close(rmin_tpu.cpu(), rmin_cpu)
+    utils.assert_close(rmax_tpu.cpu(), rmax_cpu)
+    utils.assert_close(scale_tpu.cpu(), scale_cpu)
+    utils.assert_close(zp_tpu.cpu(), zp_cpu)
+
 
 if __name__ == "__main__":
   absltest.main()
