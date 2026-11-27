@@ -34,11 +34,12 @@ torch_tpu_cc_library(
     hdrs = ["linalg_solve_triangular_kernels.h"],
     deps = [
         "//csrc/common:aten_utils",
+        "//csrc/common:device_type",
+        "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
         "//csrc/common:to_string",
-        "//csrc/common:utils",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",

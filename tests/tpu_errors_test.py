@@ -1597,6 +1597,28 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         torch.linalg.solve_triangular(a, b, upper=True).cpu()
 
   @et.why_tpu_only(
+      "PyTorch CUDA silently casts B to A's dtype via copy_ instead of"
+      " rejecting mismatched input dtypes."
+  )
+  def test_linalg_solve_triangular_input_dtype_mismatch(self):
+    a = torch.eye(3, device=et.device(), dtype=torch.float32)
+    with self.subTest("float32_vs_float64"):
+      b_f64 = torch.ones(3, 1, device=et.device(), dtype=torch.float64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the two inputs to have the same dtype, got float32 and float64""",
+      ):
+        torch.linalg.solve_triangular(a, b_f64, upper=True)
+
+    with self.subTest("float32_vs_int32"):
+      b_i32 = torch.ones(3, 1, device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the two inputs to have the same dtype, got float32 and int32""",
+      ):
+        torch.linalg.solve_triangular(a, b_i32, upper=True)
+
+  @et.why_tpu_only(
       "aten.linear_backward is only registered for TPU (PrivateUse1), not"
       " CPU/CUDA."
   )

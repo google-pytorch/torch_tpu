@@ -29086,6 +29086,72 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             atol=0,
         )
 
+  def test_linalg_solve_triangular_batch_broadcast(self):
+    shape_pairs = (
+        ((2, 3, 3), (1, 3, 1)),
+        ((2, 3, 3), (1, 3, 3)),
+        ((2, 1, 3, 3), (1, 4, 3, 2)),
+        ((0, 3, 3), (1, 3, 1)),
+        ((1, 3, 3), (0, 3, 1)),
+    )
+    for a_shape, b_left_shape in shape_pairs:
+      for left in (True, False):
+        b_shape = (
+            b_left_shape
+            if left
+            else (*b_left_shape[:-2], b_left_shape[-1], b_left_shape[-2])
+        )
+        for upper in (True, False):
+          with self.subTest(
+              a_shape=a_shape, b_shape=b_shape, left=left, upper=upper
+          ):
+            a_raw = torch.randn(a_shape, dtype=torch.float32)
+            a_strict = (
+                a_raw.triu(diagonal=1) if upper else a_raw.tril(diagonal=-1)
+            )
+            a_cpu = a_strict + 2.0 * torch.eye(a_shape[-1], dtype=torch.float32)
+            b_cpu = torch.randn(b_shape, dtype=torch.float32)
+            expected = torch.linalg.solve_triangular(
+                a_cpu, b_cpu, upper=upper, left=left
+            )
+
+            a_tpu = a_cpu.to("tpu")
+            b_tpu = b_cpu.to("tpu")
+
+            # Functional variant.
+            actual = torch.linalg.solve_triangular(
+                a_tpu, b_tpu, upper=upper, left=left
+            )
+            self.assertEqual(actual.shape, expected.shape)
+            utils.assert_close(actual.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+            # out= with empty tensor resized to the broadcasted shape.
+            out_empty = torch.empty(0, dtype=torch.float32, device="tpu")
+            ret = torch.linalg.solve_triangular(
+                a_tpu, b_tpu, upper=upper, left=left, out=out_empty
+            )
+            self.assertIs(ret, out_empty)
+            self.assertEqual(out_empty.shape, expected.shape)
+            utils.assert_close(out_empty.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+            # out= aliasing b when A broadcasts over B.
+            b_alias = b_tpu.clone()
+            ret_b = torch.linalg.solve_triangular(
+                a_tpu, b_alias, upper=upper, left=left, out=b_alias
+            )
+            self.assertIs(ret_b, b_alias)
+            self.assertEqual(b_alias.shape, expected.shape)
+            utils.assert_close(b_alias.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+            # out= aliasing a (both resized and same-shape donation paths).
+            a_alias = a_tpu.clone()
+            ret_a = torch.linalg.solve_triangular(
+                a_alias, b_tpu, upper=upper, left=left, out=a_alias
+            )
+            self.assertIs(ret_a, a_alias)
+            self.assertEqual(a_alias.shape, expected.shape)
+            utils.assert_close(a_alias.cpu(), expected, rtol=1e-4, atol=1e-4)
+
 
 class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""
