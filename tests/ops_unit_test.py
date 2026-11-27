@@ -31440,6 +31440,52 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  def test_div_floor_floating_inf_and_signed_zero(self):
+    x_cpu = torch.tensor(
+        [-1.0, 1.0, 1.0, -1.0, 0.0, -0.0, 0.0, -0.0], dtype=torch.float32
+    )
+    y_cpu = torch.tensor(
+        [
+            float("inf"),
+            float("-inf"),
+            float("inf"),
+            float("-inf"),
+            1.0,
+            1.0,
+            -1.0,
+            -1.0,
+        ],
+        dtype=torch.float32,
+    )
+    x_tpu = x_cpu.to("tpu")
+    y_tpu = y_cpu.to("tpu")
+
+    div_actual = torch.div(x_tpu, y_tpu, rounding_mode="floor").cpu()
+    div_expected = torch.div(x_cpu, y_cpu, rounding_mode="floor")
+    utils.assert_close(div_actual, div_expected)
+    self.assertEqual(torch.signbit(div_actual), torch.signbit(div_expected))
+
+    floor_div_actual = torch.floor_divide(x_tpu, y_tpu).cpu()
+    floor_div_expected = torch.floor_divide(x_cpu, y_cpu)
+    utils.assert_close(floor_div_actual, floor_div_expected)
+    self.assertEqual(
+        torch.signbit(floor_div_actual), torch.signbit(floor_div_expected)
+    )
+
+  @parameterized.named_parameters(
+      ("float32_near_one", 16777215.0, 16777216.0, torch.float32),
+      ("bfloat16_near_one", 255.0, 256.0, torch.bfloat16),
+  )
+  def test_div_floor_floating_near_one(self, a_val, b_val, dtype):
+    a_cpu = torch.tensor([a_val], dtype=dtype)
+    b_cpu = torch.tensor([b_val], dtype=dtype)
+    utils.assert_close(
+        torch.div(
+            a_cpu.to("tpu"), b_cpu.to("tpu"), rounding_mode="floor"
+        ).cpu(),
+        torch.div(a_cpu, b_cpu, rounding_mode="floor"),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

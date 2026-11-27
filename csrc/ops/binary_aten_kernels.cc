@@ -457,54 +457,105 @@ absl::StatusOr<DivOpOptions> GetDivOpOptionsTruncMode() {
                       .op_param_cache_keys = std::move(param_keys)};
 }
 
+// Implements PyTorch's `c10::div_floor_floating` semantics using `fmod`,
+// handling opposite-sign +/-inf divisors and near-integer quotients identically
+// to PyTorch CPU/CUDA.
+absl::StatusOr<mlir::MlirOp> BuildFloatFloorDivShlo(mlir::MlirOp lhs,
+                                                    mlir::MlirOp rhs) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(lhs);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(lhs, CastIfNeeded(lhs, comp_dtype));
+  TT_ASSIGN_OR_RETURN(rhs, CastIfNeeded(rhs, comp_dtype));
+
+  mlir::MlirOp raw_div = stablehlo::Div(lhs, rhs);
+  mlir::MlirOp mod = stablehlo::Rem(lhs, rhs);
+  // XLA's Rem(finite, +/-inf) returns NaN or +/-0 on some backends instead of
+  // `lhs`; preserve IEEE fmod(finite, +/-inf) == lhs so opposite-sign +/-inf
+  // divisors decrement the quotient to -1.0.
+  mlir::MlirOp is_inf_rhs = mlir::chlo::IsInf(rhs);
+  mlir::MlirOp is_finite_lhs = stablehlo::IsFinite(lhs);
+  mlir::MlirOp is_inf_rhs_and_finite_lhs =
+      stablehlo::And(is_inf_rhs, is_finite_lhs);
+  mod = stablehlo::Select(is_inf_rhs_and_finite_lhs, lhs, mod);
+
+  mlir::MlirOp lhs_minus_mod = stablehlo::Subtract(lhs, mod);
+  mlir::MlirOp div = stablehlo::Div(lhs_minus_mod, rhs);
+  mlir::MlirOp zero = MakeConstantLike(lhs, 0.0);
+  mlir::MlirOp one = MakeConstantLike(lhs, 1.0);
+  mlir::MlirOp half = MakeConstantLike(lhs, 0.5);
+
+  mlir::MlirOp mod_ne_zero =
+      stablehlo::Compare(mod, zero, stablehlo::ComparisonDirection::NE);
+  mlir::MlirOp rhs_lt_zero =
+      stablehlo::Compare(rhs, zero, stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp mod_lt_zero =
+      stablehlo::Compare(mod, zero, stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp signs_differ = stablehlo::Compare(
+      rhs_lt_zero, mod_lt_zero, stablehlo::ComparisonDirection::NE);
+  mlir::MlirOp should_dec = stablehlo::And(mod_ne_zero, signs_differ);
+  mlir::MlirOp div_minus_one = stablehlo::Subtract(div, one);
+  div = stablehlo::Select(should_dec, div_minus_one, div);
+
+  // `div` is mathematically an integer but may drift slightly below an integer
+  // due to floating-point rounding in `(lhs - mod) / rhs`; round up when the
+  // fractional part exceeds 0.5 (matching `c10::div_floor_floating`).
+  mlir::MlirOp floordiv = stablehlo::Floor(div);
+  mlir::MlirOp frac = stablehlo::Subtract(div, floordiv);
+  mlir::MlirOp round_up =
+      stablehlo::Compare(frac, half, stablehlo::ComparisonDirection::GT);
+  mlir::MlirOp floordiv_plus_one = stablehlo::Add(floordiv, one);
+  floordiv = stablehlo::Select(round_up, floordiv_plus_one, floordiv);
+
+  // Preserve the sign of zero (`-0.0` vs `+0.0`) from `lhs / rhs` when `div ==
+  // 0`.
+  mlir::MlirOp raw_div_sign = stablehlo::Sign(raw_div);
+  mlir::MlirOp signed_zero = stablehlo::Mul(zero, raw_div_sign);
+  mlir::MlirOp div_ne_zero =
+      stablehlo::Compare(div, zero, stablehlo::ComparisonDirection::NE);
+  mlir::MlirOp non_zero_b_result =
+      stablehlo::Select(div_ne_zero, floordiv, signed_zero);
+
+  // Guard `rhs == 0` so division by zero returns IEEE `lhs / 0.0` (+/-inf,
+  // NaN).
+  mlir::MlirOp b_eq_zero =
+      stablehlo::Compare(rhs, zero, stablehlo::ComparisonDirection::EQ);
+  mlir::MlirOp result =
+      stablehlo::Select(b_eq_zero, raw_div, non_zero_b_result);
+  return CastIfNeeded(result, orig_dtype);
+}
+
 absl::StatusOr<DivOpOptions> GetDivOpOptionsFloorMode() {
   ABSL_VLOG(1) << "[GetDivOpOptionsFloorMode]";
   TT_ASSIGN_OR_RETURN(auto param_keys,
                       *OpParamCacheKeysBuilder().SetParam("mode", "floor"));
   auto op_builder = [](mlir::MlirOp self_op,
                        mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp div_op, BuildDivShlo(self_op, other_op));
-
-    // Rounds the results of the division down. Equivalent to floor division
-    // in Python (the // operator) and NumPy’s np.floor_divide.
-    const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
-    const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
-    if (!self_type.getElementType().isInteger() &&
-        !other_type.getElementType().isInteger()) {
-      TT_ASSIGN_OR_RETURN(auto floor_div_op, BuildFloorShlo(div_op));
-      return floor_div_op;
+    TT_ASSIGN_OR_RETURN((auto [lhs, rhs]),
+                        ApplyBroadcastIfNeeded(self_op, other_op));
+    const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
+    if (!lhs_type.getElementType().isInteger()) {
+      return BuildFloatFloorDivShlo(lhs, rhs);
     }
 
     // Performing negative numerator / denominator is tricky.
-    // Inspired by
-    // [ref](https://github.com/tensorflow/tensorflow/blob/a0d9adf50eb4dbc3b8de346b0c95acce288959c0/tensorflow/compiler/mlir/tf2xla/transforms/legalize_tf_patterns.td#L151-L186)
-    // Here's an equivalent pseudo-code:
+    // Equivalent pseudo-code:
     // T z = x / y
     // return (z * y != x && (x < 0) != (y < 0)) ? z - 1 : z
-    auto div = chlo::BroadcastDiv(self_op, other_op);
-    auto mul = chlo::BroadcastMul(div, other_op);
-    auto l_and =
-        chlo::BroadcastCompare(mul, self_op, chlo::ComparisonDirection::NE);
-
-    auto l_zeros =
-        MakeScalarConstant(self_op.getBuilder(), 0, self_type.getElementType());
-
-    auto l_cmp =
-        chlo::BroadcastCompare(self_op, l_zeros, chlo::ComparisonDirection::LT);
-
-    auto r_cmp = chlo::BroadcastCompare(other_op, l_zeros,
-                                        chlo::ComparisonDirection::LT);
-
-    auto r_and =
-        chlo::BroadcastCompare(l_cmp, r_cmp, chlo::ComparisonDirection::NE);
-
-    auto pred_select = chlo::BroadcastAnd(l_and, r_and);
-
-    const mlir::RankedTensorType div_type = GetTensorTypeOrDie(div_op);
-    auto ones =
-        MakeScalarConstant(self_op.getBuilder(), 1, div_type.getElementType());
-    auto true_select = chlo::BroadcastSub(div, ones);
-
+    mlir::MlirOp div = stablehlo::Div(lhs, rhs);
+    mlir::MlirOp mul = stablehlo::Mul(div, rhs);
+    mlir::MlirOp l_and =
+        stablehlo::Compare(mul, lhs, stablehlo::ComparisonDirection::NE);
+    mlir::MlirOp zeros = MakeConstantLike(lhs, 0);
+    mlir::MlirOp l_cmp =
+        stablehlo::Compare(lhs, zeros, stablehlo::ComparisonDirection::LT);
+    mlir::MlirOp r_cmp =
+        stablehlo::Compare(rhs, zeros, stablehlo::ComparisonDirection::LT);
+    mlir::MlirOp r_and =
+        stablehlo::Compare(l_cmp, r_cmp, stablehlo::ComparisonDirection::NE);
+    mlir::MlirOp pred_select = stablehlo::And(l_and, r_and);
+    mlir::MlirOp ones = MakeConstantLike(div, 1);
+    mlir::MlirOp true_select = stablehlo::Subtract(div, ones);
     return stablehlo::Select(pred_select, true_select, div);
   };
   return DivOpOptions{.op_builder = std::move(op_builder),
