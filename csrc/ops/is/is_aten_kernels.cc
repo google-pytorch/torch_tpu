@@ -17,8 +17,10 @@
 #include "csrc/ops/is/is_aten_kernels.h"
 
 #include "ATen/core/TensorBody.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/ops/is/is.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
@@ -40,6 +42,9 @@ at::Tensor AtenIsNan(const at::Tensor& self) {
 
 at::Tensor& AtenIsNegInfOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kIsNegInfOut, _, (self, out), {
+    TT_CHECK_THROW(!IsComplex(self), error::kInvalidArgument)
+        << "expected the input dtype not to be complex, got "
+        << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
         UnaryOpOut(self, out, BuildIsNegInfShlo,
                    {.op_param_cache_keys = OpParamCacheKeys::Empty(),
@@ -51,6 +56,9 @@ at::Tensor& AtenIsNegInfOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenIsPosInfOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kIsPosInfOut, _, (self, out), {
+    TT_CHECK_THROW(!IsComplex(self), error::kInvalidArgument)
+        << "expected the input dtype not to be complex, got "
+        << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
         UnaryOpOut(self, out, BuildIsPosInfShlo,
                    {.op_param_cache_keys = OpParamCacheKeys::Empty(),

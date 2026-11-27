@@ -54,8 +54,22 @@ mlir::MlirOp IsNanImpl(mlir::MlirOp input_op) {
   }                                                                \
   TT_REQUIRE_SEMICOLON_
 
+absl::StatusOr<mlir::MlirOp> BuildIsNanShlo(mlir::MlirOp input_op) {
+  const mlir::RankedTensorType input_type =
+      ::torch_tpu::GetTensorTypeOrDie(input_op);
+  if (::torch_tpu::IsFloatType(input_type)) {
+    return IsNanImpl(input_op);
+  }
+  if (::torch_tpu::IsComplexType(input_type)) {
+    mlir::MlirOp real_is_nan = IsNanImpl(mlir::stablehlo::Real(input_op));
+    mlir::MlirOp imag_is_nan = IsNanImpl(mlir::stablehlo::Imag(input_op));
+    return mlir::stablehlo::Or(real_is_nan, imag_is_nan);
+  }
+  return ::torch_tpu::MakeConstantLike(input_op, false,
+                                       mlir::ElementType::PRED);
+}
+
 // go/keep-sorted start
-TT_FLOAT_IS_OP_BUILDER_(BuildIsNanShlo, IsNanImpl, false);
 TT_FLOAT_IS_OP_BUILDER_(BuildIsNegInfShlo, mlir::chlo::IsNegInf, false);
 TT_FLOAT_IS_OP_BUILDER_(BuildIsPosInfShlo, mlir::chlo::IsPosInf, false);
 // go/keep-sorted end
