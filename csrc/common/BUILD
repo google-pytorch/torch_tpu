@@ -328,6 +328,7 @@ torch_tpu_cc_test(
         "//csrc/eager:eager_mode",
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",
+        "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",

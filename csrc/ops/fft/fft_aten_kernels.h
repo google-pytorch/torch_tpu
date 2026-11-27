@@ -23,6 +23,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
 
 namespace torch_tpu {
 
@@ -32,14 +34,14 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
                           int64_t normalization, bool onesided,
                           at::Tensor& out);
 
-at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
+at::Tensor AtenFftC2c(const at::Tensor& self, c10::SymIntArrayRef dim,
                       int64_t normalization, bool forward);
-at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
+at::Tensor& AtenFftC2cOut(const at::Tensor& self, c10::SymIntArrayRef dim,
                           int64_t normalization, bool forward, at::Tensor& out);
 at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
-                      int64_t normalization, int64_t last_dim_size);
+                      int64_t normalization, c10::SymInt last_dim_size);
 at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
-                          int64_t normalization, int64_t last_dim_size,
+                          int64_t normalization, c10::SymInt last_dim_size,
                           at::Tensor& out);
 
 at::Tensor AtenFftFft(const at::Tensor& self, std::optional<c10::SymInt> n,

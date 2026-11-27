@@ -42,6 +42,8 @@
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
+#include "c10/core/SymBool.h"  // IWYU pragma: keep
+#include "c10/core/SymInt.h"
 #include "c10/util/Optional.h"
 #include "c10/util/StringUtil.h"
 #include "csrc/common/env_vars.h"
@@ -163,6 +165,11 @@ absl::StatusOr<int64_t> NumElements(const at::Tensor& tensor);
 // Fails if `dim` is not in the range `[-dim_bound, dim_bound - 1]` where
 // dim_bound is non-negative.
 absl::StatusOr<int64_t> SafeWrapDim(int64_t dim, int64_t dim_bound);
+
+// Safely wraps a symbolic dimension index, enforcing the same bounds checks,
+// guards, and error messages as the `int64_t` overload.
+absl::StatusOr<c10::SymInt> SafeWrapDim(const c10::SymInt& dim,
+                                        int64_t dim_bound);
 
 // Checks that `device_opt` is TPU (PrivateUse1), or crashes if it is not.
 //
@@ -414,6 +421,18 @@ decltype(auto) TranslateTtErrorToC10Error(Fn&& fn, Args&&... args) {
 // Returns the current C++ source location.
 #define TT_SOURCE_LOCATION \
   ::c10::SourceLocation({__func__, TT_NORMALIZED_FILE, __LINE__})
+
+// TT_GUARD_OR_FALSE(expr)
+//
+// Evaluates a `c10::SymBool` (or `bool`) via `TORCH_GUARD_OR_FALSE`, guarding
+// backed symbolic expressions and returning `false` on data-dependent errors.
+//
+// Example:
+//   // Returns an error both when `size <= 0` and when `size` is unbacked and
+//   // cannot be proven positive without data-dependent guarding.
+//   TT_RET_CHECK(TT_GUARD_OR_FALSE(size.sym_gt(0)), error::kInvalidArgument)
+//       << "expected positive size, got " << size;
+#define TT_GUARD_OR_FALSE(expr) TORCH_GUARD_OR_FALSE(expr)
 
 // TT_RET_CHECK(cond, error_code);
 //

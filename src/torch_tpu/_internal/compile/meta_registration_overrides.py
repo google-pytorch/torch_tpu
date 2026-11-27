@@ -260,6 +260,90 @@ def _patch_fused_dropout_meta(meta_lib: torch.library.Library) -> None:
   # pylint: enable=protected-access
 
 
+def _patch_fft_meta(meta_lib: torch.library.Library) -> None:
+  """Overrides FFT Meta kernels to preserve symbolic shapes on TPU.
+
+  This function replaces both `.default` and `.out` Meta dispatch entries for
+  `aten._fft_c2c`, `aten._fft_r2c`, and `aten._fft_c2r`. When the input tensor
+  hints at `"tpu"`, each override allocates an output tensor directly with
+  `self.new_empty(...)` using `SymInt`-preserving arithmetic and delegates
+  all other devices to the saved upstream Meta kernel.
+  """
+  # pylint: disable=protected-access
+  meta_key = torch._C.DispatchKey.Meta
+
+  def _upstream_meta(op: torch._ops.OpOverload) -> Callable[..., Any]:
+    """Returns the pre-existing upstream Meta kernel registered for `op`."""
+    fn = op.py_kernels.get(meta_key) or _decomp.meta_table.get(op)
+    assert fn is not None, f"Missing upstream Meta kernel for {op}"
+    return fn
+
+  upstream_c2c = _upstream_meta(torch.ops.aten._fft_c2c.default)
+  upstream_r2c = _upstream_meta(torch.ops.aten._fft_r2c.default)
+  upstream_c2r = _upstream_meta(torch.ops.aten._fft_c2r.default)
+
+  @decompositions.out_wrapper()
+  def _fft_c2c_meta(self, dim, normalization, forward):
+    """Meta kernel for `_fft_c2c` avoiding stride sorting on TPU."""
+    torch._check(self.dtype.is_complex)
+    if not dim:
+      return self.clone()
+    if _meta_registrations.device_hint(self) == "tpu":
+      return self.new_empty(self.size())
+    return upstream_c2c(self, dim, normalization, forward)
+
+  @decompositions.out_wrapper()
+  def _fft_r2c_meta(self, dim, normalization, onesided):
+    """Meta kernel for `_fft_r2c` computing symbolic output shape on TPU."""
+    torch._check(self.dtype.is_floating_point)
+    if _meta_registrations.device_hint(self) == "tpu":
+      out_sizes = list(self.size())
+      if onesided and dim:
+        out_sizes[dim[-1]] = out_sizes[dim[-1]] // 2 + 1
+      output_dtype = (
+          torch.float32 if self.dtype == torch.bfloat16 else self.dtype
+      )
+      return self.new_empty(
+          out_sizes,
+          dtype=_meta_registrations.utils.corresponding_complex_dtype(
+              output_dtype
+          ),
+      )
+    return upstream_r2c(self, dim, normalization, onesided)
+
+  @decompositions.out_wrapper()
+  def _fft_c2r_meta(self, dim, normalization, lastdim):
+    """Meta kernel for `_fft_c2r` setting symbolic `lastdim` size on TPU."""
+    torch._check(self.dtype.is_complex)
+    if _meta_registrations.device_hint(self) == "tpu":
+      out_sizes = list(self.size())
+      if dim:
+        out_sizes[dim[-1]] = lastdim
+      return self.new_empty(
+          out_sizes, dtype=_meta_registrations.toRealValueType(self.dtype)
+      )
+    return upstream_c2r(self, dim, normalization, lastdim)
+
+  def _update_op_tables(op: torch._ops.OpOverload, meta_fn: Any) -> None:
+    """Overrides Meta registration for `op` across PyTorch dispatch tables."""
+    op.py_kernels.pop(meta_key, None)
+    _decomp.meta_table[op] = meta_fn
+    meta_lib.impl(op, meta_fn, allow_override=True)
+    op.py_impl(meta_key)(meta_fn)
+
+  for op_name, meta_fn in (
+      ("_fft_c2c", _fft_c2c_meta),
+      ("_fft_r2c", _fft_r2c_meta),
+      ("_fft_c2r", _fft_c2r_meta),
+  ):
+    for op in (
+        getattr(torch.ops.aten, op_name).default,
+        getattr(torch.ops.aten, op_name).out,
+    ):
+      _update_op_tables(op, meta_fn)
+  # pylint: enable=protected-access
+
+
 def register() -> None:
   """Registers TPU Meta kernel overrides."""
   global _meta_lib
@@ -270,3 +354,4 @@ def register() -> None:
   _patch_addmm_dtype_meta(_meta_lib)
   _patch_bmm_dtype_meta(_meta_lib)
   _patch_fused_dropout_meta(_meta_lib)
+  _patch_fft_meta(_meta_lib)

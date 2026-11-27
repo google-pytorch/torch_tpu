@@ -25,20 +25,27 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/empty.h"
 #include "ATen/ops/fft_fft_native.h"
 #include "ATen/ops/fft_ifft_native.h"
 #include "ATen/ops/fft_irfft_native.h"
 #include "ATen/ops/fft_rfft_native.h"
+#include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
+#include "c10/util/DimVector.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/cache_key.h"
+#include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fake_tensor_utils.h"
 #include "csrc/common/static_shape_check.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -70,29 +77,36 @@ enum class FftNormalization {
   kByN = 2,
 };
 
-// Normalizes the dimensions for the FFT operation
-absl::StatusOr<Dimensions> GetNormalizedDims(const at::Tensor& self,
-                                             at::IntArrayRef dim) {
-  const int64_t num_dims = self.dim();
-  Dimensions dims_vec = CopyIntVector(dim);
+// Normalizes the FFT dimension indices into `c10::SymDimVector` (expanding an
+// empty `dim` to `[0, ..., num_dims - 1]` and wrapping negative indices)
+// without specializing symbolic input shapes or symbolic `SymInt` indices.
+absl::StatusOr<c10::SymDimVector> NormalizeDims(const ConstTensor& self,
+                                                const c10::SymIntArrayRef dim) {
+  TT_ASSIGN_OR_RETURN(const int64_t num_dims, self.dim());
 
-  // If no dimensions are specified, perform FFT on all dimensions
-  if (dims_vec.empty()) {
-    dims_vec.reserve(num_dims);
-    for (int i = 0; i < num_dims; ++i) {
-      dims_vec.push_back(i);
+  c10::SymDimVector normalized_dims;
+  if (dim.empty()) {
+    normalized_dims.reserve(num_dims);
+    for (int64_t i = 0; i < num_dims; ++i) {
+      normalized_dims.emplace_back(i);
     }
+    return normalized_dims;
   }
 
-  // Normalize the dimensions to be positive and perform bounds-checking
-  Dimensions normalized_dims;
-  normalized_dims.reserve(dims_vec.size());
-  for (int64_t d : dims_vec) {
-    TT_ASSIGN_OR_RETURN(int64_t wrapped_d, SafeWrapDim(d, num_dims));
-    normalized_dims.push_back(wrapped_d);
+  normalized_dims.reserve(dim.size());
+  for (const c10::SymInt& sym_d : dim) {
+    TT_ASSIGN_OR_RETURN(c10::SymInt wrapped_d, SafeWrapDim(sym_d, num_dims));
+    normalized_dims.push_back(std::move(wrapped_d));
   }
-
   return normalized_dims;
+}
+
+// Overload for `at::IntArrayRef`.
+// Converts into `c10::SymIntArrayRef` by calling `c10::fromIntArrayRefSlow`,
+// which errors if any integer element is not representable by a `SymInt`.
+absl::StatusOr<c10::SymDimVector> NormalizeDims(const ConstTensor& self,
+                                                const at::IntArrayRef dim) {
+  return NormalizeDims(self, c10::fromIntArrayRefSlow(dim));
 }
 
 struct FftParams {
@@ -212,8 +226,10 @@ absl::StatusOr<mlir::MlirOp> ApplyComplexScaling(mlir::MlirOp fft_op,
 }
 
 absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
-    mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
-    bool onesided) {
+    mlir::MlirOp input, const c10::SymIntArrayRef sym_dims,
+    const FftNormalization normalization, bool onesided) {
+  TT_ASSIGN_OR_RETURN(const Dimensions dims,
+                      ConcreteSizeToDimensions(sym_dims));
   auto input_type = GetTensorTypeOrDie(input);
 
   if (input_type.getElementType().isBF16()) {
@@ -274,8 +290,10 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
 }
 
 absl::StatusOr<mlir::MlirOp> BuildFftC2cShlo(
-    mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
-    bool forward) {
+    mlir::MlirOp input, const c10::SymIntArrayRef sym_dims,
+    const FftNormalization normalization, bool forward) {
+  TT_ASSIGN_OR_RETURN(const Dimensions dims,
+                      ConcreteSizeToDimensions(sym_dims));
   auto input_type = GetTensorTypeOrDie(input);
 
   auto elem_type = input_type.getElementType();
@@ -422,26 +440,123 @@ absl::Status FFTValidateStaticShape(const at::Tensor& tensor,
   return self.scalar_type() == at::kBFloat16 ? self.to(at::kFloat) : self;
 }
 
+// Computes the symbolic output sizes for an R2C FFT, halving the last
+// transformed dimension to `n / 2 + 1` when `onesided` is true without
+// specializing symbolic dimensions.
+[[nodiscard]] c10::SymDimVector ComputeR2cOutSymSizes(
+    const c10::SymIntArrayRef sym_sizes,
+    const c10::SymIntArrayRef normalized_dims, const bool onesided) {
+  c10::SymDimVector out_sym_sizes(sym_sizes.begin(), sym_sizes.end());
+  if (onesided && !normalized_dims.empty()) {
+    const int64_t last_dim =
+        normalized_dims.back().guard_int(__FILE__, __LINE__);
+    out_sym_sizes[last_dim] = sym_sizes[last_dim] / 2 + 1;
+  }
+  return out_sym_sizes;
+}
+
+// Computes the symbolic output sizes for a C2R FFT, setting the last
+// transformed dimension to `last_dim_size` without specializing other symbolic
+// dimensions.
+[[nodiscard]] c10::SymDimVector ComputeC2rOutSymSizes(
+    const c10::SymIntArrayRef sym_sizes,
+    const c10::SymIntArrayRef normalized_dims,
+    const c10::SymInt& last_dim_size) {
+  c10::SymDimVector out_sym_sizes(sym_sizes.begin(), sym_sizes.end());
+  if (!normalized_dims.empty()) {
+    const int64_t last_dim =
+        normalized_dims.back().guard_int(__FILE__, __LINE__);
+    out_sym_sizes[last_dim] = last_dim_size;
+  }
+  return out_sym_sizes;
+}
+
+// Validates that `self` has a static shape and dispatches an FFT op on a real
+// TPU tensor. When `out` is non-null, writes the result into `*out` via
+// `DispatchOpOut` and returns `*out`; otherwise allocates and returns a new
+// output tensor.
+template <typename BuildShloFn>
+absl::StatusOr<at::Tensor> DispatchFftImpl(
+    const at::Tensor& self, const c10::SymIntArrayRef out_sym_sizes,
+    const mlir::ElementType output_dtype, OpParamCacheKeys param_keys,
+    const BuildShloFn& build_shlo, at::Tensor* absl_nullable out = nullptr) {
+  // Explicitly check for static shape.
+  // Shape introspection is unsafe with dynamism.
+  // NOTE: This implementation is not dynamism safe. It currently
+  // uses static shape indices, more work is needed to determine how
+  // this op supports bounded dynamic values.
+  TT_RETURN_IF_ERROR(FFTValidateStaticShape(self, "input"));
+  TT_ASSIGN_OR_RETURN(const Dimensions out_dims,
+                      ConcreteSizeToDimensions(out_sym_sizes));
+
+  auto op_builder = [build_shlo, out_dims](
+                        mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+    return build_shlo(input, out_dims);
+  };
+
+  DispatchOpOptions<1> options = {.out_dtype = output_dtype,
+                                  .out_dims = out_dims,
+                                  .op_param_cache_keys = std::move(param_keys)};
+  if (out != nullptr) {
+    TT_RETURN_IF_ERROR(DispatchOpOut<1>(std::move(op_builder), self, *out,
+                                        std::move(options)));
+    return *out;
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef result,
+      DispatchOp<1>(std::move(op_builder), self, std::move(options)));
+  return MakeTensor(std::move(result));
+}
+
+// Dispatches an allocating FFT kernel, returning a symbolic tensor via
+// `at::empty_symint` for fake/functorch inputs or invoking `DispatchFftImpl`
+// for real TPU tensors.
+template <typename BuildShloFn>
+absl::StatusOr<at::Tensor> DispatchFft(const at::Tensor& self,
+                                       const c10::SymIntArrayRef out_sym_sizes,
+                                       const at::ScalarType out_scalar_type,
+                                       const mlir::ElementType output_dtype,
+                                       OpParamCacheKeys param_keys,
+                                       const BuildShloFn& build_shlo) {
+  if (IsFakeOrFunctorchTensor(self)) {
+    return at::empty_symint(out_sym_sizes,
+                            self.options().dtype(out_scalar_type));
+  }
+  return DispatchFftImpl(self, out_sym_sizes, output_dtype,
+                         std::move(param_keys), build_shlo);
+}
+
+// Dispatches an out-variant FFT kernel, resizing `out` symbolically for
+// fake/functorch inputs or invoking `DispatchFftImpl` into `out` for real TPU
+// tensors.
+template <typename BuildShloFn>
+absl::Status DispatchFftOut(const at::Tensor& self, at::Tensor& out,
+                            const c10::SymIntArrayRef out_sym_sizes,
+                            const mlir::ElementType output_dtype,
+                            OpParamCacheKeys param_keys,
+                            const BuildShloFn& build_shlo) {
+  if (IsFakeOrFunctorchTensor(self) || IsFakeOrFunctorchTensor(out)) {
+    out.resize__symint(out_sym_sizes);
+  } else {
+    TT_RETURN_IF_ERROR(DispatchFftImpl(self, out_sym_sizes, output_dtype,
+                                       std::move(param_keys), build_shlo,
+                                       &out));
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
                       int64_t normalization, bool onesided) {
   TT_KERNEL(OpName::kFftR2c, param_keys, (self, dim, normalization, onesided), {
-    FftNormalization norm_enum = static_cast<FftNormalization>(normalization);
-
-    // Explicitly check for static shape.
-    // Shape introspection is unsafe with dynamism.
-    // NOTE: This implementation is not dynamism safe. It currently
-    // uses static shape indices, more work is needed to determine how
-    // this op supports bounded dynamic values.
-    TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
-    TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-    auto out_sizes = CopyIntVector(self.sizes());
-    if (onesided) {
-      const int64_t last_dim = normalized_dims.back();
-      out_sizes[last_dim] = self.size(last_dim) / 2 + 1;
-    }
+    const FftNormalization norm_enum =
+        static_cast<FftNormalization>(normalization);
+    TT_ASSIGN_OR_THROW(const c10::SymDimVector normalized_dims,
+                       NormalizeDims(self, dim));
+    const c10::SymDimVector out_sym_sizes =
+        ComputeR2cOutSymSizes(self.sym_sizes(), normalized_dims, onesided);
 
     const auto compute_scalar_type =
         self.scalar_type() == at::kBFloat16 ? at::kFloat : self.scalar_type();
@@ -449,20 +564,15 @@ at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(out_scalar_type));
 
-    auto op_builder = [normalized_dims, norm_enum, onesided](
-                          mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-      return BuildFftR2cShlo(input, normalized_dims, norm_enum, onesided);
-    };
-
-    TT_ASSIGN_OR_THROW(auto result, DispatchOp<1>(std::move(op_builder), self,
-                                                  {.out_dtype = output_dtype,
-                                                   .out_dims = out_sizes,
-                                                   .op_param_cache_keys =
-                                                       std::move(param_keys)}));
-
     TT_ASSIGN_OR_THROW(
-        auto out, MakeEmptyTensor(out_sizes, out_scalar_type, self.device()));
-    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+        at::Tensor out,
+        DispatchFft(self, out_sym_sizes, out_scalar_type, output_dtype,
+                    std::move(param_keys),
+                    [normalized_dims, norm_enum, onesided](
+                        mlir::MlirOp input, const Dimensions& /*out_dims*/) {
+                      return BuildFftR2cShlo(input, normalized_dims, norm_enum,
+                                             onesided);
+                    }));
     return out;
   });
 }
@@ -473,22 +583,12 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
   TT_KERNEL(
       OpName::kFftR2cOut, param_keys, (self, dim, normalization, onesided, out),
       {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
-
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        // NOTE: This implementation is not dynamism safe. It currently uses
-        // static shape indices, more work is needed to determine how this op
-        // supports bounded dynamic values.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-        auto out_sizes = CopyIntVector(self.sizes());
-        if (onesided) {
-          const int64_t last_dim = normalized_dims.back();
-          out_sizes[last_dim] = self.size(last_dim) / 2 + 1;
-        }
+        TT_ASSIGN_OR_THROW(const c10::SymDimVector normalized_dims,
+                           NormalizeDims(self, dim));
+        const c10::SymDimVector out_sym_sizes =
+            ComputeR2cOutSymSizes(self.sym_sizes(), normalized_dims, onesided);
 
         const auto result_dtype = c10::toComplexType(self.scalar_type());
         TT_THROW_IF_ERROR(ValidateOutDtype(out, result_dtype,
@@ -497,165 +597,121 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-        auto op_builder =
-            [normalized_dims, norm_enum,
-             onesided](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildFftR2cShlo(input, normalized_dims, norm_enum, onesided);
-        };
-
-        TT_THROW_IF_ERROR(
-            DispatchOpOut<1>(std::move(op_builder), self, out,
-                             {.out_dtype = output_dtype,
-                              .out_dims = out_sizes,
-                              .op_param_cache_keys = std::move(param_keys)}));
+        TT_THROW_IF_ERROR(DispatchFftOut(
+            self, out, out_sym_sizes, output_dtype, std::move(param_keys),
+            [normalized_dims, norm_enum, onesided](
+                mlir::MlirOp input, const Dimensions& /*out_dims*/) {
+              return BuildFftR2cShlo(input, normalized_dims, norm_enum,
+                                     onesided);
+            }));
         return out;
       });
 }
 
-at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
+at::Tensor AtenFftC2c(const at::Tensor& self, c10::SymIntArrayRef dim,
                       int64_t normalization, bool forward) {
   TT_KERNEL(OpName::kFftC2c, param_keys, (self, dim, normalization, forward), {
-    FftNormalization norm_enum = static_cast<FftNormalization>(normalization);
-
-    // Explicitly check for static shape.
-    // Shape introspection is unsafe with dynamism.
-    // NOTE: This implementation is not dynamism safe. It currently uses
-    // static shape indices, more work is needed to determine how this op
-    // supports bounded dynamic values.
-    TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
-    TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+    const FftNormalization norm_enum =
+        static_cast<FftNormalization>(normalization);
+    TT_ASSIGN_OR_THROW(const c10::SymDimVector normalized_dims,
+                       NormalizeDims(self, dim));
 
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
     TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
         << "expected complex input type, got " << ToString(self.scalar_type());
-    auto op_builder = [normalized_dims, norm_enum, forward](
-                          mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-      return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
-    };
-
     TT_ASSIGN_OR_THROW(
-        auto result,
-        DispatchOp<1>(std::move(op_builder), self,
-                      {.out_dtype = output_dtype,
-                       .out_dims = CopyIntVector(self.sizes()),
-                       .op_param_cache_keys = std::move(param_keys)}));
-
-    TT_ASSIGN_OR_THROW(
-        auto out,
-        MakeEmptyTensor(self.sizes(), self.scalar_type(), self.device()));
-    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+        at::Tensor out,
+        DispatchFft(self, self.sym_sizes(), self.scalar_type(), output_dtype,
+                    std::move(param_keys),
+                    [normalized_dims, norm_enum, forward](
+                        mlir::MlirOp input, const Dimensions& /*out_dims*/) {
+                      return BuildFftC2cShlo(input, normalized_dims, norm_enum,
+                                             forward);
+                    }));
     return out;
   });
 }
 
-at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
+at::Tensor& AtenFftC2cOut(const at::Tensor& self, c10::SymIntArrayRef dim,
                           int64_t normalization, bool forward,
                           at::Tensor& out) {
   TT_KERNEL(
       OpName::kFftC2cOut, param_keys, (self, dim, normalization, forward, out),
       {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
-
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
         TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
                                            /*allow_out_dtype_cast=*/true));
 
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+        TT_ASSIGN_OR_THROW(const c10::SymDimVector normalized_dims,
+                           NormalizeDims(self, dim));
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
         TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
             << "expected complex input type, got "
             << ToString(self.scalar_type());
-
-        auto op_builder =
-            [normalized_dims, norm_enum,
-             forward](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
-        };
-
-        TT_THROW_IF_ERROR(
-            DispatchOpOut<1>(std::move(op_builder), self, out,
-                             {.out_dtype = output_dtype,
-                              .out_dims = self.sizes(),
-                              .op_param_cache_keys = std::move(param_keys)}));
+        TT_THROW_IF_ERROR(DispatchFftOut(
+            self, out, self.sym_sizes(), output_dtype, std::move(param_keys),
+            [normalized_dims, norm_enum, forward](
+                mlir::MlirOp input, const Dimensions& /*out_dims*/) {
+              return BuildFftC2cShlo(input, normalized_dims, norm_enum,
+                                     forward);
+            }));
         return out;
       });
 }
 
 at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
-                      int64_t normalization, int64_t last_dim_size) {
+                      int64_t normalization, c10::SymInt last_dim_size) {
   TT_KERNEL(
       OpName::kFftC2r, param_keys, (self, dim, normalization, last_dim_size), {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
+        TT_ASSIGN_OR_THROW(const c10::SymDimVector sym_normalized_dims,
+                           NormalizeDims(self, dim));
+        const c10::SymDimVector out_sym_sizes = ComputeC2rOutSymSizes(
+            self.sym_sizes(), sym_normalized_dims, last_dim_size);
 
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        // NOTE: This implementation is not dynamism safe. It currently uses
-        // static shape indices, more work is needed to determine how this op
-        // supports bounded dynamic values.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-        auto out_sizes = CopyIntVector(self.sizes());
-        const int64_t last_dim = normalized_dims.back();
-        out_sizes[last_dim] = last_dim_size;
-
+        const auto out_scalar_type = c10::toRealValueType(self.scalar_type());
         TT_ASSIGN_OR_THROW(const auto output_dtype,
-                           ConvertTo<mlir::ElementType>(
-                               c10::toRealValueType(self.scalar_type())));
+                           ConvertTo<mlir::ElementType>(out_scalar_type));
         TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
             << "expected complex input type, got "
             << ToString(self.scalar_type());
-        auto op_builder =
-            [normalized_dims, norm_enum, last_dim_size](
-                mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildFftC2rShlo(input, normalized_dims, norm_enum,
-                                 last_dim_size);
-        };
+
+        // Get concrete size for normalized dimensions. This won't error.
+        TT_ASSIGN_OR_THROW(const Dimensions normalized_dims,
+                           ConcreteSizeToDimensions(sym_normalized_dims));
 
         TT_ASSIGN_OR_THROW(
-            auto result,
-            DispatchOp<1>(std::move(op_builder), self,
-                          {.out_dtype = output_dtype,
-                           .out_dims = out_sizes,
-                           .op_param_cache_keys = std::move(param_keys)}));
-
-        TT_ASSIGN_OR_THROW(
-            auto out,
-            MakeEmptyTensor(out_sizes, c10::toRealValueType(self.scalar_type()),
-                            self.device()));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+            at::Tensor out,
+            DispatchFft(self, out_sym_sizes, out_scalar_type, output_dtype,
+                        std::move(param_keys),
+                        [normalized_dims = std::move(normalized_dims),
+                         norm_enum, last_dim_size](mlir::MlirOp input,
+                                                   const Dimensions& out_dims) {
+                          return BuildFftC2rShlo(
+                              input, std::move(normalized_dims), norm_enum,
+                              last_dim_size.expect_int());
+                        }));
         return out;
       });
 }
 
 at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
-                          int64_t normalization, int64_t last_dim_size,
+                          int64_t normalization, c10::SymInt last_dim_size,
                           at::Tensor& out) {
   TT_KERNEL(
       OpName::kFftC2rOut, param_keys,
       (self, dim, normalization, last_dim_size, out), {
-        FftNormalization norm_enum =
+        const FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
-
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        // NOTE: This implementation is not dynamism safe. It currently uses
-        // static shape indices, more work is needed to determine how this op
-        // supports bounded dynamic values.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
-        TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
-        auto out_sizes = CopyIntVector(self.sizes());
-        const int64_t last_dim = normalized_dims.back();
-        out_sizes[last_dim] = last_dim_size;
+        TT_ASSIGN_OR_THROW(const c10::SymDimVector sym_normalized_dims,
+                           NormalizeDims(self, dim));
+        const c10::SymDimVector out_sym_sizes = ComputeC2rOutSymSizes(
+            self.sym_sizes(), sym_normalized_dims, last_dim_size);
 
         const auto result_dtype = c10::toRealValueType(self.scalar_type());
         TT_THROW_IF_ERROR(ValidateOutDtype(out, result_dtype,
@@ -667,18 +723,17 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
             << "expected complex input type, got "
             << ToString(self.scalar_type());
 
-        auto op_builder =
-            [normalized_dims, norm_enum, last_dim_size](
-                mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildFftC2rShlo(input, normalized_dims, norm_enum,
-                                 last_dim_size);
-        };
+        // Get concrete size for normalized dimensions. This won't error.
+        TT_ASSIGN_OR_THROW(const Dimensions normalized_dims,
+                           ConcreteSizeToDimensions(sym_normalized_dims));
 
-        TT_THROW_IF_ERROR(
-            DispatchOpOut<1>(std::move(op_builder), self, out,
-                             {.out_dtype = output_dtype,
-                              .out_dims = out_sizes,
-                              .op_param_cache_keys = std::move(param_keys)}));
+        TT_THROW_IF_ERROR(DispatchFftOut(
+            self, out, out_sym_sizes, output_dtype, std::move(param_keys),
+            [normalized_dims = std::move(normalized_dims), norm_enum,
+             last_dim_size](mlir::MlirOp input, const Dimensions& out_dims) {
+              return BuildFftC2rShlo(input, std::move(normalized_dims),
+                                     norm_enum, last_dim_size.expect_int());
+            }));
         return out;
       });
 }
