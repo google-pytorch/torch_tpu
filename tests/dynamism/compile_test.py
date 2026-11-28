@@ -2209,5 +2209,100 @@ class DynamicFusedMovingAvgObsFqTest(seed_test_utils.RepeatableTest):
           utils.assert_close(act, exp)
 
 
+class DynamicAvgPoolTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="adaptive_avg_pool2d_non_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          spatial_shape=(5, 7),
+          output_size=(2, 3),
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool2d_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          spatial_shape=(6, 8),
+          output_size=(2, 4),
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool3d_non_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          spatial_shape=(4, 5, 4),
+          output_size=(3, 2, 3),
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool3d_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          spatial_shape=(4, 6, 4),
+          output_size=(2, 3, 2),
+      ),
+  )
+  def test_adaptive_avg_pool_multi_dynamic_dims_and_grad(
+      self,
+      pool_fn,
+      spatial_shape: tuple[int, ...],
+      output_size: tuple[int, ...],
+  ) -> None:
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      return pool_fn(x, output_size)
+
+    compiled = torch.compile(fn, backend="tpu")
+
+    def check(batch: int, channels: int, mark: bool) -> None:
+      x_cpu = torch.randn(batch, channels, *spatial_shape, requires_grad=True)
+      expected = fn(x_cpu)
+      grad_out = torch.randn_like(expected)
+      expected.backward(grad_out)
+
+      x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+      if mark:
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=8)
+        torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=8)
+      actual = compiled(x_tpu)
+      utils.assert_close(actual.to("cpu"), expected)
+      actual.backward(grad_out.to(self.device))
+      utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+
+    check(4, 3, mark=True)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      check(2, 5, mark=False)
+
+  def test_avg_pool2d_3d_unbatched_multi_dynamic_dims_and_grad(self) -> None:
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      # Use stride=1 so PyTorch < 2.12's div_rtn meta formula does not emit a
+      # parity guard on height that rejects the [4, 12] mark_dynamic range.
+      return torch.nn.functional.avg_pool2d(
+          x, kernel_size=3, stride=1, padding=1, count_include_pad=False
+      )
+
+    compiled = torch.compile(fn, backend="tpu")
+
+    def check(channels: int, height: int, mark: bool) -> None:
+      x_cpu = torch.randn(channels, height, 8, requires_grad=True)
+      expected = fn(x_cpu)
+      grad_out = torch.randn_like(expected)
+      expected.backward(grad_out)
+
+      x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+      if mark:
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=8)
+        torch._dynamo.mark_dynamic(x_tpu, 1, min=4, max=12)
+      actual = compiled(x_tpu)
+      utils.assert_close(actual.to("cpu"), expected)
+      actual.backward(grad_out.to(self.device))
+      utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+
+    check(3, 6, mark=True)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      check(5, 9, mark=False)
+
+
 if __name__ == "__main__":
   absltest.main()

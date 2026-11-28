@@ -71,6 +71,7 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",

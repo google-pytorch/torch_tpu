@@ -236,7 +236,8 @@ absl::StatusOr<mlir::MlirOp> ScaleAvgPoolOutput(
 absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
     mlir::MlirOp input, int64_t spatial_dim_count, Dimensions kernel_size,
     Dimensions stride, Dimensions padding, bool ceil_mode,
-    bool count_include_pad, std::optional<int64_t> divisor_override) {
+    bool count_include_pad, std::optional<int64_t> divisor_override,
+    SpatialDimMode spatial_dim_mode) {
   const mlir::ElementType orig_dtype = GetElementTypeOrDie(input);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(orig_dtype));
@@ -249,6 +250,10 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
   mlir::MlirOp batch_input = batch_input_info.batch_input;
   const int64_t original_dim_size = batch_input_info.original_dim_size;
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(batch_input);
+  if (spatial_dim_mode == SpatialDimMode::kRequireStatic) {
+    TT_RETURN_IF_ERROR(
+        ValidateStaticSpatialDims(input_type, spatial_dim_count));
+  }
   const mlir::Type element_type = input_type.getElementType();
   const int64_t num_dims = input_type.getRank();
 
@@ -385,12 +390,14 @@ mlir::MlirOp SliceBackwardResult(
       const int64_t fwd_pad_low = ceil_padding_pairs[spatial_idx].left;
       start_indices[i] = fwd_pad_low;
       limit_indices[i] = fwd_pad_low + input_shape[i];
+    }
 
-      // If the limit is out of bounds, we need to pad the result.
-      if (limit_indices[i] > conv_shape[i]) {
-        result_pad_high[i] = limit_indices[i] - conv_shape[i];
-        needs_padding = true;
-      }
+    // If the limit is out of bounds (including when batch_input has a larger
+    // static upper bound than full_conv_result on batch/channel dims), pad the
+    // result before slicing.
+    if (limit_indices[i] > conv_shape[i]) {
+      result_pad_high[i] = limit_indices[i] - conv_shape[i];
+      needs_padding = true;
     }
   }
 
@@ -413,7 +420,7 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp input, int64_t spatial_dim_count,
     const Dimensions& kernel_size, const Dimensions& stride,
     const Dimensions& padding, bool ceil_mode, bool count_include_pad,
-    std::optional<int64_t> divisor_override) {
+    std::optional<int64_t> divisor_override, SpatialDimMode spatial_dim_mode) {
   const mlir::ElementType orig_dtype = GetElementTypeOrDie(grad_output);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(orig_dtype));
@@ -430,6 +437,13 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
   mlir::MlirOp batch_grad_output = batch_grad_output_info.batch_input;
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(batch_input);
+  if (spatial_dim_mode == SpatialDimMode::kRequireStatic) {
+    TT_RETURN_IF_ERROR(
+        ValidateStaticSpatialDims(input_type, spatial_dim_count));
+    TT_RETURN_IF_ERROR(
+        ValidateStaticSpatialDims(GetTensorTypeOrDie(batch_grad_output),
+                                  spatial_dim_count, "grad_output"));
+  }
   const mlir::Type element_type = input_type.getElementType();
   const int64_t num_dims = input_type.getRank();
 
@@ -542,16 +556,17 @@ auto GetAvgPoolOpBuilder(at::IntArrayRef kernel_size, at::IntArrayRef stride,
                          at::IntArrayRef padding, bool ceil_mode,
                          bool count_include_pad,
                          std::optional<int64_t> divisor_override,
-                         int64_t spatial_dim_count) {
-  return
-      [kernel_size_vec = CopyIntVector(kernel_size),
-       stride_vec = CopyIntVector(stride), padding_vec = CopyIntVector(padding),
-       ceil_mode, count_include_pad, divisor_override, spatial_dim_count](
-          mlir::MlirOp input_op) -> absl::StatusOr<mlir::MlirOp> {
-        return BuildAvgPoolShlo(input_op, spatial_dim_count, kernel_size_vec,
-                                stride_vec, padding_vec, ceil_mode,
-                                count_include_pad, divisor_override);
-      };
+                         int64_t spatial_dim_count,
+                         SpatialDimMode spatial_dim_mode) {
+  return [kernel_size_vec = CopyIntVector(kernel_size),
+          stride_vec = CopyIntVector(stride),
+          padding_vec = CopyIntVector(padding), ceil_mode, count_include_pad,
+          divisor_override, spatial_dim_count, spatial_dim_mode](
+             mlir::MlirOp input_op) -> absl::StatusOr<mlir::MlirOp> {
+    return BuildAvgPoolShlo(
+        input_op, spatial_dim_count, kernel_size_vec, stride_vec, padding_vec,
+        ceil_mode, count_include_pad, divisor_override, spatial_dim_mode);
+  };
 }
 
 absl::Status ValidateAvgPool1dDtype(const at::Tensor& self) {
@@ -580,10 +595,15 @@ absl::StatusOr<DeviceBufferRef> BuildAvgPoolNd(
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, mlir::ElementType out_dtype,
     at::IntArrayRef out_sizes, int64_t spatial_dim_count,
-    OpParamCacheKeys param_keys, std::optional<OpName> override_op_name) {
+    OpParamCacheKeys param_keys, std::optional<OpName> override_op_name,
+    SpatialDimMode spatial_dim_mode) {
+  if (spatial_dim_mode == SpatialDimMode::kRequireStatic) {
+    TT_RETURN_IF_ERROR(
+        param_keys.SetParam("require_static_spatial_dims", true));
+  }
   auto op_builder = GetAvgPoolOpBuilder(kernel_size, stride, padding, ceil_mode,
                                         count_include_pad, divisor_override,
-                                        spatial_dim_count);
+                                        spatial_dim_count, spatial_dim_mode);
 
   return DispatchOp<1>(std::move(op_builder), self,
                        {.op_name = override_op_name,
@@ -596,18 +616,23 @@ absl::StatusOr<at::Tensor> BuildAvgPoolOutNd(
     const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& out,
-    int64_t spatial_dim_count, OpParamCacheKeys param_keys) {
+    int64_t spatial_dim_count, OpParamCacheKeys param_keys,
+    SpatialDimMode spatial_dim_mode) {
   TT_ASSIGN_OR_RETURN(
       const Dimensions output_size,
       GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
                            at::IntArrayRef({1}), ceil_mode, spatial_dim_count));
   TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
                                       /*allow_out_dtype_cast=*/false));
+  if (spatial_dim_mode == SpatialDimMode::kRequireStatic) {
+    TT_RETURN_IF_ERROR(
+        param_keys.SetParam("require_static_spatial_dims", true));
+  }
   TT_ASSIGN_OR_RETURN(auto out_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
   auto op_builder = GetAvgPoolOpBuilder(kernel_size, stride, padding, ceil_mode,
                                         count_include_pad, divisor_override,
-                                        spatial_dim_count);
+                                        spatial_dim_count, spatial_dim_mode);
   TT_RETURN_IF_ERROR(
       DispatchOpOut<1>(std::move(op_builder), self, out,
                        {.out_dtype = out_type,
@@ -623,21 +648,27 @@ absl::StatusOr<at::Tensor> BuildAvgPoolBackwardGradInputNd(
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& grad_input,
-    int64_t spatial_dim_count, OpParamCacheKeys param_keys) {
+    int64_t spatial_dim_count, OpParamCacheKeys param_keys,
+    SpatialDimMode spatial_dim_mode) {
   TT_RETURN_IF_ERROR(ValidateOutDtype(grad_input, self.scalar_type(),
                                       /*allow_out_dtype_cast=*/false));
+  if (spatial_dim_mode == SpatialDimMode::kRequireStatic) {
+    TT_RETURN_IF_ERROR(
+        param_keys.SetParam("require_static_spatial_dims", true));
+  }
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
 
   auto op_builder = [kernel_size_vec = CopyIntVector(kernel_size),
                      stride_vec = CopyIntVector(stride),
                      padding_vec = CopyIntVector(padding), ceil_mode,
-                     count_include_pad, divisor_override,
-                     spatial_dim_count](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+                     count_include_pad, divisor_override, spatial_dim_count,
+                     spatial_dim_mode](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
-    return BuildAvgPoolBackwardShlo(
-        inputs[0], inputs[1], spatial_dim_count, kernel_size_vec, stride_vec,
-        padding_vec, ceil_mode, count_include_pad, divisor_override);
+    return BuildAvgPoolBackwardShlo(inputs[0], inputs[1], spatial_dim_count,
+                                    kernel_size_vec, stride_vec, padding_vec,
+                                    ceil_mode, count_include_pad,
+                                    divisor_override, spatial_dim_mode);
   };
 
   DispatchOpOptions<1> options = {
