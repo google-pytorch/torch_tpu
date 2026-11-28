@@ -399,6 +399,9 @@ registration has filtered them out.
 """
 REGISTRATION_OVERRIDES = frozenset([
     # go/keep-sorted start
+    # _chunk_cat.out is used by PyTorch's FSDP2 wrapper. The default
+    # decomposition performs 2-d reshapes that are slow to compile on TPU.
+    '_chunk_cat.out',
     # _fused_rms_norm and _scaled_dot_product_fused_attention_overrideable are
     # registered for fused forward/backward lowerings.
     '_fused_rms_norm',

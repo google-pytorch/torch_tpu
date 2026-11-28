@@ -7113,6 +7113,113 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
 
+  @parameterized.product(
+      out_dtype=[torch.bfloat16, torch.float32], num_chunks=[1, 2, 8]
+  )
+  def test_chunk_cat_fsdp2_copy_in(self, out_dtype, num_chunks):
+    """Tests _chunk_cat as FSDP2 (fully_shard) calls it.
+
+    Before every reduce-scatter, FSDP2 copies the bfloat16 gradients into a
+    (num_chunks, N) view of a flat buffer of the reduce dtype. Dim 0 of a
+    gradient is zero-padded to a multiple of num_chunks.
+
+    Args:
+      out_dtype: The dtype of the flat buffer.
+      num_chunks: The number of chunks (the FSDP world size).
+    """
+    shapes = [(10, 3), (7,), (5, 2, 4), (64, 32), (1, 8)]
+    grads = [torch.randn(shape).to(torch.bfloat16) for shape in shapes]
+    row_numel = sum(
+        math.ceil(shape[0] / num_chunks) * math.prod(shape[1:])
+        for shape in shapes
+    )
+
+    def fn(device):
+      out = torch.empty(
+          num_chunks * row_numel, dtype=out_dtype, device=device
+      ).view(num_chunks, -1)
+      torch._chunk_cat(
+          [grad.to(device) for grad in grads], 0, num_chunks, out=out
+      )
+      return out
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_chunk_cat_fsdp2_ops_do_not_grow(self):
+    """FSDP2's copy-in must not record more ATen ops for more ranks or grads."""
+
+    def count_aten_ops(num_tensors, num_chunks):
+      grads = [torch.randn(9, 128, device="tpu") for _ in range(num_tensors)]
+      out = torch.empty(
+          num_chunks * num_tensors * math.ceil(9 / num_chunks) * 128,
+          device="tpu",
+      ).view(num_chunks, -1)
+      with torch.profiler.profile(
+          activities=[torch.profiler.ProfilerActivity.CPU]
+      ) as prof:
+        torch._chunk_cat(grads, 0, num_chunks, out=out)
+      return sum(
+          event.count
+          for event in prof.key_averages()
+          if event.key.startswith("aten::")
+      )
+
+    self.assertEqual(count_aten_ops(2, 2), count_aten_ops(8, 16))
+
+  def test_chunk_cat_dim1(self):
+    tensors = [torch.randn(2, 5, 3), torch.randn(2, 3)]
+
+    def fn(device):
+      out = torch.empty(0, device=device)
+      torch._chunk_cat([t.to(device) for t in tensors], 1, 2, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_chunk_cat_out_views(self):
+    """out may be a partial view of its storage, or non-contiguous."""
+    tensors = [torch.randn(5, 3), torch.randn(7)]
+
+    def fn(device):
+      storage = torch.zeros(2 * 2 * 13, device=device)
+      partial = storage[2 * 13 :].view(2, 13)
+      transposed = torch.zeros(13, 2, device=device).t()
+      for out in (partial, transposed):
+        torch._chunk_cat([t.to(device) for t in tensors], 0, 2, out=out)
+      return storage, transposed
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_chunk_cat_out_aliases_input(self):
+    """out may be one of the inputs: the inputs are read before out changes."""
+
+    def fn(device):
+      x = torch.tensor([1.0, 2.0, 3.0], device=device)
+      torch._chunk_cat([x], 0, 2, out=x)
+      return x
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_chunk_cat_negative_dim(self):
+    tensors = [torch.randn(2, 5, 3), torch.randn(2, 3, 3)]
+
+    def fn(device):
+      out = torch.empty(0, device=device)
+      torch._chunk_cat([t.to(device) for t in tensors], -2, 2, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
+  def test_chunk_cat_real_to_complex_out(self):
+    tensors = [torch.randn(5, 3), torch.randn(7)]
+
+    def fn(device):
+      out = torch.empty(0, dtype=torch.complex64, device=device)
+      torch._chunk_cat([t.to(device) for t in tensors], 0, 2, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(fn, check_value=CheckValueMode.STRICT)
+
   def test_atan2(self):
     x = torch.tensor([2], dtype=torch.int32)
     y = torch.tensor([3], dtype=torch.float32)

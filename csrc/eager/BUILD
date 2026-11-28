@@ -789,6 +789,7 @@ torch_tpu_cc_library(
         "//csrc/ops/bucketize:bucketize_aten_kernels",
         "//csrc/ops/cat:cat_aten_kernels",
         "//csrc/ops/channel_shuffle:channel_shuffle_aten_kernels",
+        "//csrc/ops/chunk_cat:chunk_cat_aten_kernels",
         "//csrc/ops/clamp:clamp_aten_kernels",
         "//csrc/ops/col2im:col2im_aten_kernels",
         "//csrc/ops/constant_pad:constant_pad_aten_kernels",

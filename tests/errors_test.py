@@ -23986,6 +23986,29 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.split_with_sizes_copy(self_0d, [1], dim=0, out=out)
 
+  def test_chunk_cat_empty_tensor(self):
+    tensors = [
+        torch.zeros(4, device=et.device()),
+        torch.zeros(0, device=et.device()),
+    ]
+    out = torch.empty(0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_chunk_cat expects non-empty tensor""",
+        gpu="""_chunk_cat expects non-empty tensor""",
+    ):
+      torch._chunk_cat(tensors, 0, 2, out=out)
+
+  def test_chunk_cat_out_on_another_device(self):
+    tensors = [torch.zeros(4, device=et.device())]
+    out = torch.empty(2, 2)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""chunk_cat(): expected out to be on tpu:0, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got tensors is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out__chunk_cat_out)""",
+    ):
+      torch._chunk_cat(tensors, 0, 2, out=out)
+
   def test_select_scatter_errors(self):
     self_0d = torch.tensor(1.0, device=et.device())
     src_0d = torch.tensor(2.0, device=et.device())
