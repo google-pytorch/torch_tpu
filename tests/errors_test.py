@@ -926,7 +926,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     out = torch.empty(1, 2, 10, 10, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""upsample_bilinear2d(): expected 4D input and out tensors, got input: 3D, out: 4D""",
+        tpu="""upsample_bilinear2d(): expected 4D input tensor, got 3D tensor""",
         gpu="""It is expected input_size equals to 4, but got size 3""",
     ):
       torch.ops.aten.upsample_bilinear2d.out(
@@ -942,7 +942,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""upsample_bilinear2d_backward(): expected 4D grad_output tensor and 4-element input_size, got grad_output: 4D, input_size: 3 elements""",
+        tpu="""upsample_bilinear2d_backward(): expected input_size to have 4 elements, got 3""",
         gpu="""It is expected input_size equals to 4, but got size 3""",
     ):
       torch.ops.aten.upsample_bilinear2d_backward.grad_input(
@@ -980,10 +980,20 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     out = torch.empty(1, 2, 0, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""upsample_linear1d(): expected input and output sizes to be greater than 0, got input (W: 4) and output (W: 0)""",
+        tpu="""upsample_linear1d(): expected input and output spatial sizes to be greater than 0, got input: [1, 2, 4], output_size: [0]""",
         gpu="""Input and output sizes should be greater than 0, but got input (W: 4) and output (W: 0)""",
     ):
       torch.ops.aten.upsample_linear1d.out(t, [0], False, None, out=out)
+
+  def test_upsample_linear1d_zero_channels(self):
+    t = torch.empty(1, 0, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_linear1d(): expected non-empty channel dimension, got input: [1, 0, 4]""",
+        gpu="""Non-empty 3D data tensor expected but got a tensor with sizes [1, 0, 4]""",
+    ):
+      torch.ops.aten.upsample_linear1d.out(t, [8], False, None, out=out)
 
   def test_upsample_linear1d_dtype_mismatch(self):
     t = torch.ones(1, 1, 4, device=et.device(), dtype=torch.float32)
@@ -1034,7 +1044,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     grad_input = torch.empty(1, 2, 4, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""upsample_linear1d_backward(): expected input and output sizes to be greater than 0, got input (W: 4) and output (W: 0)""",
+        tpu="""upsample_linear1d_backward(): expected input and output spatial sizes to be greater than 0, got input_size: [1, 2, 4], output_size: [0]""",
         gpu="""Input and output sizes should be greater than 0, but got input (W: 4) and output (W: 0)""",
     ):
       torch.ops.aten.upsample_linear1d_backward.grad_input(
@@ -1162,6 +1172,228 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           None,
           grad_input=grad_input,
       )
+
+  def test_upsample_nearest2d_out_errors(self):
+    with self.subTest("invalid_output_size"):
+      t = torch.ones(1, 2, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d(): expected output_size to have 2 elements, got 1""",
+          gpu="""It is expected output_size equals to 2, but got size 1""",
+      ):
+        torch.ops.aten.upsample_nearest2d.out(t, [8], None, None, out=out)
+
+    with self.subTest("invalid_rank"):
+      t = torch.ones(1, 2, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d(): expected 4D input tensor, got 3D tensor""",
+          gpu="""It is expected input_size equals to 4, but got size 3""",
+      ):
+        torch.ops.aten.upsample_nearest2d.out(t, [8, 8], None, None, out=out)
+
+    with self.subTest("zero_spatial_size"):
+      t = torch.ones(1, 2, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d(): expected input and output spatial sizes to be greater than 0, got input: [1, 2, 4, 4], output_size: [0, 8]""",
+          gpu="""Input and output sizes should be greater than 0, but got input (H: 4, W: 4) output (H: 0, W: 8)""",
+      ):
+        torch.ops.aten.upsample_nearest2d.out(t, [0, 8], None, None, out=out)
+
+    with self.subTest("zero_channels"):
+      t = torch.empty(1, 0, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d(): expected non-empty channel dimension, got input: [1, 0, 4, 4]""",
+          gpu="""Non-empty 4D data tensor expected but got a tensor with sizes [1, 0, 4, 4]""",
+      ):
+        torch.ops.aten.upsample_nearest2d.out(t, [8, 8], None, None, out=out)
+
+    with self.subTest("out_dtype_mismatch"):
+      t = torch.ones(1, 2, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d(): expected out dtype float32, got int32""",
+          gpu="""Expected out tensor to have dtype float, but got int instead""",
+      ):
+        torch.ops.aten.upsample_nearest2d.out(t, [8, 8], None, None, out=out)
+
+    with self.subTest("out_device_mismatch_empty_batch"):
+      t = torch.empty(0, 2, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, 2, 8, 8, device="cpu", dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d(): expected out device tpu:0, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_upsample_nearest2d_out_out)""",
+      ):
+        torch.ops.aten.upsample_nearest2d.out(t, [8, 8], None, None, out=out)
+
+  def test_upsample_nearest2d_backward_grad_input_errors(self):
+    with self.subTest("invalid_output_size"):
+      grad_out = torch.ones(1, 2, 8, 8, device=et.device(), dtype=torch.float32)
+      grad_in = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d_backward(): expected output_size to have 2 elements, got 1""",
+          gpu="""It is expected output_size equals to 2, but got size 1""",
+      ):
+        torch.ops.aten.upsample_nearest2d_backward.grad_input(
+            grad_out, [8], [1, 2, 4, 4], None, None, grad_input=grad_in
+        )
+
+    with self.subTest("invalid_input_size"):
+      grad_out = torch.ones(1, 2, 8, 8, device=et.device(), dtype=torch.float32)
+      grad_in = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d_backward(): expected input_size to have 4 elements, got 3""",
+          gpu="""It is expected input_size equals to 4, but got size 3""",
+      ):
+        torch.ops.aten.upsample_nearest2d_backward.grad_input(
+            grad_out, [8, 8], [1, 2, 4], None, None, grad_input=grad_in
+        )
+
+    with self.subTest("zero_spatial_size"):
+      grad_out = torch.ones(1, 2, 8, 8, device=et.device(), dtype=torch.float32)
+      grad_in = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d_backward(): expected input and output spatial sizes to be greater than 0, got input_size: [1, 2, 0, 4], output_size: [8, 8]""",
+          gpu="""Input and output sizes should be greater than 0, but got input (H: 0, W: 4) output (H: 8, W: 8)""",
+      ):
+        torch.ops.aten.upsample_nearest2d_backward.grad_input(
+            grad_out, [8, 8], [1, 2, 0, 4], None, None, grad_input=grad_in
+        )
+
+    with self.subTest("grad_output_shape_mismatch"):
+      grad_out = torch.ones(1, 2, 6, 8, device=et.device(), dtype=torch.float32)
+      grad_in = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d_backward(): expected grad_output to have size [1, 2, 8, 8], got [1, 2, 6, 8]""",
+          gpu="""Expected grad_output to have the same shape as output; output.size(2) = 8 but got grad_output.size(2) = 6""",
+      ):
+        torch.ops.aten.upsample_nearest2d_backward.grad_input(
+            grad_out, [8, 8], [1, 2, 4, 4], None, None, grad_input=grad_in
+        )
+
+    with self.subTest("grad_input_dtype_mismatch"):
+      grad_out = torch.ones(1, 2, 8, 8, device=et.device(), dtype=torch.float32)
+      grad_in = torch.empty(0, device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d_backward(): expected grad_input dtype float32, got int32""",
+          gpu="""Expected out tensor to have dtype float, but got int instead""",
+      ):
+        torch.ops.aten.upsample_nearest2d_backward.grad_input(
+            grad_out, [8, 8], [1, 2, 4, 4], None, None, grad_input=grad_in
+        )
+
+    with self.subTest("grad_input_device_mismatch_empty_batch"):
+      grad_out = torch.empty(
+          0, 2, 8, 8, device=et.device(), dtype=torch.float32
+      )
+      grad_in = torch.empty(0, 2, 4, 4, device="cpu", dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_nearest2d_backward(): expected grad_input device tpu:0, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got grad_output is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_upsample_nearest2d_backward_out_grad_input)""",
+      ):
+        torch.ops.aten.upsample_nearest2d_backward.grad_input(
+            grad_out, [8, 8], [0, 2, 4, 4], None, None, grad_input=grad_in
+        )
+
+  def test_upsample_bilinear2d_out_and_backward_errors(self):
+    with self.subTest("zero_channels"):
+      t = torch.empty(1, 0, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_bilinear2d(): expected non-empty channel dimension, got input: [1, 0, 4, 4]""",
+          gpu="""Non-empty 4D data tensor expected but got a tensor with sizes [1, 0, 4, 4]""",
+      ):
+        torch.ops.aten.upsample_bilinear2d.out(
+            t, [8, 8], False, None, None, out=out
+        )
+
+    with self.subTest("out_dtype_mismatch"):
+      t = torch.ones(1, 2, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_bilinear2d(): expected out dtype float32, got int32""",
+          gpu="""Expected out tensor to have dtype float, but got int instead""",
+      ):
+        torch.ops.aten.upsample_bilinear2d.out(
+            t, [8, 8], False, None, None, out=out
+        )
+
+    with self.subTest("backward_grad_input_dtype_mismatch"):
+      grad_out = torch.ones(1, 2, 8, 8, device=et.device(), dtype=torch.float32)
+      grad_in = torch.empty(0, device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_bilinear2d_backward(): expected grad_input dtype float32, got int32""",
+          gpu="""Expected out tensor to have dtype float, but got int instead""",
+      ):
+        torch.ops.aten.upsample_bilinear2d_backward.grad_input(
+            grad_out,
+            [8, 8],
+            [1, 2, 4, 4],
+            False,
+            None,
+            None,
+            grad_input=grad_in,
+        )
+
+  def test_upsample_bicubic2d_out_and_backward_errors(self):
+    with self.subTest("out_zero_channels"):
+      t = torch.empty(1, 0, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_bicubic2d(): expected non-empty channel dimension, got input: [1, 0, 4, 4]""",
+          gpu="""Non-empty 4D data tensor expected but got a tensor with sizes [1, 0, 4, 4]""",
+      ):
+        torch.ops.aten.upsample_bicubic2d.out(
+            t, [8, 8], False, None, None, out=out
+        )
+
+    with self.subTest("out_zero_spatial"):
+      t = torch.ones(1, 2, 4, 4, device=et.device(), dtype=torch.float32)
+      out = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_bicubic2d(): expected input and output spatial sizes to be greater than 0, got input: [1, 2, 4, 4], output_size: [8, 0]""",
+          gpu="""Input and output sizes should be greater than 0, but got input (H: 4, W: 4) output (H: 8, W: 0)""",
+      ):
+        torch.ops.aten.upsample_bicubic2d.out(
+            t, [8, 0], False, None, None, out=out
+        )
+
+    with self.subTest("backward_grad_output_shape_mismatch"):
+      grad_out = torch.ones(1, 2, 6, 8, device=et.device(), dtype=torch.float32)
+      grad_in = torch.empty(0, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""upsample_bicubic2d_backward(): expected grad_output to have size [1, 2, 8, 8], got [1, 2, 6, 8]""",
+          gpu="""Expected grad_output to have the same shape as output; output.size(2) = 8 but got grad_output.size(2) = 6""",
+      ):
+        torch.ops.aten.upsample_bicubic2d_backward.grad_input(
+            grad_out,
+            [8, 8],
+            [1, 2, 4, 4],
+            False,
+            None,
+            None,
+            grad_input=grad_in,
+        )
 
   @parameterized.named_parameters(
       dict(

@@ -28,13 +28,10 @@
 #include "ATen/native/UpSample.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/einsum/einsum_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
@@ -42,6 +39,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "csrc/ops/upsample/upsample_utils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -232,6 +230,7 @@ absl::StatusOr<mlir::MlirOp> BuildBicubic2d(
     const std::optional<double> scale_h, const std::optional<double> scale_w,
     const mlir::stablehlo::Precision precision,
     const BicubicDirection direction) {
+  TT_RETURN_IF_ERROR(ValidateUpsampleSpatialDimsStatic(operand));
   if (in_h == out_h && in_w == out_w &&
       (direction == BicubicDirection::kBackward ||
        align_corners == AlignCorners::kYes ||
@@ -266,14 +265,6 @@ absl::StatusOr<mlir::MlirOp> BuildBicubic2d(
              : mlir::stablehlo::ConvertElementType(result, elem_type);
 }
 
-void CheckUpsampleDtypes(const at::Tensor& tensor) {
-  TT_CHECK_THROW(tensor.scalar_type() != at::kBool &&
-                     tensor.scalar_type() != at::kInt &&
-                     tensor.scalar_type() != at::kLong,
-                 error::kPythonNotImplementedError)
-      << "not implemented for " << ToString(tensor.scalar_type());
-}
-
 }  // namespace
 
 // Lowers 2D bicubic interpolation as separable contractions along H and W:
@@ -287,17 +278,12 @@ at::Tensor& AtenUpsampleBicubic2dOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kUpsampleBicubic2dOut, param_keys,
       (self, output_size, align_corners, scale_h, scale_w, out), {
-        const Dimensions expected_output_shape = {
-            self.size(0), self.size(1), output_size[0], output_size[1]};
+        TT_ASSIGN_OR_THROW(const Dimensions expected_output_shape,
+                           ValidateUpsampleForwardInputs(
+                               self, output_size, out, /*spatial_dims=*/2,
+                               UpsampleDtypePolicy::kExcludeBoolIntLong));
         TT_THROW_IF_ERROR(
             ResizeTensorIfShapeDiffers(out, expected_output_shape));
-
-        CheckUpsampleDtypes(self);
-
-        TT_CHECK_THROW(self.scalar_type() == out.scalar_type(),
-                       error::kInvalidArgument)
-            << "expected out dtype " << ToString(self.scalar_type()) << ", got "
-            << ToString(out.scalar_type());
 
         if (out.numel() == 0) {
           return out;
@@ -326,7 +312,7 @@ at::Tensor& AtenUpsampleBicubic2dOut(const at::Tensor& self,
         TT_THROW_IF_ERROR(
             (DispatchOpOut<1>(std::move(op_builder), {self}, out,
                               {.out_dtype = element_type,
-                               .out_dims = CopyIntVector(out.sizes()),
+                               .out_dims = expected_output_shape,
                                .op_param_cache_keys = std::move(param_keys)})));
         return out;
       });
@@ -341,20 +327,16 @@ at::Tensor& AtenUpsampleBicubic2dBackwardGradInput(
     at::Tensor& grad_input) {
   TT_KERNEL(
       OpName::kUpsampleBicubic2dBackwardGradInput, param_keys,
-      (grad_output, IgnoreInCacheKey(output_size, "Unused"), input_size,
-       align_corners, scales_h, scales_w, grad_input),
+      (grad_output, IgnoreInCacheKey(output_size, "Doesn't affect SHLO"),
+       input_size, align_corners, scales_h, scales_w, grad_input),
       {
-        const Dimensions expected_grad_input_shape = CopyIntVector(input_size);
+        TT_ASSIGN_OR_THROW(
+            const Dimensions expected_grad_input_shape,
+            ValidateUpsampleBackwardInputs(
+                grad_output, output_size, input_size, grad_input,
+                /*spatial_dims=*/2, UpsampleDtypePolicy::kExcludeBoolIntLong));
         TT_THROW_IF_ERROR(
             ResizeTensorIfShapeDiffers(grad_input, expected_grad_input_shape));
-
-        CheckUpsampleDtypes(grad_output);
-
-        TT_CHECK_THROW(grad_output.scalar_type() == grad_input.scalar_type(),
-                       error::kInvalidArgument)
-            << "expected grad_input dtype "
-            << ToString(grad_output.scalar_type()) << ", got "
-            << ToString(grad_input.scalar_type());
 
         if (grad_input.numel() == 0) {
           return grad_input;
@@ -386,7 +368,7 @@ at::Tensor& AtenUpsampleBicubic2dBackwardGradInput(
         TT_THROW_IF_ERROR(
             (DispatchOpOut<1>(std::move(op_builder), {grad_output}, grad_input,
                               {.out_dtype = element_type,
-                               .out_dims = CopyIntVector(grad_input.sizes()),
+                               .out_dims = expected_grad_input_shape,
                                .op_param_cache_keys = std::move(param_keys)})));
         return grad_input;
       });

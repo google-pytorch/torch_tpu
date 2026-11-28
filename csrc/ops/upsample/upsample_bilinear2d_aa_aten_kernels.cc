@@ -33,7 +33,6 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/binary.h"
@@ -45,6 +44,7 @@
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "csrc/ops/upsample/upsample_utils.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -387,12 +387,16 @@ absl::StatusOr<mlir::MlirOp> InterpolateBilinearAa1dGather(
     mlir::MlirBuilder& builder, mlir::MlirOp input, const int64_t spatial_dim,
     const int64_t in_size, const int64_t out_size,
     const BilinearAaFilterParams& params, const mlir::Type calc_type) {
+  const StaticAtBounds static_input = MakeStaticAtBounds(input);
+  mlir::MlirOp static_op = static_input.op;
+
   TT_ASSIGN_OR_RETURN(
       BilinearAa1dTaps taps,
       ComputeBilinearAa1dTaps(builder, in_size, out_size, params, calc_type));
   const Dimensions input_shape =
-      CopyIntVector(GetTensorTypeOrDie(input).getShape());
-  const mlir::Type element_type = GetTensorTypeOrDie(input).getElementType();
+      CopyIntVector(GetTensorTypeOrDie(static_op).getShape());
+  const mlir::Type element_type =
+      GetTensorTypeOrDie(static_op).getElementType();
   const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
   const mlir::RankedTensorType vec_calc_type =
       mlir::RankedTensorType::get(Dimensions{out_size}, calc_type);
@@ -402,7 +406,7 @@ absl::StatusOr<mlir::MlirOp> InterpolateBilinearAa1dGather(
   const mlir::RankedTensorType pass_calc_type = mlir::RankedTensorType::get(
       AsArrayRef<int64_t>(pass_output_shape), calc_type);
   const BilinearAa1dGatherConfig gather_config =
-      GetBilinearAa1dGatherConfig(input, spatial_dim);
+      GetBilinearAa1dGatherConfig(static_op, spatial_dim);
   const Dimensions spatial_bcast_dims = {spatial_dim};
 
   mlir::MlirOp accumulated;
@@ -410,7 +414,7 @@ absl::StatusOr<mlir::MlirOp> InterpolateBilinearAa1dGather(
     mlir::MlirOp clamped_idx_2d = mlir::stablehlo::ConvertElementType(
         taps.clamped_indices_1d[j], i32_type);
     mlir::MlirOp gathered = mlir::stablehlo::Gather(
-        input, clamped_idx_2d, gather_config.gather_dimension_numbers,
+        static_op, clamped_idx_2d, gather_config.gather_dimension_numbers,
         AsArrayRef<int64_t>(gather_config.slice_sizes),
         /*indices_are_sorted=*/false);
     mlir::MlirOp gathered_calc =
@@ -433,10 +437,11 @@ absl::StatusOr<mlir::MlirOp> InterpolateBilinearAa1dGather(
     }
   }
 
-  if (element_type == calc_type) {
-    return accumulated;
-  }
-  return mlir::stablehlo::ConvertElementType(accumulated, element_type);
+  mlir::MlirOp result =
+      (element_type == calc_type)
+          ? accumulated
+          : mlir::stablehlo::ConvertElementType(accumulated, element_type);
+  return RestoreDynamicDimSizes(result, static_input.runtime_sizes);
 }
 
 absl::StatusOr<mlir::MlirOp> InterpolateBilinearAa1d(
@@ -468,6 +473,7 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinear2dAaShlo(
     const AlignCorners align_corners, const std::optional<double> scales_h,
     const std::optional<double> scales_w, const mlir::Type calc_type,
     const mlir::stablehlo::Precision precision) {
+  TT_RETURN_IF_ERROR(ValidateUpsampleSpatialDimsStatic(input));
   mlir::MlirBuilder& builder = input.getBuilder();
   // Separable 2D anti-aliased bilinear interpolation:
   // 1. Horizontal pass along W (dim 3):
@@ -481,41 +487,6 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinear2dAaShlo(
   return InterpolateBilinearAa1d(builder, horiz, SpatialAxis::kHeight,
                                  output_shape[2], align_corners, scales_h,
                                  calc_type, precision);
-}
-
-void CheckUpsampleBilinear2dAaDtypes(const at::Tensor& tensor) {
-  TT_CHECK_THROW(at::isFloatingType(tensor.scalar_type()),
-                 error::kPythonNotImplementedError)
-      << "not implemented for " << ToString(tensor.scalar_type());
-}
-
-void ValidateUpsampleBilinear2dAaInputs(const at::Tensor& self,
-                                        const at::IntArrayRef output_size,
-                                        const at::Tensor& out) {
-  TT_CHECK_THROW(output_size.size() == 2, error::kInvalidArgument)
-      << "expected output_size to have 2 elements, got "
-      << ToString(output_size.size());
-
-  TT_CHECK_THROW(self.dim() == 4, error::kInvalidArgument)
-      << "expected 4D input tensor, got " << ToString(self.dim()) << "D tensor";
-
-  TT_CHECK_THROW(self.size(1) != 0, error::kInvalidArgument)
-      << "expected non-empty channel dimension, got input: "
-      << ToString(self.sizes());
-
-  TT_CHECK_THROW(self.size(2) > 0 && self.size(3) > 0 && output_size[0] > 0 &&
-                     output_size[1] > 0,
-                 error::kInvalidArgument)
-      << "expected input and output spatial sizes to be greater than 0, got "
-         "input: "
-      << ToString(self.sizes()) << ", output_size: " << ToString(output_size);
-
-  CheckUpsampleBilinear2dAaDtypes(self);
-
-  TT_CHECK_THROW(self.scalar_type() == out.scalar_type(),
-                 error::kInvalidArgument)
-      << "expected out dtype " << ToString(self.scalar_type()) << ", got "
-      << ToString(out.scalar_type());
 }
 
 mlir::stablehlo::Precision GetBilinearAaPrecision(
@@ -536,10 +507,11 @@ at::Tensor& AtenUpsampleBilinear2dAaOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kUpsampleBilinear2dAaOut, param_keys,
       (self, output_size, align_corners, scales_h, scales_w, out), {
-        ValidateUpsampleBilinear2dAaInputs(self, output_size, out);
-
-        const Dimensions expected_output_shape = {
-            self.size(0), self.size(1), output_size[0], output_size[1]};
+        TT_ASSIGN_OR_THROW(
+            const Dimensions expected_output_shape,
+            ValidateUpsampleForwardInputs(self, output_size, out,
+                                          /*spatial_dims=*/2,
+                                          UpsampleDtypePolicy::kFloatingOnly));
         TT_THROW_IF_ERROR(
             ResizeTensorIfShapeDiffers(out, expected_output_shape));
 
@@ -555,7 +527,7 @@ at::Tensor& AtenUpsampleBilinear2dAaOut(const at::Tensor& self,
             GetBilinearAaPrecision(param_keys);
 
         const auto op_builder =
-            [out_shape = CopyIntVector(out.sizes()),
+            [out_shape = expected_output_shape,
              align_corners =
                  align_corners ? AlignCorners::kYes : AlignCorners::kNo,
              scales_h, scales_w, real_dtype,
@@ -572,7 +544,7 @@ at::Tensor& AtenUpsampleBilinear2dAaOut(const at::Tensor& self,
         TT_THROW_IF_ERROR(
             (DispatchOpOut<1>(std::move(op_builder), {self}, out,
                               {.out_dtype = element_type,
-                               .out_dims = CopyIntVector(out.sizes()),
+                               .out_dims = expected_output_shape,
                                .op_param_cache_keys = std::move(param_keys)})));
         return out;
       });

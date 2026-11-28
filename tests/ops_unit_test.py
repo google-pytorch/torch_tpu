@@ -6480,6 +6480,361 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           rtol=tol,
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="nearest1d",
+          shape=(2, 3, 4),
+          call=lambda x, out: torch.ops.aten.upsample_nearest1d.out(
+              x, [8], None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact1d",
+          shape=(2, 3, 4),
+          call=lambda x, out: torch.ops.aten._upsample_nearest_exact1d.out(
+              x, [8], None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="nearest2d",
+          shape=(2, 3, 4, 5),
+          call=lambda x, out: torch.ops.aten.upsample_nearest2d.out(
+              x, [8, 6], None, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact2d",
+          shape=(2, 3, 4, 5),
+          call=lambda x, out: torch.ops.aten._upsample_nearest_exact2d.out(
+              x, [8, 6], None, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="nearest3d",
+          shape=(2, 3, 2, 3, 4),
+          call=lambda x, out: torch.ops.aten.upsample_nearest3d.out(
+              x, [4, 5, 6], None, None, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact3d",
+          shape=(2, 3, 2, 3, 4),
+          call=lambda x, out: torch.ops.aten._upsample_nearest_exact3d.out(
+              x, [4, 5, 6], None, None, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="linear1d",
+          shape=(2, 3, 4),
+          call=lambda x, out: torch.ops.aten.upsample_linear1d.out(
+              x, [8], False, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d",
+          shape=(2, 3, 4, 5),
+          call=lambda x, out: torch.ops.aten.upsample_bilinear2d.out(
+              x, [8, 6], False, None, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="bicubic2d",
+          shape=(2, 3, 4, 5),
+          call=lambda x, out: torch.ops.aten.upsample_bicubic2d.out(
+              x, [8, 6], False, None, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d_aa",
+          shape=(2, 3, 6, 5),
+          call=lambda x, out: torch.ops.aten._upsample_bilinear2d_aa.out(
+              x, [4, 8], False, None, None, out=out
+          ),
+      ),
+      dict(
+          testcase_name="bicubic2d_aa",
+          shape=(2, 3, 6, 5),
+          call=lambda x, out: torch.ops.aten._upsample_bicubic2d_aa.out(
+              x, [4, 8], False, None, None, out=out
+          ),
+      ),
+  )
+  def test_upsample_out_resizing(self, shape, call):
+    tpu_device = torch.device("tpu")
+    x_cpu = torch.randn(*shape, dtype=torch.float32)
+    x_tpu = x_cpu.to(tpu_device)
+    for init_out_shape in ((0,), (1, 1), (1, *shape[1:])):
+      with self.subTest(init_out_shape=init_out_shape):
+        out_cpu = torch.empty(*init_out_shape, dtype=torch.float32)
+        out_tpu = torch.empty(
+            *init_out_shape, dtype=torch.float32, device=tpu_device
+        )
+        call(x_cpu, out_cpu)
+        call(x_tpu, out_tpu)
+        self.assertEqual(out_tpu.shape, out_cpu.shape)
+        self.assert_close(
+            golden_result=out_cpu,
+            torch_tpu_result=out_tpu.cpu(),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="nearest1d_backward",
+          grad_shape=(2, 3, 8),
+          call=lambda g, gi: torch.ops.aten.upsample_nearest1d_backward.grad_input(
+              g, [8], [2, 3, 4], None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact1d_backward",
+          grad_shape=(2, 3, 8),
+          call=lambda g, gi: torch.ops.aten._upsample_nearest_exact1d_backward.grad_input(
+              g, [8], [2, 3, 4], None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="nearest2d_backward",
+          grad_shape=(2, 3, 8, 6),
+          call=lambda g, gi: torch.ops.aten.upsample_nearest2d_backward.grad_input(
+              g, [8, 6], [2, 3, 4, 5], None, None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact2d_backward",
+          grad_shape=(2, 3, 8, 6),
+          call=lambda g, gi: torch.ops.aten._upsample_nearest_exact2d_backward.grad_input(
+              g, [8, 6], [2, 3, 4, 5], None, None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="nearest3d_backward",
+          grad_shape=(2, 3, 4, 5, 6),
+          call=lambda g, gi: torch.ops.aten.upsample_nearest3d_backward.grad_input(
+              g, [4, 5, 6], [2, 3, 2, 3, 4], None, None, None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact3d_backward",
+          grad_shape=(2, 3, 4, 5, 6),
+          call=lambda g, gi: torch.ops.aten._upsample_nearest_exact3d_backward.grad_input(
+              g, [4, 5, 6], [2, 3, 2, 3, 4], None, None, None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="linear1d_backward",
+          grad_shape=(2, 3, 8),
+          call=lambda g, gi: torch.ops.aten.upsample_linear1d_backward.grad_input(
+              g, [8], [2, 3, 4], False, None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d_backward",
+          grad_shape=(2, 3, 8, 6),
+          call=lambda g, gi: torch.ops.aten.upsample_bilinear2d_backward.grad_input(
+              g, [8, 6], [2, 3, 4, 5], False, None, None, grad_input=gi
+          ),
+      ),
+      dict(
+          testcase_name="bicubic2d_backward",
+          grad_shape=(2, 3, 8, 6),
+          call=lambda g, gi: torch.ops.aten.upsample_bicubic2d_backward.grad_input(
+              g, [8, 6], [2, 3, 4, 5], False, None, None, grad_input=gi
+          ),
+      ),
+  )
+  def test_upsample_backward_grad_input_resizing(self, grad_shape, call):
+    tpu_device = torch.device("tpu")
+    grad_out_cpu = torch.randn(*grad_shape, dtype=torch.float32)
+    grad_out_tpu = grad_out_cpu.to(tpu_device)
+    for init_gi_shape in ((0,), (1, 1), (1, *grad_shape[1:])):
+      with self.subTest(init_gi_shape=init_gi_shape):
+        gi_cpu = torch.empty(*init_gi_shape, dtype=torch.float32)
+        gi_tpu = torch.empty(
+            *init_gi_shape, dtype=torch.float32, device=tpu_device
+        )
+        call(grad_out_cpu, gi_cpu)
+        call(grad_out_tpu, gi_tpu)
+        self.assertEqual(gi_tpu.shape, gi_cpu.shape)
+        self.assert_close(
+            golden_result=gi_cpu,
+            torch_tpu_result=gi_tpu.cpu(),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+
+  def test_upsample_empty_batch_and_channel(self):
+    tpu_device = torch.device("tpu")
+    # Forward supports empty batch (N == 0) across all upsample ops.
+    fwd_cases = [
+        (
+            "nearest1d",
+            (0, 3, 4),
+            lambda x, out: torch.ops.aten.upsample_nearest1d.out(
+                x, [8], None, out=out
+            ),
+        ),
+        (
+            "nearest_exact1d",
+            (0, 3, 4),
+            lambda x, out: torch.ops.aten._upsample_nearest_exact1d.out(
+                x, [8], None, out=out
+            ),
+        ),
+        (
+            "nearest2d",
+            (0, 3, 4, 5),
+            lambda x, out: torch.ops.aten.upsample_nearest2d.out(
+                x, [8, 6], None, None, out=out
+            ),
+        ),
+        (
+            "nearest_exact2d",
+            (0, 3, 4, 5),
+            lambda x, out: torch.ops.aten._upsample_nearest_exact2d.out(
+                x, [8, 6], None, None, out=out
+            ),
+        ),
+        (
+            "nearest3d",
+            (0, 3, 2, 3, 4),
+            lambda x, out: torch.ops.aten.upsample_nearest3d.out(
+                x, [4, 5, 6], None, None, None, out=out
+            ),
+        ),
+        (
+            "nearest_exact3d",
+            (0, 3, 2, 3, 4),
+            lambda x, out: torch.ops.aten._upsample_nearest_exact3d.out(
+                x, [4, 5, 6], None, None, None, out=out
+            ),
+        ),
+        (
+            "linear1d",
+            (0, 3, 4),
+            lambda x, out: torch.ops.aten.upsample_linear1d.out(
+                x, [8], False, None, out=out
+            ),
+        ),
+        (
+            "bilinear2d",
+            (0, 3, 4, 5),
+            lambda x, out: torch.ops.aten.upsample_bilinear2d.out(
+                x, [8, 6], False, None, None, out=out
+            ),
+        ),
+        (
+            "bicubic2d",
+            (0, 3, 4, 5),
+            lambda x, out: torch.ops.aten.upsample_bicubic2d.out(
+                x, [8, 6], False, None, None, out=out
+            ),
+        ),
+        (
+            "bilinear2d_aa",
+            (0, 3, 4, 5),
+            lambda x, out: torch.ops.aten._upsample_bilinear2d_aa.out(
+                x, [8, 6], False, None, None, out=out
+            ),
+        ),
+        (
+            "bicubic2d_aa",
+            (0, 3, 4, 5),
+            lambda x, out: torch.ops.aten._upsample_bicubic2d_aa.out(
+                x, [8, 6], False, None, None, out=out
+            ),
+        ),
+    ]
+    for name, shape, call in fwd_cases:
+      with self.subTest(fwd=name):
+        x_cpu = torch.empty(*shape, dtype=torch.float32)
+        x_tpu = x_cpu.to(tpu_device)
+        out_cpu = torch.empty(0, dtype=torch.float32)
+        out_tpu = torch.empty(0, dtype=torch.float32, device=tpu_device)
+        call(x_cpu, out_cpu)
+        call(x_tpu, out_tpu)
+        self.assertEqual(out_tpu.shape, out_cpu.shape)
+        self.assertEqual(out_tpu.dtype, out_cpu.dtype)
+
+    # Backward supports both empty batch (N == 0) and empty channels (C == 0).
+    for n, c in ((0, 3), (2, 0)):
+      bwd_cases = [
+          (
+              "nearest1d_bwd",
+              (n, c, 8),
+              lambda g, gi, n=n, c=c: torch.ops.aten.upsample_nearest1d_backward.grad_input(
+                  g, [8], [n, c, 4], None, grad_input=gi
+              ),
+          ),
+          (
+              "nearest_exact1d_bwd",
+              (n, c, 8),
+              lambda g, gi, n=n, c=c: torch.ops.aten._upsample_nearest_exact1d_backward.grad_input(
+                  g, [8], [n, c, 4], None, grad_input=gi
+              ),
+          ),
+          (
+              "nearest2d_bwd",
+              (n, c, 8, 6),
+              lambda g, gi, n=n, c=c: torch.ops.aten.upsample_nearest2d_backward.grad_input(
+                  g, [8, 6], [n, c, 4, 5], None, None, grad_input=gi
+              ),
+          ),
+          (
+              "nearest_exact2d_bwd",
+              (n, c, 8, 6),
+              lambda g, gi, n=n, c=c: torch.ops.aten._upsample_nearest_exact2d_backward.grad_input(
+                  g, [8, 6], [n, c, 4, 5], None, None, grad_input=gi
+              ),
+          ),
+          (
+              "nearest3d_bwd",
+              (n, c, 4, 5, 6),
+              lambda g, gi, n=n, c=c: torch.ops.aten.upsample_nearest3d_backward.grad_input(
+                  g, [4, 5, 6], [n, c, 2, 3, 4], None, None, None, grad_input=gi
+              ),
+          ),
+          (
+              "nearest_exact3d_bwd",
+              (n, c, 4, 5, 6),
+              lambda g, gi, n=n, c=c: torch.ops.aten._upsample_nearest_exact3d_backward.grad_input(
+                  g, [4, 5, 6], [n, c, 2, 3, 4], None, None, None, grad_input=gi
+              ),
+          ),
+          (
+              "linear1d_bwd",
+              (n, c, 8),
+              lambda g, gi, n=n, c=c: torch.ops.aten.upsample_linear1d_backward.grad_input(
+                  g, [8], [n, c, 4], False, None, grad_input=gi
+              ),
+          ),
+          (
+              "bilinear2d_bwd",
+              (n, c, 8, 6),
+              lambda g, gi, n=n, c=c: torch.ops.aten.upsample_bilinear2d_backward.grad_input(
+                  g, [8, 6], [n, c, 4, 5], False, None, None, grad_input=gi
+              ),
+          ),
+          (
+              "bicubic2d_bwd",
+              (n, c, 8, 6),
+              lambda g, gi, n=n, c=c: torch.ops.aten.upsample_bicubic2d_backward.grad_input(
+                  g, [8, 6], [n, c, 4, 5], False, None, None, grad_input=gi
+              ),
+          ),
+      ]
+      for name, grad_shape, call in bwd_cases:
+        with self.subTest(bwd=name, n=n, c=c):
+          g_cpu = torch.empty(*grad_shape, dtype=torch.float32)
+          g_tpu = g_cpu.to(tpu_device)
+          gi_cpu = torch.empty(0, dtype=torch.float32)
+          gi_tpu = torch.empty(0, dtype=torch.float32, device=tpu_device)
+          call(g_cpu, gi_cpu)
+          call(g_tpu, gi_tpu)
+          self.assertEqual(gi_tpu.shape, gi_cpu.shape)
+          self.assertEqual(gi_tpu.dtype, gi_cpu.dtype)
+
   def test_bitwise_right_shift(self):
     tpu_device = torch.device("tpu")
     shift_by_int32 = torch.tensor([1, 2, 4, 5], dtype=torch.int32)
