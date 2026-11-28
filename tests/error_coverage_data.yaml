@@ -208,7 +208,7 @@ csrc/ops/op_builder_utils.cc: {remaining: 18, total: 31, infeasible: 4}
 csrc/ops/op_builder_utils.h: {remaining: 1, total: 2, infeasible: 0}
 csrc/ops/polygamma/polygamma_aten_kernels.cc: {remaining: 0, total: 3, infeasible: 0}
 csrc/ops/pooling/adaptive_avg_pool_aten_kernels.cc: {remaining: 0, total: 14, infeasible: 0}
-csrc/ops/pooling/adaptive_max_pool_aten_kernels.cc: {remaining: 0, total: 8, infeasible: 0}
+csrc/ops/pooling/adaptive_max_pool_aten_kernels.cc: {remaining: 0, total: 9, infeasible: 0}
 csrc/ops/pooling/avg_pool_aten_kernels.cc: {remaining: 0, total: 7, infeasible: 1}
 csrc/ops/pooling/max_pool_aten_kernels.cc: {remaining: 0, total: 6, infeasible: 2}
 csrc/ops/pooling/pooling.cc: {remaining: 0, total: 2, infeasible: 1}

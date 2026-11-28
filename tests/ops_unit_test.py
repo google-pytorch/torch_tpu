@@ -1561,6 +1561,46 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             )
         )
 
+  def test_adaptive_max_pool2d_empty_batch_dtypes(self):
+    """Tests 0-element inputs with unsupported dtypes for CUDA parity."""
+    device = torch.device("tpu")
+    for shape, out_size, expected_shape in [
+        ((0, 2, 4, 4), (2, 2), (0, 2, 2, 2)),
+        ((0, 2, 5, 5), (2, 2), (0, 2, 2, 2)),
+        ((0, 4, 4), (2, 2), (0, 2, 2)),
+    ]:
+      for dtype in (
+          torch.complex64,
+          torch.complex128,
+          torch.int64,
+          torch.int32,
+          torch.int16,
+          torch.int8,
+          torch.uint8,
+          torch.bool,
+      ):
+        x = torch.empty(shape, dtype=dtype, device=device)
+        val, idx = torch.nn.functional.adaptive_max_pool2d(
+            x, out_size, return_indices=True
+        )
+        # Materialize via .cpu() to verify lowering is bypassed without abort.
+        val_cpu = val.cpu()
+        idx_cpu = idx.cpu()
+        self.assertEqual(tuple(val_cpu.shape), expected_shape)
+        self.assertEqual(val_cpu.dtype, dtype)
+        self.assertEqual(tuple(idx_cpu.shape), expected_shape)
+        self.assertEqual(idx_cpu.dtype, torch.int64)
+
+        out_buf = torch.empty((0,), dtype=dtype, device=device)
+        idx_buf = torch.empty((0,), dtype=torch.int64, device=device)
+        torch.ops.aten.adaptive_max_pool2d.out(
+            x, out_size, out=out_buf, indices=idx_buf
+        )
+        self.assertEqual(tuple(out_buf.cpu().shape), expected_shape)
+        self.assertEqual(out_buf.dtype, dtype)
+        self.assertEqual(tuple(idx_buf.cpu().shape), expected_shape)
+        self.assertEqual(idx_buf.dtype, torch.int64)
+
   def test_rsqrt_complex_grad(self):
     device = torch.device("tpu")
     x = torch.randn(

@@ -1326,6 +1326,28 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         out.cpu()
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="4d_dynamic_height", shape=(2, 3, 5, 5), dynamic_dim=2
+      ),
+      dict(testcase_name="4d_dynamic_width", shape=(2, 3, 5, 5), dynamic_dim=3),
+      dict(testcase_name="3d_dynamic_height", shape=(3, 5, 5), dynamic_dim=1),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_adaptive_max_pool2d_dynamic_spatial_dim(
+      self, shape: tuple[int, ...], dynamic_dim: int
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.randn(shape, device=et.device())
+      dynamism.mark_dynamic(inp, dynamic_dim, 2, 10)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""adaptive_max_pool2d(): expected spatial dimensions of input to have static sizes, got dynamic size""",
+      ):
+        out = torch.nn.functional.adaptive_max_pool2d(inp, (2, 2))
+        # cpu() is needed because the error is triggered inside the op builder.
+        out.cpu()
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_backward_dynamic_channel_dimension(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):

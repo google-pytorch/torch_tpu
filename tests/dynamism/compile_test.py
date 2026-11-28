@@ -2070,6 +2070,79 @@ class DynamicAtanhBackwardTest(seed_test_utils.RepeatableTest):
     utils.assert_close(loss, loss_ref, rtol=tol, atol=tol)
     utils.assert_close(x_tpu.grad, x_ref.grad, rtol=tol, atol=tol)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="non_divisible_f32",
+          spatial_shape=(5, 7),
+          output_size=(2, 3),
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="divisible_f32",
+          spatial_shape=(4, 4),
+          output_size=(2, 2),
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="non_divisible_f64",
+          spatial_shape=(5, 5),
+          output_size=(2, 2),
+          dtype=torch.float64,
+      ),
+  )
+  def test_adaptive_max_pool2d_multi_dynamic_dims(
+      self,
+      spatial_shape: tuple[int, int],
+      output_size: tuple[int, int],
+      dtype: torch.dtype,
+  ):
+    def fn(x):
+      return torch.nn.functional.adaptive_max_pool2d(
+          x, output_size, return_indices=True
+      )
+
+    compiled = torch.compile(fn, backend="tpu")
+
+    x0_cpu = torch.randn(4, 3, *spatial_shape, dtype=dtype)
+    exp0_val, exp0_idx = fn(x0_cpu)
+    x0_tpu = x0_cpu.to(self.device)
+    torch._dynamo.mark_dynamic(x0_tpu, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x0_tpu, 1, min=2, max=8)
+    act0_val, act0_idx = compiled(x0_tpu)
+    utils.assert_close(act0_val.to("cpu"), exp0_val)
+    utils.assert_close(act0_idx.to("cpu"), exp0_idx)
+
+    # Different batch and channel sizes within bounds reuse the compiled graph.
+    x1_cpu = torch.randn(2, 5, *spatial_shape, dtype=dtype)
+    exp1_val, exp1_idx = fn(x1_cpu)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act1_val, act1_idx = compiled(x1_cpu.to(self.device))
+    utils.assert_close(act1_val.to("cpu"), exp1_val)
+    utils.assert_close(act1_idx.to("cpu"), exp1_idx)
+
+  def test_adaptive_max_pool2d_3d_dynamic_channel(self):
+    def fn(x):
+      return torch.nn.functional.adaptive_max_pool2d(
+          x, (2, 3), return_indices=True
+      )
+
+    compiled = torch.compile(fn, backend="tpu")
+
+    x0_cpu = torch.randn(3, 5, 7, dtype=torch.float32)
+    exp0_val, exp0_idx = fn(x0_cpu)
+    x0_tpu = x0_cpu.to(self.device)
+    torch._dynamo.mark_dynamic(x0_tpu, 0, min=2, max=8)
+    act0_val, act0_idx = compiled(x0_tpu)
+    utils.assert_close(act0_val.to("cpu"), exp0_val)
+    utils.assert_close(act0_idx.to("cpu"), exp0_idx)
+
+    x1_cpu = torch.randn(6, 5, 7, dtype=torch.float32)
+    exp1_val, exp1_idx = fn(x1_cpu)
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      act1_val, act1_idx = compiled(x1_cpu.to(self.device))
+    utils.assert_close(act1_val.to("cpu"), exp1_val)
+    utils.assert_close(act1_idx.to("cpu"), exp1_idx)
+
 
 class DynamicFusedMovingAvgObsFqTest(seed_test_utils.RepeatableTest):
 

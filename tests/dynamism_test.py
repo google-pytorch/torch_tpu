@@ -2216,6 +2216,62 @@ class DynamismTest(seed_test_utils.RepeatableTest):
         fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
     )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="4d_non_divisible_batch_f32",
+          shape=(4, 2, 5, 5),
+          output_size=(2, 2),
+          dynamic_dim=0,
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="4d_non_divisible_channel_f32",
+          shape=(2, 3, 5, 7),
+          output_size=(3, 2),
+          dynamic_dim=1,
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="4d_divisible_batch_f32",
+          shape=(4, 2, 4, 4),
+          output_size=(2, 2),
+          dynamic_dim=0,
+          dtype=torch.float32,
+      ),
+      dict(
+          testcase_name="4d_divisible_batch_f64",
+          shape=(4, 2, 4, 4),
+          output_size=(2, 2),
+          dynamic_dim=0,
+          dtype=torch.float64,
+      ),
+      dict(
+          testcase_name="3d_non_divisible_channel_f32",
+          shape=(3, 5, 7),
+          output_size=(2, 3),
+          dynamic_dim=0,
+          dtype=torch.float32,
+      ),
+  )
+  def test_adaptive_max_pool2d_bounded_dynamism(
+      self,
+      shape: tuple[int, ...],
+      output_size: tuple[int, int],
+      dynamic_dim: int,
+      dtype: torch.dtype,
+  ) -> None:
+    def pool_fn(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+      return torch.nn.functional.adaptive_max_pool2d(
+          x, output_size, return_indices=True
+      )
+
+    def mark_dynamic(x: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, dynamic_dim, 2, 8)
+
+    self._run_bounded_dynamism_test(
+        pool_fn, mark_dynamic, torch.randn(shape, dtype=dtype)
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
