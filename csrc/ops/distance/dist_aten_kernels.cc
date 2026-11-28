@@ -56,73 +56,69 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
 namespace {
 
-// When p=0, compute the 0-norm (Hamming distance equivalent)
-// which is defined as the count of non-zero elements in the vector:
-//
-// 1. Compare input elements with 0.0 to get a boolean tensor.
-// 2. Cast the boolean tensor to the input floating-point type (0.0 or 1.0).
-// 3. Sum the values along the reduction dimension.
-absl::StatusOr<mlir::MlirOp> BuildZeroNorm(mlir::MlirOp input,
-                                           int64_t reduce_dim,
-                                           mlir::Type element_type) {
-  mlir::MlirBuilder& builder = input.getBuilder();
-
-  // Create a scalar zero for the reduce initial value.
-  auto zero = MakeScalarConstant(builder, 0.0, element_type);
-  auto input_type = GetTensorTypeOrDie(input);
-  auto zero_bcast = MakeConstantLike(input, 0.0);
-
-  auto is_non_zero = mlir::stablehlo::Compare(
-      input, zero_bcast, mlir::stablehlo::ComparisonDirection::NE);
-
-  // Convert bool to float (0.0 or 1.0)
-  auto is_non_zero_casted = mlir::stablehlo::Convert(input_type, is_non_zero);
-
-  auto reduce_op = mlir::stablehlo::Reduce(
-      builder,
-      /*inputs=*/{is_non_zero_casted},
-      /*init_values=*/{zero},
-      /*body_builder=*/
-      [&](mlir::RegionBuilder& rb) {  // REF_CAPTURE_OK=called synchronously
-        mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-            element_type, rb.getRegion(), rb.getOpBuilder());
-      },
-      /*dimensions=*/{reduce_dim});
-
-  return reduce_op[0];
-}
-
-struct FeatureDimMapping {
-  int64_t first_dim;
-  int64_t second_dim;
+struct BroadcastedCdistPair {
+  mlir::MlirOp x1;
+  mlir::MlirOp x2;
 };
 
-// Helper to broadcast cdist inputs (x1, x2, grad, cdist) to target shape
-// based on their feature dimension mappings.
-mlir::MlirOp BroadcastCdistInput(mlir::MlirOp op,
-                                 mlir::RankedTensorType target_bcast_type,
-                                 const int64_t common_batch_rank,
-                                 FeatureDimMapping feature_dim_mappings) {
-  const mlir::RankedTensorType op_type = GetTensorTypeOrDie(op);
-  const int64_t op_rank = op_type.getRank();
-  const int64_t op_batch_dims_count = op_rank - 2;
-  const int64_t offset = common_batch_rank - op_batch_dims_count;
+// Broadcasts `x1_op` of shape (B1..., R1, C) and `x2_op` of shape (B2..., R2,
+// C) to (B_common..., R1, R2, C) using `BroadcastIfNeeded` directly (avoiding
+// `Unsqueeze`/`stablehlo.reshape`, which only supports a single bounded dynamic
+// dimension).
+absl::StatusOr<BroadcastedCdistPair> BroadcastCdistPair(mlir::MlirOp x1_op,
+                                                        mlir::MlirOp x2_op) {
+  const mlir::stablehlo::Dimensions x1_dims = GetDimensions(x1_op);
+  const mlir::stablehlo::Dimensions x2_dims = GetDimensions(x2_op);
+  const int64_t x1_rank = static_cast<int64_t>(x1_dims.size());
+  const int64_t x2_rank = static_cast<int64_t>(x2_dims.size());
+  const int64_t x1_batch_rank = x1_rank - 2;
+  const int64_t x2_batch_rank = x2_rank - 2;
 
-  Dimensions bcast_dims;
-  bcast_dims.reserve(op_rank);
-  for (int i = 0; i < op_batch_dims_count; ++i) {
-    bcast_dims.push_back(i + offset);
+  TT_ASSIGN_OR_RETURN(
+      mlir::stablehlo::Dimensions target_dims,
+      InferBroadcastDimensions(
+          absl::MakeConstSpan(x1_dims).subspan(0, x1_batch_rank),
+          absl::MakeConstSpan(x2_dims).subspan(0, x2_batch_rank)));
+  const int64_t common_batch_rank = static_cast<int64_t>(target_dims.size());
+  TT_ASSIGN_OR_RETURN(
+      const mlir::stablehlo::Dimensions feature_dims,
+      InferBroadcastDimensions(absl::MakeConstSpan(x1_dims).last(1),
+                               absl::MakeConstSpan(x2_dims).last(1)));
+  target_dims.push_back(x1_dims[x1_rank - 2]);  // R1
+  target_dims.push_back(x2_dims[x2_rank - 2]);  // R2
+  target_dims.push_back(feature_dims[0]);       // C
+
+  const int64_t x1_offset = common_batch_rank - x1_batch_rank;
+  Dimensions x1_bcast_dims;
+  x1_bcast_dims.reserve(x1_rank);
+  for (int64_t i = 0; i < x1_batch_rank; ++i) {
+    x1_bcast_dims.push_back(i + x1_offset);
   }
-  bcast_dims.push_back(feature_dim_mappings.first_dim);
-  bcast_dims.push_back(feature_dim_mappings.second_dim);
+  x1_bcast_dims.push_back(common_batch_rank);      // R1
+  x1_bcast_dims.push_back(common_batch_rank + 2);  // C
 
-  return mlir::stablehlo::BroadcastInDim(target_bcast_type, op, bcast_dims);
+  const int64_t x2_offset = common_batch_rank - x2_batch_rank;
+  Dimensions x2_bcast_dims;
+  x2_bcast_dims.reserve(x2_rank);
+  for (int64_t i = 0; i < x2_batch_rank; ++i) {
+    x2_bcast_dims.push_back(i + x2_offset);
+  }
+  x2_bcast_dims.push_back(common_batch_rank + 1);  // R2
+  x2_bcast_dims.push_back(common_batch_rank + 2);  // C
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x1_bcast,
+                      BroadcastIfNeeded(x1_op, target_dims, x1_bcast_dims));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp x2_bcast,
+      BroadcastIfNeeded(x2_op, std::move(target_dims), x2_bcast_dims));
+  return BroadcastedCdistPair{.x1 = x1_bcast, .x2 = x2_bcast};
 }
 
 // Computes the p-norm distance of the difference between each pair of row
@@ -140,34 +136,14 @@ absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(mlir::MlirOp x1_op,
   TT_ASSIGN_OR_RETURN(x1_op, CastIfNeeded(x1_op, compute_dtype));
   TT_ASSIGN_OR_RETURN(x2_op, CastIfNeeded(x2_op, compute_dtype));
 
-  const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
-  const mlir::Type element_type = x1_type.getElementType();
-  const int64_t x1_rank = x1_type.getRank();
-  const int64_t x2_rank = GetTensorTypeOrDie(x2_op).getRank();
-
-  // Insert singleton dimensions so X1 is (B1..., R1, 1, C) and X2 is
-  // (B2..., 1, R2, C), then broadcast to (B_common..., R1, R2, C) preserving
-  // bounded dynamic dimensions.
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp x1_unsqueezed,
-                      Unsqueeze(x1_op, x1_rank - 1));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp x2_unsqueezed,
-                      Unsqueeze(x2_op, x2_rank - 2));
   TT_ASSIGN_OR_RETURN((auto [x1_bcast, x2_bcast]),
-                      ApplyBroadcastIfNeeded(x1_unsqueezed, x2_unsqueezed));
+                      BroadcastCdistPair(x1_op, x2_op));
 
   // Compute diff = X1 - X2
   mlir::MlirOp diff_op = mlir::stablehlo::Subtract(x1_bcast, x2_bcast);
 
   // Reduce over the C dimension.
   const int64_t reduce_dim_idx = GetTensorTypeOrDie(diff_op).getRank() - 1;
-
-  if (p == 0.0) {
-    // Special handling for 0-norm (hamming distance equivalent)
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp res,
-                        BuildZeroNorm(diff_op, reduce_dim_idx, element_type));
-    return CastIfNeeded(res, out_type);
-  }
-  // General case for p-norm
   return BuildPNormShlo(diff_op, p, {reduce_dim_idx}, ReductionMode::kDropDims,
                         out_type);
 }
@@ -185,7 +161,6 @@ absl::StatusOr<mlir::MlirOp> BuildPdistForwardHlo(mlir::MlirOp input_op,
 
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  const mlir::Type element_type = input_type.getElementType();
 
   const int64_t n = input_type.getDimSize(0);
   const int64_t num_pairs = n * (n - 1) / 2;
@@ -217,15 +192,7 @@ absl::StatusOr<mlir::MlirOp> BuildPdistForwardHlo(mlir::MlirOp input_op,
 
   mlir::MlirOp diff_op = mlir::stablehlo::Subtract(lhs, rhs);
 
-  if (p == 0.0) {
-    // Special handling for 0-norm (hamming distance equivalent)
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp res,
-                        BuildZeroNorm(diff_op, /*reduce_dim=*/1, element_type));
-    return CastIfNeeded(res, out_type);
-  } else {
-    // General case for p-norm
-    return BuildPNormShlo(diff_op, p, {1}, ReductionMode::kDropDims, out_type);
-  }
+  return BuildPNormShlo(diff_op, p, {1}, ReductionMode::kDropDims, out_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildPdistBackwardShlo(mlir::MlirOp grad_op,
@@ -409,10 +376,11 @@ absl::StatusOr<mlir::MlirOp> BuildPdistBackwardShlo(mlir::MlirOp grad_op,
   return grad_final;
 }
 
-absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
-    mlir::MlirOp grad_op, mlir::MlirOp x1_op, mlir::MlirOp x2_op,
-    const double p, mlir::MlirOp cdist_op, const Dimensions common_batch_shape,
-    const int64_t r1, const int64_t r2, const int64_t c) {
+absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(mlir::MlirOp grad_op,
+                                                    mlir::MlirOp x1_op,
+                                                    mlir::MlirOp x2_op,
+                                                    const double p,
+                                                    mlir::MlirOp cdist_op) {
   TT_ASSIGN_OR_RETURN(const mlir::ElementType out_type, GetElementType(x1_op));
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(out_type));
@@ -421,37 +389,22 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
   TT_ASSIGN_OR_RETURN(x2_op, CastIfNeeded(x2_op, compute_dtype));
   TT_ASSIGN_OR_RETURN(cdist_op, CastIfNeeded(cdist_op, compute_dtype));
 
-  const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
-  const mlir::Type element_type = x1_type.getElementType();
+  TT_ASSIGN_OR_RETURN((auto [x1_bcast, x2_bcast]),
+                      BroadcastCdistPair(x1_op, x2_op));
 
-  const int64_t common_batch_rank = common_batch_shape.size();
-  Dimensions target_diff_shape = common_batch_shape;
-  target_diff_shape.insert(target_diff_shape.end(), {r1, r2, c});
-  const mlir::RankedTensorType bcast_type =
-      mlir::RankedTensorType::get(target_diff_shape, element_type);
-
-  // Broadcast X1 to (B_common..., R1, 1, C)
-  mlir::MlirOp x1_bcast =
-      BroadcastCdistInput(x1_op, bcast_type, common_batch_rank,
-                          {common_batch_rank, common_batch_rank + 2});
-
-  // Broadcast X2 to (B_common..., 1, R2, C)
-  mlir::MlirOp x2_bcast =
-      BroadcastCdistInput(x2_op, bcast_type, common_batch_rank,
-                          {common_batch_rank + 1, common_batch_rank + 2});
-
-  // Broadcast grad to (B_common..., R1, R2, C)
-  mlir::MlirOp grad_bcast =
-      BroadcastCdistInput(grad_op, bcast_type, common_batch_rank,
-                          {common_batch_rank, common_batch_rank + 1});
-
-  // Broadcast cdist to (B_common..., R1, R2, C)
-  mlir::MlirOp cdist_bcast =
-      BroadcastCdistInput(cdist_op, bcast_type, common_batch_rank,
-                          {common_batch_rank, common_batch_rank + 1});
-
-  // diff = x1_bcast - x2_bcast
+  // diff = x1_bcast - x2_bcast, shape (B_common..., R1, R2, C).
   TT_ASSIGN_OR_RETURN(mlir::MlirOp diff, BuildSubShlo(x1_bcast, x2_bcast));
+
+  // Broadcast grad and cdist from (B_common..., R1, R2) to
+  // (B_common..., R1, R2, C) directly via BroadcastIfNeeded rather than
+  // Unsqueeze, since grad/cdist can carry multiple bounded dynamic dimensions.
+  const int64_t diff_rank = GetTensorTypeOrDie(diff).getRank();
+  Dimensions grad_bcast_dims(diff_rank - 1);
+  absl::c_iota(grad_bcast_dims, 0);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp grad_bcast,
+                      BroadcastIfNeeded(grad_op, diff, grad_bcast_dims));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp cdist_bcast,
+                      BroadcastIfNeeded(cdist_op, diff, grad_bcast_dims));
 
   mlir::MlirOp unreduced_grad;
   if (p == 0.0) {
@@ -480,7 +433,8 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
     TT_ASSIGN_OR_RETURN(auto abs_diff, BuildAbsShlo(diff));
     auto is_max = mlir::stablehlo::Compare(
         abs_diff, cdist_bcast, mlir::stablehlo::ComparisonDirection::EQ);
-    auto is_max_float = mlir::stablehlo::Convert(bcast_type, is_max);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp is_max_float,
+                        CastIfNeeded(is_max, compute_dtype));
     TT_ASSIGN_OR_RETURN(auto grad_mul_sign,
                         BuildMulShlo(grad_bcast, sign_diff));
     TT_ASSIGN_OR_RETURN(unreduced_grad,
@@ -522,9 +476,10 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
     unreduced_grad = mlir::stablehlo::Select(cond, zero_bcast, div);
   }
 
-  // Reduce sum over R2 (dimension common_batch_rank + 1)
-  return BuildSumShlo(unreduced_grad, {common_batch_rank + 1},
-                      ReductionMode::kDropDims, out_type);
+  // Reduce sum over R2 (second-to-last dimension of (B_common..., R1, R2, C)).
+  const int64_t r2_dim = GetTensorTypeOrDie(unreduced_grad).getRank() - 2;
+  return BuildSumShlo(unreduced_grad, {r2_dim}, ReductionMode::kDropDims,
+                      out_type);
 }
 
 bool IsBFloatOrHalf(const at::Tensor& tensor) {
@@ -746,12 +701,10 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
         << ", " << ToString(x2.scalar_type()) << ", and "
         << ToString(cdist.scalar_type());
 
-    auto op_builder = [p, common_batch_shape, r1, r2,
-                       c](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+    auto op_builder = [p](FixedSizeSpan<mlir::MlirOp, 4> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
       auto& [grad_op, x1_op, x2_op, cdist_op] = inputs;
-      return BuildCdistBackwardShlo(grad_op, x1_op, x2_op, p, cdist_op,
-                                    common_batch_shape, r1, r2, c);
+      return BuildCdistBackwardShlo(grad_op, x1_op, x2_op, p, cdist_op);
     };
 
     TT_ASSIGN_OR_THROW(

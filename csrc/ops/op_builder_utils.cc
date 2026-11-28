@@ -1645,6 +1645,18 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
     }
   }
 
+  // StableHLO `reshape` results may have at most one bounded dimension. Use
+  // `dynamic_reshape` with the runtime result sizes otherwise, which XLA's
+  // dynamic padder lowers.
+  const int64_t num_bounded_output_dims = absl::c_count_if(
+      output_dims, [](const mlir::stablehlo::DimensionInfo& dim) {
+        return dim.boundOp.has_value();
+      });
+  if (num_bounded_output_dims > 1) {
+    return DynamicReshapeWithRuntimeSizes(
+        input, output_dims, GetRuntimeSizes(input.getBuilder(), output_dims));
+  }
+
   auto result_type =
       mlir::stablehlo::getRankedTensorType(output_dims, type.getElementType());
   return mlir::stablehlo::Reshape(result_type, input);
