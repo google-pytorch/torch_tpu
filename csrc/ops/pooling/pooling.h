@@ -18,8 +18,10 @@
 #define TORCH_TPU_CSRC_OPS_POOLING_POOLING_H_
 
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
@@ -55,6 +57,13 @@ absl::StatusOr<Dimensions> ExpandAttribute(const Dimensions& values,
 mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
                                 int64_t original_dim_size,
                                 int64_t spatial_dim_count);
+
+// Validates that the trailing `spatial_dim_count` dimensions of `tensor_type`
+// have static sizes. Returns kPythonNotImplementedError if any spatial
+// dimension is dynamic.
+absl::Status ValidateStaticSpatialDims(mlir::RankedTensorType tensor_type,
+                                       int64_t spatial_dim_count,
+                                       std::string_view tensor_name = "input");
 
 // Defines the asymmetric padding (start and end) applied to a single spatial
 // dimension during a pooling operation, typically adjusting for ceil_mode.

@@ -1326,6 +1326,152 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         out.cpu()
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="2d_4d_non_divisible_h",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          op_name="adaptive_avg_pool2d",
+          shape=(2, 3, 5, 5),
+          output_size=(2, 2),
+          dynamic_dim=2,
+      ),
+      dict(
+          testcase_name="2d_4d_divisible_w",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          op_name="adaptive_avg_pool2d",
+          shape=(2, 3, 4, 4),
+          output_size=(2, 2),
+          dynamic_dim=3,
+      ),
+      dict(
+          testcase_name="2d_3d_unbatched_h",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          op_name="adaptive_avg_pool2d",
+          shape=(3, 5, 5),
+          output_size=(2, 2),
+          dynamic_dim=1,
+      ),
+      dict(
+          testcase_name="3d_5d_non_divisible_d",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          op_name="adaptive_avg_pool3d",
+          shape=(2, 3, 5, 5, 5),
+          output_size=(2, 2, 2),
+          dynamic_dim=2,
+      ),
+      dict(
+          testcase_name="3d_5d_divisible_h",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          op_name="adaptive_avg_pool3d",
+          shape=(2, 3, 4, 4, 4),
+          output_size=(2, 2, 2),
+          dynamic_dim=3,
+      ),
+      dict(
+          testcase_name="3d_4d_unbatched_w",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          op_name="adaptive_avg_pool3d",
+          shape=(3, 5, 5, 5),
+          output_size=(2, 2, 2),
+          dynamic_dim=3,
+      ),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_adaptive_avg_pool_dynamic_spatial_dim(
+      self,
+      pool_fn,
+      op_name: str,
+      shape: tuple[int, ...],
+      output_size: tuple[int, ...],
+      dynamic_dim: int,
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.randn(shape, device=et.device())
+      dynamism.mark_dynamic(inp, dynamic_dim, 2, 10)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""{op_name}(): expected spatial dimensions of input to have static sizes, got dynamic size""",
+      ):
+        out = pool_fn(inp, output_size)
+        # cpu() is needed because the error is triggered inside the op builder.
+        out.cpu()
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="2d_non_divisible_input",
+          bwd_op=torch.ops.aten._adaptive_avg_pool2d_backward,
+          op_name="adaptive_avg_pool2d_backward",
+          inp_shape=(2, 3, 5, 5),
+          grad_shape=(2, 3, 2, 2),
+          mark_grad=False,
+      ),
+      dict(
+          testcase_name="2d_non_divisible_grad_output",
+          bwd_op=torch.ops.aten._adaptive_avg_pool2d_backward,
+          op_name="adaptive_avg_pool2d_backward",
+          inp_shape=(2, 3, 5, 5),
+          grad_shape=(2, 3, 2, 2),
+          mark_grad=True,
+      ),
+      dict(
+          testcase_name="2d_divisible_input",
+          bwd_op=torch.ops.aten._adaptive_avg_pool2d_backward,
+          op_name="adaptive_avg_pool2d_backward",
+          inp_shape=(2, 3, 4, 4),
+          grad_shape=(2, 3, 2, 2),
+          mark_grad=False,
+      ),
+      dict(
+          testcase_name="3d_non_divisible_input",
+          bwd_op=torch.ops.aten._adaptive_avg_pool3d_backward,
+          op_name="adaptive_avg_pool3d_backward",
+          inp_shape=(2, 3, 5, 5, 5),
+          grad_shape=(2, 3, 2, 2, 2),
+          mark_grad=False,
+      ),
+      dict(
+          testcase_name="3d_non_divisible_grad_output",
+          bwd_op=torch.ops.aten._adaptive_avg_pool3d_backward,
+          op_name="adaptive_avg_pool3d_backward",
+          inp_shape=(2, 3, 5, 5, 5),
+          grad_shape=(2, 3, 2, 2, 2),
+          mark_grad=True,
+      ),
+      dict(
+          testcase_name="3d_divisible_grad_output",
+          bwd_op=torch.ops.aten._adaptive_avg_pool3d_backward,
+          op_name="adaptive_avg_pool3d_backward",
+          inp_shape=(2, 3, 4, 4, 4),
+          grad_shape=(2, 3, 2, 2, 2),
+          mark_grad=True,
+      ),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_adaptive_avg_pool_backward_dynamic_spatial_dim(
+      self,
+      bwd_op,
+      op_name: str,
+      inp_shape: tuple[int, ...],
+      grad_shape: tuple[int, ...],
+      mark_grad: bool,
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.randn(inp_shape, device=et.device())
+      grad_out = torch.randn(grad_shape, device=et.device())
+      if mark_grad:
+        dynamism.mark_dynamic(grad_out, 2, 2, 10)
+        tensor_name = "grad_output"
+      else:
+        dynamism.mark_dynamic(inp, 2, 2, 10)
+        tensor_name = "input"
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""{op_name}(): expected spatial dimensions of {tensor_name} to have static sizes, got dynamic size""",
+      ):
+        grad_inp = bwd_op(grad_out, inp)
+        # cpu() is needed because the error is triggered inside the op builder.
+        grad_inp.cpu()
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_backward_dynamic_channel_dimension(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):

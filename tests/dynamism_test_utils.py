@@ -610,14 +610,9 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "lu_unpack": ALL_MODES,
         # Backward pass calls local_scalar_dense on a placeholder tensor.
         "mean": {COMPILE_GRAD},
-        # Allocates a zero-sized shape with no zero dimension. Aborts the test
-        # process.
-        "nn.functional.adaptive_avg_pool3d": ALL_MODES,
         # Queries static dim size (slice size -9223372036854775808). Aborts the
         # test process.
         "nn.functional.adaptive_max_pool2d": {EAGER, COMPILE},
-        # Fails to inline MLIR functions.
-        "nn.functional.avg_pool1d": {COMPILE},
         # PropagateBoundedDynamism fails MarkDynamic when pooling reduces a
         # bounded spatial dimension to size 1 (eager), and dynamic pad shape
         # exceeds TPU size limit (compile and compile_grad).
@@ -858,8 +853,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         "erfinv": {COMPILE},
         "fft.irfft": {COMPILE_GRAD},  # buffer != nullptr CHECK in shape.h
         "index_select": ALL_MODES,
-        # Allocates a zero-sized shape with no zero dimension.
-        "nn.functional.adaptive_avg_pool2d": ALL_MODES,
         "nn.functional.embedding": {COMPILE, COMPILE_GRAD},
         "nn.functional.embedding_bag": {COMPILE, COMPILE_GRAD},
         "nn.functional.grid_sample": ALL_MODES,
@@ -1040,6 +1033,7 @@ class DynamicOpInfo:
         EinsumDynamicOpInfo,
         SdpaDynamicOpInfo,
         ConvolutionDynamicOpInfo,
+        AdaptiveAvgPoolDynamicOpInfo,
         GluDynamicOpInfo,
         WeightNormBackwardDynamicOpInfo,
         FusedMovingAvgObsFqHelperDynamicOpInfo,
@@ -1685,6 +1679,34 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
         dim
         for dim in super().dynamic_dimension_candidates(input_value, args)
         if dim != channel_dim
+    ]
+
+
+class AdaptiveAvgPoolDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around adaptive_avg_pool*d OpInfos keeping spatial dims static."""
+
+  _SPATIAL_DIMS = {
+      "nn.functional.adaptive_avg_pool2d": 2,
+      "nn.functional.adaptive_avg_pool3d": 3,
+  }
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in AdaptiveAvgPoolDynamicOpInfo._SPATIAL_DIMS
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns batch/channel dims, keeping trailing spatial dims static."""
+    spatial_dims = self._SPATIAL_DIMS[self.op_info.name]
+    if input_value.ndim < spatial_dims + 1:
+      return ()
+    spatial_start = input_value.ndim - spatial_dims
+    return [
+        dim
+        for dim in super().dynamic_dimension_candidates(input_value, args)
+        if dim < spatial_start
     ]
 
 

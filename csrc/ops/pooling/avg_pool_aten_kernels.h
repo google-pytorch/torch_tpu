@@ -30,6 +30,14 @@
 
 namespace torch_tpu {
 
+// Controls whether average pooling builders allow bounded dynamic spatial
+// dimensions or reject them with NotImplementedError (e.g., for adaptive
+// average pooling's divisible fast path).
+enum class SpatialDimMode {
+  kAllowDynamic,
+  kRequireStatic,
+};
+
 // Helper function to build and dispatch N-dimensional average pooling.
 // It is exposed for use in adaptive average pooling, which supports a different
 // set of dtypes than standard average pooling and thus cannot always fall back
@@ -40,20 +48,23 @@ absl::StatusOr<DeviceBufferRef> BuildAvgPoolNd(
     std::optional<int64_t> divisor_override, mlir::ElementType out_dtype,
     at::IntArrayRef out_sizes, int64_t spatial_dim_count,
     OpParamCacheKeys param_keys,
-    std::optional<OpName> override_op_name = std::nullopt);
+    std::optional<OpName> override_op_name = std::nullopt,
+    SpatialDimMode spatial_dim_mode = SpatialDimMode::kAllowDynamic);
 
 absl::StatusOr<at::Tensor> BuildAvgPoolOutNd(
     const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& out,
-    int64_t spatial_dim_count, OpParamCacheKeys param_keys);
+    int64_t spatial_dim_count, OpParamCacheKeys param_keys,
+    SpatialDimMode spatial_dim_mode = SpatialDimMode::kAllowDynamic);
 
 absl::StatusOr<at::Tensor> BuildAvgPoolBackwardGradInputNd(
     const at::Tensor& grad_output, const at::Tensor& self,
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& grad_input,
-    int64_t spatial_dim_count, OpParamCacheKeys param_keys);
+    int64_t spatial_dim_count, OpParamCacheKeys param_keys,
+    SpatialDimMode spatial_dim_mode = SpatialDimMode::kAllowDynamic);
 
 at::Tensor AtenAvgPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                          at::IntArrayRef stride, at::IntArrayRef padding,

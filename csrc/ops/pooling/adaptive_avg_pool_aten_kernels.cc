@@ -186,6 +186,14 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dShlo(
   mlir::MlirBuilder& builder = batch_input.getBuilder();
 
   auto input_type = GetTensorTypeOrDie(batch_input);
+  TT_RETURN_IF_ERROR(ValidateStaticSpatialDims(input_type, spatial_dim_count));
+
+  // Lift bounded batch/channel dimensions to static upper bounds so
+  // BuildEinsumShlo operates on static shapes, then restore runtime sizes on
+  // the output. This is a no-op for static shapes.
+  const StaticAtBounds static_batch_input = MakeStaticAtBounds(batch_input);
+  batch_input = static_batch_input.op;
+
   const int64_t h_dim = input_type.getRank() - 2;
   const int64_t w_dim = input_type.getRank() - 1;
 
@@ -198,6 +206,7 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dShlo(
       ApplyAdaptiveAvgPool1D(builder, h_op, spatial_dim_count, w_dim, in_w,
                              out_w, PoolingDirection::kForward, precision));
 
+  w_op = RestoreDynamicDimSizes(w_op, static_batch_input.runtime_sizes);
   auto result = RemoveTrivialBatch(w_op, batch_input_info.original_dim_size,
                                    spatial_dim_count);
   return CastIfNeeded(result, orig_dtype);
@@ -219,6 +228,11 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dShlo(
   mlir::MlirBuilder& builder = batch_input.getBuilder();
 
   auto input_type = GetTensorTypeOrDie(batch_input);
+  TT_RETURN_IF_ERROR(ValidateStaticSpatialDims(input_type, spatial_dim_count));
+
+  const StaticAtBounds static_batch_input = MakeStaticAtBounds(batch_input);
+  batch_input = static_batch_input.op;
+
   const int64_t num_dims = input_type.getRank();
   const int64_t d_dim = num_dims - 3;
   const int64_t h_dim = num_dims - 2;
@@ -237,9 +251,48 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dShlo(
       ApplyAdaptiveAvgPool1D(builder, h_op, spatial_dim_count, w_dim, in_w,
                              out_w, PoolingDirection::kForward, precision));
 
+  w_op = RestoreDynamicDimSizes(w_op, static_batch_input.runtime_sizes);
   auto result = RemoveTrivialBatch(w_op, batch_input_info.original_dim_size,
                                    spatial_dim_count);
   return CastIfNeeded(result, orig_dtype);
+}
+
+// Aligns the leading batch/channel dimensions of static `result` to the static
+// upper bounds and runtime sizes of `batch_input`.
+mlir::MlirOp AlignBatchChannelDimsToInput(mlir::MlirOp result,
+                                          mlir::MlirOp batch_input,
+                                          const int64_t spatial_dim_count) {
+  const StaticAtBounds static_input = MakeStaticAtBounds(batch_input);
+  const Dimensions input_shape = GetStaticShape(static_input.op);
+  const Dimensions result_shape = GetStaticShape(result);
+  const int64_t num_dims = static_cast<int64_t>(result_shape.size());
+  const int64_t batch_channel_dims = num_dims - spatial_dim_count;
+
+  Dimensions pad_high(num_dims, 0);
+  Dimensions slice_limits = result_shape;
+  bool needs_pad = false;
+  bool needs_slice = false;
+  for (int64_t i = 0; i < batch_channel_dims; ++i) {
+    slice_limits[i] = input_shape[i];
+    if (input_shape[i] > result_shape[i]) {
+      pad_high[i] = input_shape[i] - result_shape[i];
+      needs_pad = true;
+    } else if (input_shape[i] < result_shape[i]) {
+      needs_slice = true;
+    }
+  }
+
+  if (needs_pad) {
+    mlir::MlirOp zero = MakeScalarConstant(
+        result.getBuilder(), 0, GetTensorTypeOrDie(result).getElementType());
+    const Dimensions zero_pad(num_dims, 0);
+    result = mlir::stablehlo::Pad(result, zero, zero_pad, pad_high, zero_pad);
+  }
+  if (needs_slice) {
+    result = mlir::stablehlo::Slice(result, Dimensions(num_dims, 0),
+                                    slice_limits, Dimensions(num_dims, 1));
+  }
+  return RestoreDynamicDimSizes(result, static_input.runtime_sizes);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dBackwardShlo(
@@ -260,6 +313,12 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dBackwardShlo(
 
   auto input_type = GetTensorTypeOrDie(batch_input_info.batch_input);
   auto grad_output_type = GetTensorTypeOrDie(batch_grad_info.batch_input);
+  TT_RETURN_IF_ERROR(ValidateStaticSpatialDims(input_type, spatial_dim_count));
+  TT_RETURN_IF_ERROR(ValidateStaticSpatialDims(
+      grad_output_type, spatial_dim_count, "grad_output"));
+
+  const StaticAtBounds static_grad_output =
+      MakeStaticAtBounds(batch_grad_info.batch_input);
 
   const int64_t h_dim = input_type.getRank() - 2;
   const int64_t w_dim = input_type.getRank() - 1;
@@ -269,10 +328,10 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dBackwardShlo(
   const int64_t out_w = grad_output_type.getShape()[w_dim];
 
   // input: [..., out_h, out_w] -> output: [..., out_h, in_w]
-  TT_ASSIGN_OR_RETURN(auto w_op, ApplyAdaptiveAvgPool1D(
-                                     builder, batch_grad_info.batch_input,
-                                     spatial_dim_count, w_dim, in_w, out_w,
-                                     PoolingDirection::kBackward, precision));
+  TT_ASSIGN_OR_RETURN(
+      auto w_op, ApplyAdaptiveAvgPool1D(
+                     builder, static_grad_output.op, spatial_dim_count, w_dim,
+                     in_w, out_w, PoolingDirection::kBackward, precision));
 
   // input: [..., out_h, in_w] -> output: [..., in_h, in_w]
   TT_ASSIGN_OR_RETURN(
@@ -280,6 +339,8 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dBackwardShlo(
       ApplyAdaptiveAvgPool1D(builder, w_op, spatial_dim_count, h_dim, in_h,
                              out_h, PoolingDirection::kBackward, precision));
 
+  h_op = AlignBatchChannelDimsToInput(h_op, batch_input_info.batch_input,
+                                      spatial_dim_count);
   auto result = RemoveTrivialBatch(h_op, batch_input_info.original_dim_size,
                                    spatial_dim_count);
   return CastIfNeeded(result, orig_dtype);
@@ -303,6 +364,12 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dBackwardShlo(
 
   auto input_type = GetTensorTypeOrDie(batch_input_info.batch_input);
   auto grad_output_type = GetTensorTypeOrDie(batch_grad_info.batch_input);
+  TT_RETURN_IF_ERROR(ValidateStaticSpatialDims(input_type, spatial_dim_count));
+  TT_RETURN_IF_ERROR(ValidateStaticSpatialDims(
+      grad_output_type, spatial_dim_count, "grad_output"));
+
+  const StaticAtBounds static_grad_output =
+      MakeStaticAtBounds(batch_grad_info.batch_input);
 
   const int64_t d_dim = input_type.getRank() - 3;
   const int64_t h_dim = input_type.getRank() - 2;
@@ -315,10 +382,10 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dBackwardShlo(
   const int64_t out_w = grad_output_type.getShape()[w_dim];
 
   // input: [..., out_d, out_h, out_w] -> output: [..., out_d, out_h, in_w]
-  TT_ASSIGN_OR_RETURN(auto w_op, ApplyAdaptiveAvgPool1D(
-                                     builder, batch_grad_info.batch_input,
-                                     spatial_dim_count, w_dim, in_w, out_w,
-                                     PoolingDirection::kBackward, precision));
+  TT_ASSIGN_OR_RETURN(
+      auto w_op, ApplyAdaptiveAvgPool1D(
+                     builder, static_grad_output.op, spatial_dim_count, w_dim,
+                     in_w, out_w, PoolingDirection::kBackward, precision));
 
   // input: [..., out_d, out_h, in_w] -> output: [..., out_d, in_h, in_w]
   TT_ASSIGN_OR_RETURN(
@@ -332,6 +399,8 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dBackwardShlo(
       ApplyAdaptiveAvgPool1D(builder, h_op, spatial_dim_count, d_dim, in_d,
                              out_d, PoolingDirection::kBackward, precision));
 
+  d_op = AlignBatchChannelDimsToInput(d_op, batch_input_info.batch_input,
+                                      spatial_dim_count);
   auto result = RemoveTrivialBatch(d_op, batch_input_info.original_dim_size,
                                    spatial_dim_count);
   return CastIfNeeded(result, orig_dtype);
@@ -440,7 +509,8 @@ absl::StatusOr<at::Tensor> AdaptiveAvgPool2dHelper(
           BuildAvgPoolOutNd(
               self, kernel_size, stride, padding, /*ceil_mode=*/false,
               /*count_include_pad=*/true, /*divisor_override=*/std::nullopt,
-              out->get(), spatial_dim_count, std::move(param_keys))
+              out->get(), spatial_dim_count, std::move(param_keys),
+              SpatialDimMode::kRequireStatic)
               .status());
       return out->get();
     }
@@ -452,7 +522,8 @@ absl::StatusOr<at::Tensor> AdaptiveAvgPool2dHelper(
                        out_dims, spatial_dim_count, std::move(param_keys),
                        // Override the OpName to kAvgPool2dOut, since we are
                        // lowering into it, anyway.
-                       /*override_op_name=*/OpName::kAvgPool2dOut));
+                       /*override_op_name=*/OpName::kAvgPool2dOut,
+                       SpatialDimMode::kRequireStatic));
     return MakeTensor(std::move(buffer));
   } else {
     const mlir::stablehlo::Precision precision =
@@ -624,19 +695,20 @@ absl::StatusOr<at::Tensor> AdaptiveAvgPool3dHelper(
                                            /*count_include_pad=*/true,
                                            /*divisor_override=*/std::nullopt,
                                            out->get(), spatial_dim_count,
-                                           std::move(param_keys))
+                                           std::move(param_keys),
+                                           SpatialDimMode::kRequireStatic)
                              .status());
       return out->get();
     }
     TT_ASSIGN_OR_RETURN(
-        auto buffer,
-        BuildAvgPoolNd(self, kernel_size, stride, padding,
-                       /*ceil_mode=*/false,
-                       /*count_include_pad=*/true,
-                       /*divisor_override=*/std::nullopt, output_dtype,
-                       expected_out_shape, spatial_dim_count,
-                       std::move(param_keys),
-                       /*override_op_name=*/OpName::kAvgPool3dOut));
+        auto buffer, BuildAvgPoolNd(self, kernel_size, stride, padding,
+                                    /*ceil_mode=*/false,
+                                    /*count_include_pad=*/true,
+                                    /*divisor_override=*/std::nullopt,
+                                    output_dtype, expected_out_shape,
+                                    spatial_dim_count, std::move(param_keys),
+                                    /*override_op_name=*/OpName::kAvgPool3dOut,
+                                    SpatialDimMode::kRequireStatic));
     return MakeTensor(std::move(buffer));
   }
 
@@ -717,7 +789,7 @@ absl::Status AdaptiveAvgPool3dBackwardHelper(const at::Tensor& grad_output,
                grad_output, self, kernel_size, stride, padding,
                /*ceil_mode=*/false, /*count_include_pad=*/true,
                /*divisor_override=*/std::nullopt, grad_input, spatial_dim_count,
-               std::move(param_keys))
+               std::move(param_keys), SpatialDimMode::kRequireStatic)
         .status();
   }
 
@@ -816,7 +888,8 @@ at::Tensor AtenAdaptiveAvgPool2dBackward(const at::Tensor& grad_output,
                                 grad_output, self, kernel_size, stride, padding,
                                 /*ceil_mode=*/false, /*count_include_pad=*/true,
                                 /*divisor_override=*/std::nullopt, grad_input,
-                                spatial_dim_count, std::move(param_keys))
+                                spatial_dim_count, std::move(param_keys),
+                                SpatialDimMode::kRequireStatic)
                                 .status());
           return grad_input;
         }

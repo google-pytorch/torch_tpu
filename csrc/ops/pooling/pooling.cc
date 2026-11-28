@@ -20,10 +20,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
@@ -54,13 +56,26 @@ absl::StatusOr<BatchInput> CreateBatchInput(mlir::MlirOp input,
       << spatial_dim_count + 2 << "D (batch mode) tensor for input, got "
       << num_dims << "D tensor";
 
-  // If the input doesn't have a batch dimension, add a size 1 batch dimension
+  // If the input doesn't have a batch dimension, add a size 1 batch dimension.
+  // Use MakeStaticAtBounds + RestoreDynamicDimSizes rather than Unsqueeze so
+  // tensors with multiple bounded dynamic dimensions are supported (raw
+  // stablehlo.reshape rejects >1 bounded dimension; this is a no-op for static
+  // shapes).
   if (num_dims == spatial_dim_count + 1) {
+    const StaticAtBounds static_input = MakeStaticAtBounds(input);
+    const Dimensions static_shape = GetStaticShape(static_input.op);
     Dimensions new_shape = {1};
-    new_shape.insert(new_shape.end(), input_type.getShape().begin(),
-                     input_type.getShape().end());
-    auto batch_input = mlir::stablehlo::Reshape(input, new_shape);
-    return BatchInput{batch_input, num_dims};
+    new_shape.insert(new_shape.end(), static_shape.begin(), static_shape.end());
+    mlir::MlirOp batch_input =
+        mlir::stablehlo::Reshape(static_input.op, new_shape);
+    std::vector<std::optional<mlir::MlirOp>> batch_runtime_sizes;
+    batch_runtime_sizes.reserve(num_dims + 1);
+    batch_runtime_sizes.push_back(std::nullopt);
+    batch_runtime_sizes.insert(batch_runtime_sizes.end(),
+                               static_input.runtime_sizes.begin(),
+                               static_input.runtime_sizes.end());
+    return BatchInput{RestoreDynamicDimSizes(batch_input, batch_runtime_sizes),
+                      num_dims};
   }
   return BatchInput{input, num_dims};
 }
@@ -88,11 +103,32 @@ mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
     return batch_op;
   }
 
-  const mlir::RankedTensorType current_type = GetTensorTypeOrDie(batch_op);
-  llvm::SmallVector<int64_t> squeezed_shape;
-  squeezed_shape.append(current_type.getShape().begin() + 1,
-                        current_type.getShape().end());
-  return mlir::stablehlo::Reshape(batch_op, squeezed_shape);
+  // Use MakeStaticAtBounds + RestoreDynamicDimSizes rather than Squeeze so
+  // tensors with multiple bounded dynamic dimensions are supported.
+  const StaticAtBounds static_batch = MakeStaticAtBounds(batch_op);
+  const Dimensions static_shape = GetStaticShape(static_batch.op);
+  const Dimensions squeezed_shape(static_shape.begin() + 1, static_shape.end());
+  mlir::MlirOp squeezed =
+      mlir::stablehlo::Reshape(static_batch.op, squeezed_shape);
+  const std::vector<std::optional<mlir::MlirOp>> squeezed_runtime_sizes(
+      static_batch.runtime_sizes.begin() + 1, static_batch.runtime_sizes.end());
+  return RestoreDynamicDimSizes(squeezed, squeezed_runtime_sizes);
+}
+
+absl::Status ValidateStaticSpatialDims(const mlir::RankedTensorType tensor_type,
+                                       const int64_t spatial_dim_count,
+                                       const std::string_view tensor_name) {
+  const int64_t rank = tensor_type.getRank();
+  ABSL_CHECK_GE(rank, spatial_dim_count)  // CRASH_OK
+      << "Expected tensor rank to be at least spatial_dim_count. This is a "
+         "TorchTPU bug.";
+  for (int64_t d = rank - spatial_dim_count; d < rank; ++d) {
+    TT_RET_CHECK(!tensor_type.isDynamicDim(d),
+                 error::kPythonNotImplementedError)
+        << "expected spatial dimensions of " << tensor_name
+        << " to have static sizes, got dynamic size";
+  }
+  return absl::OkStatus();
 }
 
 namespace {

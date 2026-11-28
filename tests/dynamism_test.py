@@ -2216,6 +2216,234 @@ class DynamismTest(seed_test_utils.RepeatableTest):
         fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
     )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="avg_pool2d_3d_unbatched",
+          pool_fn=torch.nn.functional.avg_pool2d,
+          shape=(3, 8, 8),
+      ),
+      dict(
+          testcase_name="avg_pool3d_4d_unbatched",
+          pool_fn=torch.nn.functional.avg_pool3d,
+          shape=(3, 6, 6, 6),
+      ),
+  )
+  def test_avg_pool_unbatched_dynamic_channel(
+      self,
+      pool_fn: Callable[..., torch.Tensor],
+      shape: tuple[int, ...],
+  ) -> None:
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      return pool_fn(
+          x,
+          kernel_size=3,
+          stride=2,
+          padding=1,
+          ceil_mode=True,
+          count_include_pad=False,
+      )
+
+    def mark_dynamic(x: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    x_cpu = torch.randn(shape, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(fn, mark_dynamic, x_cpu)
+    act_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_info, 1)
+    self.assertEqual(act_info[0].dimension, 0)
+    self.assertEqual(act_info[0].lower_bound, 2)
+    self.assertEqual(act_info[0].upper_bound, 10)
+
+    # Also verify backward with unbatched dynamic channel dimension.
+    x_ref = x_cpu.clone().requires_grad_(True)
+    y_ref = fn(x_ref)
+    grad_out = torch.randn_like(y_ref)
+    y_ref.backward(grad_out)
+
+    x_tpu = x_cpu.to(self.device).requires_grad_(True)
+    dynamism.mark_dynamic(x_tpu, 0, 2, 10)
+    y_tpu = fn(x_tpu)
+    grad_out_tpu = grad_out.to(self.device)
+    dynamism.mark_dynamic(grad_out_tpu, 0, 2, 10)
+    y_tpu.backward(grad_out_tpu)
+    utils.assert_close(x_tpu.grad.to("cpu"), x_ref.grad)
+    grad_info = dynamism.get_dynamism_info(x_tpu.grad)
+    self.assertLen(grad_info, 1)
+    self.assertEqual(grad_info[0].dimension, 0)
+    self.assertEqual(grad_info[0].lower_bound, 2)
+    self.assertEqual(grad_info[0].upper_bound, 10)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="adaptive_avg_pool2d_4d_non_divisible_batch",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          shape=(3, 4, 5, 7),
+          output_size=(2, 3),
+          dynamic_dim=0,
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool2d_4d_non_divisible_channel",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          shape=(2, 4, 5, 7),
+          output_size=(2, 3),
+          dynamic_dim=1,
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool2d_3d_unbatched_non_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          shape=(4, 5, 7),
+          output_size=(2, 3),
+          dynamic_dim=0,
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool2d_3d_unbatched_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool2d,
+          shape=(4, 6, 8),
+          output_size=(2, 4),
+          dynamic_dim=0,
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool3d_5d_non_divisible_batch",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          shape=(3, 4, 4, 4, 4),
+          output_size=(3, 3, 3),
+          dynamic_dim=0,
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool3d_5d_non_divisible_channel",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          shape=(2, 4, 4, 4, 4),
+          output_size=(3, 3, 3),
+          dynamic_dim=1,
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool3d_4d_unbatched_non_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          shape=(4, 5, 4, 5),
+          output_size=(2, 3, 2),
+          dynamic_dim=0,
+      ),
+      dict(
+          testcase_name="adaptive_avg_pool3d_4d_unbatched_divisible",
+          pool_fn=torch.nn.functional.adaptive_avg_pool3d,
+          shape=(4, 4, 6, 4),
+          output_size=(2, 3, 2),
+          dynamic_dim=0,
+      ),
+  )
+  def test_adaptive_avg_pool_bounded_dynamism(
+      self,
+      pool_fn: Callable[..., torch.Tensor],
+      shape: tuple[int, ...],
+      output_size: tuple[int, ...],
+      dynamic_dim: int,
+  ) -> None:
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      return pool_fn(x, output_size)
+
+    def mark_dynamic(x: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, dynamic_dim, 2, 10)
+
+    x_cpu = torch.randn(shape, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(fn, mark_dynamic, x_cpu)
+    act_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_info, 1)
+    self.assertEqual(act_info[0].dimension, dynamic_dim)
+    self.assertEqual(act_info[0].lower_bound, 2)
+    self.assertEqual(act_info[0].upper_bound, 10)
+
+    # Also verify backward with dynamic batch/channel dimension.
+    x_ref = x_cpu.clone().requires_grad_(True)
+    y_ref = fn(x_ref)
+    grad_out = torch.randn_like(y_ref)
+    y_ref.backward(grad_out)
+
+    x_tpu = x_cpu.to(self.device).requires_grad_(True)
+    dynamism.mark_dynamic(x_tpu, dynamic_dim, 2, 10)
+    y_tpu = fn(x_tpu)
+    grad_out_tpu = grad_out.to(self.device)
+    dynamism.mark_dynamic(grad_out_tpu, dynamic_dim, 2, 10)
+    y_tpu.backward(grad_out_tpu)
+    utils.assert_close(x_tpu.grad.to("cpu"), x_ref.grad)
+    grad_info = dynamism.get_dynamism_info(x_tpu.grad)
+    self.assertLen(grad_info, 1)
+    self.assertEqual(grad_info[0].dimension, dynamic_dim)
+    self.assertEqual(grad_info[0].lower_bound, 2)
+    self.assertEqual(grad_info[0].upper_bound, 10)
+
+  @parameterized.named_parameters(*[
+      dict(
+          testcase_name=f"{name}_{direction}",
+          pool_fn=pool_fn,
+          shape=shape,
+          dynamic_input=dynamic_input,
+      )
+      for name, pool_fn, shape in (
+          (
+              "adaptive_avg_pool2d_non_divisible",
+              lambda x: torch.nn.functional.adaptive_avg_pool2d(x, (2, 3)),
+              (4, 3, 5, 7),
+          ),
+          (
+              "adaptive_avg_pool2d_divisible",
+              lambda x: torch.nn.functional.adaptive_avg_pool2d(x, (2, 2)),
+              (4, 3, 4, 4),
+          ),
+          (
+              "adaptive_avg_pool3d_non_divisible",
+              lambda x: torch.nn.functional.adaptive_avg_pool3d(x, (3, 2, 3)),
+              (4, 3, 4, 5, 4),
+          ),
+          (
+              "adaptive_avg_pool3d_divisible",
+              lambda x: torch.nn.functional.adaptive_avg_pool3d(x, (2, 2, 2)),
+              (4, 3, 4, 4, 4),
+          ),
+          (
+              "avg_pool2d",
+              lambda x: torch.nn.functional.avg_pool2d(
+                  x, kernel_size=2, stride=2
+              ),
+              (4, 3, 6, 6),
+          ),
+      )
+      for direction, dynamic_input in (
+          ("dynamic_input_static_grad", True),
+          ("static_input_dynamic_grad", False),
+      )
+  ])
+  def test_avg_pool_backward_mismatched_bounds(
+      self,
+      pool_fn: Callable[..., torch.Tensor],
+      shape: tuple[int, ...],
+      dynamic_input: bool,
+  ) -> None:
+    x_cpu = torch.randn(shape, dtype=torch.float32, requires_grad=True)
+    y_cpu = pool_fn(x_cpu)
+    grad_out = torch.randn_like(y_cpu)
+    y_cpu.backward(grad_out)
+
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+      grad_out_tpu = grad_out.to(self.device)
+      if dynamic_input:
+        # Dynamic input with static grad_output exercises the pad path.
+        dynamism.mark_dynamic(x_tpu, 0, 2, 10)
+      else:
+        # Static input with dynamic grad_output exercises the slice/crop path.
+        dynamism.mark_dynamic(grad_out_tpu, 0, 2, 10)
+      y_tpu = pool_fn(x_tpu)
+      y_tpu.backward(grad_out_tpu)
+      utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+      grad_info = dynamism.get_dynamism_info(x_tpu.grad)
+      if dynamic_input:
+        self.assertLen(grad_info, 1)
+        self.assertEqual(grad_info[0].dimension, 0)
+        self.assertEqual(grad_info[0].lower_bound, 2)
+        self.assertEqual(grad_info[0].upper_bound, 10)
+      else:
+        self.assertEmpty(grad_info)
+
 
 if __name__ == "__main__":
   absltest.main()
