@@ -18709,6 +18709,52 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="int64_explicit_float32_out",
+          values=[[1, 2, 3], [4, 5, 6]],
+          input_dtype=torch.int64,
+          dtype=torch.float32,
+          out_shape=(3,),
+          out_dtype=torch.float32,
+      ),
+      # Float32 input without dtype into float64 out accumulates in float64
+      # (1e8 has ULP=8.0 in float32 so float32 accumulation would yield 0.0).
+      dict(
+          testcase_name="float32_to_float64_out_accumulates_in_float64",
+          values=[1e8, 1.0, -1e8],
+          input_dtype=torch.float32,
+          dtype=None,
+          out_shape=(),
+          out_dtype=torch.float64,
+      ),
+      dict(
+          testcase_name="float32_to_bfloat16_out",
+          values=[[1.5, 2.5], [3.5, 4.5]],
+          input_dtype=torch.float32,
+          dtype=None,
+          out_shape=(2,),
+          out_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="float8_e4m3fn_to_float32_out",
+          values=[[1.0, 2.0], [3.0, 4.0]],
+          input_dtype=torch.float8_e4m3fn,
+          dtype=None,
+          out_shape=(2,),
+          out_dtype=torch.float32,
+      ),
+  )
+  def test_mean_out_dtype_combinations(
+      self, values, input_dtype, dtype, out_shape, out_dtype
+  ):
+    x_cpu = torch.tensor(values, dtype=input_dtype)
+    out_tpu = torch.empty(out_shape, dtype=out_dtype, device="tpu")
+    torch.mean(x_cpu.to("tpu"), dim=0, dtype=dtype, out=out_tpu)
+    out_cpu = torch.empty(out_shape, dtype=out_dtype)
+    torch.mean(x_cpu, dim=0, dtype=dtype, out=out_cpu)
+    self.assert_close(golden_result=out_cpu, torch_tpu_result=out_tpu.cpu())
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

@@ -1005,6 +1005,64 @@ TEST(GetNumElements, DynamicShape) {
       num_elements->getValue().getDefiningOp()));
 }
 
+struct GetNumElementsComplexParams {
+  std::string test_name;
+  mlir::ElementType real_element_type;
+};
+
+class GetNumElementsDynamicShapeComplexTest
+    : public testing::TestWithParam<GetNumElementsComplexParams> {};
+
+TEST_P(GetNumElementsDynamicShapeComplexTest, BuildsValidComplexGraph) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+  const mlir::Type real_type = mlir::getElementType(
+      *op_builder.getContext(), GetParam().real_element_type);
+  const mlir::Type complex_type = mlir::ComplexType::get(real_type);
+
+  mlir::MlirOp arg = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({10, 4}, complex_type));
+  mlir::MlirOp dim_size = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
+  mlir::MlirOp op_dyn =
+      mlir::stablehlo::SetDimensionSize(arg, dim_size, /*dim=*/0);
+
+  // Static-dim subset returns a complex constant directly.
+  mlir::MlirOp static_subset =
+      GetNumElements(op_dyn, complex_type, /*dims=*/{1});
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::ConstantOp>(
+      static_subset.getValue().getDefiningOp()));
+  EXPECT_EQ(GetTensorTypeOrDie(static_subset).getElementType(), complex_type);
+
+  // Dynamic dim accumulates in real_type and wraps in stablehlo.complex.
+  mlir::MlirOp num_elements = GetNumElements(op_dyn, complex_type);
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::ComplexOp>(
+      num_elements.getValue().getDefiningOp()));
+  EXPECT_EQ(GetTensorTypeOrDie(num_elements).getElementType(), complex_type);
+
+  mlir::func::Return(fb, num_elements);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(module.get())));
+  module->walk([](mlir::stablehlo::ConvertOp convert_op) {
+    EXPECT_FALSE(mlir::isa<mlir::ComplexType>(
+        convert_op.getResult().getType().getElementType()));
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    GetNumElementsDynamicShapeComplexTests,
+    GetNumElementsDynamicShapeComplexTest,
+    testing::ValuesIn<GetNumElementsComplexParams>({
+        {"Complex64", /*real_element_type=*/mlir::ElementType::F32},
+        {"Complex128", /*real_element_type=*/mlir::ElementType::F64},
+    }),
+    [](const testing::TestParamInfo<
+        GetNumElementsDynamicShapeComplexTest::ParamType>& info) {
+      return info.param.test_name;
+    });
+
 // Helper for DynamicReshapeFromStaticDimensions tests.
 struct ReshapeTestResult {
   absl::StatusOr<mlir::MlirOp> reshaped_op;

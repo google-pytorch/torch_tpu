@@ -480,6 +480,39 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(counter.num_cache_hits(), 1)
 
   @parameterized.named_parameters(
+      ("complex64_reduce_all", torch.complex64, None),
+      ("complex64_reduce_dynamic_dim", torch.complex64, 0),
+      ("complex128_reduce_all", torch.complex128, None),
+      ("complex128_reduce_dynamic_dim", torch.complex128, 0),
+  )
+  def test_mean_dynamic_shapes_complex(self, dtype, dim):
+    """Tests mean op on complex tensors with bounded dynamic shapes."""
+
+    def dyn_mean(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      return torch.mean(x) if dim is None else torch.mean(x, dim=dim)
+
+    x_cpu = torch.randn(7, 13, dtype=dtype, device="cpu")
+    res_x = dyn_mean(x_cpu.to(self.device))
+    with CompilationCounter(self.device) as counter:
+      res_x_cpu = res_x.cpu()
+    self.assertEqual(counter.num_cache_hits(), 0)
+    expected_x = (
+        torch.mean(x_cpu) if dim is None else torch.mean(x_cpu, dim=dim)
+    )
+    utils.assert_close(res_x_cpu, expected_x)
+
+    y_cpu = torch.randn(3, 13, dtype=dtype, device="cpu")
+    res_y = dyn_mean(y_cpu.to(self.device))
+    with CompilationCounter(self.device) as counter:
+      res_y_cpu = res_y.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+    expected_y = (
+        torch.mean(y_cpu) if dim is None else torch.mean(y_cpu, dim=dim)
+    )
+    utils.assert_close(res_y_cpu, expected_y)
+
+  @parameterized.named_parameters(
       ("scan_dim", 0),
       ("non_scan_dim", 1),
   )

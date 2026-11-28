@@ -2859,6 +2859,61 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.mean(t, dim=0)
 
+  def test_reduction_unsupported_int_dtype_mean_out(self):
+    """Mean out-variant fails for integral input without explicit dtype."""
+    t = torch.ones(2, 3, device=et.device(), dtype=torch.int64)
+    out = torch.empty(3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mean(): expected a floating point or complex dtype, got int64""",
+        gpu="""mean(): could not infer output dtype. Input dtype must be either a floating point or complex dtype. Got: Long""",
+    ):
+      torch.mean(t, dim=0, out=out)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float64_into_float32",
+          dtype=torch.float64,
+          out_dtype=torch.float32,
+          tpu_msg="""mean(): expected the output dtype to be float64, got float32""",
+          gpu_msg="""Expected out tensor to have dtype double, but got float instead""",
+      ),
+      dict(
+          testcase_name="float32_into_float64",
+          dtype=torch.float32,
+          out_dtype=torch.float64,
+          tpu_msg="""mean(): expected the output dtype to be float32, got float64""",
+          gpu_msg="""Expected out tensor to have dtype float, but got double instead""",
+      ),
+  )
+  def test_reduction_mean_out_dtype_mismatch(
+      self,
+      dtype: torch.dtype,
+      out_dtype: torch.dtype,
+      tpu_msg: str,
+      gpu_msg: str,
+  ):
+    """Mean out-variant fails when explicit dtype does not match out.dtype."""
+    t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, device=et.device(), dtype=out_dtype)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.mean(t, dim=0, dtype=dtype, out=out)
+
+  def test_reduction_unsupported_bool_out_dtype_mean(self):
+    """Mean out-variant fails when output has boolean dtype."""
+    t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, device=et.device(), dtype=torch.bool)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mean(): expected a floating point or complex dtype, got bool""",
+        gpu=""""mean_cuda" not implemented for 'Bool'""",
+    ):
+      torch.mean(t, dim=0, out=out)
+
   def test_reduction_unsupported_int_dtype_var(self):
     """Var fails for integral dtypes."""
     t = torch.ones(2, 3, device=et.device(), dtype=torch.int32)
@@ -22872,6 +22927,21 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
         gpu=""""mean_cuda" not implemented for 'Float8_e4m3fn'""",
     ):
       torch.mean(t)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="dtype_none", dtype=None),
+      dict(testcase_name="dtype_float32", dtype=torch.float32),
+  )
+  def test_mean_float4_e2m1fn_x2_out_not_implemented(self, dtype):
+    t = torch.empty((2, 4), dtype=torch.float4_e2m1fn_x2, device=et.device())
+    out = torch.empty((4,), dtype=torch.float32, device=et.device())
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""mean(): not implemented for float4_e2m1fn_x2""",
+        gpu="""Casting from Float4_e2m1fn_x2 to Float is not supported. torch.float4_e2m1fn_x2 packs two fp4 values per byte, so there is no elementwise conversion. To decode, use .view(torch.uint8) and unpack the nibbles (low 4 bits are the first element, high 4 bits the second); to encode, pack fp4 codes into torch.uint8 and .view(torch.float4_e2m1fn_x2).""",
+    ):
+      torch.mean(t, dim=0, dtype=dtype, out=out)
 
   def test_amax_float8_e4m3fn_not_implemented(self):
     t = torch.empty((2, 2), dtype=torch.float8_e4m3fn, device=et.device())
