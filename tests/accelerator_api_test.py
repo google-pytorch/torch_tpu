@@ -711,18 +711,18 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
       time.sleep(0.001)
     actual, expected, growth = future.result()
     utils.assert_close(actual, expected)
-    # The cache keeps at most kMaxCachedScalarBuffers (1024, op_dispatcher.cc)
-    # buffers. Without a bound, it would keep all 4000.
-    self.assertLess(growth, 2048)
+    # The cache keeps two generations of at most kMaxCachedScalarBuffers (1024,
+    # op_dispatcher.cc) buffers each. Without a bound, it would keep all 4000.
+    self.assertLessEqual(growth, 2 * 1024 + 8)
 
-  def test_queued_op_keeps_scalar_buffer_after_cache_clear(self):
+  def test_queued_op_keeps_scalar_buffer_after_cache_eviction(self):
     with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(8, device="tpu")
       y = x + 0.25
-      # Pass 2048 distinct scalars, twice kMaxCachedScalarBuffers (1024, in
-      # op_dispatcher.cc), so the cache is cleared at least once. Then only the
-      # queued add for y holds its 0.25 buffer.
-      for i in range(2048):
+      # Pass 3072 distinct scalars, three times kMaxCachedScalarBuffers (1024,
+      # in op_dispatcher.cc), so both generations turn over and 0.25 is
+      # evicted. Then only the queued add for y holds its 0.25 buffer.
+      for i in range(3072):
         _ = x + (2.0 + i / 4096)
       self.assertFalse(sync.is_materializing(y))
       # 0.25 now misses the cache, so the graph gets a second 0.25 buffer.
@@ -730,6 +730,37 @@ class AcceleratorMemoryTest(seed_test_utils.RepeatableTest):
       torch.accelerator.synchronize()
     utils.assert_close(y.cpu(), torch.full((8,), 1.25))
     utils.assert_close(z.cpu(), torch.full((8,), 1.5))
+
+  @parameterized.named_parameters(
+      ("defer_and_fuse", EagerMode.DEFER_AND_FUSE),
+      ("defer_never", EagerMode.DEFER_NEVER),
+  )
+  def test_scalar_cycle_longer_than_one_generation_stays_cached(self, mode):
+    # 1500 distinct scalars do not fit in one generation of the cache
+    # (kMaxCachedScalarBuffers = 1024, op_dispatcher.cc) but fit in two. A
+    # single map that is cleared when full would miss on at least 476 of them
+    # on every pass. Two warm-up passes make every value fresh whatever the
+    # cache held before; the third pass then creates no scalar buffers.
+    scalars = [7.0 + i / 8192 for i in range(1500)]
+    with execution_mode.set_eager_mode(mode):
+      t = torch.zeros(8, device="tpu")
+      t_cpu = torch.zeros(8)
+      for _ in range(2):
+        for scalar in scalars:
+          t = t + scalar
+          t_cpu = t_cpu + scalar
+      torch.accelerator.synchronize()
+      gc.collect()
+      before = torch.accelerator.memory_stats()["allocation.all.current"]
+      for scalar in scalars:
+        t = t + scalar
+        t_cpu = t_cpu + scalar
+      torch.accelerator.synchronize()
+      gc.collect()
+      growth = torch.accelerator.memory_stats()["allocation.all.current"] - before
+    utils.assert_close(t.cpu(), t_cpu)
+    # Only the result tensor is new; every scalar buffer was a cache hit.
+    self.assertLessEqual(growth, 8)
 
   @parameterized.named_parameters(
       ("top_level", torch.accelerator.get_memory_info),

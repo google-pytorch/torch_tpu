@@ -68,7 +68,8 @@ namespace torch_tpu {
 
 namespace {
 
-// The maximum number of scalar device buffers MakeBuffer caches per thread.
+// Number of scalar device buffer misses after which MakeBuffer's per-thread
+// cache turns over a generation; see the cache in MakeBuffer.
 constexpr size_t kMaxCachedScalarBuffers = 1024;
 
 // Internal helper for MakeTensor that returns the
@@ -107,11 +108,40 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
     // that we may miss some opportunities to reuse scalars across threads,
     // but it might be a net win overall given that scalar buffers are cheap
     // to create.
+    //
+    // RATIONALE FOR TWO GENERATIONS:
+    // A single-generation cache with a hard limit (e.g., 1024 entries) causes a
+    // performance cliff: when the working set exceeds the limit, every miss
+    // triggers a full cache clear. During that clear, scalars used before and
+    // after the boundary end up on the graph input AND in the cache, breaking
+    // deduplication and forcing recompilation (#6037). Two generations solve
+    // this: scalars always survive at least 1024 misses after their last use,
+    // so a working set up to 2048 distinct values avoids the cliff, stale values
+    // are still freed (after two generations), and the common hit path is a
+    // single lookup in the fresh map.
+    //
+    // IMPLEMENTATION: A new scalar is `fresh`; once `fresh` has received
+    // kMaxCachedScalarBuffers misses, its entries become `stale` and the
+    // previous `stale` entries are dropped. A hit in `stale` moves the scalar
+    // back to `fresh`. The two maps together hold at most 2*kMaxCachedScalarBuffers
+    // entries. Pending ops hold their own references to the buffers they use,
+    // so dropping a generation cannot free a buffer in flight.
     static thread_local  // CPP_THREAD_LOCAL_OK=unrelated to Python threads.
         absl::flat_hash_map<HashableScalar, DeviceBufferRef>
-            scalar_map;
-    if (auto it = scalar_map.find(hashable_scalar); it != scalar_map.end()) {
+            fresh_scalars;
+    static thread_local  // CPP_THREAD_LOCAL_OK=unrelated to Python threads.
+        absl::flat_hash_map<HashableScalar, DeviceBufferRef>
+            stale_scalars;
+    if (auto it = fresh_scalars.find(hashable_scalar);
+        it != fresh_scalars.end()) {
       return it->second;
+    }
+    if (auto it = stale_scalars.find(hashable_scalar);
+        it != stale_scalars.end()) {
+      DeviceBufferRef buf_ref = std::move(it->second);
+      stale_scalars.erase(it);
+      fresh_scalars.insert({hashable_scalar, buf_ref});
+      return buf_ref;
     }
 
     // New scalar, create a DeviceBufferRef for it.
@@ -141,13 +171,14 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buf_ref,
                         ScheduleHostToDeviceTransfer(std::move(transfer)));
     // Every cached scalar keeps its device buffer alive, so a stream of
-    // distinct values (e.g. a learning rate schedule) would grow device memory
-    // without bound. Start over when the cache is full; pending ops hold their
-    // own references to the buffers they use.
-    if (scalar_map.size() >= kMaxCachedScalarBuffers) {
-      scalar_map.clear();
+    // distinct values would grow device memory without bound. When the fresh
+    // generation is full, it becomes the stale one and the stale one is
+    // dropped.
+    if (fresh_scalars.size() >= kMaxCachedScalarBuffers) {
+      stale_scalars = std::move(fresh_scalars);
+      fresh_scalars.clear();
     }
-    scalar_map.insert({hashable_scalar, buf_ref});
+    fresh_scalars.insert({hashable_scalar, buf_ref});
     return buf_ref;
   }
 
