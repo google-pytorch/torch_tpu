@@ -3410,16 +3410,16 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
         err_type,
-        gpu="""shape mismatch: indexing tensors could not be broadcast together with shapes [2], [3]""",
-        tpu="""index_put_(): expected index tensors to be broadcastable, got index tensor shape [3] and broadcast shape [2]: the size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+        gpu="""shape mismatch: indexing tensors could not be broadcast together with shapes [1, 2, 4], [3, 5, 4]""",
+        tpu="""index_put_(): failed to broadcast index tensors: could not infer broadcast shape for shapes [1, 2, 4] and [3, 5, 4] -- PyTorch failed with: The size of tensor a (2) must match the size of tensor b (5) at non-singleton dimension 1""",
     ):
       torch.index_put_(
-          torch.tensor([[0, 1], [2, 3]], device=et.device()),
+          torch.zeros((2, 2), device=et.device()),
           (
-              torch.tensor([0, 1], device=et.device()),
-              torch.tensor([0, 1, 1], device=et.device()),
+              torch.zeros((1, 2, 4), dtype=torch.long, device=et.device()),
+              torch.zeros((3, 5, 4), dtype=torch.long, device=et.device()),
           ),
-          torch.tensor([0], device=et.device()),
+          torch.tensor([0.0], device=et.device()),
       )
 
   def test_index_put_broadcast_values_error(self):
@@ -4334,7 +4334,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""logit_backward(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
+        tpu="""logit_backward(): could not infer broadcast shape for shapes [2, 4] and [3] -- PyTorch failed with: The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
         gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1""",
     ):
       torch.ops.aten.logit_backward.grad_input(
@@ -9442,7 +9442,7 @@ Supported combinations for non-constant padding:
     out = torch.empty(2, 3, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""linalg_cross(): the size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
+        tpu="""linalg_cross(): could not infer broadcast shape for shapes [2, 3] and [4, 3] -- PyTorch failed with: The size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
         gpu="""The size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
     ):
       torch.linalg.cross(a, b, out=out)
@@ -11974,7 +11974,7 @@ Note: this function is intended to be used with the output produced by torch.lin
     mask = torch.ones((3, 8), device=et.device(), dtype=mask_dtype)
     with et.assert_raises_message(
         RuntimeError,
-        tpu=f"""{op_name}(): the size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 0""",
+        tpu=f"""{op_name}(): could not infer broadcast shape for shapes [4, 8] and [3, 8] -- PyTorch failed with: The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 0""",
         gpu="""The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 0""",
     ):
       op(grad_or_self, mask, 2.0)
@@ -12209,7 +12209,7 @@ Note: this function is intended to be used with the output produced by torch.lin
     weight = torch.ones(4, 3, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""prelu_kernel(): the size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
+        tpu="""prelu_kernel(): could not infer broadcast shape for shapes [2, 3] and [4, 3] -- PyTorch failed with: The size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
         gpu="""The size of tensor a (2) must match the size of tensor b (4) at non-singleton dimension 0""",
     ):
       torch.ops.aten._prelu_kernel(self_tensor, weight)
@@ -12473,7 +12473,7 @@ Note: this function is intended to be used with the output produced by torch.lin
     with et.assert_raises_message(
         RuntimeError,
         gpu="""The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
-        tpu="""normal(): the size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+        tpu="""normal(): could not infer broadcast shape for shapes [2] and [3] -- PyTorch failed with: The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
     ):
       torch.normal(
           mean=torch.zeros(2, device=device), std=torch.ones(3, device=device)
@@ -13550,7 +13550,7 @@ Note: this function is intended to be used with the output produced by torch.lin
     b_bad_batch = torch.ones(3, 3, 4, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""linalg_solve_ex(): the size of tensor a (3) must match the size of tensor b (2) at non-singleton dimension 0""",
+        tpu="""linalg_solve_ex(): could not infer broadcast shape for shapes [3] and [2] -- PyTorch failed with: The size of tensor a (3) must match the size of tensor b (2) at non-singleton dimension 0""",
         gpu="""The size of tensor a (3) must match the size of tensor b (2) at non-singleton dimension 0""",
     ):
       torch.linalg.solve_ex(a_bad_batch, b_bad_batch, out=(res, info))
@@ -22295,7 +22295,7 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
     src = torch.zeros(0, dtype=torch.float32, device="cpu")
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""copy_(): the size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
+        tpu="""copy_(): could not infer broadcast shape for shapes [2, 3] and [0] -- PyTorch failed with: The size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
         gpu="""The size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
     ):
       dst.copy_(src)
@@ -22306,7 +22306,7 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
     src = torch.zeros(0, dtype=torch.float32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""copy_(): the size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
+        tpu="""copy_(): could not infer broadcast shape for shapes [2, 3] and [0] -- PyTorch failed with: The size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
         gpu="""The size of tensor a (3) must match the size of tensor b (0) at non-singleton dimension 1""",
     ):
       dst.copy_(src)

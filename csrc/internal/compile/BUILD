@@ -176,6 +176,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fingerprint_utils",
+        "//csrc/common:mlir_error_utils",
         "//csrc/common:shape",
         "//csrc/common:to_string",
         "//csrc/common:utils",

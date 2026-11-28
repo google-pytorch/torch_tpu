@@ -62,6 +62,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
+        "//csrc/common:mlir_error_utils",
         "//csrc/common:to_string",
         "//csrc/common:utils",
         "//shims/torch:aten_headers",
@@ -187,7 +188,6 @@ torch_tpu_cc_test(
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
         "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/mlir/utils:error_util",
     ],
 )
 
@@ -600,6 +600,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fingerprint_utils",
+        "//csrc/common:mlir_error_utils",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/algorithm:container",

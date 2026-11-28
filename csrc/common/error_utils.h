@@ -42,6 +42,7 @@
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
+#include "c10/util/Exception.h"
 #include "c10/util/Optional.h"
 #include "c10/util/StringUtil.h"
 #include "csrc/common/env_vars.h"
@@ -121,18 +122,6 @@ inline constexpr absl::StatusCode kPythonRuntimeError =
 // even in builds where it's disabled.
 [[nodiscard]] bool ShouldCheckErrorFormat();
 
-// Sentinel string for XLA compiler errors.
-//
-// Leading and trailing spaces are added to this sentinel, so that we don't need
-// to keep manually adding them.
-//
-// Usage:
-//   TT_RETURN_IF_ERROR(...).SetPrepend()
-//       << "context of the error"
-//       << kXlaCompilerFailedWith;
-inline constexpr std::string_view kXlaCompilerFailedWith =
-    " -- the XLA compiler failed with: ";
-
 // Returns true if debug checks are enabled via the
 // TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable. This function is
 // memorized, so calling it is cheap and will always return the same value even
@@ -195,11 +184,13 @@ absl::Status TranslateXlaTensorOomError(absl::Status status,
 // If `status` is OK, returns it unchanged.
 //
 // If `status` contains an error, returns a new status with the message
-// `context` + `kXlaCompilerFailedWith` + the original message, preserving the
-// original status code and any payloads (metadata). The original message is
-// passed through verbatim (not reformatted to TorchTPU guidelines): the
-// sentinel marks where it begins, and the error format checks skip everything
-// after it.
+// `context` + `" -- the XLA compiler failed with: "` + the trimmed original
+// message (or `context` + `": no XLA compiler error message was provided"` if
+// the trimmed original message is empty), preserving the original status code
+// and any payloads (metadata). Aside from trimming leading and trailing ASCII
+// whitespace, the original message is passed through verbatim (not reformatted
+// to TorchTPU guidelines): the sentinel marks where it begins, and the error
+// format checks skip everything after it.
 //
 // Example:
 //   TT_ASSIGN_OR_RETURN(
@@ -218,19 +209,27 @@ absl::StatusOr<T> WrapXlaError(absl::StatusOr<T> status_or,
   return WrapXlaError(std::move(status_or).status(), context);
 }
 
+// Wraps a PyTorch `c10::Error` into an `absl::Status` with `error_code`,
+// stripping its C++ backtrace and prepending `context` followed by
+// `" -- PyTorch failed with: "` (or `": no PyTorch error message was provided"`
+// if the trimmed message is empty). Aside from trimming leading and trailing
+// ASCII whitespace, the original message is passed through verbatim (not
+// reformatted to TorchTPU guidelines): the sentinel marks where it begins, and
+// the error format checks skip everything after it.
+//
+// `error_code` must not be `error::kOk`.
+//
+// Example:
+//   return WrapPyTorchError(e, error::kIndexError,
+//                           /* context= */ "failed to wrap dimension");
+absl::Status WrapPyTorchError(const c10::Error& error,
+                              absl::StatusCode error_code,
+                              std::string_view context);
+
 // Rewrites a VFIO device-collision error into an actionable message instructing
 // the user to set TPU_VISIBLE_DEVICES. Preserves the original status code and
 // payloads. If `status` is OK, returns it unchanged.
 absl::Status AdaptVfioDeviceCollisionError(absl::Status status);
-
-// Adapts a PyTorch (c10/ATen/c10d) error message to conform to guidelines.
-//
-// Not used for OpenXLA errors: those are passed through verbatim after
-// `kXlaCompilerFailedWith` by `WrapXlaError`.
-//
-// TODO(b/578638481): pass PyTorch error messages through verbatim after a
-// sentinel too, and remove this function.
-[[nodiscard]] std::string AdaptExternalErrorMessage(std::string_view message);
 
 // Formats the given number of items. E.g.
 //   FormatCount(1, "tensor", "tensors") -> "1 tensor"
@@ -779,6 +778,33 @@ decltype(auto) TranslateTtErrorToC10Error(Fn&& fn, Args&&... args) {
 // =================================================================
 
 namespace internal {
+
+// Metadata for an external error sentinel string separating TorchTPU context
+// from an upstream external error message.
+struct ErrorSentinel {
+  // Sentinel substring separating the TorchTPU context from the external error
+  // message. Must begin and end with a single space so wrappers do not need to
+  // add separating spaces manually.
+  std::string_view marker;
+
+  // Human-readable name of the external error source (e.g. "XLA compiler" or
+  // "PyTorch"), used in format validation messages.
+  std::string_view source;
+};
+
+// Sentinel separating TorchTPU context from an OpenXLA (compiler, PjRt, or
+// libtpu) error message.
+inline constexpr ErrorSentinel kXlaErrorSentinel = {
+    .marker = " -- the XLA compiler failed with: ",
+    .source = "XLA compiler",
+};
+
+// Sentinel separating TorchTPU context from a PyTorch (c10/ATen/c10d) error
+// message.
+inline constexpr ErrorSentinel kPyTorchErrorSentinel = {
+    .marker = " -- PyTorch failed with: ",
+    .source = "PyTorch",
+};
 
 // Like AdaptVfioDeviceCollisionError, but scans `proc_root` instead of
 // "/proc" for testing.

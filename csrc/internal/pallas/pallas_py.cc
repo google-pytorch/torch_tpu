@@ -188,13 +188,10 @@ std::vector<at::Tensor> PyCallCustomKernel(
         options.donated_indices.assign(donate_argnums.begin(),
                                        donate_argnums.end());
 
-        absl::StatusOr<std::vector<DeviceBufferRef>> results_status =
-            DispatchOp<kDynamicSize, kDynamicSize>(std::move(custom_op_builder),
-                                                   inputs, std::move(options));
-        TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> results, results_status,
-                           _.SetOverride()
-                               << ::torch_tpu::AdaptExternalErrorMessage(
-                                      results_status.status().message()));
+        TT_ASSIGN_OR_THROW(
+            std::vector<DeviceBufferRef> results,
+            (DispatchOp<kDynamicSize, kDynamicSize>(
+                std::move(custom_op_builder), inputs, std::move(options))));
 
         std::vector<at::Tensor> result_tensors;
         result_tensors.reserve(results.size());

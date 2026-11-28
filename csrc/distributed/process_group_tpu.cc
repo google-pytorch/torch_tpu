@@ -126,6 +126,32 @@ namespace torch_tpu {
 
 namespace {
 
+// Returns whether `e` represents a timeout error, ignoring C++ stacktrace
+// frames on `c10::Error`.
+[[nodiscard]] bool IsTimeoutException(const std::exception& e) {
+  const auto* const c10_error = dynamic_cast<const c10::Error*>(&e);
+  const std::string_view msg =
+      c10_error != nullptr ? c10_error->what_without_backtrace() : e.what();
+  return absl::StrContainsIgnoreCase(msg, "timeout");
+}
+
+// Converts `e` to an `absl::Status` with `error_code` and `context`.
+//
+// When `e` is a `c10::Error`, delegates to `WrapPyTorchError` (stripping its
+// C++ backtrace and separating `context` with the PyTorch error sentinel).
+// For all other `std::exception` types, prefixes `e.what()` with `context`.
+absl::Status GetErrorStatusWithContext(const std::exception& e,
+                                       const absl::StatusCode error_code,
+                                       const std::string_view context) {
+  if (const auto* const c10_error = dynamic_cast<const c10::Error*>(&e)) {
+    return WrapPyTorchError(*c10_error, error_code, context);
+  }
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=PyTorch stores throw c10::Error;
+                    // only reachable from custom non-c10d stores
+             error_code)
+         << context << ": " << e.what();
+}
+
 // Waits up to `timeout` for `future` to become ready.
 bool AwaitFutureWithTimeout(const xla::Future<void>& future,
                             std::chrono::milliseconds timeout) {
@@ -853,9 +879,9 @@ absl::StatusOr<P2pSendQueue::PeerChannel*> P2pSendQueue::GetOrCreateChannel(
     cloned_store = store_->clone();
     cloned_store->setTimeout(store_->getTimeout());
   } catch (const std::exception& e) {
-    return TT_ERROR(  // ERROR_COV_INFEASIBLE=store clone failure
-               error::kInternal)
-           << "failed to clone store for p2p send: " << e.what();
+    return GetErrorStatusWithContext(
+        e, error::kInternal,
+        /* context= */ "failed to clone store for p2p send");
   }
   auto channel = std::make_unique<PeerChannel>(std::move(cloned_store));
   channel->worker = std::thread(&P2pSendQueue::PeerWorkerLoop, channel.get());
@@ -970,12 +996,22 @@ void P2pSendQueue::WakeInflightWaiters(absl::Span<const std::string> keys) {
 void P2pSendQueue::ExecuteSendTask(PeerChannel* channel, PendingSend task) {
   std::vector<std::vector<uint8_t>> descriptors;
   std::exception_ptr fetch_error;
-  std::string fetch_error_msg;
   try {
     descriptors = channel->store->multiGet(task.descriptor_keys);
   } catch (const std::exception& e) {
-    fetch_error = std::current_exception();
-    fetch_error_msg = e.what();
+    absl::StatusCode error_code;
+    std::string_view context;
+
+    if (IsTimeoutException(e)) {
+      error_code = error::kDeadlineExceeded;
+      context = "p2p send timed out waiting for descriptors";
+    } else {
+      error_code = error::kUnavailable;
+      context = "failed to get p2p send descriptors from store";
+    }
+
+    fetch_error = std::make_exception_ptr(TtError(
+        GetErrorStatusWithContext(e, error_code, context), TT_SOURCE_LOCATION));
   }
 
   bool is_shutdown = false;
@@ -996,16 +1032,7 @@ void P2pSendQueue::ExecuteSendTask(PeerChannel* channel, PendingSend task) {
   }
 
   if (fetch_error) {
-    if (absl::StrContainsIgnoreCase(fetch_error_msg, "timeout")) {
-      std::move(task.on_error)(std::make_exception_ptr(TtError(
-          TT_ERROR(  // ERROR_COV_INFEASIBLE=background store wait timeout
-              error::kDeadlineExceeded)
-              << "p2p send timed out waiting for descriptors: "
-              << fetch_error_msg,
-          TT_SOURCE_LOCATION)));
-    } else {
-      std::move(task.on_error)(std::move(fetch_error));
-    }
+    std::move(task.on_error)(std::move(fetch_error));
     return;
   }
 
@@ -1308,14 +1335,11 @@ template <typename F>
 auto CallStore(std::string_view op, F&& f) {
   using R = std::invoke_result_t<F>;
   const auto to_status = [op](const std::exception& e) -> absl::Status {
-    // c10::Error::what() appends a C++ backtrace, which doesn't belong in a
-    // TorchTPU error message.
-    const auto* c10_error = dynamic_cast<const c10::Error*>(&e);
-    const std::string message = AdaptExternalErrorMessage(
-        c10_error != nullptr ? c10_error->what_without_backtrace() : e.what());
-    const bool timed_out = absl::StrContainsIgnoreCase(message, "timeout");
-    return TT_ERROR(timed_out ? error::kDeadlineExceeded : error::kUnavailable)
-           << op << ": " << message;
+    const absl::StatusCode error_code =
+        IsTimeoutException(e) ? error::kDeadlineExceeded : error::kUnavailable;
+    return GetErrorStatusWithContext(
+        e, error_code,
+        /* context= */ absl::StrCat(op, ": store call failed"));
   };
   if constexpr (std::is_void_v<R>) {
     try {

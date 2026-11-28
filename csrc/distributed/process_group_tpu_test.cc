@@ -36,6 +36,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/time.h"
+#include "c10/util/Exception.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/distributed/types.h"
@@ -903,9 +904,13 @@ TEST(ProcessGroupTpuTest, P2pSendQueueFailsFutureOnStoreTimeout) {
   try {
     waiter->WaitAndThrow();
     FAIL() << "expected store timeout exception";
-  } catch (const std::exception& e) {
-    EXPECT_THAT(e.what(), testing::HasSubstr(
-                              "p2p send timed out waiting for descriptors"));
+  } catch (const TtError& e) {
+    EXPECT_EQ(e.status().code(), error::kDeadlineExceeded);
+    EXPECT_EQ(
+        e.status().message(),
+        absl::StrCat("p2p send timed out waiting for descriptors",
+                     internal::kPyTorchErrorSentinel.marker, "Wait timeout"));
+    EXPECT_THROW(TranslateToC10ErrorAndThrow(e), c10::Error);
   }
   EXPECT_EQ(store->check_calls(), 0);
 }

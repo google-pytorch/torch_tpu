@@ -294,6 +294,18 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "mlir_error_utils",
+    srcs = ["mlir_error_utils.cc"],
+    hdrs = ["mlir_error_utils.h"],
+    deps = [
+        ":error_utils",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@xla//xla/mlir/utils:error_util",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "static_shape_check",
     srcs = ["static_shape_check.cc"],
     hdrs = ["static_shape_check.h"],
@@ -355,6 +367,18 @@ torch_tpu_cc_test(
         ":pybind_error_utils",
         "//csrc/common:oss_test_main",
         "//shims/torch/c10/util:base_headers",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "mlir_error_utils_test",
+    srcs = ["mlir_error_utils_test.cc"],
+    deps = [
+        ":error_utils",
+        ":mlir_error_utils",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//mlir:IR",
+        "@xla//xla/mlir/utils:error_util",
     ],
 )
 

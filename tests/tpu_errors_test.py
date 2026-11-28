@@ -1235,7 +1235,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<?x3xf32, #stablehlo.bounds<8, ?>>' to target shape tensor<4x3>""",
+          tpu="""bernoulli_(): failed to broadcast tensor -- the XLA compiler failed with: <unknown>:0: error: Cannot broadcast input: 'tensor<?x3xf32, #stablehlo.bounds<8, ?>>' to target shape tensor<4x3>""",
       ):
         t.bernoulli_(p)
         # cpu() is needed because the error is triggered inside the op builder.
@@ -1250,7 +1250,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""bernoulli_(): failed to broadcast tensor: <unknown>:0: error: Cannot broadcast input: 'tensor<4x3xf32>' to target shape tensor<b8x3>""",
+          tpu="""bernoulli_(): failed to broadcast tensor -- the XLA compiler failed with: <unknown>:0: error: Cannot broadcast input: 'tensor<4x3xf32>' to target shape tensor<b8x3>""",
       ):
         t.bernoulli_(p)
         # cpu() is needed because the error is triggered inside the op builder.

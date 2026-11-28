@@ -52,6 +52,7 @@ torch_tpu_cc_library(
         ":instrumentation",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:mlir_error_utils",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:guard_zero_operand_custom_calls",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",

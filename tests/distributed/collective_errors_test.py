@@ -1308,8 +1308,8 @@ _API_PREFIX = r"(?:create_process_group\(\): )?"
 _COLLECTOR_ERROR = (
     r"collector \(node holding world_topo:0\): failed after \d+ms with 7/8"
     r" peer keys filled from 7 arrived nodes; missing keys \[world_topo:7\]:"
-    r" world_store wait nlag:world_topo:0:8:node:7: wait timeout after \d+ms,"
-    r" keys: \S+"
+    r" world_store wait nlag:world_topo:0:8:node:7: store call failed"
+    r" -- PyTorch failed with: wait timeout after \d+ms, keys: \S+"
 )
 
 
@@ -1371,8 +1371,8 @@ def run_missing_rank_and_local_rank_out_of_range() -> None:
     elif rank == _EARLY_TIMEOUT_RANK:
       timeout = _EARLY_TIMEOUT
       expected_pattern = (
-          r"world_store get nlag:world_topo:0:8:table: wait timeout after"
-          r" \d+ms, keys: \S+"
+          r"world_store get nlag:world_topo:0:8:table: store call failed"
+          r" -- PyTorch failed with: wait timeout after \d+ms, keys: \S+"
       )
     else:
       timeout = _LONG_TIMEOUT
