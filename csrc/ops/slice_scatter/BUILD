@@ -28,6 +28,8 @@ torch_tpu_cc_library(
     srcs = ["slice_scatter_aten_kernels.cc"],
     hdrs = ["slice_scatter_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
+        "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -44,6 +46,7 @@ torch_tpu_cc_library(
         "//csrc/ops/resize:resize_aten_kernels",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",

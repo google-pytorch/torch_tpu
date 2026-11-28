@@ -30,8 +30,6 @@
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
-#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -53,7 +51,6 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -217,6 +214,23 @@ mlir::MlirOp RestoreDynamicDimSizes(
 mlir::MlirOp FillPastRuntimeSizes(
     mlir::MlirOp input, mlir::MlirOp fill_value,
     absl::Span<const std::optional<mlir::MlirOp>> runtime_sizes);
+
+// Returns an I64 scalar start index along `dim` of `operand`.
+//
+// When `raw_index < 0` and `dim` of `operand` is bounded dynamic, computes
+// `max(get_dimension_size(operand, dim) + raw_index, 0)` so negative indices
+// resolve against the runtime dimension size rather than the upper bound.
+// Otherwise returns a scalar constant with `wrapped_index`.
+mlir::MlirOp ResolveDynamicIndex(mlir::MlirOp operand, int64_t dim,
+                                 int64_t raw_index, int64_t wrapped_index);
+
+// Slices `operand` along any dimension where its static upper bound exceeds
+// `target`'s static upper bound, preserving runtime sizes on dimensions where
+// `target` is bounded dynamic and dropping bounds where `target` is static.
+//
+// Returns `operand` unchanged when every dimension's upper bound is already
+// `<= target`'s upper bound.
+mlir::MlirOp ClampToTargetBounds(mlir::MlirOp operand, mlir::MlirOp target);
 
 // Returns the bytecode of the module.
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module);
@@ -683,11 +697,16 @@ absl::StatusOr<mlir::MlirOp> ConvertIfInteger(mlir::MlirOp op,
                                               mlir::ElementType target_dtype);
 
 // Converts an operand to `target_type`. Unlike
-// `mlir::stablehlo::ConvertElementType`, when converting a non-complex operand
-// to a complex target type (`COMPLEXF32` or `COMPLEXF64`), this casts the input
-// to the real component type and constructs the complex value explicitly with a
-// zero imaginary component. This avoids emitting direct `Convert(f64 -> c128)`
-// instructions that fail in `XPrecisionRewriter`.
+// `mlir::stablehlo::ConvertElementType`:
+// - When converting a non-complex operand to a complex target type
+//   (`COMPLEXF32` or `COMPLEXF64`), casts the input to the real component type
+//   and constructs the complex value explicitly with a zero imaginary
+//   component, avoiding direct `Convert(f64 -> c128)` instructions that fail in
+//   `XPrecisionRewriter`.
+// - When converting a complex operand to `PRED`, returns `GetNonzeroMask(op)`
+//   so elements with non-zero imaginary part evaluate to true.
+// - When converting a complex operand to another non-complex target type,
+//   extracts `stablehlo::Real(op)` first before converting to `target_type`.
 absl::StatusOr<mlir::MlirOp> ComplexSafeConvertElementType(
     mlir::MlirOp op, mlir::ElementType target_type);
 

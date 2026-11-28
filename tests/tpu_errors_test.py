@@ -5731,6 +5731,77 @@ module {
           copy_sizes_major_dim=[4],
       )
 
+  @et.why_tpu_only(
+      "PyTorch CUDA allows cross-device copy_() between CPU and CUDA tensors in"
+      " select_scatter."
+  )
+  def test_select_scatter_mixed_device_errors(self):
+    self_empty_tpu = torch.empty(0, 3, dtype=torch.float32, device=et.device())
+    src_empty_cpu = torch.empty(0, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected src to be on tpu, got cpu""",
+    ):
+      torch.select_scatter(self_empty_tpu, src_empty_cpu, dim=1, index=0)
+
+    self_empty_cpu = torch.empty(0, 3, dtype=torch.float32, device="cpu")
+    src_empty_tpu = torch.empty(0, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected self to be on tpu, got cpu""",
+    ):
+      torch.select_scatter(self_empty_cpu, src_empty_tpu, dim=1, index=0)
+
+  @et.why_tpu_only(
+      "PyTorch CUDA allows cross-device copy_() between CPU and CUDA tensors in"
+      " slice_scatter."
+  )
+  def test_slice_scatter_mixed_device_errors(self):
+    self_tpu = torch.zeros(4, 3, dtype=torch.float32, device=et.device())
+    src_empty_slice_cpu = torch.zeros(0, 3, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected src to be on tpu, got cpu""",
+    ):
+      torch.slice_scatter(
+          self_tpu, src_empty_slice_cpu, dim=0, start=2, end=2, step=1
+      )
+
+    self_empty_cpu = torch.zeros(0, 3, dtype=torch.float32, device="cpu")
+    src_empty_tpu = torch.zeros(0, 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected self to be on tpu, got cpu""",
+    ):
+      torch.slice_scatter(
+          self_empty_cpu, src_empty_tpu, dim=1, start=0, end=2, step=1
+      )
+
+  @et.why_tpu_only("Bounded dynamism is TPU-specific.")
+  def test_slice_scatter_dynamic_src_strided_unsupported(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      self_tpu = torch.zeros(10, 3, dtype=torch.float32, device=et.device())
+      src_tpu = torch.ones(4, 3, dtype=torch.float32, device=et.device())
+      dynamism.mark_dynamic(src_tpu, 0, 2, 8)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""slice_scatter(): dynamic slice dimension 0 with step > 1 is not supported""",
+      ):
+        torch.slice_scatter(
+            self_tpu, src_tpu, dim=0, start=0, end=8, step=2
+        ).cpu()
+
+      self_dyn = torch.zeros(10, 3, dtype=torch.float32, device=et.device())
+      src_static = torch.ones(2, 3, dtype=torch.float32, device=et.device())
+      dynamism.mark_dynamic(self_dyn, 0, 6, 12)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""slice_scatter(): dynamic slice dimension 0 with negative start and step > 1 is not supported""",
+      ):
+        torch.slice_scatter(
+            self_dyn, src_static, dim=0, start=-4, end=None, step=2
+        ).cpu()
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 

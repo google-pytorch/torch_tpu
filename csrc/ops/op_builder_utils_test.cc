@@ -2922,5 +2922,178 @@ TEST(InferBroadcastDimensions, RejectsMixedStaticAndBoundedDim) {
           HasSubstr("cannot mix bounded and static dimensions in broadcast")));
 }
 
+TEST(UnsqueezeTest, MultiBoundedDimsUsesDynamicReshape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp arg = MakeBoundedArg(fb, {8, 16}, {0, 1});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp unsqueezed, Unsqueeze(arg, 1));
+  mlir::func::Return(fb, unsqueezed);
+
+  mlir::RankedTensorType out_type = GetTensorTypeOrDie(unsqueezed);
+  EXPECT_EQ(out_type.getRank(), 3);
+  EXPECT_TRUE(out_type.isDynamicDim(0));
+  EXPECT_FALSE(out_type.isDynamicDim(1));
+  EXPECT_EQ(out_type.getDimSize(1), 1);
+  EXPECT_TRUE(out_type.isDynamicDim(2));
+  EXPECT_EQ(GetStaticShape(unsqueezed), (Dimensions{8, 1, 16}));
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())));
+}
+
+TEST(ComplexSafeConvertElementTypeTest, HandlesComplexConversions) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::RankedTensorType c64_type = mlir::RankedTensorType::get(
+      {4},
+      mlir::getElementType(mb.getContext(), mlir::ElementType::COMPLEXF32));
+  mlir::RankedTensorType c128_type = mlir::RankedTensorType::get(
+      {4},
+      mlir::getElementType(mb.getContext(), mlir::ElementType::COMPLEXF64));
+  mlir::RankedTensorType i32_type = mlir::RankedTensorType::get(
+      {4}, mlir::getElementType(mb.getContext(), mlir::ElementType::I32));
+  mlir::MlirOp c64_arg = mlir::func::Argument(fb, c64_type);
+  mlir::MlirOp c128_arg = mlir::func::Argument(fb, c128_type);
+  mlir::MlirOp i32_arg = mlir::func::Argument(fb, i32_type);
+  mlir::MlirOp bounded_f32 = MakeBoundedArg(fb, {8}, {0});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp i32_to_f32,
+      ComplexSafeConvertElementType(i32_arg, mlir::ElementType::F32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp i32_to_c64,
+      ComplexSafeConvertElementType(i32_arg, mlir::ElementType::COMPLEXF32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp c64_to_f32,
+      ComplexSafeConvertElementType(c64_arg, mlir::ElementType::F32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp c64_to_i32,
+      ComplexSafeConvertElementType(c64_arg, mlir::ElementType::I32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp c64_to_pred,
+      ComplexSafeConvertElementType(c64_arg, mlir::ElementType::PRED));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp c128_to_f64,
+      ComplexSafeConvertElementType(c128_arg, mlir::ElementType::F64));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp c128_to_f32,
+      ComplexSafeConvertElementType(c128_arg, mlir::ElementType::F32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp c128_to_pred,
+      ComplexSafeConvertElementType(c128_arg, mlir::ElementType::PRED));
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp bounded_c64,
+                          ComplexSafeConvertElementType(
+                              bounded_f32, mlir::ElementType::COMPLEXF32));
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp bounded_pred,
+      ComplexSafeConvertElementType(bounded_c64, mlir::ElementType::PRED));
+  mlir::func::Return(
+      fb, {i32_to_f32, i32_to_c64, c64_to_f32, c64_to_i32, c64_to_pred,
+           c128_to_f64, c128_to_f32, c128_to_pred, bounded_c64, bounded_pred});
+
+  EXPECT_EQ(GetElementTypeOrDie(i32_to_f32), mlir::ElementType::F32);
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::ConvertOp>(
+      i32_to_f32.getValue().getDefiningOp()));
+  EXPECT_EQ(GetElementTypeOrDie(i32_to_c64), mlir::ElementType::COMPLEXF32);
+  EXPECT_EQ(GetElementTypeOrDie(c64_to_f32), mlir::ElementType::F32);
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::RealOp>(
+      c64_to_f32.getValue().getDefiningOp()));
+  EXPECT_EQ(GetElementTypeOrDie(c64_to_i32), mlir::ElementType::I32);
+  auto c64_to_i32_op = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(
+      c64_to_i32.getValue().getDefiningOp());
+  ASSERT_TRUE(c64_to_i32_op != nullptr);
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::RealOp>(
+      c64_to_i32_op.getOperand().getDefiningOp()));
+  EXPECT_EQ(GetElementTypeOrDie(c64_to_pred), mlir::ElementType::PRED);
+  EXPECT_TRUE(
+      mlir::isa<mlir::stablehlo::OrOp>(c64_to_pred.getValue().getDefiningOp()));
+  EXPECT_EQ(GetElementTypeOrDie(c128_to_f64), mlir::ElementType::F64);
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::RealOp>(
+      c128_to_f64.getValue().getDefiningOp()));
+  EXPECT_EQ(GetElementTypeOrDie(c128_to_f32), mlir::ElementType::F32);
+  EXPECT_EQ(GetElementTypeOrDie(c128_to_pred), mlir::ElementType::PRED);
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::OrOp>(
+      c128_to_pred.getValue().getDefiningOp()));
+  EXPECT_TRUE(GetTensorTypeOrDie(bounded_c64).isDynamicDim(0));
+  EXPECT_TRUE(GetTensorTypeOrDie(bounded_pred).isDynamicDim(0));
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::OrOp>(
+      bounded_pred.getValue().getDefiningOp()));
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())));
+}
+
+TEST(ResolveDynamicIndexTest, ResolvesNegativeDynamicAndStaticIndices) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp arg = MakeBoundedArg(fb, {8, 5}, {0});
+
+  mlir::MlirOp dyn_neg = ResolveDynamicIndex(arg, /*dim=*/0, /*raw_index=*/-1,
+                                             /*wrapped_index=*/7);
+  mlir::MlirOp static_neg = ResolveDynamicIndex(
+      arg, /*dim=*/1, /*raw_index=*/-1, /*wrapped_index=*/4);
+  mlir::MlirOp dyn_pos = ResolveDynamicIndex(arg, /*dim=*/0, /*raw_index=*/2,
+                                             /*wrapped_index=*/2);
+  mlir::func::Return(fb, {dyn_neg, static_neg, dyn_pos});
+
+  EXPECT_EQ(GetElementTypeOrDie(dyn_neg), mlir::ElementType::I64);
+  EXPECT_TRUE(
+      mlir::isa<mlir::stablehlo::MaxOp>(dyn_neg.getValue().getDefiningOp()));
+
+  auto expect_i64_scalar_constant = [](mlir::MlirOp op, int64_t expected) {
+    EXPECT_EQ(GetElementTypeOrDie(op), mlir::ElementType::I64);
+    auto const_op = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
+        op.getValue().getDefiningOp());
+    ASSERT_TRUE(const_op != nullptr);
+    auto dense_attr =
+        mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue());
+    ASSERT_TRUE(dense_attr != nullptr);
+    ASSERT_TRUE(dense_attr.isSplat());
+    EXPECT_EQ(dense_attr.getSplatValue<int64_t>(), expected);
+  };
+  expect_i64_scalar_constant(static_neg, 4);
+  expect_i64_scalar_constant(dyn_pos, 2);
+
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())));
+}
+
+TEST(ClampToTargetBoundsTest, ClampsLargerBoundedOperandToStaticAndBounded) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp src_bounded = MakeBoundedArg(fb, {10, 1}, {0});
+  mlir::MlirOp target_static = MakeBoundedArg(fb, {4, 5}, {});
+  mlir::MlirOp target_bounded = MakeBoundedArg(fb, {6, 5}, {0});
+
+  mlir::MlirOp clamped_static = ClampToTargetBounds(src_bounded, target_static);
+  mlir::MlirOp clamped_bounded =
+      ClampToTargetBounds(src_bounded, target_bounded);
+  mlir::func::Return(fb, {clamped_static, clamped_bounded});
+
+  EXPECT_TRUE(GetTensorTypeOrDie(clamped_static).hasStaticShape());
+  EXPECT_EQ(GetStaticShape(clamped_static), (Dimensions{4, 1}));
+  EXPECT_TRUE(GetTensorTypeOrDie(clamped_bounded).isDynamicDim(0));
+  EXPECT_EQ(GetStaticShape(clamped_bounded), (Dimensions{6, 1}));
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())));
+}
+
+TEST(ClampToTargetBoundsTest, ReturnsOperandUnchangedWhenWithinTargetBounds) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp src_bounded = MakeBoundedArg(fb, {4, 1}, {0});
+  mlir::MlirOp target_bounded = MakeBoundedArg(fb, {6, 5}, {0});
+
+  mlir::MlirOp result = ClampToTargetBounds(src_bounded, target_bounded);
+  mlir::func::Return(fb, result);
+
+  EXPECT_EQ(result.getValue(), src_bounded.getValue());
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())));
+}
+
 }  // namespace
 }  // namespace torch_tpu

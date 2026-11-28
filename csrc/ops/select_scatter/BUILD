@@ -28,6 +28,8 @@ torch_tpu_cc_library(
     srcs = ["select_scatter_aten_kernels.cc"],
     hdrs = ["select_scatter_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
+        "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
