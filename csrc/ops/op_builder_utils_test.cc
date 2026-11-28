@@ -1430,6 +1430,289 @@ TEST(DynamicReshapeWithRuntimeSizesDeathTest, RankZeroResult) {
       "rank at least 1");
 }
 
+// Describes a scalar i32 runtime size expression produced for a
+// `stablehlo.dynamic_reshape` output_shape element.
+std::string DescribeSizeExpr(mlir::Value value) {
+  if (auto constant = value.getDefiningOp<mlir::stablehlo::ConstantOp>()) {
+    auto dense =
+        mlir::dyn_cast<mlir::DenseIntElementsAttr>(constant.getValue());
+    if (dense && dense.isSplat()) {
+      return absl::StrCat("const:", dense.getSplatValue<int32_t>());
+    }
+    return "const:?";
+  }
+  if (auto dim_size =
+          value.getDefiningOp<mlir::stablehlo::GetDimensionSizeOp>()) {
+    return absl::StrCat("dim:", dim_size.getDimension());
+  }
+  if (auto div = value.getDefiningOp<mlir::stablehlo::DivOp>()) {
+    return absl::StrCat(DescribeSizeExpr(div.getLhs()), "/",
+                        DescribeSizeExpr(div.getRhs()));
+  }
+  if (auto mul = value.getDefiningOp<mlir::stablehlo::MulOp>()) {
+    return absl::StrCat(DescribeSizeExpr(mul.getLhs()), "*",
+                        DescribeSizeExpr(mul.getRhs()));
+  }
+  return "other";
+}
+
+// Extracts the per-dimension size expressions from a `DynamicReshapeOp`'s
+// concatenated `output_shape` operand.
+std::vector<std::string> DescribeDynamicReshapeOutputSizes(mlir::MlirOp op) {
+  auto dynamic_reshape =
+      op.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>();
+  if (!dynamic_reshape) {
+    return {};
+  }
+  auto concat = dynamic_reshape.getOutputShape()
+                    .getDefiningOp<mlir::stablehlo::ConcatenateOp>();
+  if (!concat) {
+    return {};
+  }
+  std::vector<std::string> result;
+  result.reserve(concat.getInputs().size());
+  for (mlir::Value part : concat.getInputs()) {
+    if (auto reshape = part.getDefiningOp<mlir::stablehlo::ReshapeOp>()) {
+      result.push_back(DescribeSizeExpr(reshape.getOperand()));
+    } else {
+      result.push_back(DescribeSizeExpr(part));
+    }
+  }
+  return result;
+}
+
+TEST(SplitDim, StaticShape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {2, 6, 4, 5}, /*bound_dims=*/{});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp split,
+                          SplitDim(input, /*dim=*/1, /*outer_size=*/2));
+  mlir::func::Return(fb, split);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(split.getValue().getDefiningOp<mlir::stablehlo::ReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(split), ElementsAre(2, 2, 3, 4, 5));
+  EXPECT_THAT(GetBoundedDims(split), testing::IsEmpty());
+}
+
+TEST(SplitDim, OuterSizeOne) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 6, 5}, /*bound_dims=*/{1});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp split,
+                          SplitDim(input, /*dim=*/1, /*outer_size=*/1));
+  mlir::func::Return(fb, split);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      split.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(split), ElementsAre(4, 1, 6, 5));
+  EXPECT_THAT(GetBoundedDims(split), ElementsAre(2));
+  EXPECT_THAT(DescribeDynamicReshapeOutputSizes(split),
+              ElementsAre("const:4", "const:1", "dim:1", "const:5"));
+}
+
+TEST(SplitDim, SingleBoundedDimOutsideSplitAxisUsesReshape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 6, 5, 3}, /*bound_dims=*/{0});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp split,
+                          SplitDim(input, /*dim=*/1, /*outer_size=*/2));
+  mlir::func::Return(fb, split);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(split.getValue().getDefiningOp<mlir::stablehlo::ReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(split), ElementsAre(4, 2, 3, 5, 3));
+  EXPECT_THAT(GetBoundedDims(split), ElementsAre(0));
+}
+
+TEST(SplitDim, StaticSplitAxisWithMultiBoundedDimsUsesDynamicReshape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 6, 5, 3}, /*bound_dims=*/{0, 2});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp split,
+                          SplitDim(input, /*dim=*/1, /*outer_size=*/2));
+  mlir::func::Return(fb, split);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      split.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(split), ElementsAre(4, 2, 3, 5, 3));
+  EXPECT_THAT(GetBoundedDims(split), ElementsAre(0, 3));
+  EXPECT_THAT(DescribeDynamicReshapeOutputSizes(split),
+              ElementsAre("dim:0", "const:2", "const:3", "dim:2", "const:3"));
+}
+
+TEST(SplitDim, BoundedSplitAxisAndMultiBoundedDimsUsesDynamicReshape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input =
+      MakeBoundedArg(fb, {4, 6, 5, 3}, /*bound_dims=*/{0, 1, 2});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp split,
+                          SplitDim(input, /*dim=*/1, /*outer_size=*/2));
+  mlir::func::Return(fb, split);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      split.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(split), ElementsAre(4, 2, 3, 5, 3));
+  EXPECT_THAT(GetBoundedDims(split), ElementsAre(0, 2, 3));
+  EXPECT_THAT(
+      DescribeDynamicReshapeOutputSizes(split),
+      ElementsAre("dim:0", "const:2", "dim:1/const:2", "dim:2", "const:3"));
+}
+
+TEST(SplitDim, RejectsNonDivisibleStaticDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 5, 3}, /*bound_dims=*/{});
+
+  EXPECT_THAT(
+      SplitDim(input, /*dim=*/1, /*outer_size=*/2),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected dimension 1 size to be divisible by 2, "
+                         "got 5")));
+}
+
+TEST(SplitDim, RejectsNonDivisibleBoundedDimUpperBound) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 7, 3}, /*bound_dims=*/{1});
+
+  EXPECT_THAT(
+      SplitDim(input, /*dim=*/1, /*outer_size=*/2),
+      StatusIs(error::kPythonNotImplementedError,
+               HasSubstr("expected dimension 1 size to be divisible by 2, "
+                         "got 7")));
+}
+
+TEST(MergeAdjacentDims, NoOpWhenSingleDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 6, 5}, /*bound_dims=*/{0, 2});
+
+  mlir::MlirOp merged =
+      MergeAdjacentDims(input, /*start_dim=*/1, /*end_dim=*/1);
+  mlir::func::Return(fb, merged);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_EQ(merged.getValue(), input.getValue());
+}
+
+TEST(MergeAdjacentDims, StaticShape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 2, 3, 5}, /*bound_dims=*/{});
+
+  mlir::MlirOp merged =
+      MergeAdjacentDims(input, /*start_dim=*/1, /*end_dim=*/2);
+  mlir::func::Return(fb, merged);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(merged.getValue().getDefiningOp<mlir::stablehlo::ReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(merged), ElementsAre(4, 6, 5));
+  EXPECT_THAT(GetBoundedDims(merged), testing::IsEmpty());
+}
+
+TEST(MergeAdjacentDims, SingleBoundedOutsideMergedAxesUsesReshape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 2, 3, 5}, /*bound_dims=*/{0});
+
+  mlir::MlirOp merged =
+      MergeAdjacentDims(input, /*start_dim=*/1, /*end_dim=*/2);
+  mlir::func::Return(fb, merged);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(merged.getValue().getDefiningOp<mlir::stablehlo::ReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(merged), ElementsAre(4, 6, 5));
+  EXPECT_THAT(GetBoundedDims(merged), ElementsAre(0));
+}
+
+TEST(MergeAdjacentDims,
+     StaticMergedAxesWithMultiBoundedDimsUsesDynamicReshape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 2, 3, 5}, /*bound_dims=*/{0, 3});
+
+  mlir::MlirOp merged =
+      MergeAdjacentDims(input, /*start_dim=*/1, /*end_dim=*/2);
+  mlir::func::Return(fb, merged);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      merged.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(merged), ElementsAre(4, 6, 5));
+  EXPECT_THAT(GetBoundedDims(merged), ElementsAre(0, 2));
+  EXPECT_THAT(DescribeDynamicReshapeOutputSizes(merged),
+              ElementsAre("dim:0", "const:6", "dim:3"));
+}
+
+TEST(MergeAdjacentDims, BoundedMergedAxisAndMultiBoundedUsesDynamicReshape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input =
+      MakeBoundedArg(fb, {4, 2, 3, 5}, /*bound_dims=*/{0, 2, 3});
+
+  mlir::MlirOp merged =
+      MergeAdjacentDims(input, /*start_dim=*/1, /*end_dim=*/2);
+  mlir::func::Return(fb, merged);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      merged.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(merged), ElementsAre(4, 6, 5));
+  EXPECT_THAT(GetBoundedDims(merged), ElementsAre(0, 1, 2));
+  EXPECT_THAT(DescribeDynamicReshapeOutputSizes(merged),
+              ElementsAre("dim:0", "const:2*dim:2", "dim:3"));
+}
+
 TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");

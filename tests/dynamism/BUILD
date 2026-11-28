@@ -192,6 +192,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile/dynamic:graph_transform_context",
+        "//src/torch_tpu/_internal/compile/dynamic:graph_transformations",
         "//src/torch_tpu/_internal/compile/dynamic:output_sym_shape",
         "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
         "//src/torch_tpu/_internal/compile/dynamic:sym_utils",

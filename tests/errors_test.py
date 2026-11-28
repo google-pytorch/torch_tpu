@@ -4763,6 +4763,101 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           [True, True, True],
       )
 
+  def test_native_group_norm_zero_channels(self):
+    x = torch.ones(2, 0, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected number of channels to be greater than 0, got 0""",
+        tpu="""native_group_norm(): expected number of channels to be > 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 0, 3, 2, 1e-5)
+
+  def test_native_group_norm_zero_hxw(self):
+    x = torch.ones(2, 4, 0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected HxW to be greater than 0, got 0""",
+        tpu="""native_group_norm(): expected HxW to be > 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 4, 0, 2, 1e-5)
+
+  def test_native_group_norm_non_positive_groups(self):
+    x = torch.ones(2, 4, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected num groups to be greater than 0, got 0""",
+        tpu="""native_group_norm(): expected num_groups to be > 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 4, 3, 0, 1e-5)
+
+  def test_native_group_norm_channels_not_divisible_by_groups(self):
+    x = torch.ones(2, 5, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected number of channels in input to be divisible by num_groups, but got input of shape [2, 5, 3] and num_groups=2""",
+        tpu="""native_group_norm(): expected number of channels to be divisible by num_groups, got 5 channels and num_groups=2""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 5, 3, 2, 1e-5)
+
+  def test_native_group_norm_weight_shape_mismatch(self):
+    x = torch.ones(2, 4, 3, device=et.device())
+    w = torch.ones(3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected weight to be a vector of size equal to the number of channels in input, but got weight of shape [3] and input of shape [2, 4, 3]""",
+        tpu="""native_group_norm(): expected weight to be a 1D tensor of size 4, got shape [3]""",
+    ):
+      torch.ops.aten.native_group_norm(x, w, None, 2, 4, 3, 2, 1e-5)
+
+  def test_native_group_norm_bias_shape_mismatch(self):
+    x = torch.ones(2, 4, 3, device=et.device())
+    b = torch.ones(3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected bias to be a vector of size equal to the number of channels in input, but got bias of shape [3] and input of shape [2, 4, 3]""",
+        tpu="""native_group_norm(): expected bias to be a 1D tensor of size 4, got shape [3]""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, b, 2, 4, 3, 2, 1e-5)
+
+  def test_native_group_norm_non_float_input(self):
+    x = torch.ones(2, 4, 3, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""GroupNormKernelImpl" not implemented for 'Int'""",
+        tpu="""native_group_norm(): expected the input dtype to be floating point, got int32""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 2, 4, 3, 2, 1e-5)
+
+  def test_native_group_norm_non_float_weight(self):
+    x = torch.ones(2, 4, 3, dtype=torch.float32, device=et.device())
+    w = torch.ones(4, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""mixed dtype (CPU): expect parameter to have scalar type of Float""",
+        tpu="""native_group_norm(): expected weight to have dtype float32 for mixed dtype, got int32""",
+    ):
+      torch.ops.aten.native_group_norm(x, w, None, 2, 4, 3, 2, 1e-5)
+
+  def test_native_group_norm_non_float_bias(self):
+    x = torch.ones(2, 4, 3, dtype=torch.float32, device=et.device())
+    b = torch.ones(4, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""mixed dtype (CPU): expect parameter to have scalar type of Float""",
+        tpu="""native_group_norm(): expected bias to have dtype float32 for mixed dtype, got int32""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, b, 2, 4, 3, 2, 1e-5)
+
+  def test_native_group_norm_mixed_dtype_non_reduced_input(self):
+    x = torch.ones(2, 4, 3, dtype=torch.float64, device=et.device())
+    w = torch.ones(4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""mixed dtype (CPU): all inputs must share same datatype.""",
+        tpu="""native_group_norm(): expected input to have dtype bfloat16 or float16 for mixed dtype, got float64""",
+    ):
+      torch.ops.aten.native_group_norm(x, w, None, 2, 4, 3, 2, 1e-5)
+
   @parameterized.named_parameters(
       dict(
           testcase_name="bool",

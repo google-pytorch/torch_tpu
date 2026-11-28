@@ -225,6 +225,32 @@ class ScanInputsCreatePlaceholdersPass:
         )
 
 
+# Ops whose SymInt arguments duplicate dimensions already carried as bounded
+# dynamic dimensions on their tensor operands. Replacing those SymInt arguments
+# with their static upper bounds lets StaticCompiler trace the kernel while the
+# StableHLO lowering derives runtime sizes from the bounded tensor operands.
+_UPPER_BOUND_SYMINT_ARGS: dict[
+    torch._ops.OpOverload, tuple[tuple[int, ...], frozenset[str]]
+] = {
+    torch.ops.aten.native_group_norm.default: (
+        (3, 4, 5),
+        frozenset({"N", "C", "HxW"}),
+    ),
+    torch.ops.aten.native_group_norm.out: (
+        (3, 4, 5),
+        frozenset({"N", "C", "HxW"}),
+    ),
+    torch.ops.aten.native_group_norm_backward.default: (
+        (5, 6, 7),
+        frozenset({"N", "C", "HxW"}),
+    ),
+    torch.ops.aten.native_group_norm_backward.out: (
+        (5, 6, 7),
+        frozenset({"N", "C", "HxW"}),
+    ),
+}
+
+
 class HandleSymIntUsagesPass:
   """Usages of SymInt nodes in tensor operations and graph outputs transformation pass.
 
@@ -245,10 +271,16 @@ class HandleSymIntUsagesPass:
           and "SymInt" not in str(node.target)
           and "sym_size" not in str(node.target)
       ):
+        upper_bound_indices, upper_bound_kwargs = _UPPER_BOUND_SYMINT_ARGS.get(
+            node.target, ((), frozenset())
+        )
         new_args = []
         changed = False
-        for arg in node.args:
-          if sym_utils.is_symint_node(arg):
+        for idx, arg in enumerate(node.args):
+          if idx in upper_bound_indices and sym_utils.is_symint(arg):
+            new_args.append(self._transform_context.get_upper_bound(arg))
+            changed = True
+          elif sym_utils.is_symint_node(arg):
             tensor_node = self._transform_context.ensure_tensor(
                 graph_module, arg, node
             )
@@ -259,6 +291,18 @@ class HandleSymIntUsagesPass:
 
         if changed:
           node.args = tuple(new_args)
+
+        if upper_bound_kwargs and node.kwargs:
+          new_kwargs = dict(node.kwargs)
+          kwargs_changed = False
+          for key in upper_bound_kwargs:
+            if key in new_kwargs and sym_utils.is_symint(new_kwargs[key]):
+              new_kwargs[key] = self._transform_context.get_upper_bound(
+                  new_kwargs[key]
+              )
+              kwargs_changed = True
+          if kwargs_changed:
+            node.kwargs = new_kwargs
       elif node.op == "output":
         if node.args and isinstance(node.args[0], (tuple, list)):
           new_ret_args = []

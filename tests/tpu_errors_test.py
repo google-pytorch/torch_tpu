@@ -1962,6 +1962,92 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           grad_out, inp, mean, rstd, weight, n, c, h_w, group, output_mask
       )
 
+  @et.why_tpu_only(
+      "PyTorch native_group_norm CUDA kernel treats input as flat storage and"
+      " does not validate input rank."
+  )
+  def test_native_group_norm_input_rank_less_than_2(self):
+    x = torch.ones(6, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected input to have >= 2 dimensions, got 1""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 1, 6, 1, 2, 1e-5)
+
+  @et.why_tpu_only(
+      "PyTorch native_group_norm CUDA kernel does not validate input shape"
+      " against N, C, HxW arguments."
+  )
+  def test_native_group_norm_input_shape_mismatch(self):
+    x = torch.ones(2, 6, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected input to have shape [1, 6, ...] with 18 elements, got shape [2, 6, 3]""",
+    ):
+      torch.ops.aten.native_group_norm(x, None, None, 1, 6, 3, 2, 1e-5)
+
+  @et.why_tpu_only(
+      "PyTorch native_group_norm_backward does not validate num_groups > 0."
+  )
+  def test_native_group_norm_backward_non_positive_groups(self):
+    go = torch.ones(2, 4, 3, device=et.device())
+    x = torch.ones(2, 4, 3, device=et.device())
+    mean = torch.ones(2, 0, device=et.device())
+    rstd = torch.ones(2, 0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm_backward(): expected num_groups to be > 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm_backward(
+          go, x, mean, rstd, None, 2, 4, 3, 0, [True, False, False]
+      )
+
+  @et.why_tpu_only(
+      "PyTorch native_group_norm_backward does not validate C % group == 0."
+  )
+  def test_native_group_norm_backward_channels_not_divisible_by_groups(self):
+    go = torch.ones(2, 5, 3, device=et.device())
+    x = torch.ones(2, 5, 3, device=et.device())
+    mean = torch.ones(2, 2, device=et.device())
+    rstd = torch.ones(2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm_backward(): expected number of channels to be divisible by num_groups, got 5 channels and num_groups=2""",
+    ):
+      torch.ops.aten.native_group_norm_backward(
+          go, x, mean, rstd, None, 2, 5, 3, 2, [True, False, False]
+      )
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_native_group_norm_backward_bounded_flat_input(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      go = torch.ones(24, device=et.device())
+      x = torch.ones(24, device=et.device())
+      mean = torch.ones(2, 2, device=et.device())
+      rstd = torch.ones(2, 2, device=et.device())
+      dynamism.mark_dynamic(go, 0, 12, 36)
+      dynamism.mark_dynamic(x, 0, 12, 36)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""native_group_norm_backward(): expected static input shape when input does not start with [N, C], got [36]""",
+      ):
+        dx, _, _ = torch.ops.aten.native_group_norm_backward(
+            go, x, mean, rstd, None, 2, 4, 3, 2, [True, False, False]
+        )
+        dx.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_group_norm_bounded_channel_upper_bound_not_divisible(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones(2, 4, 3, device=et.device())
+      dynamism.mark_dynamic(x, 1, 2, 7)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""native_group_norm(): expected dimension 1 size to be divisible by 2, got 7""",
+      ):
+        y = torch.nn.functional.group_norm(x, 2)
+        y.cpu()
+
   # PyTorch implementation promotes `input` and `target` dtypes, instead of
   # raising an error.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")

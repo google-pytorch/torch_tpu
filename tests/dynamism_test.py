@@ -2216,6 +2216,263 @@ class DynamismTest(seed_test_utils.RepeatableTest):
         fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
     )
 
+  def test_group_norm_eager_dynamic_forward_and_backward(self) -> None:
+    # Verifies eager bounded dynamism for group_norm forward and
+    # native_group_norm_backward across varying N, dynamic C, 2D inputs, and
+    # partial output_mask (b/568062359).
+    num_groups = 2
+    for n in (2, 3):
+      with self.subTest(case="varying_batch", n=n):
+        x_cpu = torch.randn(n, 4, 6, 6, dtype=torch.float32)
+        w_cpu = torch.randn(4, dtype=torch.float32)
+        b_cpu = torch.randn(4, dtype=torch.float32)
+        go_cpu = torch.randn(n, 4, 6, 6, dtype=torch.float32)
+
+        y_cpu, mean_cpu, rstd_cpu = torch.ops.aten.native_group_norm(
+            x_cpu, w_cpu, b_cpu, n, 4, 36, num_groups, 1e-5
+        )
+        dx_cpu, dw_cpu, db_cpu = torch.ops.aten.native_group_norm_backward(
+            go_cpu,
+            x_cpu,
+            mean_cpu,
+            rstd_cpu,
+            w_cpu,
+            n,
+            4,
+            36,
+            num_groups,
+            [True, True, True],
+        )
+
+        x_tpu = x_cpu.to(self.device)
+        w_tpu = w_cpu.to(self.device)
+        b_tpu = b_cpu.to(self.device)
+        go_tpu = go_cpu.to(self.device)
+        dynamism.mark_dynamic(x_tpu, 0, 2, 4)
+        dynamism.mark_dynamic(go_tpu, 0, 2, 4)
+
+        y_tpu = torch.nn.functional.group_norm(x_tpu, num_groups, w_tpu, b_tpu)
+        utils.assert_close(y_tpu.cpu(), y_cpu)
+
+        mean_tpu = mean_cpu.to(self.device)
+        rstd_tpu = rstd_cpu.to(self.device)
+        dynamism.mark_dynamic(mean_tpu, 0, 2, 4)
+        dynamism.mark_dynamic(rstd_tpu, 0, 2, 4)
+        dx_tpu, dw_tpu, db_tpu = torch.ops.aten.native_group_norm_backward(
+            go_tpu,
+            x_tpu,
+            mean_tpu,
+            rstd_tpu,
+            w_tpu,
+            n,
+            4,
+            36,
+            num_groups,
+            [True, True, True],
+        )
+        utils.assert_close(dx_tpu.cpu(), dx_cpu)
+        utils.assert_close(dw_tpu.cpu(), dw_cpu)
+        utils.assert_close(db_tpu.cpu(), db_cpu)
+
+    with self.subTest(case="dynamic_channels"):
+      x_cpu = torch.randn(2, 4, 5, 3, dtype=torch.float32)
+      w_cpu = torch.randn(4, dtype=torch.float32)
+      b_cpu = torch.randn(4, dtype=torch.float32)
+      go_cpu = torch.randn(2, 4, 5, 3, dtype=torch.float32)
+
+      y_cpu, mean_cpu, rstd_cpu = torch.ops.aten.native_group_norm(
+          x_cpu, w_cpu, b_cpu, 2, 4, 15, num_groups, 1e-5
+      )
+      dx_cpu, dw_cpu, db_cpu = torch.ops.aten.native_group_norm_backward(
+          go_cpu,
+          x_cpu,
+          mean_cpu,
+          rstd_cpu,
+          w_cpu,
+          2,
+          4,
+          15,
+          num_groups,
+          [True, True, True],
+      )
+
+      x_tpu = x_cpu.to(self.device)
+      w_tpu = w_cpu.to(self.device)
+      b_tpu = b_cpu.to(self.device)
+      go_tpu = go_cpu.to(self.device)
+      dynamism.mark_dynamic(x_tpu, 1, 2, 8)
+      dynamism.mark_dynamic(w_tpu, 0, 2, 8)
+      dynamism.mark_dynamic(b_tpu, 0, 2, 8)
+      dynamism.mark_dynamic(go_tpu, 1, 2, 8)
+
+      y_tpu = torch.nn.functional.group_norm(x_tpu, num_groups, w_tpu, b_tpu)
+      utils.assert_close(y_tpu.cpu(), y_cpu)
+
+      dx_tpu, dw_tpu, db_tpu = torch.ops.aten.native_group_norm_backward(
+          go_tpu,
+          x_tpu,
+          mean_cpu.to(self.device),
+          rstd_cpu.to(self.device),
+          w_tpu,
+          2,
+          4,
+          15,
+          num_groups,
+          [True, True, True],
+      )
+      utils.assert_close(dx_tpu.cpu(), dx_cpu)
+      utils.assert_close(dw_tpu.cpu(), dw_cpu)
+      utils.assert_close(db_tpu.cpu(), db_cpu)
+
+    with self.subTest(case="2d_and_partial_output_mask"):
+      x_cpu = torch.randn(2, 4, dtype=torch.float32)
+      w_cpu = torch.randn(4, dtype=torch.float32)
+      b_cpu = torch.randn(4, dtype=torch.float32)
+      go_cpu = torch.randn(2, 4, dtype=torch.float32)
+
+      y_cpu, mean_cpu, rstd_cpu = torch.ops.aten.native_group_norm(
+          x_cpu, w_cpu, b_cpu, 2, 4, 1, num_groups, 1e-5
+      )
+      dx_cpu, dw_cpu, db_cpu = torch.ops.aten.native_group_norm_backward(
+          go_cpu,
+          x_cpu,
+          mean_cpu,
+          rstd_cpu,
+          w_cpu,
+          2,
+          4,
+          1,
+          num_groups,
+          [True, True, True],
+      )
+
+      x_tpu = x_cpu.to(self.device)
+      w_tpu = w_cpu.to(self.device)
+      b_tpu = b_cpu.to(self.device)
+      go_tpu = go_cpu.to(self.device)
+      mean_tpu = mean_cpu.to(self.device)
+      rstd_tpu = rstd_cpu.to(self.device)
+      dynamism.mark_dynamic(x_tpu, 0, 2, 4)
+      dynamism.mark_dynamic(go_tpu, 0, 2, 4)
+      dynamism.mark_dynamic(mean_tpu, 0, 2, 4)
+      dynamism.mark_dynamic(rstd_tpu, 0, 2, 4)
+
+      y_tpu = torch.nn.functional.group_norm(x_tpu, num_groups, w_tpu, b_tpu)
+      utils.assert_close(y_tpu.cpu(), y_cpu)
+
+      dx_only, dw_none, db_none = torch.ops.aten.native_group_norm_backward(
+          go_tpu,
+          x_tpu,
+          mean_tpu,
+          rstd_tpu,
+          w_tpu,
+          2,
+          4,
+          1,
+          num_groups,
+          [True, False, False],
+      )
+      utils.assert_close(dx_only.cpu(), dx_cpu)
+      self.assertIsNone(dw_none)
+      self.assertIsNone(db_none)
+
+      dx_none, dw_only, db_only = torch.ops.aten.native_group_norm_backward(
+          go_tpu,
+          x_tpu,
+          mean_tpu,
+          rstd_tpu,
+          w_tpu,
+          2,
+          4,
+          1,
+          num_groups,
+          [False, True, True],
+      )
+      self.assertIsNone(dx_none)
+      utils.assert_close(dw_only.cpu(), dw_cpu)
+      utils.assert_close(db_only.cpu(), db_cpu)
+
+    with self.subTest(case="mixed_dtype_direct_backward"):
+      x_cpu = torch.randn(2, 4, 5, 3, dtype=torch.bfloat16)
+      w_cpu = torch.randn(4, dtype=torch.float32)
+      b_cpu = torch.randn(4, dtype=torch.float32)
+      go_cpu = torch.randn(2, 4, 5, 3, dtype=torch.bfloat16)
+
+      _, mean_cpu, rstd_cpu = torch.ops.aten.native_group_norm(
+          x_cpu, w_cpu, b_cpu, 2, 4, 15, num_groups, 1e-5
+      )
+      dx_cpu, dw_cpu, db_cpu = torch.ops.aten.native_group_norm_backward(
+          go_cpu,
+          x_cpu,
+          mean_cpu,
+          rstd_cpu,
+          w_cpu,
+          2,
+          4,
+          15,
+          num_groups,
+          [True, True, True],
+      )
+
+      x_tpu = x_cpu.to(self.device)
+      w_tpu = w_cpu.to(self.device)
+      go_tpu = go_cpu.to(self.device)
+      mean_tpu = mean_cpu.to(self.device)
+      rstd_tpu = rstd_cpu.to(self.device)
+      dynamism.mark_dynamic(x_tpu, 0, 2, 4)
+      dynamism.mark_dynamic(go_tpu, 0, 2, 4)
+      dynamism.mark_dynamic(mean_tpu, 0, 2, 4)
+      dynamism.mark_dynamic(rstd_tpu, 0, 2, 4)
+
+      dx_tpu, dw_tpu, db_tpu = torch.ops.aten.native_group_norm_backward(
+          go_tpu,
+          x_tpu,
+          mean_tpu,
+          rstd_tpu,
+          w_tpu,
+          2,
+          4,
+          15,
+          num_groups,
+          [True, True, True],
+      )
+      self.assertEqual(dx_tpu.dtype, x_tpu.dtype)
+      self.assertEqual(dw_tpu.dtype, w_tpu.dtype)
+      self.assertEqual(db_tpu.dtype, w_tpu.dtype)
+      utils.assert_close(dx_tpu.cpu(), dx_cpu, rtol=2e-2, atol=2e-2)
+      utils.assert_close(dw_tpu.cpu(), dw_cpu, rtol=2e-2, atol=2e-2)
+      utils.assert_close(db_tpu.cpu(), db_cpu, rtol=2e-2, atol=2e-2)
+
+    with self.subTest(case="empty_spatial_dynamic_channels_none_weight"):
+      x_tpu = torch.empty(2, 4, 0, dtype=torch.float32, device=self.device)
+      go_tpu = torch.empty(2, 4, 0, dtype=torch.float32, device=self.device)
+      mean_tpu = torch.zeros(
+          2, num_groups, dtype=torch.float32, device=self.device
+      )
+      rstd_tpu = torch.zeros(
+          2, num_groups, dtype=torch.float32, device=self.device
+      )
+      dynamism.mark_dynamic(x_tpu, 1, 2, 8)
+      dynamism.mark_dynamic(go_tpu, 1, 2, 8)
+
+      dx_tpu, dw_tpu, db_tpu = torch.ops.aten.native_group_norm_backward(
+          go_tpu,
+          x_tpu,
+          mean_tpu,
+          rstd_tpu,
+          None,
+          2,
+          4,
+          0,
+          num_groups,
+          [True, True, True],
+      )
+      self.assertEqual(dx_tpu.shape, torch.Size([2, 4, 0]))
+      self.assertEqual(dw_tpu.shape, torch.Size([4]))
+      self.assertEqual(db_tpu.shape, torch.Size([4]))
+      utils.assert_close(dw_tpu.cpu(), torch.zeros(4, dtype=torch.float32))
+      utils.assert_close(db_tpu.cpu(), torch.zeros(4, dtype=torch.float32))
+
 
 if __name__ == "__main__":
   absltest.main()

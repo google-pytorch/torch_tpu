@@ -2053,6 +2053,166 @@ std::vector<mlir::MlirOp> GetReshapeOutputRuntimeSizes(
   return sizes;
 }
 
+mlir::MlirOp GetInputDimRuntimeSize(
+    mlir::MlirOp input, const mlir::stablehlo::DimensionInfo& input_dim,
+    const int64_t dim_idx, const mlir::Type i32_type) {
+  if (input_dim.boundOp.has_value()) {
+    return mlir::stablehlo::GetDimensionSize(input, dim_idx);
+  }
+  return MakeScalarConstant(input.getBuilder(), input_dim.size, i32_type);
+}
+
+bool CanUseStaticReshapeForDynamic(
+    const bool modified_dim_is_dynamic,
+    const mlir::stablehlo::Dimensions& output_dims) {
+  if (modified_dim_is_dynamic) {
+    return false;
+  }
+  const int64_t num_bounded = absl::c_count_if(
+      output_dims, [](const mlir::stablehlo::DimensionInfo& d) {
+        return d.boundOp.has_value();
+      });
+  return num_bounded <= 1;
+}
+
+Dimensions BuildSplitStaticShape(const mlir::stablehlo::Dimensions& input_dims,
+                                 const int64_t dim, const int64_t outer_size,
+                                 const int64_t inner_size) {
+  const int64_t rank = static_cast<int64_t>(input_dims.size());
+  Dimensions out_shape;
+  out_shape.reserve(rank + 1);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i == dim) {
+      out_shape.push_back(outer_size);
+      out_shape.push_back(inner_size);
+    } else {
+      out_shape.push_back(input_dims[i].size);
+    }
+  }
+  return out_shape;
+}
+
+mlir::stablehlo::Dimensions BuildSplitOutputDims(
+    mlir::MlirOp input, const mlir::stablehlo::Dimensions& input_dims,
+    const int64_t dim, const int64_t outer_size, const int64_t inner_size,
+    const bool split_dim_is_dynamic) {
+  const int64_t rank = static_cast<int64_t>(input_dims.size());
+  mlir::stablehlo::Dimensions output_dims;
+  output_dims.reserve(rank + 1);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i == dim) {
+      output_dims.push_back({.size = outer_size});
+      output_dims.push_back(
+          split_dim_is_dynamic
+              ? mlir::stablehlo::DimensionInfo{.size = inner_size,
+                                               .boundOp = input.getValue()}
+              : mlir::stablehlo::DimensionInfo{.size = inner_size});
+    } else {
+      output_dims.push_back(input_dims[i]);
+    }
+  }
+  return output_dims;
+}
+
+mlir::MlirOp BuildSplitInnerRuntimeSize(mlir::MlirOp input, const int64_t dim,
+                                        const int64_t outer_size,
+                                        const int64_t inner_size,
+                                        const bool split_dim_is_dynamic,
+                                        const mlir::Type i32_type) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  if (!split_dim_is_dynamic) {
+    return MakeScalarConstant(builder, inner_size, i32_type);
+  }
+  mlir::MlirOp runtime_dim = mlir::stablehlo::GetDimensionSize(input, dim);
+  if (outer_size == 1) {
+    return runtime_dim;
+  }
+  mlir::MlirOp outer_const = MakeScalarConstant(builder, outer_size, i32_type);
+  return mlir::stablehlo::Div(runtime_dim, outer_const);
+}
+
+std::vector<mlir::MlirOp> BuildSplitDimRuntimeSizes(
+    mlir::MlirOp input, const mlir::stablehlo::Dimensions& input_dims,
+    const int64_t dim, const int64_t outer_size, const int64_t inner_size,
+    const bool split_dim_is_dynamic) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  const int64_t rank = static_cast<int64_t>(input_dims.size());
+  std::vector<mlir::MlirOp> output_sizes;
+  output_sizes.reserve(rank + 1);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i == dim) {
+      output_sizes.push_back(MakeScalarConstant(builder, outer_size, i32_type));
+      output_sizes.push_back(BuildSplitInnerRuntimeSize(
+          input, dim, outer_size, inner_size, split_dim_is_dynamic, i32_type));
+    } else {
+      output_sizes.push_back(
+          GetInputDimRuntimeSize(input, input_dims[i], i, i32_type));
+    }
+  }
+  return output_sizes;
+}
+
+Dimensions BuildMergeStaticShape(const mlir::stablehlo::Dimensions& input_dims,
+                                 const int64_t start_dim, const int64_t end_dim,
+                                 const int64_t merged_size) {
+  const int64_t rank = static_cast<int64_t>(input_dims.size());
+  Dimensions out_shape;
+  out_shape.reserve(rank - (end_dim - start_dim));
+  for (int64_t i = 0; i < start_dim; ++i) {
+    out_shape.push_back(input_dims[i].size);
+  }
+  out_shape.push_back(merged_size);
+  for (int64_t i = end_dim + 1; i < rank; ++i) {
+    out_shape.push_back(input_dims[i].size);
+  }
+  return out_shape;
+}
+
+mlir::stablehlo::Dimensions BuildMergeOutputDims(
+    mlir::MlirOp input, const mlir::stablehlo::Dimensions& input_dims,
+    const int64_t start_dim, const int64_t end_dim, const int64_t merged_size,
+    const bool merged_is_dynamic) {
+  const int64_t rank = static_cast<int64_t>(input_dims.size());
+  mlir::stablehlo::Dimensions output_dims;
+  output_dims.reserve(rank - (end_dim - start_dim));
+  for (int64_t i = 0; i < start_dim; ++i) {
+    output_dims.push_back(input_dims[i]);
+  }
+  output_dims.push_back(
+      merged_is_dynamic
+          ? mlir::stablehlo::DimensionInfo{.size = merged_size,
+                                           .boundOp = input.getValue()}
+          : mlir::stablehlo::DimensionInfo{.size = merged_size});
+  for (int64_t i = end_dim + 1; i < rank; ++i) {
+    output_dims.push_back(input_dims[i]);
+  }
+  return output_dims;
+}
+
+std::vector<mlir::MlirOp> BuildMergeRuntimeSizes(
+    mlir::MlirOp input, const mlir::stablehlo::Dimensions& input_dims,
+    const int64_t start_dim, const int64_t end_dim, const int64_t merged_size,
+    const bool merged_is_dynamic, absl::Span<const int64_t> merged_indices) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  const int64_t rank = static_cast<int64_t>(input_dims.size());
+  std::vector<mlir::MlirOp> output_sizes;
+  output_sizes.reserve(rank - (end_dim - start_dim));
+  for (int64_t i = 0; i < start_dim; ++i) {
+    output_sizes.push_back(
+        GetInputDimRuntimeSize(input, input_dims[i], i, i32_type));
+  }
+  output_sizes.push_back(
+      merged_is_dynamic ? GetNumElements(input, i32_type, merged_indices)
+                        : MakeScalarConstant(builder, merged_size, i32_type));
+  for (int64_t i = end_dim + 1; i < rank; ++i) {
+    output_sizes.push_back(
+        GetInputDimRuntimeSize(input, input_dims[i], i, i32_type));
+  }
+  return output_sizes;
+}
+
 }  // namespace
 
 mlir::MlirOp DynamicReshapeWithRuntimeSizes(
@@ -2094,6 +2254,92 @@ std::vector<mlir::MlirOp> GetRuntimeSizes(
         mlir::stablehlo::GetDimensionSize(bound_op, dim.boundOpDim));
   }
   return sizes;
+}
+
+absl::StatusOr<mlir::MlirOp> SplitDim(mlir::MlirOp input, int64_t dim,
+                                      int64_t outer_size) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
+  const int64_t rank = type.getRank();
+  ABSL_CHECK_GE(dim, 0)  // CRASH_OK=internal invariant.
+      << "SplitDim dim must be >= 0. This is a TorchTPU bug.";
+  ABSL_CHECK_LT(dim, rank)  // CRASH_OK=internal invariant.
+      << "SplitDim dim must be < rank. This is a TorchTPU bug.";
+  ABSL_CHECK_GT(outer_size, 0)  // CRASH_OK=internal invariant.
+      << "SplitDim outer_size must be > 0. This is a TorchTPU bug.";
+
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  const int64_t dim_size = input_dims[dim].size;
+  const bool split_dim_is_dynamic = input_dims[dim].boundOp.has_value();
+  TT_RET_CHECK(dim_size % outer_size == 0,
+               split_dim_is_dynamic ? error::kPythonNotImplementedError
+                                    : error::kInvalidArgument)
+      << "expected dimension " << dim << " size to be divisible by "
+      << outer_size << ", got " << dim_size;
+  const int64_t inner_size = dim_size / outer_size;
+
+  if (type.hasStaticShape()) {
+    return mlir::stablehlo::Reshape(
+        input, BuildSplitStaticShape(input_dims, dim, outer_size, inner_size));
+  }
+
+  const mlir::stablehlo::Dimensions output_dims = BuildSplitOutputDims(
+      input, input_dims, dim, outer_size, inner_size, split_dim_is_dynamic);
+  if (CanUseStaticReshapeForDynamic(split_dim_is_dynamic, output_dims)) {
+    mlir::RankedTensorType result_type = mlir::stablehlo::getRankedTensorType(
+        output_dims, type.getElementType());
+    return mlir::stablehlo::Reshape(result_type, input);
+  }
+
+  return DynamicReshapeWithRuntimeSizes(
+      input, output_dims,
+      BuildSplitDimRuntimeSizes(input, input_dims, dim, outer_size, inner_size,
+                                split_dim_is_dynamic));
+}
+
+mlir::MlirOp MergeAdjacentDims(mlir::MlirOp input, int64_t start_dim,
+                               int64_t end_dim) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
+  const int64_t rank = type.getRank();
+  ABSL_CHECK_GE(start_dim, 0)  // CRASH_OK=internal invariant.
+      << "MergeAdjacentDims start_dim must be >= 0. This is a TorchTPU bug.";
+  ABSL_CHECK_LE(start_dim, end_dim)  // CRASH_OK=internal invariant.
+      << "MergeAdjacentDims start_dim must be <= end_dim. This is a TorchTPU "
+         "bug.";
+  ABSL_CHECK_LT(end_dim, rank)  // CRASH_OK=internal invariant.
+      << "MergeAdjacentDims end_dim must be < rank. This is a TorchTPU bug.";
+  if (start_dim == end_dim) {
+    return input;
+  }
+
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  int64_t merged_size = 1;
+  bool merged_is_dynamic = false;
+  Dimensions merged_indices;
+  merged_indices.reserve(end_dim - start_dim + 1);
+  for (int64_t i = start_dim; i <= end_dim; ++i) {
+    merged_size *= input_dims[i].size;
+    merged_is_dynamic |= input_dims[i].boundOp.has_value();
+    merged_indices.push_back(i);
+  }
+
+  if (type.hasStaticShape()) {
+    return mlir::stablehlo::Reshape(
+        input,
+        BuildMergeStaticShape(input_dims, start_dim, end_dim, merged_size));
+  }
+
+  const mlir::stablehlo::Dimensions output_dims = BuildMergeOutputDims(
+      input, input_dims, start_dim, end_dim, merged_size, merged_is_dynamic);
+  if (CanUseStaticReshapeForDynamic(merged_is_dynamic, output_dims)) {
+    mlir::RankedTensorType result_type = mlir::stablehlo::getRankedTensorType(
+        output_dims, type.getElementType());
+    return mlir::stablehlo::Reshape(result_type, input);
+  }
+
+  return DynamicReshapeWithRuntimeSizes(
+      input, output_dims,
+      BuildMergeRuntimeSizes(input, input_dims, start_dim, end_dim, merged_size,
+                             merged_is_dynamic, merged_indices));
 }
 
 // Returns a string representation of the reassociation indices for debugging.
