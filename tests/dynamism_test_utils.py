@@ -632,9 +632,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # (compile_grad). COMPILE is triaged under "the result has wrong
         # values".
         "nn.functional.cross_entropy": {EAGER, COMPILE_GRAD},
-        # var_mean reshape reassociation fails (eager) and local_scalar_dense
-        # cannot materialize a placeholder tensor (compile / compile_grad).
-        "nn.functional.group_norm": ALL_MODES,
         # Queries static dim size (dimension size -9223372036854775808). Eager
         # aborts the test process, and compile fails to inline MLIR functions.
         "nn.functional.max_pool1d": ALL_MODES,

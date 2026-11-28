@@ -2209,5 +2209,183 @@ class DynamicFusedMovingAvgObsFqTest(seed_test_utils.RepeatableTest):
           utils.assert_close(act, exp)
 
 
+class DynamicGroupNormTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    torch._dynamo.reset()
+    self.device = torch.accelerator.current_accelerator()
+
+  @parameterized.named_parameters(
+      dict(testcase_name="affine", affine=True),
+      dict(testcase_name="no_affine", affine=False),
+  )
+  def test_group_norm_dynamic_forward_and_backward_varying_shapes(
+      self, affine: bool
+  ):
+    num_groups = 2
+
+    def fn(x, weight, bias):
+      return torch.nn.functional.group_norm(
+          x, num_groups, weight=weight, bias=bias, eps=1e-5
+      )
+
+    compiled = torch.compile(fn, backend="tpu")
+
+    for idx, (n, c, h, w) in enumerate(
+        [(4, 6, 6, 5), (2, 4, 3, 4), (3, 8, 5, 3)]
+    ):
+      with self.subTest(shape=(n, c, h, w), affine=affine):
+        x_cpu = torch.randn(n, c, h, w, dtype=torch.float32, requires_grad=True)
+        weight_cpu = (
+            torch.randn(c, dtype=torch.float32, requires_grad=True)
+            if affine
+            else None
+        )
+        bias_cpu = (
+            torch.randn(c, dtype=torch.float32, requires_grad=True)
+            if affine
+            else None
+        )
+        grad_out_cpu = torch.randn(n, c, h, w, dtype=torch.float32)
+
+        y_cpu = fn(x_cpu, weight_cpu, bias_cpu)
+        y_cpu.backward(grad_out_cpu)
+
+        x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+        weight_tpu = (
+            weight_cpu.detach().to(self.device).requires_grad_(True)
+            if affine
+            else None
+        )
+        bias_tpu = (
+            bias_cpu.detach().to(self.device).requires_grad_(True)
+            if affine
+            else None
+        )
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=8)
+        # Channel dim has a divisibility guard (C % num_groups == 0), so use
+        # maybe_mark_dynamic on dim 1 (and coupled weight/bias dim 0).
+        torch._dynamo.maybe_mark_dynamic(x_tpu, 1)
+        torch._dynamo.mark_dynamic(x_tpu, 2, min=2, max=8)
+        torch._dynamo.mark_dynamic(x_tpu, 3, min=2, max=8)
+        if affine:
+          torch._dynamo.maybe_mark_dynamic(weight_tpu, 0)
+          torch._dynamo.maybe_mark_dynamic(bias_tpu, 0)
+
+        if idx > 0:
+          with torch._dynamo.config.patch(error_on_recompile=True):
+            y_tpu = compiled(x_tpu, weight_tpu, bias_tpu)
+        else:
+          y_tpu = compiled(x_tpu, weight_tpu, bias_tpu)
+        y_tpu.backward(grad_out_cpu.to(self.device))
+
+        utils.assert_close(y_tpu.cpu(), y_cpu)
+        utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+        if affine:
+          utils.assert_close(weight_tpu.grad.cpu(), weight_cpu.grad)
+          utils.assert_close(bias_tpu.grad.cpu(), bias_cpu.grad)
+
+  def test_group_norm_dynamic_2d_input(self):
+    num_groups = 2
+
+    def fn(x, weight, bias):
+      return torch.nn.functional.group_norm(
+          x, num_groups, weight=weight, bias=bias, eps=1e-5
+      )
+
+    compiled = torch.compile(fn, backend="tpu")
+
+    for idx, (n, c) in enumerate([(4, 6), (2, 4), (3, 8)]):
+      with self.subTest(shape=(n, c)):
+        x_cpu = torch.randn(n, c, dtype=torch.float32, requires_grad=True)
+        weight_cpu = torch.randn(c, dtype=torch.float32, requires_grad=True)
+        bias_cpu = torch.randn(c, dtype=torch.float32, requires_grad=True)
+        grad_out_cpu = torch.randn(n, c, dtype=torch.float32)
+
+        y_cpu = fn(x_cpu, weight_cpu, bias_cpu)
+        y_cpu.backward(grad_out_cpu)
+
+        x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+        weight_tpu = weight_cpu.detach().to(self.device).requires_grad_(True)
+        bias_tpu = bias_cpu.detach().to(self.device).requires_grad_(True)
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=8)
+        torch._dynamo.maybe_mark_dynamic(x_tpu, 1)
+        torch._dynamo.maybe_mark_dynamic(weight_tpu, 0)
+        torch._dynamo.maybe_mark_dynamic(bias_tpu, 0)
+
+        if idx > 0:
+          with torch._dynamo.config.patch(error_on_recompile=True):
+            y_tpu = compiled(x_tpu, weight_tpu, bias_tpu)
+        else:
+          y_tpu = compiled(x_tpu, weight_tpu, bias_tpu)
+        y_tpu.backward(grad_out_cpu.to(self.device))
+
+        utils.assert_close(y_tpu.cpu(), y_cpu)
+        utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad, rtol=1e-3, atol=1e-4)
+        utils.assert_close(weight_tpu.grad.cpu(), weight_cpu.grad)
+        utils.assert_close(bias_tpu.grad.cpu(), bias_cpu.grad)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bfloat16",
+          input_dtype=torch.bfloat16,
+          param_dtype=torch.bfloat16,
+      ),
+      dict(
+          testcase_name="mixed_bf16_f32",
+          input_dtype=torch.bfloat16,
+          param_dtype=torch.float32,
+      ),
+  )
+  def test_group_norm_dynamic_reduced_and_mixed_dtypes(
+      self, input_dtype: torch.dtype, param_dtype: torch.dtype
+  ):
+    num_groups = 2
+
+    def fn(x, weight, bias):
+      return torch.nn.functional.group_norm(
+          x, num_groups, weight=weight, bias=bias, eps=1e-5
+      )
+
+    compiled = torch.compile(fn, backend="tpu")
+
+    for idx, (n, c, h, w) in enumerate([(4, 6, 4, 5), (2, 4, 3, 3)]):
+      with self.subTest(shape=(n, c, h, w)):
+        x_cpu = torch.randn(n, c, h, w, dtype=input_dtype, requires_grad=True)
+        weight_cpu = torch.randn(c, dtype=param_dtype, requires_grad=True)
+        bias_cpu = torch.randn(c, dtype=param_dtype, requires_grad=True)
+        grad_out_cpu = torch.randn(n, c, h, w, dtype=input_dtype)
+
+        y_cpu = fn(x_cpu, weight_cpu, bias_cpu)
+        y_cpu.backward(grad_out_cpu)
+
+        x_tpu = x_cpu.detach().to(self.device).requires_grad_(True)
+        weight_tpu = weight_cpu.detach().to(self.device).requires_grad_(True)
+        bias_tpu = bias_cpu.detach().to(self.device).requires_grad_(True)
+        torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=8)
+        torch._dynamo.maybe_mark_dynamic(x_tpu, 1)
+        torch._dynamo.mark_dynamic(x_tpu, 2, min=2, max=8)
+        torch._dynamo.mark_dynamic(x_tpu, 3, min=2, max=8)
+        torch._dynamo.maybe_mark_dynamic(weight_tpu, 0)
+        torch._dynamo.maybe_mark_dynamic(bias_tpu, 0)
+
+        if idx > 0:
+          with torch._dynamo.config.patch(error_on_recompile=True):
+            y_tpu = compiled(x_tpu, weight_tpu, bias_tpu)
+        else:
+          y_tpu = compiled(x_tpu, weight_tpu, bias_tpu)
+        y_tpu.backward(grad_out_cpu.to(self.device))
+
+        utils.assert_close(y_tpu.cpu(), y_cpu, rtol=2e-2, atol=2e-2)
+        utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad, rtol=2e-2, atol=2e-2)
+        utils.assert_close(
+            weight_tpu.grad.cpu(), weight_cpu.grad, rtol=2e-2, atol=2e-2
+        )
+        utils.assert_close(
+            bias_tpu.grad.cpu(), bias_cpu.grad, rtol=2e-2, atol=2e-2
+        )
+
+
 if __name__ == "__main__":
   absltest.main()

@@ -502,6 +502,10 @@ REGISTRATION_OVERRIDES = frozenset([
     # masked_fill_.
     'masked_fill.Scalar',
     'masked_fill.Tensor',
+    # native_group_norm is registered directly to provide a bounded-dynamism-
+    # aware StableHLO lowering on TPU, overriding CompositeExplicitAutograd
+    # math_group_norm.
+    'native_group_norm',
     'native_layer_norm',  # pending removal
     # new_full, new_ones, new_zeros, ones, and ones_like are registered
     # directly to lower to a single StableHLO constant instead of the composite

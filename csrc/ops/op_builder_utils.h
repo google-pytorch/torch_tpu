@@ -30,8 +30,6 @@
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
-#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -53,7 +51,6 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -607,6 +604,23 @@ mlir::MlirOp DynamicReshapeWithRuntimeSizes(
 // `DynamicReshapeWithRuntimeSizes`.
 std::vector<mlir::MlirOp> GetRuntimeSizes(
     mlir::MlirBuilder& builder, const mlir::stablehlo::Dimensions& dims);
+
+// Splits axis `dim` of `input` (of size or upper bound `D`) into two adjacent
+// axes `[outer_size, D / outer_size]`. Requires `0 <= dim < rank`,
+// `outer_size > 0`, and `D % outer_size == 0` (returns an error if `D` is not
+// divisible by `outer_size`). Preserves bounded dynamic dimensions on `input`,
+// including when `dim` itself is bounded dynamic (with runtime inner size
+// `GetDimensionSize(input, dim) / outer_size`).
+absl::StatusOr<mlir::MlirOp> SplitDim(mlir::MlirOp input, int64_t dim,
+                                      int64_t outer_size);
+
+// Merges inclusive adjacent axes `[start_dim, end_dim]` of `input` into a
+// single axis whose size is the product of their sizes. Requires
+// `0 <= start_dim <= end_dim < rank`. Preserves bounded dynamic dimensions on
+// `input`, including when one or more merged axes are bounded dynamic.
+[[nodiscard]] mlir::MlirOp MergeAdjacentDims(mlir::MlirOp input,
+                                             int64_t start_dim,
+                                             int64_t end_dim);
 
 // Flattens the input tensor to a single dimension.
 // Supports bounded dynamic flatten.
