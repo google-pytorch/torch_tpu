@@ -38,6 +38,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "c10/core/SymInt.h"
 #include "c10/util/Exception.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/env_vars.h"
@@ -1298,7 +1299,6 @@ TEST(SafeWrapDim, ReturnsZeroOnValidDimForZeroDimBound) {
                           SafeWrapDim(/*dim=*/-1, /*dim_bound=*/0));
   EXPECT_EQ(result1, 0);
 }
-
 // Tests for AdaptVfioDeviceCollisionError.
 
 TEST(VfioDeviceCollisionTest, AdaptDetectsBothCollisionPatterns) {

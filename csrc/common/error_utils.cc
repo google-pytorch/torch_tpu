@@ -56,6 +56,8 @@
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/SymBool.h"
+#include "c10/core/SymInt.h"
 #include "c10/core/WrapDimMinimal.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
 #include "c10/util/ArrayRef.h"  // IWYU pragma: keep for IntArrayRef
@@ -987,6 +989,13 @@ absl::StatusOr<int64_t> NumElements(const at::Tensor& tensor) {
 }
 
 absl::StatusOr<int64_t> SafeWrapDim(int64_t dim, int64_t dim_bound) {
+  TT_ASSIGN_OR_RETURN(const c10::SymInt wrapped,
+                      SafeWrapDim(c10::SymInt(dim), dim_bound));
+  return wrapped.expect_int();
+}
+
+absl::StatusOr<c10::SymInt> SafeWrapDim(const c10::SymInt& dim,
+                                        int64_t dim_bound) {
   // These `TT_RET_CHECK()` calls mirror `maybe_wrap_dim()` checks. They are
   // needed so that we can emit error messages that follow the TorchTPU
   // guidelines.
@@ -1000,12 +1009,15 @@ absl::StatusOr<int64_t> SafeWrapDim(int64_t dim, int64_t dim_bound) {
     //
     // Internally, `maybe_wrap_dim()` calls itself, but setting the upper
     // bound to 1. Therefore, in this case, `dim` should be either 0 or -1.
-    TT_RET_CHECK(dim == 0 || dim == -1, error::kIndexError)
+    TT_RET_CHECK(TT_GUARD_OR_FALSE(dim.sym_eq(0).sym_or(dim.sym_eq(-1))),
+                 error::kIndexError)
         << "expected dimension to be either 0 or -1 for a shape with 0 "
            "dimensions, got "
         << dim;
   } else {
-    TT_RET_CHECK(dim >= -dim_bound && dim < dim_bound, error::kIndexError)
+    TT_RET_CHECK(TT_GUARD_OR_FALSE(
+                     dim.sym_ge(-dim_bound).sym_and(dim.sym_lt(dim_bound))),
+                 error::kIndexError)
         << "expected dimension to be in range [" << -dim_bound << ", "
         << dim_bound - 1 << "], got " << dim;
   }
@@ -1014,8 +1026,8 @@ absl::StatusOr<int64_t> SafeWrapDim(int64_t dim, int64_t dim_bound) {
     return at::maybe_wrap_dim(  // MAYBE_WRAP_DIM_OK=implementing SafeWrapDim.
         dim, dim_bound);
   } catch (const c10::Error& e) {
-    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Preconditions at lines 988-1005
-                      // prevent maybe_wrap_dim from throwing.
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Preconditions above prevent
+                      // maybe_wrap_dim from throwing.
                error::kIndexError)
            << AdaptExternalErrorMessage(e.what_without_backtrace());
   }
