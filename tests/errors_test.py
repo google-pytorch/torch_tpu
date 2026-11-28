@@ -5539,6 +5539,15 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           op_name="avg_pool3d",
           gpu_op_name="avg_pool3d_out_cuda",
       ),
+      # Unlike avg_pool1d/2d, CUDA checks the avg_pool3d dtype even when the
+      # input has no elements.
+      dict(
+          testcase_name="avg_pool3d_empty",
+          op=torch.nn.functional.avg_pool3d,
+          shape=(0, 1, 4, 4, 4),
+          op_name="avg_pool3d",
+          gpu_op_name="avg_pool3d_out_cuda",
+      ),
   )
   def test_avg_pool_int64_unsupported(
       self, op, shape, op_name: str, gpu_op_name: str
@@ -5552,15 +5561,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
       op(t, kernel_size=3)
 
   def test_avg_pool3d_unsupported_dtypes(self):
-    if et.is_on_gpu():
-      # On TPU, avg_pool3d raises RuntimeError for unsupported dtypes
-      # (bool, float16). On GPU, CUDA natively supports 3D
-      # average pooling for float16 and bfloat16 without error.
-      self.skipTest("GPU behavior difference")
     t_bool = torch.zeros((1, 1, 4, 4, 4), device=et.device(), dtype=torch.bool)
-    t_f16 = torch.zeros(
-        (1, 1, 4, 4, 4), device=et.device(), dtype=torch.float16
-    )
     t_complex = torch.zeros(
         (1, 1, 4, 4, 4), device=et.device(), dtype=torch.complex64
     )
@@ -5581,13 +5582,6 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
         gpu=""""avg_pool3d_out_cuda" not implemented for 'Bool'""",
     ):
       torch.nn.functional.avg_pool3d(t_bool, kernel_size=3)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""avg_pool3d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got float16""",
-        gpu=""""avg_pool3d_out_cuda" not implemented for 'Half'""",
-    ):
-      torch.nn.functional.avg_pool3d(t_f16, kernel_size=3)
 
     with et.assert_raises_message(
         RuntimeError,

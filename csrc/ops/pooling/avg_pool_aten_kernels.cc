@@ -770,8 +770,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
                            self.scalar_type() != at::ScalarType::Char &&
                            self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
-                           self.scalar_type() != at::ScalarType::ComplexFloat &&
-                           self.scalar_type() != at::ScalarType::Half,
+                           self.scalar_type() != at::ScalarType::ComplexFloat,
                        error::kInvalidArgument)
             << "expected input dtype to be none of (bool, uint8, int8, "
                "int16, int32, complex64), got "

@@ -1877,10 +1877,12 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_avg_pool3d(self):
     self.do_test_op(
         "nn.functional.avg_pool3d",
-        # TODO: GPU does not support integral, complex, and `float16` dtypes.
-        exclude_dtypes=(torch.uint8, torch.int8, torch.int16)
-        + COMPLEX_DTYPES
-        + (torch.float16,)
+        # GPU does not support integral and complex dtypes.
+        exclude_dtypes=(torch.uint8, torch.int8, torch.int16) + COMPLEX_DTYPES
+        # TODO(b/579089164): CUDA sums the gradients of overlapping windows in
+        # float16 while TorchTPU sums them in float32, which exceeds the
+        # default grad tolerance. Add a grad tolerance and compare float16.
+        + ((torch.float16,) if op_testing._COMPUTE_GRAD.value else ())
         # TODO(b/589910660): Eager CUDA rejects bool/int32/int64 (TorchTPU
         # matches eager); compiled CUDA/Inductor widens via decomposition.
         + _if_tpu_vs_gpu_compiled((torch.bool, torch.int32, torch.int64), ()),

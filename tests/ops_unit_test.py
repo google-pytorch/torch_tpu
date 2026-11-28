@@ -24032,9 +24032,10 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   def test_avg_pool_low_precision_large_window(self):
     """Tests 16-bit avg_pool1d/2d with windows larger than 256 elements.
 
-    Window sums (and, with count_include_pad=False, the element counts) must
-    accumulate in float32 like ATen does. Accumulating in bfloat16 cannot
-    represent counts above 256 exactly, which made the result up to 3x off.
+    Window sums (and, with count_include_pad=False or ceil_mode=True, the
+    element counts) must accumulate in float32 like ATen does. Accumulating in
+    bfloat16 cannot represent counts above 256 exactly, which made the result
+    up to 3x off.
     """
     torch.manual_seed(0)
     x2d = torch.randn(2, 4, 64, 64) + 3.0
@@ -24068,12 +24069,57 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             count_include_pad=False,
         )
 
+      def compute_2d_ceil_mode(device, dtype=dtype):
+        # The last window in each dimension is clipped by ceil_mode, so the
+        # element counts (up to 1024) are computed rather than constant.
+        return torch.nn.functional.avg_pool2d(
+            x2d.to(dtype).to(device),
+            kernel_size=32,
+            stride=24,
+            ceil_mode=True,
+            count_include_pad=True,
+        )
+
       with self.subTest(dtype=dtype, op="avg_pool2d"):
         self.assert_close_tpu_vs_cpu(compute_2d)
       with self.subTest(dtype=dtype, op="avg_pool2d_backward"):
         self.assert_close_tpu_vs_cpu(compute_2d_grad)
       with self.subTest(dtype=dtype, op="avg_pool1d"):
         self.assert_close_tpu_vs_cpu(compute_1d)
+      with self.subTest(dtype=dtype, op="avg_pool2d_ceil_mode"):
+        self.assert_close_tpu_vs_cpu(compute_2d_ceil_mode)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="non_overlapping", kwargs={}),
+      dict(
+          testcase_name="count_exclude_pad",
+          kwargs={"stride": 8, "padding": 8, "count_include_pad": False},
+      ),
+      dict(testcase_name="ceil_mode", kwargs={"stride": 12, "ceil_mode": True}),
+  )
+  def test_avg_pool3d_float16(self, kwargs):
+    """Tests float16 avg_pool3d forward and backward.
+
+    Windows hold up to 16^3 = 4096 elements, more than float16 can count
+    exactly (2048), so sums and element counts must accumulate in float32. The
+    forward pass matches CUDA. In the backward pass, CUDA sums the gradients of
+    overlapping windows in float16, so the float32 reference is more precise.
+    """
+    torch.manual_seed(0)
+    x = torch.randn(1, 2, 16, 16, 32) + 3.0
+
+    def compute(device):
+      # ATen implements float16 avg_pool3d on CUDA only, so the CPU reference
+      # computes in float32 and rounds once.
+      on_cpu = torch.device(device).type == "cpu"
+      dtype = torch.float32 if on_cpu else torch.float16
+      inp = x.to(torch.float16).to(device, dtype).requires_grad_()
+      out = torch.nn.functional.avg_pool3d(inp, kernel_size=16, **kwargs)
+      grad = torch.randn(out.shape, generator=torch.Generator().manual_seed(1))
+      out.backward(grad.to(torch.float16).to(device, dtype))
+      return out.to(torch.float16), inp.grad.to(torch.float16)
+
+    self.assert_close_tpu_vs_cpu(compute)
 
   def test_bernoulli_out_dtypes(self):
     device = torch.device("tpu")
