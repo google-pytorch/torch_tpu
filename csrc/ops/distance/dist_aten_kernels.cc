@@ -318,6 +318,9 @@ absl::StatusOr<mlir::MlirOp> BuildPdistBackwardShlo(mlir::MlirOp grad_op,
                         BuildMulShlo(grad_mul_sign, is_max_float));
   } else {
     // Case 5: General p
+    // Gradient: sign(diff) * (|diff| / pdist)^(p-1) * grad
+    // Normalize |diff| / pdist before exponentiation to avoid float32 overflow
+    // and precision loss when p is large.
     auto zero = MakeScalarConstant(builder, 0.0, out_type);
     auto zero_bcast = mlir::stablehlo::BroadcastInDim(bcast_type, zero, {});
     auto one = MakeScalarConstant(builder, 1.0, out_type);
@@ -342,17 +345,17 @@ absl::StatusOr<mlir::MlirOp> BuildPdistBackwardShlo(mlir::MlirOp grad_op,
     auto safe_abs_diff = mlir::stablehlo::Select(cond, one_bcast, abs_diff);
     auto safe_cdist = mlir::stablehlo::Select(cond, one_bcast, pdist_bcast);
 
-    TT_ASSIGN_OR_RETURN(auto pow_diff,
-                        BuildPowShlo(safe_abs_diff, p_minus_1_bcast));
-    TT_ASSIGN_OR_RETURN(auto pow_cdist,
-                        BuildPowShlo(safe_cdist, p_minus_1_bcast));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp ratio,
+                        BuildDivShlo(safe_abs_diff, safe_cdist));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp pow_ratio,
+                        BuildPowShlo(ratio, p_minus_1_bcast));
 
-    TT_ASSIGN_OR_RETURN(auto sign_diff, BuildSignShlo(diff));
-    TT_ASSIGN_OR_RETURN(auto term1, BuildMulShlo(sign_diff, pow_diff));
-    TT_ASSIGN_OR_RETURN(auto term2, BuildMulShlo(term1, grad_bcast));
-    TT_ASSIGN_OR_RETURN(auto div, BuildDivShlo(term2, pow_cdist));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sign_diff, BuildSignShlo(diff));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp term1, BuildMulShlo(sign_diff, pow_ratio));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp unmasked_grad,
+                        BuildMulShlo(term1, grad_bcast));
 
-    unreduced_grad = mlir::stablehlo::Select(cond, zero_bcast, div);
+    unreduced_grad = mlir::stablehlo::Select(cond, zero_bcast, unmasked_grad);
   }
 
   // Create self_grad filled with zeros
@@ -487,8 +490,10 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
                         BuildMulShlo(grad_mul_sign, is_max_float));
   } else {
     // Case 5: General p (Minkowski distance)
-    // Gradient: sign(diff) * |diff|^(p-1) * grad / cdist^(p-1)
-    // Use safety condition to mask division-by-zero positions to 0.0.
+    // Gradient: sign(diff) * (|diff| / cdist)^(p-1) * grad
+    // Normalize |diff| / cdist before exponentiation to avoid float32 overflow
+    // and precision loss when p is large, and use safety condition to mask
+    // division-by-zero positions to 0.0.
     auto zero_bcast = MakeConstantLike(diff, 0.0);
     auto one_bcast = MakeConstantLike(diff, 1.0);
 
@@ -509,17 +514,17 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
     auto safe_abs_diff = mlir::stablehlo::Select(cond, one_bcast, abs_diff);
     auto safe_cdist = mlir::stablehlo::Select(cond, one_bcast, cdist_bcast);
 
-    TT_ASSIGN_OR_RETURN(auto pow_diff,
-                        BuildPowShlo(safe_abs_diff, p_minus_1_bcast));
-    TT_ASSIGN_OR_RETURN(auto pow_cdist,
-                        BuildPowShlo(safe_cdist, p_minus_1_bcast));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp ratio,
+                        BuildDivShlo(safe_abs_diff, safe_cdist));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp pow_ratio,
+                        BuildPowShlo(ratio, p_minus_1_bcast));
 
-    TT_ASSIGN_OR_RETURN(auto sign_diff, BuildSignShlo(diff));
-    TT_ASSIGN_OR_RETURN(auto term1, BuildMulShlo(sign_diff, pow_diff));
-    TT_ASSIGN_OR_RETURN(auto term2, BuildMulShlo(term1, grad_bcast));
-    TT_ASSIGN_OR_RETURN(auto div, BuildDivShlo(term2, pow_cdist));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sign_diff, BuildSignShlo(diff));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp term1, BuildMulShlo(sign_diff, pow_ratio));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp unmasked_grad,
+                        BuildMulShlo(term1, grad_bcast));
 
-    unreduced_grad = mlir::stablehlo::Select(cond, zero_bcast, div);
+    unreduced_grad = mlir::stablehlo::Select(cond, zero_bcast, unmasked_grad);
   }
 
   // Reduce sum over R2 (dimension common_batch_rank + 1)
