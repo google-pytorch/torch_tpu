@@ -19,6 +19,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <optional>
 #include <ostream>
@@ -172,6 +173,10 @@ template <typename T>
     mlir::stablehlo::Precision precision) {
   return mlir::stablehlo::stringifyPrecision(precision).str();
 }
+
+// Formats an MLIR tensor shape (e.g. `RankedTensorType::getShape()`),
+// replacing dynamic dimensions (`mlir::ShapedType::isDynamic`) with `"dyn"`.
+[[nodiscard]] std::string MlirShapeToString(absl::Span<const int64_t> shape);
 
 ////////////////////////////////////////////////////////////////////////////////
 // ToString() for absl types.

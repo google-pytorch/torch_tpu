@@ -28,10 +28,12 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
+#include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "csrc/common/const_tensor.h"
 #include "csrc/common/macro_utils.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Types.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #include "torch/headeronly/core/Layout.h"
@@ -329,6 +331,19 @@ std::string ToString(const mlir::Type type) {
   llvm::raw_string_ostream os(str);
   os << type;
   return str;
+}
+
+std::string MlirShapeToString(const absl::Span<const int64_t> shape) {
+  return absl::StrCat("[",
+                      absl::StrJoin(shape, ", ",
+                                    [](std::string* out, const int64_t dim) {
+                                      if (mlir::ShapedType::isDynamic(dim)) {
+                                        absl::StrAppend(out, "dyn");
+                                      } else {
+                                        absl::StrAppend(out, dim);
+                                      }
+                                    }),
+                      "]");
 }
 
 }  // namespace torch_tpu

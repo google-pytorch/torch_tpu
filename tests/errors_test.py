@@ -2229,6 +2229,36 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           grad_input=grad_input,
       )
 
+  def test_nll_loss2d_backward_grad_output_rank_mismatch(self):
+    grad_output = torch.ones(
+        1, 1, 2, 2, device=et.device(), dtype=torch.float32
+    )
+    t = torch.ones(1, 3, 2, 2, device=et.device(), dtype=torch.float32)
+    target = torch.ones(1, 2, 2, device=et.device(), dtype=torch.long)
+    total_weight = torch.ones((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss2d_backward(): expected input rank <= target rank (3), got 4""",
+        gpu="""grad_output must have same dimension as target (3) but got dimension: [1, 1, 2, 2]""",
+    ):
+      torch.ops.aten.nll_loss2d_backward(
+          grad_output, t, target, None, 0, -100, total_weight
+      ).cpu()
+
+  def test_nll_loss2d_backward_grad_output_shape_mismatch(self):
+    grad_output = torch.ones(1, 2, 3, device=et.device(), dtype=torch.float32)
+    t = torch.ones(1, 3, 2, 2, device=et.device(), dtype=torch.float32)
+    target = torch.ones(1, 2, 2, device=et.device(), dtype=torch.long)
+    total_weight = torch.ones((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss2d_backward(): cannot broadcast input shape [1, 2, 3] to target shape [1, 2, 2]""",
+        gpu="""grad_output sizes don't match target sizes: target [1, 2, 2], grad_output [1, 2, 3]""",
+    ):
+      torch.ops.aten.nll_loss2d_backward(
+          grad_output, t, target, None, 0, -100, total_weight
+      ).cpu()
+
   def test_nll_loss_invalid_reduction(self):
     t = torch.ones(1, 3, 2, 2, device=et.device(), dtype=torch.float32)
     target = torch.ones(1, 2, 3, device=et.device(), dtype=torch.long)
@@ -16553,6 +16583,24 @@ Note: this function is intended to be used with the output produced by torch.lin
           query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
       )
 
+  def test_native_multi_head_attention_non_float_dtype(self):
+    device = et.device()
+    query = torch.ones(2, 4, 8, device=device, dtype=torch.int32)
+    key = torch.ones(2, 4, 8, device=device, dtype=torch.int32)
+    value = torch.ones(2, 4, 8, device=device, dtype=torch.int32)
+    qkv_weight = torch.ones(24, 8, device=device, dtype=torch.int32)
+    qkv_bias = torch.ones(24, device=device, dtype=torch.int32)
+    proj_weight = torch.ones(8, 8, device=device, dtype=torch.int32)
+    proj_bias = torch.ones(8, device=device, dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected floating-point input dtype, got int32""",
+        gpu=""""addmm_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
+      )[0].cpu()
+
   def test_native_multi_head_attention_invalid_key_dim(self):
     device = et.device()
     query = torch.ones(2, 4, 8, device=device)
@@ -22113,6 +22161,16 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
     ):
       torch.ops.ao.offload(x)
 
+  def test_reload_mismatched_original_stride_len(self):
+    _ensure_ao_ops_registered()
+    x = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reload(): must specify the same number of strides as dimensions in the tensor""",
+        gpu="""dimensionality of sizes (2) must match dimensionality of strides (1)""",
+    ):
+      torch.ops.ao.reload(x, et.device(), [2, 3], [1])
+
   def test_pinned_host_oom(self):
     if et.is_on_gpu():
       # GPU test raises this error:
@@ -24925,6 +24983,59 @@ class UnaryOpsErrorTest(et.ErrorTestBase):
         ):
           op(t, out=out)
 
+  def test_generator_set_state_invalid_tensor_type(self):
+    gen = torch.Generator(device=et.device())
+    bad_dtype = torch.zeros(16, dtype=torch.int32)
+    bad_device = torch.zeros(16, dtype=torch.uint8, device=et.device())
+    exc_type = RuntimeError if et.is_on_tpu() else TypeError
+
+    with et.assert_raises_message(
+        exc_type,
+        tpu="""set_state(): expected rng state to be a CPU ByteTensor (uint8, strided), got CPU int32 (strided)""",
+        gpu="""RNG state must be a torch.ByteTensor""",
+    ):
+      gen.set_state(bad_dtype)
+
+    with et.assert_raises_message(
+        exc_type,
+        tpu="""set_state(): expected rng state to be a CPU ByteTensor (uint8, strided), got TPU uint8 (strided)""",
+        gpu="""RNG state must be a torch.ByteTensor""",
+    ):
+      gen.set_state(bad_device)
+
+  def test_generator_set_state_non_contiguous(self):
+    gen = torch.Generator(device=et.device())
+    non_contig = torch.zeros(32, dtype=torch.uint8)[::2]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_state(): expected rng state to be contiguous, got non-contiguous tensor with strides [2]""",
+        gpu="""RNG state must be contiguous""",
+    ):
+      gen.set_state(non_contig)
+
+  def test_generator_set_state_invalid_shape(self):
+    gen = torch.Generator(device=et.device())
+    bad_shape = torch.zeros(3, dtype=torch.uint8)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_state(): expected rng state to have shape [16], got [3]""",
+        gpu="""RNG state is wrong size""",
+    ):
+      gen.set_state(bad_shape)
+
+  def test_generator_graphsafe_set_state_invalid_type(self):
+    dev_gen = torch.Generator(device=et.device())
+    cpu_gen = torch.Generator(device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""graphsafe_set_state(): expected a TPU generator, got CPU generator""",
+        gpu="""Expected a CUDA Generator""",
+    ):
+      dev_gen.graphsafe_set_state(cpu_gen)
+
 
 class OpsErrorCoverageTest(et.ErrorTestBase):
   """Tests error messages for ops across TPU and GPU."""
@@ -25212,6 +25323,149 @@ class OpsErrorCoverageTest(et.ErrorTestBase):
       torch.ops.aten.fake_quantize_per_tensor_affine_cachemask(
           t, scale=0.5, zero_point=0, quant_min=-128, quant_max=127
       )
+
+  @parameterized.named_parameters(
+      ("kernel_size", "kernel_size", (2,), (1, 1), (0, 0), (1, 1)),
+      ("dilation", "dilation", (2, 2), (1,), (0, 0), (1, 1)),
+      ("padding", "padding", (2, 2), (1, 1), (0,), (1, 1)),
+      ("stride", "stride", (2, 2), (1, 1), (0, 0), (1,)),
+  )
+  def test_im2col_invalid_param_dim(
+      self, param_name, kernel_size, dilation, padding, stride
+  ):
+    t = torch.ones((1, 1, 4, 4), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""im2col(): expected {param_name} to have 2 dimensions, got 1""",
+        gpu=f"""It is expected {param_name} equals to 2, but got size 1""",
+    ):
+      torch.ops.aten.im2col(t, kernel_size, dilation, padding, stride)
+
+  def test_foreach_add_broadcast_error(self):
+    a = torch.ones((2, 3), device=et.device())
+    b = torch.ones((4, 5), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_add(): failed to broadcast tensors with shapes [2, 3] and [4, 5]: incompatible sizes 3 and 5 at trailing dimension -1""",
+        gpu="""The size of tensor a (3) must match the size of tensor b (5) at non-singleton dimension 1""",
+    ):
+      torch._foreach_add([a], [b])[0].cpu()
+
+  def test_foreach_add_inplace_cast_error(self):
+    a = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
+    b = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_add_(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch._foreach_add_([a], [b])
+      a.cpu()
+
+  def test_im2col_invalid_input_dim(self):
+    t = torch.ones((1, 1, 1, 4, 4), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected input to have 3 or 4 dimensions, got 5""",
+        gpu="""Expected 3D or 4D (batch mode) tensor with possibly 0 batch size and other non-zero dimensions for input, but got: [1, 1, 1, 4, 4]""",
+    ):
+      torch.ops.aten.im2col(t, (2, 2), (1, 1), (0, 0), (1, 1))
+
+  def test_im2col_non_positive_output_shape(self):
+    t = torch.ones((1, 1, 2, 2), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected output shape to be positive, got -2x-2""",
+        gpu="""Given input with spatial size (2, 2), kernel_size=(5, 5), dilation=(1, 1), padding=(0, 0), calculated shape of the array of sliding blocks as (-2, -2), but its components must be at least one.""",
+    ):
+      torch.ops.aten.im2col(t, (5, 5), (1, 1), (0, 0), (1, 1))
+
+  def test_grid_sampler_2d_bilinear_invalid_grid_last_dim(self):
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 4), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected 2 or 3 spatial dimensions for bilinear interpolation, got 4""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [1, 2, 2, 4]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 0, 0, False).cpu()
+
+  def test_grid_sampler_2d_bicubic_invalid_grid_last_dim(self):
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 3), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d(): expected 2 spatial dimensions for bicubic interpolation, got 3""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [1, 2, 2, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d(inp, grid, 2, 0, False).cpu()
+
+  def test_grid_sampler_2d_backward_bicubic_invalid_grid_last_dim(self):
+    grad_out = torch.ones((1, 1, 2, 2), device=et.device())
+    inp = torch.ones((1, 1, 2, 2), device=et.device())
+    grid = torch.zeros((1, 2, 2, 3), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grid_sampler_2d_backward(): expected 2 spatial dimensions for bicubic interpolation, got 3""",
+        gpu="""grid_sampler(): expected grid to have size 2 in last dimension, but got grid with sizes [1, 2, 2, 3]""",
+    ):
+      torch.ops.aten.grid_sampler_2d_backward(
+          grad_out, inp, grid, 2, 0, False, [True, True]
+      )[0].cpu()
+
+  def test_sdpa_cudnn_mqa_gqa_num_heads_not_divisible(self):
+    q = torch.ones((1, 4, 4, 8), dtype=torch.bfloat16, device=et.device())
+    k = torch.ones((1, 3, 4, 8), dtype=torch.bfloat16, device=et.device())
+    v = torch.ones((1, 3, 4, 8), dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_dot_product_cudnn_attention(): expected num_heads to be divisible by kv_num_heads for MQA/GQA, got num_heads=4 and kv_num_heads=3""",
+        gpu="""cuDNN Frontend error: For group-query attention, number of heads for key and query must be a factor of number of heads for query""",
+    ):
+      torch.ops.aten._scaled_dot_product_cudnn_attention(
+          q, k, v, None, False, 0.0, False, False, scale=None
+      )[0].cpu()
+
+  def test_sdpa_cudnn_unsupported_dtype(self):
+    q = torch.ones((1, 2, 4, 8), dtype=torch.int32, device=et.device())
+    k = torch.ones((1, 2, 4, 8), dtype=torch.int32, device=et.device())
+    v = torch.ones((1, 2, 4, 8), dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        tpu="""scaled_dot_product_cudnn_attention(): expected query dtype to be float32 or bfloat16, got int32""",
+        gpu="""cuDNN attention only supports float16 and bfloat16, got Int""",
+    ):
+      torch.ops.aten._scaled_dot_product_cudnn_attention(
+          q, k, v, None, False, 0.0, False, False, scale=None
+      )[0].cpu()
+
+  def test_copy_from_0d_float4(self):
+    fp4 = (
+        torch.tensor([0x11], dtype=torch.uint8)
+        .view(torch.float4_e2m1fn_x2)
+        .to(et.device())
+        .squeeze(0)
+    )
+    dest = torch.empty((), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""copy_(): expected float4_e2m1fn_x2 tensors to be at least 1D, got 0D""",
+        gpu="""Casting from Float4_e2m1fn_x2 to Float is not supported. torch.float4_e2m1fn_x2 packs two fp4 values per byte, so there is no elementwise conversion. To decode, use .view(torch.uint8) and unpack the nibbles (low 4 bits are the first element, high 4 bits the second); to encode, pack fp4 codes into torch.uint8 and .view(torch.float4_e2m1fn_x2).""",
+    ):
+      dest.copy_(fp4)
+
+  def test_padded_dense_to_jagged_float8_unsupported_scalar(self):
+    dense = torch.empty(
+        (1, 2, 2), dtype=torch.float8_e4m3fn, device=et.device()
+    )
+    offsets = torch.tensor([0, 0], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""padded_dense_to_jagged_forward(): unsupported scalar constant dtype float8_e4m3fn""",
+        gpu=""""dense_to_jagged_gpu_op_forward" not implemented for 'Float8_e4m3fn'""",
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], None)
+      torch.accelerator.synchronize()
 
 
 class IndexReduceErrorTest(et.ErrorTestBase):

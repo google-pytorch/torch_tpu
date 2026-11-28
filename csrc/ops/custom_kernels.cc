@@ -252,7 +252,9 @@ absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
   if (!module->config().use_spmd_partitioning()) {
     return absl::OkStatus();
   }
-  TT_RET_CHECK(pipeline != nullptr, error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers always pass a non-null
+                 // stack-allocated HloPassPipeline.
+      pipeline != nullptr, error::kInternal)
       << "Expected a parent pipeline to be passed as input";
 
   pipeline->AddPass<xla::HloDCE>();
@@ -326,7 +328,8 @@ absl::Status PartitionGlobalToLocal(
 
   mlir::PassManager shardy_pm(context);
   xla::sdy::addSdyRoundTripExportPipeline(shardy_pm);
-  TT_RET_CHECK(mlir::succeeded(shardy_pm.run(module)), error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=MLIR pass error not reachable by user
+      mlir::succeeded(shardy_pm.run(module)), error::kInternal)
       << "Running Shardy MLIR passes failed.";
 
   //////////////////////////////////////////////////////////////////////////////
@@ -396,7 +399,8 @@ absl::Status PartitionGlobalToLocal(
   // HLO's DCE and Inliner passes are unable to do this.
   mlir::PassManager inline_pm(context);
   inline_pm.addPass(mlir::createInlinerPass());
-  TT_RET_CHECK(mlir::succeeded(inline_pm.run(new_module)), error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=MLIR pass error not reachable by user
+      mlir::succeeded(inline_pm.run(new_module)), error::kInternal)
       << "Running inline passes failed.";
 
   // Replace the contents of the original module with the new module.

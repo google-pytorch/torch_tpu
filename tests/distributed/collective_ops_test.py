@@ -1556,14 +1556,14 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
         (
             [0, 0],
             NotImplementedError,
-            r"device_ids in barrier options is not supported, except "
-            r"device_ids=\[0\] which names this process's own device",
+            r"distributed\.barrier\(\): expected device_ids in barrier options"
+            r" to be empty or \[0\], got \[0, 0\]",
         ),
         (
             [0, 1],
             NotImplementedError,
-            r"device_ids in barrier options is not supported, except "
-            r"device_ids=\[0\] which names this process's own device",
+            r"distributed\.barrier\(\): expected device_ids in barrier options"
+            r" to be empty or \[0\], got \[0, 1\]",
         ),
     ):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=just using helper
