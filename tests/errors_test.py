@@ -1373,6 +1373,84 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           a, b, upper=True, left=True, unitriangular=False
       )
 
+  def test_linalg_solve_triangular_non_square_matrix(self):
+    a = torch.ones(3, 4, device=et.device(), dtype=torch.float32)
+    b = torch.ones(3, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, 5, device=et.device(), dtype=torch.float32)
+
+    with self.subTest("functional"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the first argument to be square, got 3 and 4""",
+          gpu="""linalg.solve_triangular: A must be batches of square matrices, but they are 3 by 4 matrices""",
+      ):
+        torch.linalg.solve_triangular(a, b, upper=True)
+
+    with self.subTest("out"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the first argument to be square, got 3 and 4""",
+          gpu="""linalg.solve_triangular: A must be batches of square matrices, but they are 3 by 4 matrices""",
+      ):
+        torch.linalg.solve_triangular(a, b, upper=True, out=out)
+      self.assertEqual(out.shape, (5, 5))
+
+  def test_linalg_solve_triangular_non_broadcastable_batch(self):
+    a = torch.ones(2, 3, 3, device=et.device(), dtype=torch.float32)
+    b = torch.ones(3, 3, 1, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, 5, device=et.device(), dtype=torch.float32)
+
+    with self.subTest("functional"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): the size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+          gpu="""The size of tensor a (3) must match the size of tensor b (2) at non-singleton dimension 0""",
+      ):
+        torch.linalg.solve_triangular(a, b, upper=True)
+
+    with self.subTest("out"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): the size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+          gpu="""The size of tensor a (3) must match the size of tensor b (2) at non-singleton dimension 0""",
+      ):
+        torch.linalg.solve_triangular(a, b, upper=True, out=out)
+      self.assertEqual(out.shape, (5, 5))
+
+  def test_linalg_solve_triangular_out_on_cpu(self):
+    a = torch.eye(3, device=et.device(), dtype=torch.float32)
+    b = torch.ones(3, 1, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, 1, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_triangular(): expected output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_out_linalg_solve_triangular_out)""",
+    ):
+      torch.linalg.solve_triangular(a, b, upper=True, out=out)
+
+  def test_linalg_solve_triangular_input_dtype_mismatch_out(self):
+    a = torch.eye(3, device=et.device(), dtype=torch.float32)
+    with self.subTest("float32_vs_float64"):
+      b_f64 = torch.ones(3, 1, device=et.device(), dtype=torch.float64)
+      out_f64 = torch.empty(3, 1, device=et.device(), dtype=torch.float64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the two inputs to have the same dtype, got float32 and float64""",
+          gpu="""expected scalar type Float but found Double""",
+      ):
+        torch.linalg.solve_triangular(a, b_f64, upper=True, out=out_f64)
+
+    with self.subTest("float32_vs_int32"):
+      b_i32 = torch.ones(3, 1, device=et.device(), dtype=torch.int32)
+      out_i32 = torch.empty(3, 1, device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_solve_triangular(): expected the two inputs to have the same dtype, got float32 and int32""",
+          gpu="""expected scalar type Float but found Int""",
+      ):
+        torch.linalg.solve_triangular(a, b_i32, upper=True, out=out_i32)
+
   def test_eq__for_scalar_with_integral_dtype(self):
     """Tests that eq_ with an integral dtype (e.g. uint8) doesn't fail."""
     t1 = torch.tensor(2, device=et.device(), dtype=torch.uint8)

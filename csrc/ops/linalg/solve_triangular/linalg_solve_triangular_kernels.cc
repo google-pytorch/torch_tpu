@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -30,11 +31,12 @@
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -52,12 +54,19 @@ namespace torch_tpu {
 
 namespace {
 
-absl::Status ValidateDimensions(const at::Tensor& a, const at::Tensor& b,
-                                bool left) {
+// Validates input shapes and dtypes for `linalg.solve_triangular` and returns
+// the broadcasted output shape `(*broadcasted_batch_dims, b.size(-2),
+// b.size(-1))`.
+absl::StatusOr<Dimensions> ValidateInputsAndComputeOutShape(const at::Tensor& a,
+                                                            const at::Tensor& b,
+                                                            bool left) {
   // Solving A * X = B if left == true, X * A = B if left == false.
   TT_RET_CHECK(a.dim() >= 2, error::kInvalidArgument)
       << "expected the first argument to have at least 2 dimensions, got "
       << a.dim();
+  TT_RET_CHECK(a.size(-2) == a.size(-1), error::kInvalidArgument)
+      << "expected the first argument to be square, got " << a.size(-2)
+      << " and " << a.size(-1);
   TT_RET_CHECK(b.dim() == a.dim(), error::kInvalidArgument)
       << "expected the two inputs to have the same number of dimensions, got "
       << a.dim() << " and " << b.dim();
@@ -69,7 +78,21 @@ absl::Status ValidateDimensions(const at::Tensor& a, const at::Tensor& b,
       << "expected the two inputs to have matching second to last dimension "
          "(left == True means we are solving A * X = B), got "
       << a.size(-2) << " and " << b.size(-2);
-  return absl::OkStatus();
+  TT_ASSIGN_OR_RETURN(Dimensions out_dims,
+                      InferSize(a.sizes().slice(0, a.dim() - 2),
+                                b.sizes().slice(0, b.dim() - 2)));
+  out_dims.push_back(b.size(-2));
+  out_dims.push_back(b.size(-1));
+
+  const at::ScalarType dtype = a.scalar_type();
+  TT_RET_CHECK(b.scalar_type() == dtype, error::kInvalidArgument)
+      << "expected the two inputs to have the same dtype, got "
+      << ToString(dtype) << " and " << ToString(b.scalar_type());
+  TT_RET_CHECK(dtype == at::kFloat || dtype == at::kDouble ||
+                   dtype == at::kComplexFloat || dtype == at::kComplexDouble,
+               error::kInvalidArgument)
+      << "triangular solve not supported for dtype " << ToString(dtype);
+  return out_dims;
 }
 
 // Builds a `stablehlo.triangular_solve` that also supports bounded dynamic
@@ -228,29 +251,23 @@ at::Tensor& AtenLinalgSolveTriangularOut(const at::Tensor& a,
   TT_KERNEL(
       OpName::kLinalgSolveTriangularOut, param_keys,
       (a, b, upper, left, unitriangular, out), {
-        TT_THROW_IF_ERROR(ValidateDimensions(a, b, left));
-        TT_CHECK_THROW(a.scalar_type() != c10::ScalarType::BFloat16 &&
-                           a.scalar_type() != c10::ScalarType::Half &&
-                           !IsIntegral(a),
-                       error::kInvalidArgument)
-            << "triangular solve not supported for dtype "
-            << ToString(a.scalar_type());
-
-        at::ScalarType out_scalar_type =
-            c10::promoteTypes(a.scalar_type(), b.scalar_type());
-
-        TT_THROW_IF_ERROR(ValidateOutDtype(out, out_scalar_type,
+        TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+            << "expected output tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got "
+            << ToString(out.device());
+        TT_ASSIGN_OR_THROW(const Dimensions out_dims,
+                           ValidateInputsAndComputeOutShape(a, b, left));
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, a.scalar_type(),
                                            /*allow_out_dtype_cast=*/false));
-
-        TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                           ConvertTo<mlir::ElementType>(out_scalar_type));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
+                           ConvertTo<mlir::ElementType>(a.scalar_type()));
 
         TT_THROW_IF_ERROR(DispatchOpOut<2>(
             LinalgSolveTriangularBuilder(
                 {.upper = upper, .left = left, .unitriangular = unitriangular}),
             {a, b}, out,
             {.out_dtype = out_dtype,
-             .out_dims = CopyIntVector(b.sizes()),
+             .out_dims = out_dims,
              .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
@@ -262,19 +279,10 @@ at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a, const at::Tensor& b,
   TT_KERNEL(
       OpName::kLinalgSolveTriangular, param_keys,
       (a, b, upper, left, unitriangular), {
-        TT_THROW_IF_ERROR(ValidateDimensions(a, b, left));
-        TT_CHECK_THROW(a.scalar_type() != c10::ScalarType::BFloat16 &&
-                           a.scalar_type() != c10::ScalarType::Half &&
-                           !IsIntegral(a),
-                       error::kInvalidArgument)
-            << "triangular solve not supported for dtype "
-            << ToString(a.scalar_type());
-
-        at::ScalarType out_scalar_type =
-            c10::promoteTypes(a.scalar_type(), b.scalar_type());
-
-        TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
-                           ConvertTo<mlir::ElementType>(out_scalar_type));
+        TT_ASSIGN_OR_THROW(const Dimensions out_dims,
+                           ValidateInputsAndComputeOutShape(a, b, left));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
+                           ConvertTo<mlir::ElementType>(a.scalar_type()));
 
         TT_ASSIGN_OR_THROW(
             auto result_buffer,
@@ -284,7 +292,7 @@ at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a, const at::Tensor& b,
                                               .unitriangular = unitriangular}),
                 {a, b},
                 {.out_dtype = out_dtype,
-                 .out_dims = CopyIntVector(b.sizes()),
+                 .out_dims = out_dims,
                  .op_param_cache_keys = std::move(param_keys)}));
         return MakeTensor(std::move(result_buffer));
       });
