@@ -222,8 +222,6 @@ UNREGISTERED_OPS = frozenset([
     'histogram.bins_tensor_out',
     'hspmm',
     'hspmm.out',
-    'huber_loss',
-    'huber_loss.out',
     'huber_loss_backward.out',
     'hypot.out',
     'i0.out',

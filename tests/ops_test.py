@@ -3992,6 +3992,13 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=INTEGRAL_DTYPES,
     )
 
+  def test_nn_functional_huber_loss(self):
+    self.do_test_op(
+        "nn.functional.huber_loss",
+        # TODO: Enable check_grad=True once huber_loss_backward is implemented.
+        check_grad=False,
+    )
+
   def test_nn_functional_mse_loss(self):
     self.do_test_op(
         "nn.functional.mse_loss",
