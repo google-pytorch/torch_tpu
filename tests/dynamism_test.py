@@ -1945,6 +1945,16 @@ class DynamismTest(seed_test_utils.RepeatableTest):
           expected_dynamic_dims=(1, 2),
       ),
       dict(
+          testcase_name="both_rows_single_feature_p2",
+          p=2.0,
+          x1_shape=(2, 4, 1),
+          x2_shape=(2, 6, 1),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_dynamic_dims=(1, 2),
+          compute_mode="donot_use_mm_for_euclid_dist",
+      ),
+      dict(
           testcase_name="broadcast_batch_p1",
           p=1.0,
           x1_shape=(4, 3),
@@ -1988,6 +1998,194 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     )
     for info in act_dynamism_info:
       self.assertEqual(info.upper_bound, upper_bound)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="x1_rows_p2",
+          p=2.0,
+          x1_shape=(4, 5),
+          x2_shape=(3, 5),
+          x1_dynamic_dim=0,
+          x2_dynamic_dim=None,
+          expected_x1_grad_dynamic_dims=(0,),
+      ),
+      dict(
+          testcase_name="x2_rows_p2",
+          p=2.0,
+          x1_shape=(4, 5),
+          x2_shape=(3, 5),
+          x1_dynamic_dim=None,
+          x2_dynamic_dim=0,
+          expected_x1_grad_dynamic_dims=(),
+      ),
+      dict(
+          testcase_name="both_rows_p0",
+          p=0.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_x1_grad_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="both_rows_p1",
+          p=1.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_x1_grad_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="both_rows_pinf",
+          p=float("inf"),
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_x1_grad_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="both_rows_p05",
+          p=0.5,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_x1_grad_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="both_rows_p3",
+          p=3.0,
+          x1_shape=(2, 4, 3),
+          x2_shape=(2, 6, 3),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_x1_grad_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="feature_dim_p0",
+          p=0.0,
+          x1_shape=(4, 5),
+          x2_shape=(3, 5),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_x1_grad_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="feature_dim_p2",
+          p=2.0,
+          x1_shape=(4, 5),
+          x2_shape=(3, 5),
+          x1_dynamic_dim=1,
+          x2_dynamic_dim=1,
+          expected_x1_grad_dynamic_dims=(1,),
+      ),
+      dict(
+          testcase_name="broadcast_batch_p2",
+          p=2.0,
+          x1_shape=(4, 3),
+          x2_shape=(5, 6, 3),
+          x1_dynamic_dim=None,
+          x2_dynamic_dim=0,
+          expected_x1_grad_dynamic_dims=(0,),
+      ),
+      dict(
+          testcase_name="singleton_batch_x2_dynamic_p2",
+          p=2.0,
+          x1_shape=(1, 4, 3),
+          x2_shape=(5, 6, 3),
+          x1_dynamic_dim=None,
+          x2_dynamic_dim=0,
+          expected_x1_grad_dynamic_dims=(0,),
+      ),
+      dict(
+          testcase_name="singleton_batch_x1_dynamic_p2",
+          p=2.0,
+          x1_shape=(5, 4, 3),
+          x2_shape=(1, 6, 3),
+          x1_dynamic_dim=0,
+          x2_dynamic_dim=None,
+          expected_x1_grad_dynamic_dims=(0,),
+      ),
+  )
+  def test_cdist_backward_dynamic_input(
+      self,
+      p: float,
+      x1_shape: tuple[int, ...],
+      x2_shape: tuple[int, ...],
+      x1_dynamic_dim: int | None,
+      x2_dynamic_dim: int | None,
+      expected_x1_grad_dynamic_dims: tuple[int, ...],
+  ) -> None:
+    upper_bound = 10
+    tol = 1e-4
+
+    def mark_dynamic(x1: torch.Tensor, x2: torch.Tensor) -> None:
+      if x1_dynamic_dim is not None:
+        dynamism.mark_dynamic(x1, x1_dynamic_dim, 2, upper_bound)
+      if x2_dynamic_dim is not None:
+        dynamism.mark_dynamic(x2, x2_dynamic_dim, 2, upper_bound)
+
+    def cdist_grad_fn(x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+      # Exercise _cdist_forward and _cdist_backward directly; derive a
+      # non-uniform grad_out from cdist so it inherits all dynamic dimensions
+      # (including 2 dynamic dims when both x1 and x2 rows are dynamic).
+      cdist = torch.cdist(
+          x1, x2, p=p, compute_mode="donot_use_mm_for_euclid_dist"
+      )
+      grad_out = torch.sin(cdist) + 0.5
+      return torch.ops.aten._cdist_backward(grad_out, x1, x2, p, cdist)
+
+    x1 = torch.randn(x1_shape, dtype=torch.float32)
+    x2 = torch.randn(x2_shape, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(
+        cdist_grad_fn, mark_dynamic, x1, x2, rtol=tol, atol=tol
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertEqual(
+        [info.dimension for info in act_dynamism_info],
+        list(expected_x1_grad_dynamic_dims),
+    )
+    for info in act_dynamism_info:
+      self.assertEqual(info.upper_bound, upper_bound)
+
+  def test_cdist_multi_dynamic_dims_single_input(self) -> None:
+    """Tests cdist forward and backward when x1 itself has 2 dynamic dims."""
+    upper_bound = 10
+    tol = 1e-4
+
+    def mark_dynamic(
+        a: torch.Tensor, b: torch.Tensor, x2: torch.Tensor
+    ) -> None:
+      dynamism.mark_dynamic(a, 0, 2, upper_bound)
+      dynamism.mark_dynamic(b, 1, 2, upper_bound)
+      dynamism.mark_dynamic(x2, 0, 2, upper_bound)
+
+    def cdist_fn(
+        a: torch.Tensor, b: torch.Tensor, x2: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+      # Combine a (B?, 1, C) and b (1, R1?, C) so x1 carries 2 bounded dynamic
+      # dims (dims 0 and 1).
+      x1 = a + b
+      cdist = torch.cdist(
+          x1, x2, p=2.0, compute_mode="donot_use_mm_for_euclid_dist"
+      )
+      grad_out = torch.sin(cdist) + 0.5
+      grad_x1 = torch.ops.aten._cdist_backward(grad_out, x1, x2, 2.0, cdist)
+      return cdist, grad_x1
+
+    a = torch.randn((3, 1, 5), dtype=torch.float32)
+    b = torch.randn((1, 4, 5), dtype=torch.float32)
+    x2 = torch.randn((3, 6, 5), dtype=torch.float32)
+    act_cdist, act_grad_x1 = self._run_bounded_dynamism_test(
+        cdist_fn, mark_dynamic, a, b, x2, rtol=tol, atol=tol
+    )
+    for act in (act_cdist, act_grad_x1):
+      info = dynamism.get_dynamism_info(act)
+      self.assertEqual([d.dimension for d in info], [0, 1])
+      for d in info:
+        self.assertEqual(d.upper_bound, upper_bound)
 
   # Each entry of `dynamic_dims` is `(tensor_index, dim, upper_bound)`, where
   # tensor 0 is `data` and tensor 1 is `lengths` or `offsets`. Zero lengths

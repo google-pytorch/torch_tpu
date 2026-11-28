@@ -2308,6 +2308,25 @@ TEST(OpBuilderUtils, Squeeze_PreservesBoundedDynamism) {
   EXPECT_TRUE(dims[1].boundOp.has_value());
 }
 
+TEST(OpBuilderUtils, Squeeze_PreservesMultipleBoundedDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 6, 1}, /*bound_dims=*/{0, 1});
+
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp squeezed, Squeeze(input, {2}));
+  mlir::func::Return(fb, squeezed);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+  EXPECT_TRUE(
+      squeezed.getValue().getDefiningOp<mlir::stablehlo::DynamicReshapeOp>())
+      << DebugString(module.get());
+  EXPECT_THAT(GetStaticShape(squeezed), ElementsAre(8, 6));
+  EXPECT_THAT(GetBoundedDims(squeezed), ElementsAre(0, 1));
+}
+
 // A convolution of operands and result with configurable dimension numbers and
 // optional result_dims. Operand shapes are the bounds of their bounded
 // dimensions.
