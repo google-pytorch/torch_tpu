@@ -17,7 +17,6 @@
 #include "csrc/ops/unary.h"
 
 #include <array>
-#include <cstdint>
 #include <numbers>
 
 #include "absl/functional/function_ref.h"
@@ -44,8 +43,9 @@ namespace stablehlo = mlir::stablehlo;
 
 namespace {
 
-absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
-                                  mlir::ElementType default_dtype) {
+absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op,
+                                  const double inv_ln_base,
+                                  const mlir::ElementType default_dtype) {
   // Similarly to CUDA, Half and BFloat16 inputs are promoted to Float for
   // the actual mathematical computation.
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
@@ -58,11 +58,23 @@ absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
 
   mlir::MlirBuilder& builder = input_op.getBuilder();
 
-  // Defined as LogN(x) = log(x) / log(N):
+  // Defined as log_N(x) = log(x) * (1 / ln(N)).
   mlir::MlirOp log_op = stablehlo::Log(computation_input_op);
-  mlir::MlirOp value_n = MakeScalarConstant(builder, n, computation_type);
-  mlir::MlirOp log_of_n = stablehlo::Log(value_n);
-  mlir::MlirOp result_op = mlir::chlo::BroadcastDiv(log_op, log_of_n);
+  const mlir::ElementType real_type = RealComponentOf(computation_type);
+  mlir::MlirOp scale = MakeScalarConstant(builder, inv_ln_base, real_type);
+  mlir::MlirOp result_op;
+  if (IsComplexType(GetTensorTypeOrDie(log_op))) {
+    // Scale real and imaginary components independently by the real scalar
+    // 1 / ln(N). Complex division (a + bi) / (ln(N) + 0i) evaluates
+    // (±inf * 0) = NaN when Re(log(z)) = ±inf (e.g., at ±0+0j and ±inf+0j).
+    mlir::MlirOp log_real = stablehlo::Real(log_op);
+    mlir::MlirOp log_imag = stablehlo::Imag(log_op);
+    mlir::MlirOp real_part = mlir::chlo::BroadcastMul(log_real, scale);
+    mlir::MlirOp imag_part = mlir::chlo::BroadcastMul(log_imag, scale);
+    result_op = stablehlo::Complex(real_part, imag_part);
+  } else {
+    result_op = mlir::chlo::BroadcastMul(log_op, scale);
+  }
 
   return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
 }
@@ -361,12 +373,12 @@ absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(
 
 absl::StatusOr<mlir::MlirOp> BuildLog2Shlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
-  return LogN(input_op, 2, default_mlir_type);
+  return LogN(input_op, std::numbers::log2e, default_mlir_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLog10Shlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
-  return LogN(input_op, 10, default_mlir_type);
+  return LogN(input_op, std::numbers::log10e, default_mlir_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildSignShlo(mlir::MlirOp input) {

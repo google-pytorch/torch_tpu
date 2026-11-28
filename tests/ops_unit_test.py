@@ -31590,6 +31590,118 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         base_tpu.cpu(), torch.tensor([0.0, 0.0, 1.0, 4.0, 0.0, 0.0])
     )
 
+  @parameterized.named_parameters(
+      (
+          "log2_complex64",
+          torch.log2,
+          torch._foreach_log2,
+          torch.complex64,
+      ),
+      (
+          "log2_complex128",
+          torch.log2,
+          torch._foreach_log2,
+          torch.complex128,
+      ),
+      (
+          "log10_complex64",
+          torch.log10,
+          torch._foreach_log10,
+          torch.complex64,
+      ),
+      (
+          "log10_complex128",
+          torch.log10,
+          torch._foreach_log10,
+          torch.complex128,
+      ),
+  )
+  def test_log_n_complex_edge_cases(
+      self,
+      op_fn: Callable[..., torch.Tensor],
+      foreach_fn: Callable[[Sequence[torch.Tensor]], Sequence[torch.Tensor]],
+      dtype: torch.dtype,
+  ):
+    inf = float("inf")
+    nan = float("nan")
+    real_dtype = torch.float32 if dtype == torch.complex64 else torch.float64
+    pairs = [
+        (0.0, 0.0),
+        (-0.0, 0.0),
+        (0.0, -0.0),
+        (-0.0, -0.0),
+        (inf, 0.0),
+        (-inf, 0.0),
+        (inf, -0.0),
+        (-inf, -0.0),
+        (0.0, inf),
+        (-0.0, inf),
+        (0.0, -inf),
+        (-0.0, -inf),
+        (inf, inf),
+        (-inf, inf),
+        (inf, -inf),
+        (-inf, -inf),
+        (nan, 0.0),
+        (0.0, nan),
+        (nan, nan),
+        (1.0, 0.0),
+        (2.0, 0.0),
+        (-1.0, 0.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+        (-2.0, -3.0),
+        (10.0, 0.0),
+    ]
+    re = torch.tensor([p[0] for p in pairs], dtype=real_dtype)
+    im = torch.tensor([p[1] for p in pairs], dtype=real_dtype)
+    z_cpu = torch.complex(re, im)
+    z_tpu = z_cpu.to("tpu")
+    expected = op_fn(z_cpu)
+    rtol, atol = (1e-4, 1e-4) if dtype == torch.complex64 else (1e-12, 1e-12)
+    # libtpu < 0.0.51 lowers float64 log(+inf) to NaN via XLA's legacy Cephes
+    # path, which corrupts Re(log(z)) on infinite complex128 inputs (fixed in
+    # libtpu >= 0.0.51). Im(log_N(z)) and all non-infinite Re(log_N(z)) values
+    # are still checked on older libtpu.
+    skip_posinf_real = (
+        dtype == torch.complex128
+        and oss_utils.is_oss()
+        and (ver := utils.libtpu_version()) is not None
+        and ver < (0, 0, 51)
+    )
+
+    # Compare real and imaginary parts separately so ±inf real parts do not
+    # produce (-inf) - (-inf) = NaN when checking 1-ULP imaginary differences.
+    def check(actual: torch.Tensor):
+      actual_cpu = actual.cpu()
+      self.assertEqual(actual_cpu.dtype, dtype)
+      if skip_posinf_real:
+        mask = ~torch.isposinf(expected.real)
+        utils.assert_close(
+            actual=actual_cpu.real[mask],
+            expected=expected.real[mask],
+            rtol=rtol,
+            atol=atol,
+        )
+      else:
+        utils.assert_close(
+            actual=actual_cpu.real, expected=expected.real, rtol=rtol, atol=atol
+        )
+      utils.assert_close(
+          actual=actual_cpu.imag, expected=expected.imag, rtol=rtol, atol=atol
+      )
+
+    check(op_fn(z_tpu))
+
+    out_tpu = torch.empty_like(z_tpu)
+    op_fn(z_tpu, out=out_tpu)
+    check(out_tpu)
+
+    check(foreach_fn([z_tpu])[0])
+
+    compiled_fn = torch.compile(op_fn, backend="tpu", fullgraph=True)
+    check(compiled_fn(z_tpu))
+
 
 if __name__ == "__main__":
   absltest.main()
