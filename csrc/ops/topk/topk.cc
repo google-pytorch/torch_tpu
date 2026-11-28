@@ -24,6 +24,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "csrc/ops/sort/sort.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
@@ -58,6 +59,22 @@ absl::StatusOr<TopKOutputs> BuildTopKShlo(
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   const int64_t rank = input_type.getRank();
   TT_ASSIGN_OR_RETURN(const int64_t canonical_dim, SafeWrapDim(dim, rank));
+  const bool is_stable = topk_stable_mode == TopKStableMode::kStable;
+
+  if (!input_type.hasStaticShape()) {
+    // chlo::TopK legalizes dynamic shapes via DynamicIotaOp (dropping
+    // #stablehlo.bounds) and RealDynamicSliceOp, which XLA DynamicPadder does
+    // not support. Lower bounded dynamic inputs via BuildSortShlo + Slice.
+    const SortShloOutputs sorted =
+        BuildSortShlo(input_op, is_stable, canonical_dim,
+                      /*descending=*/topk_mode == TopKMode::kLargest);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp topk_values,
+                        SlicePrefixAlongDim(sorted.values, canonical_dim, k));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp topk_indices,
+                        SlicePrefixAlongDim(sorted.indices, canonical_dim, k));
+    return TopKOutputs{.values = topk_values, .indices = topk_indices};
+  }
+
   const bool need_transpose = (canonical_dim != rank - 1);
 
   // Construct permutation vector to swap canonical_dim with rank - 1.
@@ -81,8 +98,7 @@ absl::StatusOr<TopKOutputs> BuildTopKShlo(
   // so the default preserves the historical unstable-sort tie-selection
   // semantics. See github.com/google-pytorch/torch_tpu/issues/3392.
   llvm::SmallVector<mlir::MlirOp, 2> outputs =
-      chlo::TopK(sort_input, static_cast<uint64_t>(k),
-                 /*is_stable=*/topk_stable_mode == TopKStableMode::kStable);
+      chlo::TopK(sort_input, static_cast<uint64_t>(k), is_stable);
   mlir::MlirOp topk_values = outputs[0];
   mlir::MlirOp topk_indices = outputs[1];
 

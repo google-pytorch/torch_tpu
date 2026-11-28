@@ -15,6 +15,7 @@
 #include "csrc/ops/isin/isin_aten_kernels.h"
 
 #include <cstdint>
+#include <numeric>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -26,6 +27,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -38,22 +40,10 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
-namespace {
-
-// Specifies whether elements are assumed to be unique to optimize search.
-enum class IsUnique {
-  kNo,
-  kYes,
-};
-
-// Specifies whether matches should be inverted in the final predicate output.
-enum class IsInverted {
-  kNo,
-  kYes,
-};
 
 absl::StatusOr<mlir::MlirOp> BuildIsInShlo(mlir::MlirOp elements,
                                            mlir::MlirOp test_elements,
@@ -70,64 +60,66 @@ absl::StatusOr<mlir::MlirOp> BuildIsInShlo(mlir::MlirOp elements,
   // TODO: for now we ignore assume_unique. In principle, taking that into
   // account can speed up the computation.
 
-  // The algorithm below is based on the SHLO expansion of jnp.isin, for
-  // instance:
-  //
-  // def foo():
-  //   elements = jnp.array([[1, 2.2], [3, 4]])
-  //   test_elements = jnp.array([2, 3, 7])
-  //   return jnp.isin(elements, test_elements, assume_unique=False,
-  //   invert=False)
-  //
-  // print(jax.jit(foo).lower()._lowering.stablehlo())
-
-  const mlir::RankedTensorType elements_type = GetTensorTypeOrDie(elements);
+  // Broadcast `elements` (shape [D_0, ..., D_{R-1}]) and `test_elements`
+  // (shape [T_0, ..., T_{K-1}]) to [D_0, ..., D_{R-1}, T_0, ..., T_{K-1}],
+  // compare pairwise for equality, and OR-reduce over the trailing K dims.
+  // Keeping `elements` unflattened preserves multiple bounded dynamic
+  // dimensions without hitting `stablehlo.reshape` dynamic-dim limits.
   const mlir::RankedTensorType test_elements_type =
       GetTensorTypeOrDie(test_elements);
+  if (test_elements_type.hasStaticShape() && test_elements_type.getRank() > 1) {
+    test_elements = Flatten(test_elements);
+  }
 
-  TT_ASSIGN_OR_RETURN(const int64_t num_elements,
-                      NumElements(elements_type.getShape()));
-  TT_ASSIGN_OR_RETURN(const int64_t num_test_elements,
-                      NumElements(test_elements_type.getShape()));
+  const mlir::stablehlo::Dimensions elements_dims = GetDimensions(elements);
+  const mlir::stablehlo::Dimensions test_elements_dims =
+      GetDimensions(test_elements);
+  const int64_t elements_rank = elements_dims.size();
+  const int64_t test_elements_rank = test_elements_dims.size();
 
-  auto elements_flat = mlir::stablehlo::Reshape(elements, {num_elements});
-  auto test_elements_flat =
-      mlir::stablehlo::Reshape(test_elements, {num_test_elements});
+  mlir::stablehlo::Dimensions target_dims;
+  target_dims.reserve(elements_rank + test_elements_rank);
+  target_dims.append(elements_dims.begin(), elements_dims.end());
+  target_dims.append(test_elements_dims.begin(), test_elements_dims.end());
 
-  TT_ASSIGN_OR_RETURN(auto elements_bcast,
-                      Broadcast(elements_flat, {num_elements, 1}, {0}));
+  const Dimensions elements_bcast_dims = GetAllDimensions(elements);
+  Dimensions test_elements_bcast_dims(test_elements_rank);
+  std::iota(test_elements_bcast_dims.begin(), test_elements_bcast_dims.end(),
+            elements_rank);
+
   TT_ASSIGN_OR_RETURN(
-      auto test_elements_bcast,
-      Broadcast(test_elements_flat, {1, num_test_elements}, {1}));
-
+      mlir::MlirOp elements_bcast,
+      BroadcastIfNeeded(elements, target_dims, elements_bcast_dims));
   TT_ASSIGN_OR_RETURN(
-      elements_bcast,
-      Broadcast(elements_bcast, {num_elements, num_test_elements}, {0, 1}));
-  TT_ASSIGN_OR_RETURN(test_elements_bcast,
-                      Broadcast(test_elements_bcast,
-                                {num_elements, num_test_elements}, {0, 1}));
+      mlir::MlirOp test_elements_bcast,
+      BroadcastIfNeeded(test_elements, target_dims, test_elements_bcast_dims));
 
-  auto cmp = mlir::stablehlo::Compare(elements_bcast, test_elements_bcast,
-                                      mlir::stablehlo::ComparisonDirection::EQ);
-  auto init = MakeScalarConstant(builder, false, mlir::ElementType::PRED);
+  mlir::MlirOp cmp =
+      mlir::stablehlo::Compare(elements_bcast, test_elements_bcast,
+                               mlir::stablehlo::ComparisonDirection::EQ);
 
-  const mlir::RankedTensorType cmp_type = GetTensorTypeOrDie(cmp);
-
-  auto reduce_builder =
-      [dtype = cmp_type.getElementType()](mlir::RegionBuilder& rb) {
-        mlir::stablehlo::buildReduceBody<mlir::stablehlo::OrOp>(
-            dtype, rb.getRegion(), rb.getOpBuilder());
-      };
-
-  auto res =
-      mlir::stablehlo::Reduce(builder, cmp, init, reduce_builder, {1})[0];
+  mlir::MlirOp res = cmp;
+  if (test_elements_rank > 0) {
+    mlir::MlirOp init =
+        MakeScalarConstant(builder, false, mlir::ElementType::PRED);
+    const mlir::RankedTensorType cmp_type = GetTensorTypeOrDie(cmp);
+    auto reduce_builder =
+        [dtype = cmp_type.getElementType()](mlir::RegionBuilder& rb) {
+          mlir::stablehlo::buildReduceBody<mlir::stablehlo::OrOp>(
+              dtype, rb.getRegion(), rb.getOpBuilder());
+        };
+    res = mlir::stablehlo::Reduce(builder, cmp, init, reduce_builder,
+                                  test_elements_bcast_dims)[0];
+  }
 
   if (inversion == IsInverted::kYes) {
     res = mlir::stablehlo::Not(res);
   }
 
-  return mlir::stablehlo::Reshape(res, elements_type.getShape());
+  return res;
 }
+
+namespace {
 
 IsUnique ToIsUnique(bool assume_unique) {
   return assume_unique ? IsUnique::kYes : IsUnique::kNo;

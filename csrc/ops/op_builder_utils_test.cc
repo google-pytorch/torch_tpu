@@ -2922,5 +2922,84 @@ TEST(InferBroadcastDimensions, RejectsMixedStaticAndBoundedDim) {
           HasSubstr("cannot mix bounded and static dimensions in broadcast")));
 }
 
+TEST(SlicePrefixAlongDim, StaticInput) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 6}, {});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp sliced,
+                          SlicePrefixAlongDim(input, /*dim=*/1, /*k=*/3));
+  mlir::func::Return(fb, sliced);
+
+  const mlir::RankedTensorType result_type = GetTensorTypeOrDie(sliced);
+  EXPECT_TRUE(result_type.hasStaticShape());
+  EXPECT_THAT(result_type.getShape(), ElementsAre(4, 3));
+}
+
+TEST(SlicePrefixAlongDim, BoundedSliceDimBecomesStatic) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {4, 10}, {1});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp sliced,
+                          SlicePrefixAlongDim(input, /*dim=*/1, /*k=*/3));
+  mlir::func::Return(fb, sliced);
+
+  const mlir::RankedTensorType result_type = GetTensorTypeOrDie(sliced);
+  EXPECT_TRUE(result_type.hasStaticShape());
+  EXPECT_THAT(result_type.getShape(), ElementsAre(4, 3));
+}
+
+TEST(SlicePrefixAlongDim, PreservesBoundedNonSliceDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 6}, {0});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp sliced,
+                          SlicePrefixAlongDim(input, /*dim=*/1, /*k=*/2));
+  mlir::func::Return(fb, sliced);
+
+  const mlir::stablehlo::Dimensions result_dims = GetDimensions(sliced);
+  ASSERT_EQ(result_dims.size(), 2);
+  EXPECT_EQ(result_dims[0].size, 8);
+  EXPECT_TRUE(result_dims[0].boundOp.has_value());
+  EXPECT_EQ(result_dims[1].size, 2);
+  EXPECT_FALSE(result_dims[1].boundOp.has_value());
+}
+
+TEST(SlicePrefixAlongDim, MultiBoundedDimsAndZeroK) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 10}, {0, 1});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp sliced,
+                          SlicePrefixAlongDim(input, /*dim=*/1, /*k=*/0));
+  mlir::func::Return(fb, sliced);
+
+  const mlir::stablehlo::Dimensions result_dims = GetDimensions(sliced);
+  ASSERT_EQ(result_dims.size(), 2);
+  EXPECT_EQ(result_dims[0].size, 8);
+  EXPECT_TRUE(result_dims[0].boundOp.has_value());
+  EXPECT_EQ(result_dims[1].size, 0);
+  EXPECT_FALSE(result_dims[1].boundOp.has_value());
+}
+
+TEST(SlicePrefixAlongDim, RejectsInvalidDimAndK) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp input = MakeBoundedArg(fb, {8, 6}, {0});
+  mlir::func::Return(fb, input);
+
+  EXPECT_THAT(SlicePrefixAlongDim(input, /*dim=*/-1, /*k=*/2),
+              StatusIs(error::kInvalidArgument));
+  EXPECT_THAT(SlicePrefixAlongDim(input, /*dim=*/2, /*k=*/2),
+              StatusIs(error::kInvalidArgument));
+  EXPECT_THAT(SlicePrefixAlongDim(input, /*dim=*/1, /*k=*/-1),
+              StatusIs(error::kInvalidArgument));
+  EXPECT_THAT(SlicePrefixAlongDim(input, /*dim=*/1, /*k=*/7),
+              StatusIs(error::kInvalidArgument));
+}
+
 }  // namespace
 }  // namespace torch_tpu

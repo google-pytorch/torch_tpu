@@ -30,8 +30,6 @@
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
-#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -53,7 +51,6 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -886,6 +883,14 @@ mlir::MlirOp BuildFillUninitialized(mlir::MlirBuilder& builder,
 absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
                                              int64_t left_pad,
                                              int64_t right_pad);
+
+// Slices `[0, k)` along `dim`, producing exact static size `k` along `dim`.
+//
+// Supports both static and bounded dynamic inputs. All bounded dynamic
+// dimensions other than `dim` are preserved on the output; `dim` becomes
+// static with size `k`.
+absl::StatusOr<mlir::MlirOp> SlicePrefixAlongDim(mlir::MlirOp op, int64_t dim,
+                                                 int64_t k);
 
 // Returns a vector containing all dimensions of the given MlirOp.
 Dimensions GetAllDimensions(mlir::MlirOp op);

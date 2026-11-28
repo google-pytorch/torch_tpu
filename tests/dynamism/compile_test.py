@@ -694,6 +694,56 @@ class CompileTest(seed_test_utils.RepeatableTest):
     expected = torch.full((2, 3), 4.0, device="cpu")
     utils.assert_close(out.cpu(), expected)
 
+  @parameterized.product(invert=[False, True])
+  def test_isin_multi_dynamic_dims(self, invert: bool):
+    # Cast bool output to int32 to avoid XLA TPU tile layout verification
+    # issues on multi-dim bounded 1-byte outputs while exercising multi-dim
+    # bounded `isin` lowering and reduction.
+    def fn(elements, test_elements):
+      return torch.isin(elements, test_elements, invert=invert).to(torch.int32)
+
+    compiled = torch.compile(fn, backend="tpu")
+    for rows, cols, t_rows in ((3, 4, 2), (5, 3, 4)):
+      elements_cpu = torch.arange(rows * cols, dtype=torch.int32).reshape(
+          rows, cols
+      )
+      test_elements_cpu = torch.arange(
+          1, 1 + t_rows * 2, dtype=torch.int32
+      ).reshape(t_rows, 2)
+      expected = fn(elements_cpu, test_elements_cpu)
+
+      elements_tpu = elements_cpu.to(self.device)
+      test_elements_tpu = test_elements_cpu.to(self.device)
+      torch._dynamo.mark_dynamic(elements_tpu, 0, min=2, max=16)
+      torch._dynamo.mark_dynamic(elements_tpu, 1, min=2, max=16)
+      torch._dynamo.mark_dynamic(test_elements_tpu, 0, min=2, max=16)
+      utils.assert_close(
+          compiled(elements_tpu, test_elements_tpu).to("cpu"), expected
+      )
+
+  @parameterized.product(
+      dim=[0, 1],
+      k=[1, 2],
+      largest=[True, False],
+  )
+  def test_topk_multi_dynamic_dims(self, dim: int, k: int, largest: bool):
+    def fn(x):
+      return torch.topk(x, k=k, dim=dim, largest=largest, sorted=True)
+
+    compiled = torch.compile(fn, backend="tpu")
+    for rows, cols in ((3, 4), (5, 3)):
+      x_cpu = torch.linspace(
+          -5.0, 5.0, rows * cols, dtype=torch.float32
+      ).reshape(rows, cols)
+      expected_vals, expected_idxs = fn(x_cpu)
+
+      x_tpu = x_cpu.to(self.device)
+      torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=16)
+      torch._dynamo.mark_dynamic(x_tpu, 1, min=2, max=16)
+      actual_vals, actual_idxs = compiled(x_tpu)
+      utils.assert_close(actual_vals.to("cpu"), expected_vals)
+      utils.assert_close(actual_idxs.to("cpu"), expected_idxs)
+
 
 class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
 
