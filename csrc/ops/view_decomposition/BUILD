@@ -60,10 +60,8 @@ torch_tpu_cc_library(
     deps = [
         ":strided_layout",
         "//csrc/common:to_string",
-        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@llvm-project//mlir:IR",
     ],
 )
 
