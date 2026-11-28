@@ -241,6 +241,9 @@ its `SKILL.md` and follow it.
 *   [`tt-add-precompiled-kernels`](.agents/skills/tt-add-precompiled-kernels/SKILL.md):
     adding or extending precompiled unbounded dynamic kernels (Mosaic kernels
     written in Kiln), with their registration and tests.
+*   [`tt-analyze-tpu-only-error-test-to-gpu-movement`](.agents/skills/tt-analyze-tpu-only-error-test-to-gpu-movement/SKILL.md):
+    adapting and analyzing tests from `tpu_errors_test.py` on GPU to check if
+    they can be moved to `errors_test.py`.
 *   [`tt-create-change`](.agents/skills/tt-create-change/SKILL.md): committing a
     change, and opening, describing, or updating a pull request, including
     addressing review comments.
@@ -256,6 +259,9 @@ its `SKILL.md` and follow it.
 *   [`tt-manage-api-lifecycle`](.agents/skills/tt-manage-api-lifecycle/SKILL.md):
     adding, changing, exposing, or deprecating TorchTPU APIs, env vars, or
     `tt_apis.yaml`.
+*   [`tt-move-tpu-only-error-test-to-gpu`](.agents/skills/tt-move-tpu-only-error-test-to-gpu/SKILL.md):
+    moving error tests from `tpu_errors_test.py` to `errors_test.py` based on
+    analysis outcome and cross-device verification.
 *   [`tt-review-code`](.agents/skills/tt-review-code/SKILL.md): reviewing a
     change for complexity, C++ pitfalls, readability, and style.
 *   [`tt-support-dtypes`](.agents/skills/tt-support-dtypes/SKILL.md): fixing
