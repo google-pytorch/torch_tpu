@@ -294,6 +294,158 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     args = (torch.rand(5, 3, dtype=torch.float32),)
     self._run_bounded_dynamism_test(torch.sort, mark_dynamic, *args)
 
+  @parameterized.product(
+      dim=[0, 1],
+      dynamic_dim=[0, 1],
+      descending=[False, True],
+      dtype=[torch.float32, torch.int32],
+  )
+  def test_sort_dynamic_variants(self, dim, dynamic_dim, descending, dtype):
+    # Include negative values so any leaked zero-padding along a dynamic sort
+    # axis would corrupt the sorted order.
+    x = torch.tensor(
+        [[-3, 1, -2, 7], [6, -4, 5, 0], [-8, 9, 2, -1]], dtype=dtype
+    )
+
+    def mark_dynamic(t):
+      dynamism.mark_dynamic(t, dynamic_dim, 2, 10)
+
+    self._run_bounded_dynamism_test(
+        lambda t: torch.sort(t, dim=dim, descending=descending), mark_dynamic, x
+    )
+
+  @parameterized.product(
+      dynamic_dim=[0, 1],
+      dtype=[torch.float32, torch.int32],
+  )
+  def test_msort_dynamic(self, dynamic_dim, dtype):
+    x = torch.tensor([[-3, 1, -2], [6, -4, 5], [-8, 9, 2]], dtype=dtype)
+
+    def mark_dynamic(t):
+      dynamism.mark_dynamic(t, dynamic_dim, 2, 10)
+
+    self._run_bounded_dynamism_test(torch.msort, mark_dynamic, x)
+
+  @parameterized.product(
+      rank=[1, 2],
+      test_elements_rank=[1, 2],
+      invert=[False, True],
+      dtype=[torch.int32, torch.float32],
+  )
+  def test_isin_dynamic_elements(self, rank, test_elements_rank, invert, dtype):
+    if rank == 1:
+      elements = torch.tensor([0, 1, 2, 3, 4], dtype=dtype)
+    else:
+      elements = torch.tensor([[0, 1, 2], [3, 4, 5]], dtype=dtype)
+    if test_elements_rank == 1:
+      test_elements = torch.tensor([2, 4, 6], dtype=dtype)
+    else:
+      test_elements = torch.tensor([[2, 4], [6, 8]], dtype=dtype)
+
+    def mark_dynamic(elements_tpu, test_elements_tpu):
+      del test_elements_tpu
+      dynamism.mark_dynamic(elements_tpu, 0, 2, 10)
+
+    self._run_bounded_dynamism_test(
+        lambda els, test_els: torch.isin(els, test_els, invert=invert),
+        mark_dynamic,
+        elements,
+        test_elements,
+    )
+
+  @parameterized.product(
+      elements_rank=[1, 2],
+      test_elements_rank=[1, 2],
+      mark_both=[False, True],
+      invert=[False, True],
+  )
+  def test_isin_dynamic_test_elements(
+      self, elements_rank, test_elements_rank, mark_both, invert
+  ):
+    # Include 0 in `elements` and omit 0 from `test_elements` so any unmasked
+    # zero padding on dynamic `test_elements` would produce a false positive.
+    if elements_rank == 1:
+      elements = torch.tensor([0, 1, 2, 3, 4], dtype=torch.int32)
+    else:
+      elements = torch.tensor([[0, 1, 2], [3, 4, 5]], dtype=torch.int32)
+    if test_elements_rank == 1:
+      test_elements = torch.tensor([2, 4, 6], dtype=torch.int32)
+    else:
+      test_elements = torch.tensor([[2, 4], [6, 8]], dtype=torch.int32)
+
+    def mark_dynamic(elements_tpu, test_elements_tpu):
+      if mark_both:
+        dynamism.mark_dynamic(elements_tpu, 0, 2, 10)
+      dynamism.mark_dynamic(test_elements_tpu, 0, 2, 10)
+
+    self._run_bounded_dynamism_test(
+        lambda els, test_els: torch.isin(els, test_els, invert=invert),
+        mark_dynamic,
+        elements,
+        test_elements,
+    )
+
+  def test_isin_dynamic_scalar_variants(self):
+    elements = torch.tensor([[0, 1, 2], [3, 4, 5]], dtype=torch.int32)
+    self._run_bounded_dynamism_test(
+        lambda els: torch.isin(els, 4),
+        lambda els: dynamism.mark_dynamic(els, 0, 2, 10),
+        elements,
+    )
+    test_elements = torch.tensor([2, 4, 6], dtype=torch.int32)
+    self._run_bounded_dynamism_test(
+        lambda test_els: torch.isin(0, test_els),
+        lambda test_els: dynamism.mark_dynamic(test_els, 0, 2, 10),
+        test_elements,
+    )
+
+  @parameterized.product(
+      dim=[0, 1],
+      dynamic_dim=[0, 1],
+      k=[0, 2],
+      largest=[True, False],
+      dtype=[torch.float32, torch.int32],
+  )
+  def test_topk_dynamic_sorted(self, dim, dynamic_dim, k, largest, dtype):
+    x = torch.tensor(
+        [[-3, 1, -2, 7], [6, -4, 5, 0], [-8, 9, 2, -1]], dtype=dtype
+    )
+
+    def mark_dynamic(t):
+      dynamism.mark_dynamic(t, dynamic_dim, 2, 10)
+
+    self._run_bounded_dynamism_test(
+        lambda t: torch.topk(t, k=k, dim=dim, largest=largest, sorted=True),
+        mark_dynamic,
+        x,
+    )
+
+  @parameterized.product(
+      dim=[0, 1],
+      dynamic_dim=[0, 1],
+      largest=[True, False],
+  )
+  def test_topk_dynamic_unsorted(self, dim, dynamic_dim, largest):
+    x_cpu = torch.tensor(
+        [[-3.0, 1.0, -2.0, 7.0], [6.0, -4.0, 5.0, 0.0], [-8.0, 9.0, 2.0, -1.0]],
+        dtype=torch.float32,
+    )
+    expected_vals, _ = torch.topk(
+        x_cpu, k=2, dim=dim, largest=largest, sorted=True
+    )
+
+    x_tpu = x_cpu.to(self.device)
+    dynamism.mark_dynamic(x_tpu, dynamic_dim, 2, 10)
+    tpu_vals, tpu_idxs = torch.topk(
+        x_tpu, k=2, dim=dim, largest=largest, sorted=False
+    )
+    tpu_vals_cpu = tpu_vals.to("cpu")
+    tpu_idxs_cpu = tpu_idxs.to("cpu")
+    sorted_vals, _ = torch.sort(tpu_vals_cpu, dim=dim, descending=largest)
+    utils.assert_close(sorted_vals, expected_vals)
+    gathered = torch.gather(x_cpu, dim, tpu_idxs_cpu)
+    utils.assert_close(gathered, tpu_vals_cpu)
+
   @absltest.skip("CompilationCounter is flaky unless tests run sequentially.")
   def test_executable_is_reused(self):
     def dyn_pow(x):

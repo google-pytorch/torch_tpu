@@ -19,8 +19,27 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/statusor.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
+
+// Specifies whether elements are assumed to be unique to optimize search.
+enum class IsUnique {
+  kNo,
+  kYes,
+};
+
+// Specifies whether matches should be inverted in the final predicate output.
+enum class IsInverted {
+  kNo,
+  kYes,
+};
+
+absl::StatusOr<mlir::MlirOp> BuildIsInShlo(mlir::MlirOp elements,
+                                           mlir::MlirOp test_elements,
+                                           IsUnique uniqueness,
+                                           IsInverted inversion);
 
 at::Tensor& AtenIsInScalarTensorOut(const at::Scalar& element,
                                     const at::Tensor& test_elements,

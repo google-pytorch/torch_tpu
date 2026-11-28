@@ -666,8 +666,9 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Fails to inline MLIR functions on bounded inputs.
         "squeeze": {COMPILE, COMPILE_GRAD},
         "squeeze_copy": {COMPILE, COMPILE_GRAD},
-        # Lowers via sort with %iota, which lacks XLA dynamic_padder support.
-        "topk": ALL_MODES,
+        # topk backward lowers via scatter, which fails MLIR function inlining
+        # on multi-dim bounded shapes.
+        "topk": {COMPILE_GRAD},
         # Calls getNumElements() and static scale checks on bounded operands.
         # torch._scaled_mm_v2 aborts the test process.
         "torch._scaled_mm.rowwise": {EAGER, COMPILE},
@@ -826,10 +827,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
     "untriaged: MLIR assertion failure (bounds length vs rank)": {
         "matmul": ALL_MODES,
         "vdot": ALL_MODES,
-    },
-    "untriaged: materialization failure (negative dimension size)": {
-        # Aborts the test process.
-        "isin": ALL_MODES,
     },
     "untriaged: expected all dimensions to be static": {
         # TODO: b/449736443 - FFT ATen kernels enforce FFTValidateStaticShape.

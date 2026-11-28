@@ -1729,6 +1729,36 @@ absl::StatusOr<mlir::MlirOp> BuildMaybeSlice(mlir::MlirOp op, int64_t dimension,
   return RestoreDynamicDimSizes(sliced, static_op.runtime_sizes);
 }
 
+absl::StatusOr<mlir::MlirOp> SlicePrefixAlongDim(mlir::MlirOp op, int64_t dim,
+                                                 int64_t k) {
+  const mlir::RankedTensorType op_type = GetTensorTypeOrDie(op);
+  const int64_t rank = op_type.getRank();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers validate dim before lowering.
+      dim >= 0 && dim < rank, error::kInvalidArgument)
+      << "dim " << dim << " out of bounds for rank " << rank;
+
+  const Dimensions static_shape = GetStaticShape(op);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers validate k before lowering.
+      k >= 0 && k <= static_shape[dim], error::kInvalidArgument)
+      << "k (" << k << ") out of bounds for dimension " << dim
+      << " with static size/bound " << static_shape[dim];
+
+  const Dimensions start_indices(rank, 0);
+  Dimensions limit_indices = static_shape;
+  limit_indices[dim] = k;
+  const Dimensions strides(rank, 1);
+
+  if (op_type.hasStaticShape()) {
+    return mlir::stablehlo::Slice(op, start_indices, limit_indices, strides);
+  }
+
+  StaticAtBounds static_op = MakeStaticAtBounds(op);
+  static_op.runtime_sizes[dim] = std::nullopt;
+  mlir::MlirOp sliced = mlir::stablehlo::Slice(static_op.op, start_indices,
+                                               limit_indices, strides);
+  return RestoreDynamicDimSizes(sliced, static_op.runtime_sizes);
+}
+
 Dimensions GetAllDimensions(mlir::MlirOp op) {
   Dimensions dims(GetTensorTypeOrDie(op).getRank());
   absl::c_iota(dims, 0);
