@@ -23382,6 +23382,284 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-4, atol=1e-4)
 
+  @parameterized.named_parameters(
+      (
+          "conv1d_bfloat16",
+          torch.nn.functional.conv1d,
+          False,
+          torch.bfloat16,
+          (16, 8, 256),
+          (8, 8, 3),
+      ),
+      (
+          "conv2d_bfloat16",
+          torch.nn.functional.conv2d,
+          False,
+          torch.bfloat16,
+          (16, 8, 32, 32),
+          (8, 8, 3, 3),
+      ),
+      (
+          "conv3d_bfloat16",
+          torch.nn.functional.conv3d,
+          False,
+          torch.bfloat16,
+          (4, 8, 8, 8, 8),
+          (8, 8, 3, 3, 3),
+      ),
+      (
+          "conv_transpose1d_bfloat16",
+          torch.nn.functional.conv_transpose1d,
+          True,
+          torch.bfloat16,
+          (16, 8, 256),
+          (8, 8, 3),
+      ),
+      (
+          "conv_transpose2d_bfloat16",
+          torch.nn.functional.conv_transpose2d,
+          True,
+          torch.bfloat16,
+          (16, 8, 32, 32),
+          (8, 8, 3, 3),
+      ),
+      (
+          "conv_transpose3d_bfloat16",
+          torch.nn.functional.conv_transpose3d,
+          True,
+          torch.bfloat16,
+          (4, 8, 8, 8, 8),
+          (8, 8, 3, 3, 3),
+      ),
+      (
+          "conv1d_float16",
+          torch.nn.functional.conv1d,
+          False,
+          torch.float16,
+          (16, 8, 256),
+          (8, 8, 3),
+      ),
+      (
+          "conv2d_float16",
+          torch.nn.functional.conv2d,
+          False,
+          torch.float16,
+          (16, 8, 32, 32),
+          (8, 8, 3, 3),
+      ),
+      (
+          "conv3d_float16",
+          torch.nn.functional.conv3d,
+          False,
+          torch.float16,
+          (4, 8, 8, 8, 8),
+          (8, 8, 3, 3, 3),
+      ),
+      (
+          "conv_transpose1d_float16",
+          torch.nn.functional.conv_transpose1d,
+          True,
+          torch.float16,
+          (16, 8, 256),
+          (8, 8, 3),
+      ),
+      (
+          "conv_transpose2d_float16",
+          torch.nn.functional.conv_transpose2d,
+          True,
+          torch.float16,
+          (16, 8, 32, 32),
+          (8, 8, 3, 3),
+      ),
+      (
+          "conv_transpose3d_float16",
+          torch.nn.functional.conv_transpose3d,
+          True,
+          torch.float16,
+          (4, 8, 8, 8, 8),
+          (8, 8, 3, 3, 3),
+      ),
+  )
+  def test_convolution_low_precision_upcast(
+      self,
+      conv_fn: Callable[..., torch.Tensor],
+      is_transposed: bool,
+      dtype: torch.dtype,
+      x_shape: Sequence[int],
+      w_shape: Sequence[int],
+  ) -> None:
+    """Verifies low-precision conv fwd/bwd accumulates in float32."""
+    torch.manual_seed(42)
+    out_channels = w_shape[1] if is_transposed else w_shape[0]
+    x_base = torch.randn(x_shape, dtype=dtype)
+    w_base = torch.randn(w_shape, dtype=dtype)
+    b_base = torch.randn(out_channels, dtype=dtype)
+
+    x_f32 = x_base.to(torch.float32).requires_grad_(True)
+    w_f32 = w_base.to(torch.float32).requires_grad_(True)
+    b_f32 = b_base.to(torch.float32).requires_grad_(True)
+    out_f32 = conv_fn(x_f32, w_f32, b_f32)
+    go_base = (torch.randn_like(out_f32) + 0.5).to(dtype)
+    out_f32.backward(go_base.to(torch.float32))
+    out_ref = out_f32.detach().to(dtype)
+    gx_ref = x_f32.grad.detach().to(dtype)
+    gw_ref = w_f32.grad.detach().to(dtype)
+    gb_ref = b_f32.grad.detach().to(dtype)
+
+    # Under DEFAULT precision, bfloat16 matches the float32 reference without
+    # bias double-rounding; under HIGHEST precision, float16 operands upcast to
+    # float32 allow XLA to preserve the full 10-bit float16 mantissa.
+    precision = (
+        torch.tpu.Precision.DEFAULT
+        if dtype == torch.bfloat16
+        else torch.tpu.Precision.HIGHEST
+    )
+    rtol = 2e-2 if dtype == torch.bfloat16 else 2e-3
+    atol = 7e-2 if dtype == torch.bfloat16 else 2e-3
+
+    with torch.tpu.precision(precision):
+      x_tpu = x_base.to("tpu").detach().requires_grad_(True)
+      w_tpu = w_base.to("tpu").detach().requires_grad_(True)
+      b_tpu = b_base.to("tpu").detach().requires_grad_(True)
+      out_tpu = conv_fn(x_tpu, w_tpu, b_tpu)
+      out_tpu.backward(go_base.to("tpu"))
+
+    self.assert_close(
+        golden_result=out_ref,
+        torch_tpu_result=out_tpu.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+    self.assert_close(
+        golden_result=gx_ref,
+        torch_tpu_result=x_tpu.grad.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+    self.assert_close(
+        golden_result=gw_ref,
+        torch_tpu_result=w_tpu.grad.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+    self.assert_close(
+        golden_result=gb_ref,
+        torch_tpu_result=b_tpu.grad.detach().cpu(),
+        rtol=rtol,
+        atol=atol,
+    )
+
+  @parameterized.named_parameters(
+      ("conv1d", torch.nn.functional.conv1d, False, 1),
+      ("conv2d", torch.nn.functional.conv2d, False, 2),
+      ("conv3d", torch.nn.functional.conv3d, False, 3),
+      ("conv_transpose1d", torch.nn.functional.conv_transpose1d, True, 1),
+      ("conv_transpose2d", torch.nn.functional.conv_transpose2d, True, 2),
+      ("conv_transpose3d", torch.nn.functional.conv_transpose3d, True, 3),
+  )
+  def test_convolution_bfloat16_bias_no_double_rounding(
+      self,
+      conv_fn: Callable[..., torch.Tensor],
+      is_transposed: bool,
+      spatial_dims: int,
+  ) -> None:
+    """Verifies bfloat16 conv adds bias in float32 without double-rounding."""
+    spatial = (1,) * spatial_dims
+    # 16384 + 63 = 16447 (rounds to 16384 in bf16); adding bias 2 in float32
+    # yields 16449 -> rounds to 16512 in bf16 (not 16384).
+    x = torch.tensor([16384.0, 63.0], dtype=torch.bfloat16).reshape(
+        1, 2, *spatial
+    )
+    w_shape = (2, 1, *spatial) if is_transposed else (1, 2, *spatial)
+    w = torch.ones(w_shape, dtype=torch.bfloat16)
+    b = torch.tensor([2.0], dtype=torch.bfloat16)
+    expected = conv_fn(x.float(), w.float(), b.float()).to(torch.bfloat16)
+
+    with torch.tpu.precision(torch.tpu.Precision.DEFAULT):
+      actual = conv_fn(x.to("tpu"), w.to("tpu"), b.to("tpu")).cpu()
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=actual, rtol=1e-4, atol=1e-4
+    )
+
+  @parameterized.named_parameters(
+      ("conv1d", torch.nn.functional.conv1d, False, 1),
+      ("conv2d", torch.nn.functional.conv2d, False, 2),
+      ("conv3d", torch.nn.functional.conv3d, False, 3),
+      ("conv_transpose1d", torch.nn.functional.conv_transpose1d, True, 1),
+      ("conv_transpose2d", torch.nn.functional.conv_transpose2d, True, 2),
+      ("conv_transpose3d", torch.nn.functional.conv_transpose3d, True, 3),
+  )
+  def test_convolution_float16_bias_cancels_intermediate_overflow(
+      self,
+      conv_fn: Callable[..., torch.Tensor],
+      is_transposed: bool,
+      spatial_dims: int,
+  ) -> None:
+    """Verifies float16 conv avoids overflow before bias cancellation."""
+    spatial = (1,) * spatial_dims
+    # 256 * 192 + 256 * 192 = 98304 (> float16 max 65504), + (-49152) = 49152.
+    x = torch.full((1, 2, *spatial), 256.0, dtype=torch.float16)
+    w_shape = (2, 1, *spatial) if is_transposed else (1, 2, *spatial)
+    w = torch.full(w_shape, 192.0, dtype=torch.float16)
+    b = torch.tensor([-49152.0], dtype=torch.float16)
+    expected = conv_fn(x.float(), w.float(), b.float()).to(torch.float16)
+
+    with torch.tpu.precision(torch.tpu.Precision.DEFAULT):
+      actual = conv_fn(x.to("tpu"), w.to("tpu"), b.to("tpu")).cpu()
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=actual, rtol=1e-4, atol=1e-4
+    )
+
+  @parameterized.named_parameters(
+      ("conv1d", torch.nn.functional.conv1d, 1),
+      ("conv2d", torch.nn.functional.conv2d, 2),
+      ("conv3d", torch.nn.functional.conv3d, 3),
+      ("conv_transpose1d", torch.nn.functional.conv_transpose1d, 1),
+      ("conv_transpose2d", torch.nn.functional.conv_transpose2d, 2),
+      ("conv_transpose3d", torch.nn.functional.conv_transpose3d, 3),
+  )
+  def test_convolution_float16_mantissa_precision(
+      self, conv_fn: Callable[..., torch.Tensor], spatial_dims: int
+  ) -> None:
+    """Verifies float16 10-bit mantissa is preserved under HIGHEST precision."""
+    spatial = (1,) * spatial_dims
+    # 1 + 2^-10 is exact in float16 but truncates to 1.0 in bfloat16.
+    val = 1.0 + 2.0**-10
+    x = torch.full((1, 1, *spatial), val, dtype=torch.float16)
+    w = torch.full((1, 1, *spatial), val, dtype=torch.float16)
+    b = torch.tensor([-1.0], dtype=torch.float16)
+    go = torch.full((1, 1, *spatial), val, dtype=torch.float16)
+
+    x_ref = x.float().requires_grad_(True)
+    w_ref = w.float().requires_grad_(True)
+    out_ref = conv_fn(x_ref, w_ref, b.float())
+    out_ref.backward(go.float())
+
+    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
+      x_tpu = x.to("tpu").detach().requires_grad_(True)
+      w_tpu = w.to("tpu").detach().requires_grad_(True)
+      out_tpu = conv_fn(x_tpu, w_tpu, b.to("tpu"))
+      out_tpu.backward(go.to("tpu"))
+
+    self.assert_close(
+        golden_result=out_ref.detach().to(torch.float16),
+        torch_tpu_result=out_tpu.detach().cpu(),
+        rtol=1e-3,
+        atol=1e-5,
+    )
+    self.assert_close(
+        golden_result=x_ref.grad.detach().to(torch.float16),
+        torch_tpu_result=x_tpu.grad.detach().cpu(),
+        rtol=1e-3,
+        atol=1e-4,
+    )
+    self.assert_close(
+        golden_result=w_ref.grad.detach().to(torch.float16),
+        torch_tpu_result=w_tpu.grad.detach().cpu(),
+        rtol=1e-3,
+        atol=1e-4,
+    )
+
   @parameterized.product(
       kernel_size=[3],
       stride=[2],

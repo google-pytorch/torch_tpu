@@ -96,6 +96,16 @@ SpatialPadding CalculateWindowAlignedPadding(int64_t operand_dim,
   return {padding, padding - overhang};
 }
 
+// Keeps bfloat16 operands in bfloat16 so XLA executes native mixed-precision
+// (bf16, bf16) -> f32 convolutions without extra conversion or bounded-dynamic
+// masking overhead in f32, while upcasting float16 operands to f32 so higher
+// precision configs can preserve the 10-bit float16 mantissa.
+mlir::ElementType ConvolutionOperandDtype(mlir::ElementType output_dtype,
+                                          mlir::ElementType computation_dtype) {
+  return output_dtype == mlir::ElementType::BF16 ? output_dtype
+                                                 : computation_dtype;
+}
+
 absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
     mlir::MlirOp input, mlir::MlirOp weight, std::optional<mlir::MlirOp> bias,
     absl::Span<const int64_t> stride, absl::Span<const int64_t> padding,
@@ -210,12 +220,16 @@ absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
   const auto precision_config =
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(output_dtype));
+  const mlir::ElementType operand_dtype =
+      ConvolutionOperandDtype(output_dtype, computation_dtype);
   const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      output_dims, mlir::getElementType(ctx, output_dtype));
+      output_dims, mlir::getElementType(ctx, computation_dtype));
 
-  mlir::MlirOp conv_input = stablehlo::ConvertElementType(input, output_dtype);
+  mlir::MlirOp conv_input = stablehlo::ConvertElementType(input, operand_dtype);
   transformed_weight =
-      stablehlo::ConvertElementType(transformed_weight, output_dtype);
+      stablehlo::ConvertElementType(transformed_weight, operand_dtype);
 
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp conv_op,
@@ -224,15 +238,16 @@ absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
                       window_strides, dims_padding, lhs_dilation, rhs_dilation,
                       window_reversal, precision_config));
 
-  if (!bias.has_value()) {
-    return conv_op;
+  if (bias.has_value()) {
+    mlir::MlirOp computation_bias =
+        stablehlo::ConvertElementType(*bias, computation_dtype);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp shaped_bias,
+                        BroadcastIfNeeded(computation_bias, conv_op,
+                                          /*broadcast_dimensions=*/{1}));
+    conv_op = stablehlo::Add(conv_op, shaped_bias);
   }
 
-  bias = stablehlo::ConvertElementType(*bias, output_dtype);
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp shaped_bias,
-      BroadcastIfNeeded(*bias, conv_op, /*broadcast_dimensions=*/{1}));
-  return stablehlo::Add(conv_op, shaped_bias);
+  return stablehlo::ConvertElementType(conv_op, output_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildConvolution(
@@ -312,11 +327,15 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
   const auto precision_config =
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(output_dtype));
+  const mlir::ElementType operand_dtype =
+      ConvolutionOperandDtype(output_dtype, computation_dtype);
   const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      output_dims, mlir::getElementType(ctx, output_dtype));
+      output_dims, mlir::getElementType(ctx, computation_dtype));
 
-  input = stablehlo::ConvertElementType(input, output_dtype);
-  weight = stablehlo::ConvertElementType(weight, output_dtype);
+  input = stablehlo::ConvertElementType(input, operand_dtype);
+  weight = stablehlo::ConvertElementType(weight, operand_dtype);
 
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp conv_op,
@@ -325,23 +344,24 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
                       dims_padding, lhs_dilation, rhs_dilation, window_reversal,
                       precision_config, result_dims));
 
-  if (!bias.has_value()) {
-    return conv_op;
+  if (bias.has_value()) {
+    const int64_t out_channels = weight_type.getDimSize(0);
+    const mlir::RankedTensorType bias_type = GetTensorTypeOrDie(*bias);
+
+    // If it exists, bias should be shaped as (C_out,)
+    TT_RETURN_IF_ERROR(
+        ValidateConvolutionBias(bias_type.getShape(), out_channels));
+
+    mlir::MlirOp computation_bias =
+        stablehlo::ConvertElementType(*bias, computation_dtype);
+    // Broadcast bias from shape (C_out,) to (B, C_out, *result_spatial_dims)...
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp shaped_bias,
+                        BroadcastIfNeeded(computation_bias, conv_op,
+                                          /*broadcast_dimensions=*/{1}));
+    conv_op = stablehlo::Add(conv_op, shaped_bias);
   }
 
-  const int64_t out_channels = weight_type.getDimSize(0);
-  const mlir::RankedTensorType bias_type = GetTensorTypeOrDie(*bias);
-
-  // If it exists, bias should be shaped as (C_out,)
-  TT_RETURN_IF_ERROR(
-      ValidateConvolutionBias(bias_type.getShape(), out_channels));
-
-  bias = stablehlo::ConvertElementType(*bias, output_dtype);
-  // Broadcast bias from shape (C_out,) to (B, C_out, *result_spatial_dims)...
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp shaped_bias,
-      BroadcastIfNeeded(*bias, conv_op, /*broadcast_dimensions=*/{1}));
-  return stablehlo::Add(conv_op, shaped_bias);
+  return stablehlo::ConvertElementType(conv_op, output_dtype);
 }
 
 }  // namespace
@@ -557,16 +577,23 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardInput(
   const auto precision_config =
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(output_dtype));
+  const mlir::ElementType operand_dtype =
+      ConvolutionOperandDtype(output_dtype, computation_dtype);
   const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      output_dims, mlir::getElementType(ctx, output_dtype));
+      output_dims, mlir::getElementType(ctx, computation_dtype));
 
-  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
-  weight = stablehlo::ConvertElementType(weight, output_dtype);
+  grad_output = stablehlo::ConvertElementType(grad_output, operand_dtype);
+  weight = stablehlo::ConvertElementType(weight, operand_dtype);
 
-  return ConvolutionLike(
-      result_type, grad_output, weight, dimension_numbers, groups,
-      /*batch_group_count=*/1, window_strides, dims_padding, lhs_dilation,
-      rhs_dilation, window_reversal, precision_config, input_dims);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp grad_input,
+      ConvolutionLike(result_type, grad_output, weight, dimension_numbers,
+                      groups, /*batch_group_count=*/1, window_strides,
+                      dims_padding, lhs_dilation, rhs_dilation, window_reversal,
+                      precision_config, input_dims));
+  return stablehlo::ConvertElementType(grad_input, output_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
@@ -666,19 +693,27 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
   const auto precision_config =
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
-  const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      GetStaticShape(weight_dims), mlir::getElementType(ctx, output_dtype));
-  input = stablehlo::ConvertElementType(input, output_dtype);
-  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(output_dtype));
+  const mlir::ElementType operand_dtype =
+      ConvolutionOperandDtype(output_dtype, computation_dtype);
+  const mlir::RankedTensorType result_type =
+      mlir::RankedTensorType::get(GetStaticShape(weight_dims),
+                                  mlir::getElementType(ctx, computation_dtype));
+  input = stablehlo::ConvertElementType(input, operand_dtype);
+  grad_output = stablehlo::ConvertElementType(grad_output, operand_dtype);
 
   // Directly instantiate the convolution with result_type matching weight_dims
   // [C_out, C_in/groups, spatial...]. batch_group_count=groups contracts the
   // batch dimension within each group slice.
-  return ConvolutionLike(result_type, input, grad_output, dimension_numbers,
-                         /*feature_group_count=*/1,
-                         /*batch_group_count=*/groups, window_strides,
-                         dims_padding, lhs_dilation, rhs_dilation,
-                         window_reversal, precision_config, weight_dims);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp grad_weight,
+      ConvolutionLike(result_type, input, grad_output, dimension_numbers,
+                      /*feature_group_count=*/1,
+                      /*batch_group_count=*/groups, window_strides,
+                      dims_padding, lhs_dilation, rhs_dilation, window_reversal,
+                      precision_config, weight_dims));
+  return stablehlo::ConvertElementType(grad_weight, output_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardBias(
