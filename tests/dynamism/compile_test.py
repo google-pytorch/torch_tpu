@@ -694,6 +694,93 @@ class CompileTest(seed_test_utils.RepeatableTest):
     expected = torch.full((2, 3), 4.0, device="cpu")
     utils.assert_close(out.cpu(), expected)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="nearest2d",
+          fn=lambda x: torch.nn.functional.interpolate(
+              x, size=(8, 6), mode="nearest"
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact2d",
+          fn=lambda x: torch.nn.functional.interpolate(
+              x, size=(8, 6), mode="nearest-exact"
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d",
+          fn=lambda x: torch.nn.functional.interpolate(
+              x, size=(8, 6), mode="bilinear", align_corners=False
+          ),
+      ),
+      dict(
+          testcase_name="bicubic2d",
+          fn=lambda x: torch.nn.functional.interpolate(
+              x, size=(8, 6), mode="bicubic", align_corners=False
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d_aa",
+          fn=lambda x: torch.nn.functional.interpolate(
+              x,
+              size=(4, 6),
+              mode="bilinear",
+              align_corners=False,
+              antialias=True,
+          ),
+      ),
+      dict(
+          testcase_name="bicubic2d_aa",
+          fn=lambda x: torch.nn.functional.interpolate(
+              x,
+              size=(4, 6),
+              mode="bicubic",
+              align_corners=False,
+              antialias=True,
+          ),
+      ),
+  )
+  def test_upsample_2d_dynamic_batch_and_channels_compile(self, fn):
+    test_inputs = [
+        (torch.randn(3, 4, 6, 4),),
+        (torch.randn(5, 2, 6, 4),),
+    ]
+    mark_dynamic_tests_info = [
+        ((True, [(0, 2, 8), (1, 2, 8)]),),
+        ((True, [(0, 2, 8), (1, 2, 8)]),),
+    ]
+    compilations_per_call = self.call_and_compare(
+        fn, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(compilations_per_call, [1, 0])
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bilinear2d_aa_gather",
+          op=torch.ops.aten._upsample_bilinear2d_aa,
+      ),
+      dict(
+          testcase_name="bicubic2d_aa_gather",
+          op=torch.ops.aten._upsample_bicubic2d_aa,
+      ),
+  )
+  def test_upsample_aa_large_dim_gather_multi_dynamic_compile(self, op):
+    def fn(x):
+      return op(x, [4, 2048], False, None, None)
+
+    test_inputs = [
+        (torch.randn(2, 3, 2, 4097),),
+        (torch.randn(3, 2, 2, 4097),),
+    ]
+    mark_dynamic_tests_info = [
+        ((True, [(0, 2, 4), (1, 2, 4)]),),
+        ((True, [(0, 2, 4), (1, 2, 4)]),),
+    ]
+    compilations_per_call = self.call_and_compare(
+        fn, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(compilations_per_call, [1, 0])
+
 
 class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
 

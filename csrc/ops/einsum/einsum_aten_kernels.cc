@@ -132,8 +132,8 @@ struct ParsedEinsum {
   Dimensions label_size;
   // Output tensor dimensions.
   Dimensions output_dims;
-  // Product of `output_dims` (0 if any output dimension is 0).
-  int64_t output_num_elements = 1;
+  // True if any output dimension is 0.
+  bool output_is_zero_sized = false;
   // True if any input operand has 0 elements (`numel() == 0`).
   bool any_operand_zero_elements = false;
   // Number of dimensions covered by `...` across all operands.
@@ -527,11 +527,13 @@ absl::StatusOr<ParsedEinsum> ParseEinsumEquationFromShapes(
       BuildContractionSteps(num_ops, path, parsed.contraction_steps));
 
   parsed.output_dims.reserve(parsed.rhs_labels.size());
-  parsed.output_num_elements = 1;
+  parsed.output_is_zero_sized = false;
   for (const int64_t c : parsed.rhs_labels) {
     const int64_t sz = parsed.label_size[c];
     parsed.output_dims.push_back(sz);
-    parsed.output_num_elements *= sz;
+    if (sz == 0) {
+      parsed.output_is_zero_sized = true;
+    }
   }
 
   PopulateLabelToCharMap(label_count, ell_num_dim, total_expanded_labels,
@@ -1080,7 +1082,7 @@ absl::StatusOr<mlir::MlirOp> BuildEinsumShlo(
     absl::Span<const mlir::MlirOp> inputs, mlir::MlirBuilder& builder,
     const ParsedEinsum& parsed, mlir::ElementType out_dtype,
     mlir::stablehlo::Precision precision) {
-  if (parsed.output_num_elements == 0) {
+  if (parsed.output_is_zero_sized) {
     return MakeZeroSizedTensor(builder, out_dtype,
                                AsArrayRef<int64_t>(parsed.output_dims));
   }

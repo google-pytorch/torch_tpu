@@ -26,20 +26,22 @@
 #include "ATen/core/TensorBody.h"
 #include "ATen/native/UpSample.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
+#include "csrc/common/cache_key.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/einsum/einsum_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "csrc/ops/resize/resize_aten_kernels.h"
+#include "csrc/ops/upsample/upsample_utils.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -192,6 +194,7 @@ absl::StatusOr<mlir::MlirOp> BuildBilinear2d(
     int64_t out_w, bool align_corners, std::optional<double> scale_h,
     std::optional<double> scale_w, mlir::stablehlo::Precision precision,
     bool is_backward) {
+  TT_RETURN_IF_ERROR(ValidateUpsampleSpatialDimsStatic(operand));
   if (in_h == out_h && in_w == out_w) {
     return operand;
   }
@@ -297,6 +300,7 @@ absl::StatusOr<mlir::MlirOp> BuildNearest(
     mlir::stablehlo::Precision precision, bool is_backward) {
   ABSL_DCHECK_EQ(in_spatial.size(), out_spatial.size());
   ABSL_DCHECK_EQ(in_spatial.size(), scales.size());
+  TT_RETURN_IF_ERROR(ValidateUpsampleSpatialDimsStatic(operand));
 
   bool all_identity = true;
   for (size_t i = 0; i < in_spatial.size(); ++i) {
@@ -333,12 +337,97 @@ absl::StatusOr<mlir::MlirOp> BuildNearest(
              : mlir::stablehlo::ConvertElementType(result, elem_type);
 }
 
-void CheckUpsampleDtypes(const at::Tensor& tensor) {
-  TT_CHECK_THROW(tensor.scalar_type() != at::kBool &&
-                     tensor.scalar_type() != at::kInt &&
-                     tensor.scalar_type() != at::kLong,
-                 error::kPythonNotImplementedError)
-      << "not implemented for " << ToString(tensor.scalar_type());
+absl::Status RunUpsampleNearestOut(const at::Tensor& self,
+                                   at::IntArrayRef upsample_shape,
+                                   llvm::ArrayRef<std::optional<double>> scales,
+                                   UpsampleMode mode, at::Tensor& out,
+                                   OpParamCacheKeys param_keys) {
+  const int64_t spatial_dims = static_cast<int64_t>(scales.size());
+  TT_ASSIGN_OR_RETURN(
+      const Dimensions expected_output_shape,
+      ValidateUpsampleForwardInputs(self, upsample_shape, out, spatial_dims,
+                                    UpsampleDtypePolicy::kExcludeBoolIntLong));
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, expected_output_shape));
+  if (out.numel() == 0) {
+    return absl::OkStatus();
+  }
+
+  TT_ASSIGN_OR_RETURN(const auto element_type,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  const mlir::stablehlo::Precision precision = GetAndAddPrecisionWithDefaultTo(
+      param_keys,
+      mlir::stablehlo::Precision::HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
+
+  Dimensions in_spatial;
+  in_spatial.reserve(spatial_dims);
+  Dimensions out_spatial;
+  out_spatial.reserve(spatial_dims);
+  for (int64_t i = 0; i < spatial_dims; ++i) {
+    in_spatial.push_back(self.size(i + 2));
+    out_spatial.push_back(upsample_shape[i]);
+  }
+  llvm::SmallVector<std::optional<double>, 3> scales_vec(scales.begin(),
+                                                         scales.end());
+
+  auto op_builder =
+      [in_spatial = std::move(in_spatial), out_spatial = std::move(out_spatial),
+       scales_vec = std::move(scales_vec), mode,
+       precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+    return BuildNearest(input, in_spatial, out_spatial, scales_vec, mode,
+                        precision, /*is_backward=*/false);
+  };
+
+  return DispatchOpOut<1>(std::move(op_builder), {self}, out,
+                          {.out_dtype = element_type,
+                           .out_dims = expected_output_shape,
+                           .op_param_cache_keys = std::move(param_keys)});
+}
+
+absl::Status RunUpsampleNearestBackwardGradInput(
+    const at::Tensor& grad_output, at::IntArrayRef output_shape_in,
+    at::IntArrayRef input_shape, llvm::ArrayRef<std::optional<double>> scales,
+    UpsampleMode mode, at::Tensor& grad_input, OpParamCacheKeys param_keys) {
+  const int64_t spatial_dims = static_cast<int64_t>(scales.size());
+  TT_ASSIGN_OR_RETURN(
+      const Dimensions expected_grad_input_shape,
+      ValidateUpsampleBackwardInputs(grad_output, output_shape_in, input_shape,
+                                     grad_input, spatial_dims,
+                                     UpsampleDtypePolicy::kExcludeBoolIntLong));
+  TT_RETURN_IF_ERROR(
+      ResizeTensorIfShapeDiffers(grad_input, expected_grad_input_shape));
+  if (grad_input.numel() == 0) {
+    return absl::OkStatus();
+  }
+
+  TT_ASSIGN_OR_RETURN(const auto element_type,
+                      ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
+  const mlir::stablehlo::Precision precision = GetAndAddPrecisionWithDefaultTo(
+      param_keys,
+      mlir::stablehlo::Precision::HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
+
+  Dimensions in_spatial;
+  in_spatial.reserve(spatial_dims);
+  Dimensions out_spatial;
+  out_spatial.reserve(spatial_dims);
+  for (int64_t i = 0; i < spatial_dims; ++i) {
+    in_spatial.push_back(input_shape[i + 2]);
+    out_spatial.push_back(output_shape_in[i]);
+  }
+  llvm::SmallVector<std::optional<double>, 3> scales_vec(scales.begin(),
+                                                         scales.end());
+
+  auto op_builder =
+      [in_spatial = std::move(in_spatial), out_spatial = std::move(out_spatial),
+       scales_vec = std::move(scales_vec), mode,
+       precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
+    return BuildNearest(grad_out, in_spatial, out_spatial, scales_vec, mode,
+                        precision, /*is_backward=*/true);
+  };
+
+  return DispatchOpOut<1>(std::move(op_builder), {grad_output}, grad_input,
+                          {.out_dtype = element_type,
+                           .out_dims = expected_grad_input_shape,
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
@@ -347,36 +436,13 @@ at::Tensor& AtenUpsampleNearest1dBackwardGradInput(
     const at::Tensor& grad_output, at::IntArrayRef output_shape_in,
     at::IntArrayRef input_shape, std::optional<double> scale,
     at::Tensor& grad_input) {
-  TT_KERNEL(
-      OpName::kUpsampleNearest1dBackwardGradInput, param_keys,
-      (grad_output, output_shape_in, input_shape, scale, grad_input), {
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_input.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
-
-        auto op_builder =
-            [in_w = input_shape[2], out_w = output_shape_in[0], scale,
-             precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(grad_out, {in_w}, {out_w}, {scale},
-                              UpsampleMode::kNearest, precision,
-                              /*is_backward=*/true);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            (DispatchOp<1>(std::move(op_builder), {grad_output},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(input_shape),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(grad_input_buf), grad_input));
-        return grad_input;
-      });
+  TT_KERNEL(OpName::kUpsampleNearest1dBackwardGradInput, param_keys,
+            (grad_output, output_shape_in, input_shape, scale, grad_input), {
+              TT_THROW_IF_ERROR(RunUpsampleNearestBackwardGradInput(
+                  grad_output, output_shape_in, input_shape, {scale},
+                  UpsampleMode::kNearest, grad_input, std::move(param_keys)));
+              return grad_input;
+            });
 }
 
 at::Tensor& AtenUpsampleNearest2dBackwardGradInput(
@@ -387,78 +453,28 @@ at::Tensor& AtenUpsampleNearest2dBackwardGradInput(
       OpName::kUpsampleNearest2dBackwardGradInput, param_keys,
       (grad_output, output_shape_in, input_shape, scale_h, scale_w, grad_input),
       {
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_input.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
-
-        auto op_builder =
-            [in_h = input_shape[2], in_w = input_shape[3],
-             out_h = output_shape_in[0], out_w = output_shape_in[1], scale_h,
-             scale_w,
-             precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(grad_out, {in_h, in_w}, {out_h, out_w},
-                              {scale_h, scale_w}, UpsampleMode::kNearest,
-                              precision, /*is_backward=*/true);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            (DispatchOp<1>(std::move(op_builder), {grad_output},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(input_shape),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(grad_input_buf), grad_input));
+        TT_THROW_IF_ERROR(RunUpsampleNearestBackwardGradInput(
+            grad_output, output_shape_in, input_shape, {scale_h, scale_w},
+            UpsampleMode::kNearest, grad_input, std::move(param_keys)));
         return grad_input;
       });
 }
 
 at::Tensor& AtenUpsampleNearest3dBackwardGradInput(
     const at::Tensor& grad_output, at::IntArrayRef output_shape_in,
-    at::IntArrayRef input_shape, std::optional<double> scale_h,
-    std::optional<double> scale_w, std::optional<double> scale_d,
+    at::IntArrayRef input_shape, std::optional<double> scale_d,
+    std::optional<double> scale_h, std::optional<double> scale_w,
     at::Tensor& grad_input) {
-  TT_KERNEL(
-      OpName::kUpsampleNearest3dBackwardGradInput, param_keys,
-      (grad_output, output_shape_in, input_shape, scale_h, scale_w, scale_d,
-       grad_input),
-      {
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_input.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
-
-        auto op_builder =
-            [in_d = input_shape[2], in_h = input_shape[3],
-             in_w = input_shape[4], out_d = output_shape_in[0],
-             out_h = output_shape_in[1], out_w = output_shape_in[2], scale_h,
-             scale_w, scale_d,
-             precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(
-              grad_out, {in_d, in_h, in_w}, {out_d, out_h, out_w},
-              {scale_h, scale_w, scale_d}, UpsampleMode::kNearest, precision,
-              /*is_backward=*/true);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            (DispatchOp<1>(std::move(op_builder), {grad_output},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(input_shape),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(grad_input_buf), grad_input));
-        return grad_input;
-      });
+  TT_KERNEL(OpName::kUpsampleNearest3dBackwardGradInput, param_keys,
+            (grad_output, output_shape_in, input_shape, scale_d, scale_h,
+             scale_w, grad_input),
+            {
+              TT_THROW_IF_ERROR(RunUpsampleNearestBackwardGradInput(
+                  grad_output, output_shape_in, input_shape,
+                  {scale_d, scale_h, scale_w}, UpsampleMode::kNearest,
+                  grad_input, std::move(param_keys)));
+              return grad_input;
+            });
 }
 
 at::Tensor& AtenUpsampleNearestExact1dBackwardGradInput(
@@ -468,31 +484,9 @@ at::Tensor& AtenUpsampleNearestExact1dBackwardGradInput(
   TT_KERNEL(
       OpName::kUpsampleNearestExact1dBackwardGradInput, param_keys,
       (grad_output, output_shape_in, input_shape, scale, grad_input), {
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_input.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest_exact
-
-        auto op_builder =
-            [in_w = input_shape[2], out_w = output_shape_in[0], scale,
-             precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(grad_out, {in_w}, {out_w}, {scale},
-                              UpsampleMode::kNearestExact, precision,
-                              /*is_backward=*/true);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            (DispatchOp<1>(std::move(op_builder), {grad_output},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(input_shape),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(grad_input_buf), grad_input));
+        TT_THROW_IF_ERROR(RunUpsampleNearestBackwardGradInput(
+            grad_output, output_shape_in, input_shape, {scale},
+            UpsampleMode::kNearestExact, grad_input, std::move(param_keys)));
         return grad_input;
       });
 }
@@ -505,79 +499,28 @@ at::Tensor& AtenUpsampleNearestExact2dBackwardGradInput(
       OpName::kUpsampleNearestExact2dBackwardGradInput, param_keys,
       (grad_output, output_shape_in, input_shape, scale_h, scale_w, grad_input),
       {
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_input.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest_exact
-
-        auto op_builder =
-            [in_h = input_shape[2], in_w = input_shape[3],
-             out_h = output_shape_in[0], out_w = output_shape_in[1], scale_h,
-             scale_w,
-             precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(grad_out, {in_h, in_w}, {out_h, out_w},
-                              {scale_h, scale_w}, UpsampleMode::kNearestExact,
-                              precision, /*is_backward=*/true);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            (DispatchOp<1>(std::move(op_builder), {grad_output},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(input_shape),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(grad_input_buf), grad_input));
+        TT_THROW_IF_ERROR(RunUpsampleNearestBackwardGradInput(
+            grad_output, output_shape_in, input_shape, {scale_h, scale_w},
+            UpsampleMode::kNearestExact, grad_input, std::move(param_keys)));
         return grad_input;
       });
 }
 
 at::Tensor& AtenUpsampleNearestExact3dBackwardGradInput(
     const at::Tensor& grad_output, at::IntArrayRef output_shape_in,
-    at::IntArrayRef input_shape, std::optional<double> scale_h,
-    std::optional<double> scale_w, std::optional<double> scale_d,
+    at::IntArrayRef input_shape, std::optional<double> scale_d,
+    std::optional<double> scale_h, std::optional<double> scale_w,
     at::Tensor& grad_input) {
-  TT_KERNEL(
-      OpName::kUpsampleNearestExact3dBackwardGradInput, param_keys,
-      (grad_output, output_shape_in, input_shape, scale_h, scale_w, scale_d,
-       grad_input),
-      {
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_input.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest_exact
-
-        auto op_builder =
-            [in_d = input_shape[2], in_h = input_shape[3],
-             in_w = input_shape[4], out_d = output_shape_in[0],
-             out_h = output_shape_in[1], out_w = output_shape_in[2], scale_h,
-             scale_w, scale_d,
-             precision](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(grad_out, {in_d, in_h, in_w},
-                              {out_d, out_h, out_w},
-                              {scale_h, scale_w, scale_d},
-                              UpsampleMode::kNearestExact, precision,
-                              /*is_backward=*/true);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            (DispatchOp<1>(std::move(op_builder), {grad_output},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(input_shape),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(grad_input_buf), grad_input));
-        return grad_input;
-      });
+  TT_KERNEL(OpName::kUpsampleNearestExact3dBackwardGradInput, param_keys,
+            (grad_output, output_shape_in, input_shape, scale_d, scale_h,
+             scale_w, grad_input),
+            {
+              TT_THROW_IF_ERROR(RunUpsampleNearestBackwardGradInput(
+                  grad_output, output_shape_in, input_shape,
+                  {scale_d, scale_h, scale_w}, UpsampleMode::kNearestExact,
+                  grad_input, std::move(param_keys)));
+              return grad_input;
+            });
 }
 
 // Lowers 2D bilinear interpolation as separable contractions along H and W:
@@ -591,12 +534,17 @@ at::Tensor& AtenUpsampleBilinear2dOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kUpsampleBilinear2dOut, param_keys,
       (self, upsample_shape, align_corners, scale_h, scale_w, out), {
-        CheckUpsampleDtypes(self);
-        TT_CHECK_THROW(self.dim() == 4 && out.dim() == 4,
-                       error::kInvalidArgument)
-            << "expected 4D input and out tensors, got input: "
-            << ToString(self.dim()) << "D, out: " << ToString(out.dim()) << "D";
-        TT_ASSIGN_OR_THROW(auto element_type,
+        TT_ASSIGN_OR_THROW(const Dimensions expected_output_shape,
+                           ValidateUpsampleForwardInputs(
+                               self, upsample_shape, out, /*spatial_dims=*/2,
+                               UpsampleDtypePolicy::kExcludeBoolIntLong));
+        TT_THROW_IF_ERROR(
+            ResizeTensorIfShapeDiffers(out, expected_output_shape));
+        if (out.numel() == 0) {
+          return out;
+        }
+
+        TT_ASSIGN_OR_THROW(const auto element_type,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));
         const mlir::stablehlo::Precision precision =
             GetAndAddPrecisionWithDefaultTo(
@@ -606,24 +554,19 @@ at::Tensor& AtenUpsampleBilinear2dOut(const at::Tensor& self,
 
         auto op_builder =
             [in_h = self.size(kBilinearHeightDim),
-             in_w = self.size(kBilinearWidthDim),
-             out_h = out.size(kBilinearHeightDim),
-             out_w = out.size(kBilinearWidthDim), align_corners, scale_h,
-             scale_w,
+             in_w = self.size(kBilinearWidthDim), out_h = upsample_shape[0],
+             out_w = upsample_shape[1], align_corners, scale_h, scale_w,
              precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           return BuildBilinear2d(input, in_h, in_w, out_h, out_w, align_corners,
                                  scale_h, scale_w, precision,
                                  /*is_backward=*/false);
         };
 
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), {self},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(out.sizes()),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
+        TT_THROW_IF_ERROR(
+            (DispatchOpOut<1>(std::move(op_builder), {self}, out,
+                              {.out_dtype = element_type,
+                               .out_dims = expected_output_shape,
+                               .op_param_cache_keys = std::move(param_keys)})));
         return out;
       });
 }
@@ -640,14 +583,20 @@ at::Tensor& AtenUpsampleBilinear2dBackwardGradInput(
       (grad_output, output_size, input_size, align_corners, scales_h, scales_w,
        grad_input),
       {
-        TT_CHECK_THROW(grad_output.dim() == 4 && input_size.size() == 4,
-                       error::kInvalidArgument)
-            << "expected 4D grad_output tensor and 4-element input_size, got "
-               "grad_output: "
-            << ToString(grad_output.dim())
-            << "D, input_size: " << ToString(input_size.size()) << " elements";
-        TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<mlir::ElementType>(
-                                                  grad_input.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            const Dimensions expected_grad_input_shape,
+            ValidateUpsampleBackwardInputs(
+                grad_output, output_size, input_size, grad_input,
+                /*spatial_dims=*/2, UpsampleDtypePolicy::kExcludeBoolIntLong));
+        TT_THROW_IF_ERROR(
+            ResizeTensorIfShapeDiffers(grad_input, expected_grad_input_shape));
+        if (grad_input.numel() == 0) {
+          return grad_input;
+        }
+
+        TT_ASSIGN_OR_THROW(
+            const auto element_type,
+            ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
         const mlir::stablehlo::Precision precision =
             GetAndAddPrecisionWithDefaultTo(
                 param_keys,
@@ -665,15 +614,11 @@ at::Tensor& AtenUpsampleBilinear2dBackwardGradInput(
                                  /*is_backward=*/true);
         };
 
-        TT_ASSIGN_OR_THROW(
-            auto grad_input_buf,
-            (DispatchOp<1>(std::move(op_builder), {grad_output},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(input_size),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
         TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(grad_input_buf), grad_input));
+            (DispatchOpOut<1>(std::move(op_builder), {grad_output}, grad_input,
+                              {.out_dtype = element_type,
+                               .out_dims = expected_grad_input_shape,
+                               .op_param_cache_keys = std::move(param_keys)})));
         return grad_input;
       });
 }
@@ -682,36 +627,13 @@ at::Tensor& AtenUpsampleNearest1dOut(const at::Tensor& self,
                                      at::IntArrayRef upsample_shape,
                                      std::optional<double> scale,
                                      at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kUpsampleNearest1dOut, param_keys,
-      (self, upsample_shape, scale, out), {
-        CheckUpsampleDtypes(self);
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
-
-        auto op_builder =
-            [in_w = self.size(2), out_w = upsample_shape[0], scale,
-             precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(input, {in_w}, {out_w}, {scale},
-                              UpsampleMode::kNearest, precision,
-                              /*is_backward=*/false);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), {self},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(out.sizes()),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kUpsampleNearest1dOut, param_keys,
+            (self, upsample_shape, scale, out), {
+              TT_THROW_IF_ERROR(RunUpsampleNearestOut(
+                  self, upsample_shape, {scale}, UpsampleMode::kNearest, out,
+                  std::move(param_keys)));
+              return out;
+            });
 }
 
 at::Tensor& AtenUpsampleNearest2dOut(const at::Tensor& self,
@@ -719,115 +641,41 @@ at::Tensor& AtenUpsampleNearest2dOut(const at::Tensor& self,
                                      std::optional<double> scale_h,
                                      std::optional<double> scale_w,
                                      at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kUpsampleNearest2dOut, param_keys,
-      (self, upsample_shape, scale_h, scale_w, out), {
-        CheckUpsampleDtypes(self);
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
-
-        auto op_builder =
-            [in_h = self.size(2), in_w = self.size(3),
-             out_h = upsample_shape[0], out_w = upsample_shape[1], scale_h,
-             scale_w,
-             precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(input, {in_h, in_w}, {out_h, out_w},
-                              {scale_h, scale_w}, UpsampleMode::kNearest,
-                              precision, /*is_backward=*/false);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), {self},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(out.sizes()),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kUpsampleNearest2dOut, param_keys,
+            (self, upsample_shape, scale_h, scale_w, out), {
+              TT_THROW_IF_ERROR(RunUpsampleNearestOut(
+                  self, upsample_shape, {scale_h, scale_w},
+                  UpsampleMode::kNearest, out, std::move(param_keys)));
+              return out;
+            });
 }
 
 at::Tensor& AtenUpsampleNearest3dOut(const at::Tensor& self,
                                      at::IntArrayRef upsample_shape,
+                                     std::optional<double> scale_d,
                                      std::optional<double> scale_h,
                                      std::optional<double> scale_w,
-                                     std::optional<double> scale_d,
                                      at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kUpsampleNearest3dOut, param_keys,
-      (self, upsample_shape, scale_h, scale_w, scale_d, out), {
-        CheckUpsampleDtypes(self);
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest
-
-        auto op_builder =
-            [in_d = self.size(2), in_h = self.size(3), in_w = self.size(4),
-             out_d = upsample_shape[0], out_h = upsample_shape[1],
-             out_w = upsample_shape[2], scale_h, scale_w, scale_d,
-             precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(input, {in_d, in_h, in_w}, {out_d, out_h, out_w},
-                              {scale_h, scale_w, scale_d},
-                              UpsampleMode::kNearest, precision,
-                              /*is_backward=*/false);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), {self},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(out.sizes()),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kUpsampleNearest3dOut, param_keys,
+            (self, upsample_shape, scale_d, scale_h, scale_w, out), {
+              TT_THROW_IF_ERROR(RunUpsampleNearestOut(
+                  self, upsample_shape, {scale_d, scale_h, scale_w},
+                  UpsampleMode::kNearest, out, std::move(param_keys)));
+              return out;
+            });
 }
 
 at::Tensor& AtenUpsampleNearestExact1dOut(const at::Tensor& self,
                                           at::IntArrayRef upsample_shape,
                                           std::optional<double> scale,
                                           at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kUpsampleNearestExact1dOut, param_keys,
-      (self, upsample_shape, scale, out), {
-        CheckUpsampleDtypes(self);
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest_exact
-
-        auto op_builder =
-            [in_w = self.size(2), out_w = upsample_shape[0], scale,
-             precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(input, {in_w}, {out_w}, {scale},
-                              UpsampleMode::kNearestExact, precision,
-                              /*is_backward=*/false);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), {self},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(out.sizes()),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kUpsampleNearestExact1dOut, param_keys,
+            (self, upsample_shape, scale, out), {
+              TT_THROW_IF_ERROR(RunUpsampleNearestOut(
+                  self, upsample_shape, {scale}, UpsampleMode::kNearestExact,
+                  out, std::move(param_keys)));
+              return out;
+            });
 }
 
 at::Tensor& AtenUpsampleNearestExact2dOut(const at::Tensor& self,
@@ -835,79 +683,28 @@ at::Tensor& AtenUpsampleNearestExact2dOut(const at::Tensor& self,
                                           std::optional<double> scale_h,
                                           std::optional<double> scale_w,
                                           at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kUpsampleNearestExact2dOut, param_keys,
-      (self, upsample_shape, scale_h, scale_w, out), {
-        CheckUpsampleDtypes(self);
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest_exact
-
-        auto op_builder =
-            [in_h = self.size(2), in_w = self.size(3),
-             out_h = upsample_shape[0], out_w = upsample_shape[1], scale_h,
-             scale_w,
-             precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(input, {in_h, in_w}, {out_h, out_w},
-                              {scale_h, scale_w}, UpsampleMode::kNearestExact,
-                              precision, /*is_backward=*/false);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), {self},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(out.sizes()),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kUpsampleNearestExact2dOut, param_keys,
+            (self, upsample_shape, scale_h, scale_w, out), {
+              TT_THROW_IF_ERROR(RunUpsampleNearestOut(
+                  self, upsample_shape, {scale_h, scale_w},
+                  UpsampleMode::kNearestExact, out, std::move(param_keys)));
+              return out;
+            });
 }
 
 at::Tensor& AtenUpsampleNearestExact3dOut(const at::Tensor& self,
                                           at::IntArrayRef upsample_shape,
+                                          std::optional<double> scale_d,
                                           std::optional<double> scale_h,
                                           std::optional<double> scale_w,
-                                          std::optional<double> scale_d,
                                           at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kUpsampleNearestExact3dOut, param_keys,
-      (self, upsample_shape, scale_h, scale_w, scale_d, out), {
-        CheckUpsampleDtypes(self);
-        TT_ASSIGN_OR_THROW(auto element_type,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        const mlir::stablehlo::Precision precision =
-            GetAndAddPrecisionWithDefaultTo(
-                param_keys,
-                mlir::stablehlo::Precision::
-                    HIGHEST);  // EXPLICIT_PRECISION_OK=nearest_exact
-
-        auto op_builder =
-            [in_d = self.size(2), in_h = self.size(3), in_w = self.size(4),
-             out_d = upsample_shape[0], out_h = upsample_shape[1],
-             out_w = upsample_shape[2], scale_h, scale_w, scale_d,
-             precision](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-          return BuildNearest(input, {in_d, in_h, in_w}, {out_d, out_h, out_w},
-                              {scale_h, scale_w, scale_d},
-                              UpsampleMode::kNearestExact, precision,
-                              /*is_backward=*/false);
-        };
-
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<1>(std::move(op_builder), {self},
-                           {.out_dtype = element_type,
-                            .out_dims = CopyIntVector(out.sizes()),
-                            .op_param_cache_keys = std::move(param_keys)})));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kUpsampleNearestExact3dOut, param_keys,
+            (self, upsample_shape, scale_d, scale_h, scale_w, out), {
+              TT_THROW_IF_ERROR(RunUpsampleNearestOut(
+                  self, upsample_shape, {scale_d, scale_h, scale_w},
+                  UpsampleMode::kNearestExact, out, std::move(param_keys)));
+              return out;
+            });
 }
 
 }  // namespace torch_tpu

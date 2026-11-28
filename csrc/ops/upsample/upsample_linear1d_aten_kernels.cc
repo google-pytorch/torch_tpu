@@ -26,13 +26,10 @@
 #include "ATen/native/UpSample.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/einsum/einsum_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
@@ -40,6 +37,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "csrc/ops/upsample/upsample_utils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -154,6 +152,7 @@ absl::StatusOr<mlir::MlirOp> BuildLinear1d(
     const mlir::stablehlo::Precision precision,
     const UpsampleDirection direction) {
   ABSL_DCHECK_EQ(GetTensorTypeOrDie(operand).getRank(), 3);
+  TT_RETURN_IF_ERROR(ValidateUpsampleSpatialDimsStatic(operand));
   if (in_w == out_w) {
     return operand;
   }
@@ -185,81 +184,6 @@ absl::StatusOr<mlir::MlirOp> BuildLinear1d(
              : mlir::stablehlo::ConvertElementType(result, elem_type);
 }
 
-void CheckUpsampleLinear1dDtypes(const at::Tensor& tensor) {
-  TT_CHECK_THROW(at::isFloatingType(tensor.scalar_type()),
-                 error::kPythonNotImplementedError)
-      << "not implemented for " << ToString(tensor.scalar_type());
-}
-
-void ValidateUpsampleLinear1dInputs(const at::Tensor& self,
-                                    at::IntArrayRef output_size,
-                                    const at::Tensor& out) {
-  TT_CHECK_THROW(output_size.size() == 1, error::kInvalidArgument)
-      << "expected output_size to have 1 element, got "
-      << ToString(output_size.size());
-
-  TT_CHECK_THROW(self.dim() == 3, error::kInvalidArgument)
-      << "expected 3D input tensor, got " << ToString(self.dim()) << "D tensor";
-
-  const int64_t input_width = self.size(2);
-  const int64_t output_width = output_size[0];
-
-  TT_CHECK_THROW(input_width > 0 && output_width > 0, error::kInvalidArgument)
-      << "expected input and output sizes to be greater than 0, got input (W: "
-      << ToString(input_width) << ") and output (W: " << ToString(output_width)
-      << ")";
-
-  CheckUpsampleLinear1dDtypes(self);
-
-  TT_CHECK_THROW(self.scalar_type() == out.scalar_type(),
-                 error::kInvalidArgument)
-      << "expected out dtype " << ToString(self.scalar_type()) << ", got "
-      << ToString(out.scalar_type());
-}
-
-void ValidateUpsampleLinear1dBackwardInputs(const at::Tensor& grad_output,
-                                            at::IntArrayRef output_size,
-                                            at::IntArrayRef input_size,
-                                            const at::Tensor& grad_input) {
-  TT_CHECK_THROW(output_size.size() == 1, error::kInvalidArgument)
-      << "expected output_size to have 1 element, got "
-      << ToString(output_size.size());
-
-  TT_CHECK_THROW(input_size.size() == 3, error::kInvalidArgument)
-      << "expected input_size to have 3 elements, got "
-      << ToString(input_size.size());
-
-  const int64_t nbatch = input_size[0];
-  const int64_t channels = input_size[1];
-  const int64_t input_width = input_size[2];
-  const int64_t output_width = output_size[0];
-
-  TT_CHECK_THROW(input_width > 0 && output_width > 0, error::kInvalidArgument)
-      << "expected input and output sizes to be greater than 0, got input (W: "
-      << ToString(input_width) << ") and output (W: " << ToString(output_width)
-      << ")";
-
-  TT_CHECK_THROW(grad_output.dim() == 3, error::kInvalidArgument)
-      << "expected 3D grad_output tensor, got " << ToString(grad_output.dim())
-      << "D tensor";
-
-  const Dimensions expected_grad_output_shape = {nbatch, channels,
-                                                 output_width};
-  TT_CHECK_THROW(
-      grad_output.sizes() == AsArrayRef<int64_t>(expected_grad_output_shape),
-      error::kInvalidArgument)
-      << "expected grad_output to have size "
-      << ToString(expected_grad_output_shape) << ", got "
-      << ToString(grad_output.sizes());
-
-  CheckUpsampleLinear1dDtypes(grad_output);
-
-  TT_CHECK_THROW(grad_output.scalar_type() == grad_input.scalar_type(),
-                 error::kInvalidArgument)
-      << "expected grad_input dtype " << ToString(grad_output.scalar_type())
-      << ", got " << ToString(grad_input.scalar_type());
-}
-
 }  // namespace
 
 // Lowers 1D linear interpolation as a matrix contraction along W:
@@ -272,14 +196,15 @@ at::Tensor& AtenUpsampleLinear1dOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kUpsampleLinear1dOut, param_keys,
       (self, output_size, align_corners, scales, out), {
-        ValidateUpsampleLinear1dInputs(self, output_size, out);
-
-        const Dimensions expected_output_shape = {self.size(0), self.size(1),
-                                                  output_size[0]};
+        TT_ASSIGN_OR_THROW(
+            const Dimensions expected_output_shape,
+            ValidateUpsampleForwardInputs(self, output_size, out,
+                                          /*spatial_dims=*/1,
+                                          UpsampleDtypePolicy::kFloatingOnly));
         TT_THROW_IF_ERROR(
             ResizeTensorIfShapeDiffers(out, expected_output_shape));
 
-        if (self.numel() == 0) {
+        if (out.numel() == 0) {
           return out;
         }
 
@@ -304,7 +229,7 @@ at::Tensor& AtenUpsampleLinear1dOut(const at::Tensor& self,
         TT_THROW_IF_ERROR(
             (DispatchOpOut<1>(std::move(op_builder), {self}, out,
                               {.out_dtype = element_type,
-                               .out_dims = CopyIntVector(out.sizes()),
+                               .out_dims = expected_output_shape,
                                .op_param_cache_keys = std::move(param_keys)})));
         return out;
       });
@@ -323,10 +248,11 @@ at::Tensor& AtenUpsampleLinear1dBackwardGradInput(const at::Tensor& grad_output,
       (grad_output, IgnoreInCacheKey(output_size, "Doesn't affect SHLO"),
        input_size, align_corners, scales, grad_input),
       {
-        ValidateUpsampleLinear1dBackwardInputs(grad_output, output_size,
-                                               input_size, grad_input);
-
-        const Dimensions expected_grad_input_shape = CopyIntVector(input_size);
+        TT_ASSIGN_OR_THROW(
+            const Dimensions expected_grad_input_shape,
+            ValidateUpsampleBackwardInputs(grad_output, output_size, input_size,
+                                           grad_input, /*spatial_dims=*/1,
+                                           UpsampleDtypePolicy::kFloatingOnly));
         TT_THROW_IF_ERROR(
             ResizeTensorIfShapeDiffers(grad_input, expected_grad_input_shape));
 
@@ -356,7 +282,7 @@ at::Tensor& AtenUpsampleLinear1dBackwardGradInput(const at::Tensor& grad_output,
         TT_THROW_IF_ERROR(
             (DispatchOpOut<1>(std::move(op_builder), {grad_output}, grad_input,
                               {.out_dtype = element_type,
-                               .out_dims = CopyIntVector(grad_input.sizes()),
+                               .out_dims = expected_grad_input_shape,
                                .op_param_cache_keys = std::move(param_keys)})));
         return grad_input;
       });

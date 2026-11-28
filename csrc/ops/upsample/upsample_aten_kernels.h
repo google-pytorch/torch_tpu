@@ -36,8 +36,8 @@ at::Tensor& AtenUpsampleNearest2dBackwardGradInput(
 
 at::Tensor& AtenUpsampleNearest3dBackwardGradInput(
     const at::Tensor& grad_output, at::IntArrayRef output_shape,
-    at::IntArrayRef input_shape, std::optional<double> scale_h,
-    std::optional<double> scale_w, std::optional<double> scale_d,
+    at::IntArrayRef input_shape, std::optional<double> scale_d,
+    std::optional<double> scale_h, std::optional<double> scale_w,
     at::Tensor& grad_input);
 
 at::Tensor& AtenUpsampleNearestExact1dBackwardGradInput(
@@ -52,8 +52,8 @@ at::Tensor& AtenUpsampleNearestExact2dBackwardGradInput(
 
 at::Tensor& AtenUpsampleNearestExact3dBackwardGradInput(
     const at::Tensor& grad_output, at::IntArrayRef output_shape,
-    at::IntArrayRef input_shape, std::optional<double> scale_h,
-    std::optional<double> scale_w, std::optional<double> scale_d,
+    at::IntArrayRef input_shape, std::optional<double> scale_d,
+    std::optional<double> scale_h, std::optional<double> scale_w,
     at::Tensor& grad_input);
 
 at::Tensor& AtenUpsampleBilinear2dOut(const at::Tensor& self,
@@ -82,9 +82,9 @@ at::Tensor& AtenUpsampleNearest2dOut(const at::Tensor& self,
 
 at::Tensor& AtenUpsampleNearest3dOut(const at::Tensor& self,
                                      at::IntArrayRef upsample_shape,
+                                     std::optional<double> scale_d,
                                      std::optional<double> scale_h,
                                      std::optional<double> scale_w,
-                                     std::optional<double> scale_d,
                                      at::Tensor& out);
 
 at::Tensor& AtenUpsampleNearestExact1dOut(const at::Tensor& self,
@@ -100,9 +100,9 @@ at::Tensor& AtenUpsampleNearestExact2dOut(const at::Tensor& self,
 
 at::Tensor& AtenUpsampleNearestExact3dOut(const at::Tensor& self,
                                           at::IntArrayRef upsample_shape,
+                                          std::optional<double> scale_d,
                                           std::optional<double> scale_h,
                                           std::optional<double> scale_w,
-                                          std::optional<double> scale_d,
                                           at::Tensor& out);
 
 }  // namespace torch_tpu

@@ -1041,6 +1041,7 @@ class DynamicOpInfo:
         SdpaDynamicOpInfo,
         ConvolutionDynamicOpInfo,
         GluDynamicOpInfo,
+        UpsampleDynamicOpInfo,
         WeightNormBackwardDynamicOpInfo,
         FusedMovingAvgObsFqHelperDynamicOpInfo,
     ]
@@ -1707,6 +1708,33 @@ class GluDynamicOpInfo(DynamicOpInfo):
         dim
         for dim in super().dynamic_dimension_candidates(input_value, args)
         if dim != split_dim
+    ]
+
+
+class UpsampleDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around upsample OpInfos that keeps spatial dims static."""
+
+  _UPSAMPLE_OP_NAMES = frozenset({
+      "nn.functional.interpolate",
+      "nn.functional.upsample_bilinear",
+      "nn.functional.upsample_nearest",
+      "_upsample_bicubic2d_aa",
+      "_upsample_bilinear2d_aa",
+  })
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in UpsampleDynamicOpInfo._UPSAMPLE_OP_NAMES
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns batch/channel candidate dims (dim < 2); spatial dims stay static."""
+    return [
+        dim
+        for dim in super().dynamic_dimension_candidates(input_value, args)
+        if dim < 2
     ]
 
 

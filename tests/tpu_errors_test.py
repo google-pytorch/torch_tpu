@@ -1536,6 +1536,94 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.glu(x, dim=dim).cpu()
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="nearest1d",
+          op_name="upsample_nearest1d",
+          shape=(2, 3, 4),
+          fn=lambda x: torch.ops.aten.upsample_nearest1d(x, [8]),
+      ),
+      dict(
+          testcase_name="nearest2d",
+          op_name="upsample_nearest2d",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten.upsample_nearest2d(x, [8, 8]),
+      ),
+      dict(
+          testcase_name="nearest2d_backward",
+          op_name="upsample_nearest2d_backward",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten.upsample_nearest2d_backward(
+              x, [4, 4], [2, 3, 2, 2]
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d",
+          op_name="upsample_bilinear2d",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten.upsample_bilinear2d(x, [8, 8], False),
+      ),
+      dict(
+          testcase_name="bilinear2d_backward",
+          op_name="upsample_bilinear2d_backward",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten.upsample_bilinear2d_backward(
+              x, [4, 4], [2, 3, 2, 2], False
+          ),
+      ),
+      dict(
+          testcase_name="linear1d",
+          op_name="upsample_linear1d",
+          shape=(2, 3, 4),
+          fn=lambda x: torch.ops.aten.upsample_linear1d(x, [8], False),
+      ),
+      dict(
+          testcase_name="linear1d_backward",
+          op_name="upsample_linear1d_backward",
+          shape=(2, 3, 4),
+          fn=lambda x: torch.ops.aten.upsample_linear1d_backward(
+              x, [4], [2, 3, 2], False
+          ),
+      ),
+      dict(
+          testcase_name="bicubic2d",
+          op_name="upsample_bicubic2d",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten.upsample_bicubic2d(x, [8, 8], False),
+      ),
+      dict(
+          testcase_name="bicubic2d_backward",
+          op_name="upsample_bicubic2d_backward",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten.upsample_bicubic2d_backward(
+              x, [4, 4], [2, 3, 2, 2], False
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d_aa",
+          op_name="upsample_bilinear2d_aa",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten._upsample_bilinear2d_aa(x, [8, 8], False),
+      ),
+      dict(
+          testcase_name="bicubic2d_aa",
+          op_name="upsample_bicubic2d_aa",
+          shape=(2, 3, 4, 4),
+          fn=lambda x: torch.ops.aten._upsample_bicubic2d_aa(x, [8, 8], False),
+      ),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_upsample_dynamic_spatial_dim(self, op_name, shape, fn):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones(*shape, device=et.device(), dtype=torch.float32)
+      dynamism.mark_dynamic(x, 2, 2, 8)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""{op_name}(): expected spatial dimension 2 to have a static size, got dynamic size""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        fn(x).cpu()
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_linalg_solve_triangular_mismatched_square_upper_bounds(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):

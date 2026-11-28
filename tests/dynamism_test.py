@@ -2216,6 +2216,178 @@ class DynamismTest(seed_test_utils.RepeatableTest):
         fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
     )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="nearest1d",
+          shape=(3, 4, 5),
+          fn=lambda x: torch.ops.aten.upsample_nearest1d(x, [9]),
+      ),
+      dict(
+          testcase_name="nearest_exact1d",
+          shape=(3, 4, 5),
+          fn=lambda x: torch.ops.aten._upsample_nearest_exact1d(x, [9]),
+      ),
+      dict(
+          testcase_name="nearest2d",
+          shape=(3, 4, 5, 6),
+          fn=lambda x: torch.ops.aten.upsample_nearest2d(x, [9, 4]),
+      ),
+      dict(
+          testcase_name="nearest_exact2d",
+          shape=(3, 4, 5, 6),
+          fn=lambda x: torch.ops.aten._upsample_nearest_exact2d(x, [9, 4]),
+      ),
+      dict(
+          testcase_name="nearest3d",
+          shape=(3, 4, 3, 4, 5),
+          fn=lambda x: torch.ops.aten.upsample_nearest3d(x, [5, 6, 3]),
+      ),
+      dict(
+          testcase_name="nearest_exact3d",
+          shape=(3, 4, 3, 4, 5),
+          fn=lambda x: torch.ops.aten._upsample_nearest_exact3d(x, [5, 6, 3]),
+      ),
+      dict(
+          testcase_name="linear1d",
+          shape=(3, 4, 5),
+          fn=lambda x: torch.ops.aten.upsample_linear1d(x, [9], False),
+      ),
+      dict(
+          testcase_name="bilinear2d",
+          shape=(3, 4, 5, 6),
+          fn=lambda x: torch.ops.aten.upsample_bilinear2d(x, [9, 4], False),
+      ),
+      dict(
+          testcase_name="bicubic2d",
+          shape=(3, 4, 5, 6),
+          fn=lambda x: torch.ops.aten.upsample_bicubic2d(x, [9, 4], False),
+      ),
+      dict(
+          testcase_name="bilinear2d_aa",
+          shape=(3, 4, 8, 6),
+          fn=lambda x: torch.ops.aten._upsample_bilinear2d_aa(x, [4, 9], False),
+      ),
+      dict(
+          testcase_name="bicubic2d_aa",
+          shape=(3, 4, 8, 6),
+          fn=lambda x: torch.ops.aten._upsample_bicubic2d_aa(x, [4, 9], False),
+      ),
+  )
+  def test_upsample_forward_dynamic_batch_and_channels(self, shape, fn):
+    for dyn_dim in (0, 1):
+      with self.subTest(dyn_dim=dyn_dim):
+
+        def mark_dynamic(x: torch.Tensor, d: int = dyn_dim) -> None:
+          dynamism.mark_dynamic(x, d, 2, 8)
+
+        args = (torch.randn(*shape, dtype=torch.float32),)
+        self._run_bounded_dynamism_test(
+            fn, mark_dynamic, *args, rtol=1e-4, atol=1e-4
+        )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="nearest1d_bwd",
+          grad_shape=(3, 4, 9),
+          fn=lambda g: torch.ops.aten.upsample_nearest1d_backward(
+              g, [9], [3, 4, 5]
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact1d_bwd",
+          grad_shape=(3, 4, 9),
+          fn=lambda g: torch.ops.aten._upsample_nearest_exact1d_backward(
+              g, [9], [3, 4, 5]
+          ),
+      ),
+      dict(
+          testcase_name="nearest2d_bwd",
+          grad_shape=(3, 4, 9, 4),
+          fn=lambda g: torch.ops.aten.upsample_nearest2d_backward(
+              g, [9, 4], [3, 4, 5, 6]
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact2d_bwd",
+          grad_shape=(3, 4, 9, 4),
+          fn=lambda g: torch.ops.aten._upsample_nearest_exact2d_backward(
+              g, [9, 4], [3, 4, 5, 6]
+          ),
+      ),
+      dict(
+          testcase_name="nearest3d_bwd",
+          grad_shape=(3, 4, 5, 6, 3),
+          fn=lambda g: torch.ops.aten.upsample_nearest3d_backward(
+              g, [5, 6, 3], [3, 4, 3, 4, 5]
+          ),
+      ),
+      dict(
+          testcase_name="nearest_exact3d_bwd",
+          grad_shape=(3, 4, 5, 6, 3),
+          fn=lambda g: torch.ops.aten._upsample_nearest_exact3d_backward(
+              g, [5, 6, 3], [3, 4, 3, 4, 5]
+          ),
+      ),
+      dict(
+          testcase_name="linear1d_bwd",
+          grad_shape=(3, 4, 9),
+          fn=lambda g: torch.ops.aten.upsample_linear1d_backward(
+              g, [9], [3, 4, 5], False
+          ),
+      ),
+      dict(
+          testcase_name="bilinear2d_bwd",
+          grad_shape=(3, 4, 9, 4),
+          fn=lambda g: torch.ops.aten.upsample_bilinear2d_backward(
+              g, [9, 4], [3, 4, 5, 6], False
+          ),
+      ),
+      dict(
+          testcase_name="bicubic2d_bwd",
+          grad_shape=(3, 4, 9, 4),
+          fn=lambda g: torch.ops.aten.upsample_bicubic2d_backward(
+              g, [9, 4], [3, 4, 5, 6], False
+          ),
+      ),
+  )
+  def test_upsample_backward_dynamic_batch_and_channels(self, grad_shape, fn):
+    for dyn_dim in (0, 1):
+      with self.subTest(dyn_dim=dyn_dim):
+
+        def mark_dynamic(g: torch.Tensor, d: int = dyn_dim) -> None:
+          dynamism.mark_dynamic(g, d, 2, 8)
+
+        args = (torch.randn(*grad_shape, dtype=torch.float32),)
+        self._run_bounded_dynamism_test(
+            fn, mark_dynamic, *args, rtol=1e-4, atol=1e-4
+        )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bilinear2d_aa_gather",
+          op=torch.ops.aten._upsample_bilinear2d_aa,
+      ),
+      dict(
+          testcase_name="bicubic2d_aa_gather",
+          op=torch.ops.aten._upsample_bicubic2d_aa,
+      ),
+  )
+  def test_upsample_aa_large_dim_gather_dynamic_batch_and_channels(self, op):
+    # Spatial dim > 4096 triggers the 1D Gather fallback path.
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      return op(x, [4, 2048], False, None, None)
+
+    for dyn_dim in (0, 1):
+      with self.subTest(dyn_dim=dyn_dim):
+
+        def mark_dynamic(x: torch.Tensor, d: int = dyn_dim) -> None:
+          dynamism.mark_dynamic(x, d, 2, 4)
+
+        args = (torch.randn(2, 2, 2, 4097, dtype=torch.float32),)
+        self._run_bounded_dynamism_test(
+            fn, mark_dynamic, *args, rtol=1e-4, atol=1e-4
+        )
+
 
 if __name__ == "__main__":
   absltest.main()
