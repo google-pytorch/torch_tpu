@@ -6887,15 +6887,89 @@ Supported combinations for non-constant padding:
     ):
       torch._foreach_abs_(self_list)
 
-  def test_foreach_add_int_tensors_float_alpha(self):
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="list",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="inplace_list",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="tensor",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=False,
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=False,
+      ),
+  )
+  def test_foreach_add_int_tensors_float_alpha(
+      self, op: Callable[..., Any], op_name: str, other_is_list: bool
+  ):
     self_list = [torch.tensor([1, 2], dtype=torch.int32, device=et.device())]
-    other_list = [torch.tensor([3, 4], dtype=torch.int32, device=et.device())]
+    other = (
+        [torch.tensor([3, 4], dtype=torch.int32, device=et.device())]
+        if other_is_list
+        else torch.tensor(3, dtype=torch.int32, device=et.device())
+    )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""foreach_add(): expected alpha to be integral for integral input tensors, got float64""",
+        tpu=f"""{op_name}(): expected alpha to be integral for integral input tensors, got float64""",
         gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
     ):
-      torch._foreach_add(self_list, other_list, alpha=1.5)
+      op(self_list, other, alpha=1.5)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="list",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="inplace_list",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=True,
+      ),
+      dict(
+          testcase_name="tensor",
+          op=torch._foreach_add,
+          op_name="foreach_add",
+          other_is_list=False,
+      ),
+      dict(
+          testcase_name="inplace_tensor",
+          op=torch._foreach_add_,
+          op_name="foreach_add_",
+          other_is_list=False,
+      ),
+  )
+  def test_foreach_add_mixed_int_tensors_bool_alpha(
+      self, op: Callable[..., Any], op_name: str, other_is_list: bool
+  ):
+    self_list = [torch.tensor([1, 2], dtype=torch.int32, device=et.device())]
+    other = (
+        [torch.tensor([3, 4], dtype=torch.int64, device=et.device())]
+        if other_is_list
+        else torch.tensor(3, dtype=torch.int64, device=et.device())
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected input tensor dtypes to be bool when alpha dtype is bool, got int32 and int64""",
+        gpu="""Boolean alpha only supported for Boolean results.""",
+    ):
+      op(self_list, other, alpha=True)
 
   def test_foreach_add_int_tensors_bool_alpha(self):
     if et.is_on_gpu():
@@ -6987,6 +7061,137 @@ Supported combinations for non-constant padding:
       torch._foreach_clamp_max(self_list, True)
 
   @parameterized.named_parameters(
+      dict(
+          testcase_name="maximum_scalar",
+          op=torch._foreach_maximum_,
+          op_name="foreach_maximum_",
+          scalar=2.5,
+      ),
+      dict(
+          testcase_name="maximum_scalarlist",
+          op=torch._foreach_maximum_,
+          op_name="foreach_maximum_",
+          scalar=[2.5],
+      ),
+      dict(
+          testcase_name="minimum_scalar",
+          op=torch._foreach_minimum_,
+          op_name="foreach_minimum_",
+          scalar=2.5,
+      ),
+      dict(
+          testcase_name="minimum_scalarlist",
+          op=torch._foreach_minimum_,
+          op_name="foreach_minimum_",
+          scalar=[2.5],
+      ),
+      dict(
+          testcase_name="clamp_min_scalar",
+          op=torch._foreach_clamp_min_,
+          op_name="foreach_clamp_min_",
+          scalar=2.5,
+      ),
+      dict(
+          testcase_name="clamp_min_scalarlist",
+          op=torch._foreach_clamp_min_,
+          op_name="foreach_clamp_min_",
+          scalar=[2.5],
+      ),
+      dict(
+          testcase_name="clamp_max_scalar",
+          op=torch._foreach_clamp_max_,
+          op_name="foreach_clamp_max_",
+          scalar=2.5,
+      ),
+      dict(
+          testcase_name="clamp_max_scalarlist",
+          op=torch._foreach_clamp_max_,
+          op_name="foreach_clamp_max_",
+          scalar=[2.5],
+      ),
+  )
+  def test_foreach_extrema_inplace_int_float_scalar(
+      self, op: Callable[..., Any], op_name: str, scalar: float | list[float]
+  ):
+    self_list = [torch.tensor([1, 5], dtype=torch.int32, device=et.device())]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type int""",
+    ):
+      op(self_list, scalar)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="maximum",
+          op=torch._foreach_maximum_,
+          op_name="foreach_maximum_",
+      ),
+      dict(
+          testcase_name="minimum",
+          op=torch._foreach_minimum_,
+          op_name="foreach_minimum_",
+      ),
+      dict(
+          testcase_name="clamp_min",
+          op=torch._foreach_clamp_min_,
+          op_name="foreach_clamp_min_",
+      ),
+      dict(
+          testcase_name="clamp_max",
+          op=torch._foreach_clamp_max_,
+          op_name="foreach_clamp_max_",
+      ),
+  )
+  def test_foreach_extrema_inplace_bool_int_scalar(
+      self, op: Callable[..., Any], op_name: str
+  ):
+    self_list = [
+        torch.tensor([True, False], dtype=torch.bool, device=et.device())
+    ]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): result type int64 can't be cast to the desired output type bool""",
+        gpu="""result type Long can't be cast to the desired output type bool""",
+    ):
+      op(self_list, 1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="maximum",
+          op=torch._foreach_maximum_,
+          op_name="foreach_maximum_",
+      ),
+      dict(
+          testcase_name="minimum",
+          op=torch._foreach_minimum_,
+          op_name="foreach_minimum_",
+      ),
+      dict(
+          testcase_name="clamp_min",
+          op=torch._foreach_clamp_min_,
+          op_name="foreach_clamp_min_",
+      ),
+      dict(
+          testcase_name="clamp_max",
+          op=torch._foreach_clamp_max_,
+          op_name="foreach_clamp_max_",
+      ),
+  )
+  def test_foreach_extrema_inplace_bool_bool_scalar(
+      self, op: Callable[..., Any], op_name: str
+  ):
+    self_list = [
+        torch.tensor([True, False], dtype=torch.bool, device=et.device())
+    ]
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""{op_name}(): not implemented for bool""",
+        gpu=""""clamp_scalar_cuda" not implemented for 'Bool'""",
+    ):
+      op(self_list, True)
+
+  @parameterized.named_parameters(
       dict(testcase_name="tensor_list", other_kind="tensor_list"),
       dict(testcase_name="scalar", other_kind="scalar"),
       dict(testcase_name="scalar_list", other_kind="scalar_list"),
@@ -7032,6 +7237,30 @@ Supported combinations for non-constant padding:
         gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
     ):
       torch._foreach_sub_(self_list, other_list, alpha=1.5)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="out_of_place",
+          op=torch._foreach_sub,
+          op_name="foreach_sub",
+      ),
+      dict(
+          testcase_name="inplace",
+          op=torch._foreach_sub_,
+          op_name="foreach_sub_",
+      ),
+  )
+  def test_foreach_sub_bool_alpha(self, op: Callable[..., Any], op_name: str):
+    self_list = [
+        torch.tensor([1.0, 2.0], dtype=torch.float32, device=et.device())
+    ]
+    other_list = [torch.tensor([3, 4], dtype=torch.int32, device=et.device())]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected the alpha argument not to be bool, got true""",
+        gpu="""Boolean alpha only supported for Boolean results.""",
+    ):
+      op(self_list, other_list, alpha=True)
 
   def test_foreach_sqrt_inplace_integral(self):
     self_list = [
@@ -7367,6 +7596,17 @@ Supported combinations for non-constant padding:
           gpu="""Tensor list must have same number of elements as scalar list.""",
       ):
         op(*tensor_lists, scalars)
+
+  def test_foreach_lerp_complex_scalar_on_real(self):
+    start = torch.tensor([1.0, 2.0], dtype=torch.float32, device=et.device())
+    end = torch.tensor([3.0, 4.0], dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_lerp(): result type complex64 can't be cast to the desired output type float32""",
+        gpu="""value cannot be converted to type float without overflow""",
+    ):
+      torch._foreach_lerp([start], [end], 0.5 + 0.5j)
+      torch.accelerator.synchronize()
 
   def test_foreach_pow_negative_integer_scalar_exponent(self):
     x = torch.tensor([2, 3], dtype=torch.int32, device=et.device())
