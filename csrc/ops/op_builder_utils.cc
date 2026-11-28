@@ -1568,20 +1568,32 @@ mlir::MlirOp GetNumElements(mlir::MlirOp input, mlir::Type element_type,
   }
 
   // Static case - emit constant.
-  mlir::MlirOp num_elements_op =
-      MakeScalarConstant(input.getBuilder(), num_elements, element_type);
   if (!found_dynamic) {
-    return num_elements_op;
+    return MakeScalarConstant(input.getBuilder(), num_elements, element_type);
   }
 
   // Bounded dynamic case - multiply static dim count by dynamic dims.
+  // For complex element types, accumulate in the underlying real type to avoid
+  // direct non-complex-to-complex `stablehlo.convert` ops (which fail in
+  // XLA/TPU lowering; see `ComplexSafeConvertElementType`) and unnecessary
+  // complex multiplications.
+  const mlir::ComplexType complex_type =
+      mlir::dyn_cast<mlir::ComplexType>(element_type);
+  const mlir::Type real_type =
+      complex_type ? complex_type.getElementType() : element_type;
+  mlir::MlirOp num_elements_op =
+      MakeScalarConstant(input.getBuilder(), num_elements, real_type);
   for (int64_t dim : dims) {
     if (mlir::ShapedType::isDynamic(shape[dim])) {
       mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(input, dim);
       mlir::MlirOp dim_size_cast =
-          mlir::stablehlo::ConvertElementType(dim_size, element_type);
+          mlir::stablehlo::ConvertElementType(dim_size, real_type);
       num_elements_op = mlir::stablehlo::Mul(num_elements_op, dim_size_cast);
     }
+  }
+  if (complex_type) {
+    mlir::MlirOp zero = MakeScalarConstant(input.getBuilder(), 0.0, real_type);
+    return mlir::stablehlo::Complex(num_elements_op, zero);
   }
   return num_elements_op;
 }

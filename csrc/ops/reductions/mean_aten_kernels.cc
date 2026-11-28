@@ -17,19 +17,19 @@
 #include "csrc/ops/reductions/mean_aten_kernels.h"
 
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/ops/full.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -43,19 +43,6 @@
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
-
-namespace {
-
-// Get the output scalar type and throw if it is float or complex.
-// Types comes from dtype if it has a value, otherwise it is tensor's type.
-absl::StatusOr<c10::ScalarType> GetOutputScalarType(
-    const at::Tensor& tensor, std::optional<c10::ScalarType> dtype) {
-  c10::ScalarType scalar_dtype = dtype.value_or(tensor.scalar_type());
-  TT_RETURN_IF_ERROR(ValidateFloatOrComplex(scalar_dtype));
-  return scalar_dtype;
-}
-
-}  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildMeanShlo(
     mlir::MlirOp input, absl::Span<const int64_t> canonical_dims,
@@ -77,8 +64,22 @@ at::Tensor& AtenMeanOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kMeanOut, param_keys,
       (self, canonical_dims, keep_dim, dtype, out), {
-        TT_ASSIGN_OR_THROW(c10::ScalarType scalar_dtype,
-                           GetOutputScalarType(out, dtype));
+        if (self.scalar_type() == at::ScalarType::Float4_e2m1fn_x2) {
+          TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(self));
+        }
+        if (!dtype.has_value()) {
+          const c10::ScalarType self_dtype = self.scalar_type();
+          // Allow float8_* inputs here so `mean(fp8, out=f32)` works when the
+          // output dtype is not low-precision float; low-precision outputs are
+          // still rejected below and by UnaryOpOut.
+          TT_CHECK_THROW(
+              c10::isFloatingType(self_dtype) || c10::isComplexType(self_dtype),
+              error::kInvalidArgument)
+              << "expected a floating point or complex dtype, got "
+              << ToString(self_dtype);
+        }
+        const c10::ScalarType scalar_dtype = dtype.value_or(out.scalar_type());
+        TT_THROW_IF_ERROR(ValidateFloatOrComplex(scalar_dtype));
 
         const ReductionMode reduction_mode =
             keep_dim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
@@ -106,6 +107,7 @@ at::Tensor& AtenMeanOut(const at::Tensor& self,
              .out_dtype = mlir_type,
              .out_dims = std::move(output_dims),
              .computation_dtype = computation_dtype,
+             .allow_out_dtype_cast = false,
              .allow_low_precision_float = !IsLowPrecisionFloat(scalar_dtype) &&
                                           !IsLowPrecisionFloat(out)}));
         return out;
