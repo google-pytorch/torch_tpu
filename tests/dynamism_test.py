@@ -2216,6 +2216,203 @@ class DynamismTest(seed_test_utils.RepeatableTest):
         fq_fn, mark_dynamic, *args, rtol=2e-2, atol=2e-2
     )
 
+  def test_select_scatter_bounded_dynamic(self) -> None:
+    # Non-selected dimension bounded dynamic on both self and src.
+    def select_dim1(x, src):
+      return torch.select_scatter(x, src, dim=1, index=2)
+
+    x_cpu = torch.randn(4, 5)
+    src_cpu = torch.randn(4) + 10.0
+    self._run_bounded_dynamism_test(
+        select_dim1,
+        lambda x, src: (
+            dynamism.mark_dynamic(x, 0, 2, 8),
+            dynamism.mark_dynamic(src, 0, 2, 8),
+        ),
+        x_cpu,
+        src_cpu,
+    )
+
+    # Target dimension has size 1 while another dimension is bounded dynamic.
+    x_len1 = torch.randn(4, 1, 3)
+    src_len1 = torch.randn(4, 3) + 5.0
+    self._run_bounded_dynamism_test(
+        lambda x, src: torch.select_scatter(x, src, dim=1, index=0),
+        lambda x, src: (
+            dynamism.mark_dynamic(x, 0, 2, 8),
+            dynamism.mark_dynamic(src, 0, 2, 8),
+        ),
+        x_len1,
+        src_len1,
+    )
+
+    # Selected dimension itself is bounded dynamic (src has static shape).
+    self._run_bounded_dynamism_test(
+        lambda x, src: torch.select_scatter(x, src, dim=0, index=1),
+        lambda x, src: dynamism.mark_dynamic(x, 0, 2, 8),
+        torch.randn(4, 5),
+        torch.randn(5) + 3.0,
+    )
+
+    # Multi-dim bounded dynamism under torch.compile.
+    compiled_fn = torch.compile(
+        lambda x, src: torch.select_scatter(x, src, dim=1, index=2),
+        backend="tpu",
+    )
+    x_3d = torch.randn(3, 5, 4)
+    src_2d = torch.randn(3, 4) + 7.0
+    x_3d_tpu = x_3d.to(self.device)
+    src_2d_tpu = src_2d.to(self.device)
+    torch._dynamo.mark_dynamic(x_3d_tpu, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x_3d_tpu, 2, min=2, max=8)
+    torch._dynamo.mark_dynamic(src_2d_tpu, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(src_2d_tpu, 1, min=2, max=8)
+    utils.assert_close(
+        compiled_fn(x_3d_tpu, src_2d_tpu).cpu(),
+        torch.select_scatter(x_3d, src_2d, dim=1, index=2),
+    )
+
+    # Negative index along a bounded dynamic dimension resolves against the
+    # runtime size across invocations without recompiling.
+    compiled_neg = torch.compile(
+        lambda x, src: torch.select_scatter(x, src, dim=0, index=-1),
+        backend="tpu",
+    )
+    x_neg_1 = torch.randn(4, 5)
+    src_neg_1 = torch.randn(5) + 11.0
+    x_neg_1_tpu = x_neg_1.to(self.device)
+    torch._dynamo.mark_dynamic(x_neg_1_tpu, 0, min=2, max=8)
+    utils.assert_close(
+        compiled_neg(x_neg_1_tpu, src_neg_1.to(self.device)).cpu(),
+        torch.select_scatter(x_neg_1, src_neg_1, dim=0, index=-1),
+    )
+    x_neg_2 = torch.randn(6, 5)
+    src_neg_2 = torch.randn(5) + 13.0
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      utils.assert_close(
+          compiled_neg(
+              x_neg_2.to(self.device), src_neg_2.to(self.device)
+          ).cpu(),
+          torch.select_scatter(x_neg_2, src_neg_2, dim=0, index=-1),
+      )
+
+    # Static self with bounded dynamic src on a non-selected dimension.
+    self._run_bounded_dynamism_test(
+        select_dim1,
+        lambda x, src: dynamism.mark_dynamic(src, 0, 2, 8),
+        torch.randn(4, 5),
+        torch.randn(4) + 9.0,
+    )
+
+  def test_slice_scatter_bounded_dynamic(self) -> None:
+    # Interior, boundary-anchored, full-replacement, and strided (divisible and
+    # non-divisible) slices with a bounded dynamic non-sliced dimension.
+    cases = [
+        ("interior", (4, 10, 3), (4, 3, 3), 1, 2, 5, 1),
+        ("boundary_start", (4, 10, 3), (4, 7, 3), 1, 0, 7, 1),
+        ("boundary_end", (4, 10, 3), (4, 6, 3), 1, 4, 10, 1),
+        ("full", (4, 6, 3), (4, 6, 3), 1, 0, 6, 1),
+        ("strided_div", (4, 10, 3), (4, 5, 3), 1, 0, 10, 2),
+        ("strided_nondiv", (4, 11, 3), (4, 2, 3), 1, 4, 10, 3),
+    ]
+    for name, self_shape, src_shape, dim, start, end, step in cases:
+      with self.subTest(name):
+        x_cpu = torch.randn(self_shape)
+        src_cpu = torch.randn(src_shape) + 5.0
+        self._run_bounded_dynamism_test(
+            lambda x, src, d=dim, s=start, e=end, st=step: torch.slice_scatter(
+                x, src, dim=d, start=s, end=e, step=st
+            ),
+            lambda x, src: (
+                dynamism.mark_dynamic(x, 0, 2, 8),
+                dynamism.mark_dynamic(src, 0, 2, 8),
+            ),
+            x_cpu,
+            src_cpu,
+        )
+
+    # Sliced dimension itself is bounded dynamic (unit stride and strided).
+    self._run_bounded_dynamism_test(
+        lambda x, src: torch.slice_scatter(
+            x, src, dim=0, start=1, end=3, step=1
+        ),
+        lambda x, src: dynamism.mark_dynamic(x, 0, 4, 10),
+        torch.randn(6, 4),
+        torch.randn(2, 4) + 2.0,
+    )
+    self._run_bounded_dynamism_test(
+        lambda x, src: torch.slice_scatter(
+            x, src, dim=0, start=1, end=5, step=2
+        ),
+        lambda x, src: dynamism.mark_dynamic(x, 0, 6, 11),
+        torch.randn(6, 4),
+        torch.randn(2, 4) + 2.0,
+    )
+
+    # Multi-dim bounded dynamism under torch.compile for strided slice_scatter.
+    compiled_fn = torch.compile(
+        lambda x, src: torch.slice_scatter(
+            x, src, dim=1, start=1, end=9, step=2
+        ),
+        backend="tpu",
+    )
+    x_3d = torch.randn(3, 11, 4)
+    src_3d = torch.randn(3, 4, 4) + 7.0
+    x_3d_tpu = x_3d.to(self.device)
+    src_3d_tpu = src_3d.to(self.device)
+    torch._dynamo.mark_dynamic(x_3d_tpu, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x_3d_tpu, 2, min=2, max=8)
+    torch._dynamo.mark_dynamic(src_3d_tpu, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(src_3d_tpu, 2, min=2, max=8)
+    utils.assert_close(
+        compiled_fn(x_3d_tpu, src_3d_tpu).cpu(),
+        torch.slice_scatter(x_3d, src_3d, dim=1, start=1, end=9, step=2),
+    )
+
+    # Negative start along a bounded dynamic dimension resolves against the
+    # runtime size across invocations without recompiling.
+    compiled_neg = torch.compile(
+        lambda x, src: torch.slice_scatter(
+            x, src, dim=0, start=-2, end=None, step=1
+        ),
+        backend="tpu",
+    )
+    x_neg_1 = torch.randn(4, 3)
+    src_neg_1 = torch.randn(2, 3) + 11.0
+    x_neg_1_tpu = x_neg_1.to(self.device)
+    torch._dynamo.mark_dynamic(x_neg_1_tpu, 0, min=3, max=8)
+    utils.assert_close(
+        compiled_neg(x_neg_1_tpu, src_neg_1.to(self.device)).cpu(),
+        torch.slice_scatter(x_neg_1, src_neg_1, dim=0, start=-2, end=None),
+    )
+    x_neg_2 = torch.randn(6, 3)
+    src_neg_2 = torch.randn(2, 3) + 13.0
+    with torch._dynamo.config.patch(error_on_recompile=True):
+      utils.assert_close(
+          compiled_neg(
+              x_neg_2.to(self.device), src_neg_2.to(self.device)
+          ).cpu(),
+          torch.slice_scatter(x_neg_2, src_neg_2, dim=0, start=-2, end=None),
+      )
+
+    # Static self with bounded dynamic src on a non-sliced dimension.
+    self._run_bounded_dynamism_test(
+        lambda x, src: torch.slice_scatter(
+            x, src, dim=1, start=1, end=3, step=1
+        ),
+        lambda x, src: dynamism.mark_dynamic(src, 0, 2, 8),
+        torch.randn(4, 6),
+        torch.randn(4, 2) + 9.0,
+    )
+    self._run_bounded_dynamism_test(
+        lambda x, src: torch.slice_scatter(
+            x, src, dim=1, start=0, end=6, step=2
+        ),
+        lambda x, src: dynamism.mark_dynamic(src, 0, 2, 8),
+        torch.randn(4, 6),
+        torch.randn(4, 3) + 9.0,
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

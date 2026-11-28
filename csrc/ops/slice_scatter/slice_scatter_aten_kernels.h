@@ -27,16 +27,18 @@ namespace torch_tpu {
 
 // Implements aten::slice_scatter on TPU with direct StableHLO lowerings and
 // algebraic strength reductions:
-//   - Fast-path 1 (Full replacement): If `step == 1 && slice_len == total_len`,
-//     returns `src.clone()` or `src.to(self.options())` directly without
-//     running DynamicUpdateSlice.
-//   - Fast-path 2 (Boundary-anchored concatenate): For unit-stride slices
-//     (`step == 1`) anchored at `start == 0` or `end == total_len` where
-//     `slice_len * 2 >= total_len` (e.g. Causal LM logit slicing, KV-cache
-//     prefix/suffix updates), emits `stablehlo::Concatenate` joining `src_op`
-//     with `stablehlo::Slice(self_op, ...)` along `dim`. This eliminates
-//     DynamicUpdateSlice index tensor creation and enables fusion in XLA.
-//   - Fallback for interior slices (`step == 1`): Emits
+//   - Fast-path 1 (Full replacement): If `step == 1`, `dim` is static,
+//     `slice_len == total_len`, and `src_op` matches `self_op`'s type/bounds,
+//     returns converted `src_op` directly without DynamicUpdateSlice.
+//   - Fast-path 2 (Boundary-anchored concatenate): For static-`dim` unit-stride
+//     slices (`step == 1`) anchored at `start == 0` or `end == total_len` where
+//     `slice_len * 2 >= total_len` and non-slice dimensions match, emits
+//     `stablehlo::Concatenate` joining `src_op` with a sliced `self_op` along
+//     `dim`. This eliminates DynamicUpdateSlice index tensor creation and
+//     enables fusion in XLA.
+//   - Strided slices (`step > 1`): Reshapes `dim` into `(num_blocks, step)`
+//     with edge-only high padding and emits unit-stride `DynamicUpdateSlice`.
+//   - Fallback for interior/dynamic unit-stride slices (`step == 1`): Emits
 //     `stablehlo::DynamicUpdateSlice(self_op, src_op, start_indices)`.
 at::Tensor AtenSliceScatter(const at::Tensor& self, const at::Tensor& src,
                             int64_t dim, std::optional<int64_t> start,

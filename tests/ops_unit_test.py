@@ -27782,6 +27782,59 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+    # Real-to-complex and complex-to-real/bool src conversions
+    for self_dtype, src_tensor in (
+        (torch.complex64, torch.arange(12, dtype=torch.float32).reshape(2, 6)),
+        (torch.complex64, torch.arange(12, dtype=torch.int32).reshape(2, 6)),
+        (torch.complex128, torch.arange(12, dtype=torch.float64).reshape(2, 6)),
+        (
+            torch.float32,
+            torch.complex(
+                torch.arange(12, dtype=torch.float32).reshape(2, 6),
+                torch.ones(2, 6, dtype=torch.float32),
+            ),
+        ),
+        (
+            torch.int32,
+            torch.complex(
+                torch.arange(12, dtype=torch.float32).reshape(2, 6),
+                torch.ones(2, 6, dtype=torch.float32),
+            ),
+        ),
+        (
+            torch.bool,
+            torch.tensor(
+                [
+                    [0.0 + 0.0j, 0.0 + 1.0j, 2.0 + 0.0j, 0.0 - 3.0j, 0.0, 1.0],
+                    [0.0 + 2.0j, 0.0 + 0.0j, -1.0 + 0.0j, 0.0, 0.0 + 5.0j, 0.0],
+                ],
+                dtype=torch.complex64,
+            ),
+        ),
+    ):
+      with self.subTest(self_dtype=self_dtype, src_dtype=src_tensor.dtype):
+        t_conv = torch.zeros(4, 6, dtype=self_dtype)
+        self.assert_close_tpu_vs_cpu(
+            lambda device, t=t_conv, src=src_tensor: torch.slice_scatter(
+                to(t, device=device),
+                to(src, device=device),
+                dim=0,
+                start=1,
+                end=3,
+                step=1,
+            )
+        )
+        self.assert_close_tpu_vs_cpu(
+            lambda device, t=t_conv, src=src_tensor: torch.slice_scatter(
+                to(t, device=device),
+                to(src, device=device),
+                dim=0,
+                start=0,
+                end=4,
+                step=2,
+            )
+        )
+
   def test_select_scatter(self):
     # Fast-path: total_len == 1
     t_len1 = torch.randn(3, 1, 4)
@@ -27873,6 +27926,56 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
             to(src, device=device),
             dim=0,
             index=1,
+        )
+    )
+
+    # Real-to-complex and complex-to-real/bool src conversions
+    for self_dtype, src_tensor in (
+        (torch.complex64, torch.arange(6, dtype=torch.float32)),
+        (torch.complex64, torch.arange(6, dtype=torch.int32)),
+        (torch.complex128, torch.arange(6, dtype=torch.float64)),
+        (
+            torch.float32,
+            torch.complex(
+                torch.arange(6, dtype=torch.float32),
+                torch.ones(6, dtype=torch.float32),
+            ),
+        ),
+        (
+            torch.int32,
+            torch.complex(
+                torch.arange(6, dtype=torch.float32),
+                torch.ones(6, dtype=torch.float32),
+            ),
+        ),
+        (
+            torch.bool,
+            torch.tensor(
+                [0.0 + 0.0j, 0.0 + 1.0j, 2.0 + 0.0j, 0.0 - 3.0j, 0.0, 1.0],
+                dtype=torch.complex64,
+            ),
+        ),
+    ):
+      with self.subTest(self_dtype=self_dtype, src_dtype=src_tensor.dtype):
+        t_conv = torch.zeros(4, 6, dtype=self_dtype)
+        self.assert_close_tpu_vs_cpu(
+            lambda device, t=t_conv, src=src_tensor: torch.select_scatter(
+                to(t, device=device),
+                to(src, device=device),
+                dim=0,
+                index=1,
+            )
+        )
+
+    # Empty self with complex64 src into float32 self matches CPU copy_ rules.
+    t_empty_f32 = torch.zeros(0, 3, dtype=torch.float32)
+    src_empty_c64 = torch.zeros(0, dtype=torch.complex64)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_empty_f32, src=src_empty_c64: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            index=0,
         )
     )
 
@@ -27971,6 +28074,17 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_slice_inplace)
 
+    # Partial aliasing overlap between self and out (allowed in PyTorch).
+    def run_slice_partial_overlap(device):
+      base = torch.arange(18.0, device=device).reshape(6, 3)
+      src_val = torch.full((2, 3), 99.0, device=device)
+      torch.ops.aten.slice_scatter.out(
+          base[:4], src_val, dim=0, start=1, end=3, step=1, out=base[2:]
+      )
+      return base
+
+    self.assert_close_tpu_vs_cpu(run_slice_partial_overlap)
+
   def test_select_scatter_out(self):
     # Functional equivalence vs CPU with preallocated out
     t = torch.randn(3, 5, 4)
@@ -28053,6 +28167,17 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       return res
 
     self.assert_close_tpu_vs_cpu(run_select_inplace)
+
+    # Partial aliasing overlap between self and out (allowed in PyTorch).
+    def run_select_partial_overlap(device):
+      base = torch.arange(18.0, device=device).reshape(6, 3)
+      src_val = torch.full((3,), 99.0, device=device)
+      torch.ops.aten.select_scatter.out(
+          base[:4], src_val, dim=0, index=1, out=base[2:]
+      )
+      return base
+
+    self.assert_close_tpu_vs_cpu(run_select_partial_overlap)
 
   def test_polygamma_n_0(self):
     # n = 0 is digamma.

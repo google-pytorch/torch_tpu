@@ -24053,6 +24053,45 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
           self_2d, src_wrong_size, dim=0, index=0, out=out_2d
       )
 
+    out_cpu = torch.empty(2, 3, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected out to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.ops.aten.select_scatter.out(
+          self_2d, src_1d, dim=0, index=0, out=out_cpu
+      )
+
+    self_empty = torch.empty(0, 3, dtype=torch.float32, device=et.device())
+    src_empty = torch.empty(0, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected out to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.ops.aten.select_scatter.out(
+          self_empty, src_empty, dim=1, index=0, out=out_cpu
+      )
+    if et.is_on_tpu():
+      # TPU validates out's device before resizing; PyTorch CUDA resizes out
+      # first.
+      self.assertEqual(out_cpu.shape, (2, 3))
+
+    out_overlap = torch.empty(
+        1, dtype=torch.float32, device=et.device()
+    ).expand(2, 3)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): inplace writes to overlapping views are undefined behavior and are not supported.
+Because multiple logical tensor indices point to the same buffer elements, writes from multiple indices may overwrite each other.
+Please use clone() or contiguous() to copy the tensor before writing""",
+        gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.ops.aten.select_scatter.out(
+          self_2d, src_1d, dim=0, index=0, out=out_overlap
+      )
+
   def test_slice_scatter_errors(self):
     self_2d = torch.ones(4, 3, device=et.device())
     src_2d = torch.ones(2, 3, device=et.device())
@@ -24126,6 +24165,55 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.ops.aten.slice_scatter.out(
           self_2d, src_wrong_size, dim=0, start=0, end=2, step=1, out=out_2d
+      )
+
+    out_cpu = torch.empty(4, 3, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected out to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_2d, src_2d, dim=0, start=0, end=2, step=1, out=out_cpu
+      )
+
+    self_empty = torch.empty(0, 3, dtype=torch.float32, device=et.device())
+    src_empty_zero = torch.empty(0, 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected out to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_empty, src_empty_zero, dim=1, start=0, end=2, step=1, out=out_cpu
+      )
+    if et.is_on_tpu():
+      # TPU validates out's device before resizing; PyTorch CUDA resizes out
+      # first.
+      self.assertEqual(out_cpu.shape, (4, 3))
+
+    src_empty_slice = torch.empty(0, 3, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected out to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_2d, src_empty_slice, dim=0, start=2, end=2, step=1, out=out_cpu
+      )
+
+    out_overlap = torch.empty(
+        1, dtype=torch.float32, device=et.device()
+    ).expand(4, 3)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): inplace writes to overlapping views are undefined behavior and are not supported.
+Because multiple logical tensor indices point to the same buffer elements, writes from multiple indices may overwrite each other.
+Please use clone() or contiguous() to copy the tensor before writing""",
+        gpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_2d, src_2d, dim=0, start=0, end=2, step=1, out=out_overlap
       )
 
   def test_tensor_factories_errors(self):

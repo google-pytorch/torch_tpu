@@ -487,6 +487,55 @@ mlir::MlirOp FillPastRuntimeSizes(
   return mlir::stablehlo::Select(*in_bounds, input, fill_tensor);
 }
 
+mlir::MlirOp ResolveDynamicIndex(mlir::MlirOp operand, int64_t dim,
+                                 int64_t raw_index, int64_t wrapped_index) {
+  mlir::MlirBuilder& builder = operand.getBuilder();
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(operand);
+  if (raw_index >= 0 || !type.isDynamicDim(dim)) {
+    return MakeScalarConstant(builder, wrapped_index, mlir::ElementType::I64);
+  }
+  mlir::MlirOp dim_size = mlir::stablehlo::ConvertElementType(
+      mlir::stablehlo::GetDimensionSize(operand, dim), mlir::ElementType::I64);
+  mlir::MlirOp offset =
+      MakeScalarConstant(builder, raw_index, mlir::ElementType::I64);
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0, mlir::ElementType::I64);
+  mlir::MlirOp shifted = mlir::stablehlo::Add(dim_size, offset);
+  return mlir::stablehlo::Max(shifted, zero);
+}
+
+mlir::MlirOp ClampToTargetBounds(mlir::MlirOp operand, mlir::MlirOp target) {
+  const mlir::RankedTensorType target_type = GetTensorTypeOrDie(target);
+  const Dimensions operand_static = GetStaticShape(operand);
+  const Dimensions target_static = GetStaticShape(target);
+  ABSL_CHECK_EQ(operand_static.size(), target_static.size())  // CRASH_OK
+      << "Expected operand and target to have the same rank. This is a "
+         "TorchTPU bug.";
+
+  bool needs_clamp = false;
+  Dimensions limit_indices = operand_static;
+  for (size_t i = 0; i < operand_static.size(); ++i) {
+    if (operand_static[i] > target_static[i]) {
+      limit_indices[i] = target_static[i];
+      needs_clamp = true;
+    }
+  }
+  if (!needs_clamp) {
+    return operand;
+  }
+
+  StaticAtBounds static_operand = MakeStaticAtBounds(operand);
+  const Dimensions starts(operand_static.size(), 0);
+  const Dimensions strides(operand_static.size(), 1);
+  mlir::MlirOp sliced =
+      mlir::stablehlo::Slice(static_operand.op, starts, limit_indices, strides);
+  for (size_t i = 0; i < operand_static.size(); ++i) {
+    if (operand_static[i] > target_static[i] && !target_type.isDynamicDim(i)) {
+      static_operand.runtime_sizes[i] = std::nullopt;
+    }
+  }
+  return RestoreDynamicDimSizes(sliced, static_operand.runtime_sizes);
+}
+
 std::string DebugString(mlir::Operation* absl_nonnull op,
                         DebugStringOptions opts) {
   std::string result;
@@ -825,6 +874,11 @@ mlir::MlirOp GetNonzeroMask(mlir::MlirOp input) {
   mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   if (IsBooleanType(input_type)) {
     return input;
+  }
+  if (IsComplexType(input_type)) {
+    mlir::MlirOp real_nz = GetNonzeroMask(mlir::stablehlo::Real(input));
+    mlir::MlirOp imag_nz = GetNonzeroMask(mlir::stablehlo::Imag(input));
+    return mlir::stablehlo::Or(real_nz, imag_nz);
   }
 
   // Test the bits instead: the float comparator would flush subnormals to
@@ -1246,22 +1300,35 @@ absl::StatusOr<mlir::MlirOp> ComplexSafeConvertElementType(
   if (current_type == target_type) {
     return op;
   }
+  const bool current_is_complex =
+      current_type == mlir::ElementType::COMPLEXF32 ||
+      current_type == mlir::ElementType::COMPLEXF64;
   if (target_type == mlir::ElementType::COMPLEXF32 ||
       target_type == mlir::ElementType::COMPLEXF64) {
-    const mlir::ElementType component_type =
-        (target_type == mlir::ElementType::COMPLEXF64) ? mlir::ElementType::F64
-                                                       : mlir::ElementType::F32;
-    if (current_type == mlir::ElementType::COMPLEXF32 ||
-        current_type == mlir::ElementType::COMPLEXF64) {
+    const mlir::ElementType component_type = RealComponentOf(target_type);
+    if (current_is_complex) {
       mlir::MlirOp real = mlir::stablehlo::Real(op);
       mlir::MlirOp imag = mlir::stablehlo::Imag(op);
       real = mlir::stablehlo::ConvertElementType(real, component_type);
       imag = mlir::stablehlo::ConvertElementType(imag, component_type);
       return mlir::stablehlo::Complex(real, imag);
     }
-    mlir::MlirOp real = mlir::stablehlo::ConvertElementType(op, component_type);
+    mlir::MlirOp real =
+        (current_type == component_type)
+            ? op
+            : mlir::stablehlo::ConvertElementType(op, component_type);
     mlir::MlirOp zero = MakeConstantLike(real, 0.0);
     return mlir::stablehlo::Complex(real, zero);
+  }
+  if (current_is_complex) {
+    if (target_type == mlir::ElementType::PRED) {
+      return GetNonzeroMask(op);
+    }
+    mlir::MlirOp real = mlir::stablehlo::Real(op);
+    if (RealComponentOf(current_type) == target_type) {
+      return real;
+    }
+    return mlir::stablehlo::ConvertElementType(real, target_type);
   }
   return mlir::stablehlo::ConvertElementType(op, target_type);
 }
@@ -1605,6 +1672,17 @@ absl::StatusOr<mlir::MlirOp> Unsqueeze(mlir::MlirOp input, int64_t dim) {
   int64_t rank = type.getRank();
   TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, rank + 1));
   output_dims.insert(output_dims.begin() + dim, {1});
+
+  // StableHLO `reshape` results may have at most one bounded dimension. Use
+  // `dynamic_reshape` with runtime sizes otherwise.
+  const int64_t num_bounded_output_dims = absl::c_count_if(
+      output_dims, [](const mlir::stablehlo::DimensionInfo& d) {
+        return d.boundOp.has_value();
+      });
+  if (num_bounded_output_dims > 1) {
+    return DynamicReshapeWithRuntimeSizes(
+        input, output_dims, GetRuntimeSizes(input.getBuilder(), output_dims));
+  }
 
   // Build reshape op
   // Dim expanding reshapes support dynamic shapes.
