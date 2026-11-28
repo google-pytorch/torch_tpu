@@ -18123,6 +18123,432 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           self.assertIsNone(db_tpu)
 
   @parameterized.named_parameters(
+      ("bfloat16", torch.bfloat16, 2e-2),
+      ("float16", torch.float16, 5e-3),
+  )
+  def test_native_group_norm_low_precision(self, dtype, atol):
+    torch.manual_seed(0)
+    x_cpu = (100.0 + torch.randn(2, 4, 32, 32, dtype=torch.float32)).to(dtype)
+    w_cpu = torch.randn(4, dtype=dtype)
+    b_cpu = torch.randn(4, dtype=dtype)
+    y_ref, mean_ref, rstd_ref = torch.ops.aten.native_group_norm(
+        x_cpu.float(), w_cpu.float(), b_cpu.float(), 2, 4, 1024, 2, 1e-5
+    )
+    y_tpu, mean_tpu, rstd_tpu = torch.ops.aten.native_group_norm(
+        x_cpu.to("tpu"),
+        w_cpu.to("tpu"),
+        b_cpu.to("tpu"),
+        2,
+        4,
+        1024,
+        2,
+        1e-5,
+    )
+    self.assertEqual(
+        (y_tpu.dtype, mean_tpu.dtype, rstd_tpu.dtype), (dtype,) * 3
+    )
+    self.assert_close(
+        golden_result=y_ref,
+        torch_tpu_result=y_tpu.cpu().float(),
+        atol=atol,
+        rtol=1e-2,
+    )
+    self.assert_close(
+        golden_result=mean_ref,
+        torch_tpu_result=mean_tpu.cpu().float(),
+        atol=1e-1,
+        rtol=1e-2,
+    )
+    self.assert_close(
+        golden_result=rstd_ref,
+        torch_tpu_result=rstd_tpu.cpu().float(),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+  @parameterized.named_parameters(
+      ("bfloat16_weight_and_bias", torch.bfloat16, True, True),
+      ("float16_weight_and_bias", torch.float16, True, True),
+      ("bfloat16_bias_only", torch.bfloat16, False, True),
+      ("float16_bias_only", torch.float16, False, True),
+  )
+  def test_native_group_norm_mixed_dtype_forward_and_out(
+      self, input_dtype, use_weight, use_bias
+  ):
+    torch.manual_seed(0)
+    x_c = torch.randn(2, 4, 8, 8, dtype=input_dtype)
+    w_c = torch.randn(4, dtype=torch.float32) if use_weight else None
+    b_c = torch.randn(4, dtype=torch.float32) if use_bias else None
+    yc, mc, rc = torch.ops.aten.native_group_norm(
+        x_c, w_c, b_c, 2, 4, 64, 2, 1e-5
+    )
+    yt, mt, rt = torch.ops.aten.native_group_norm(
+        x_c.to("tpu"),
+        w_c.to("tpu") if w_c is not None else None,
+        b_c.to("tpu") if b_c is not None else None,
+        2,
+        4,
+        64,
+        2,
+        1e-5,
+    )
+    self.assert_close(
+        golden_result=yc, torch_tpu_result=yt.cpu(), atol=2e-2, rtol=2e-2
+    )
+    self.assert_close(
+        golden_result=mc, torch_tpu_result=mt.cpu(), atol=1e-4, rtol=1e-4
+    )
+    self.assert_close(
+        golden_result=rc, torch_tpu_result=rt.cpu(), atol=1e-4, rtol=1e-4
+    )
+
+    out_y = torch.empty(0, dtype=input_dtype, device="tpu")
+    out_m = torch.empty(0, dtype=torch.float32, device="tpu")
+    out_r = torch.empty(0, dtype=torch.float32, device="tpu")
+    torch.ops.aten.native_group_norm.out(
+        x_c.to("tpu"),
+        w_c.to("tpu") if w_c is not None else None,
+        b_c.to("tpu") if b_c is not None else None,
+        2,
+        4,
+        64,
+        2,
+        1e-5,
+        out0=out_y,
+        out1=out_m,
+        out2=out_r,
+    )
+    self.assert_close(
+        golden_result=yc, torch_tpu_result=out_y.cpu(), atol=2e-2, rtol=2e-2
+    )
+    self.assert_close(
+        golden_result=mc, torch_tpu_result=out_m.cpu(), atol=1e-4, rtol=1e-4
+    )
+    self.assert_close(
+        golden_result=rc, torch_tpu_result=out_r.cpu(), atol=1e-4, rtol=1e-4
+    )
+
+  @parameterized.named_parameters(
+      ("weight_and_bias", True),
+      ("bias_only_with_downstream_mm", False),
+  )
+  def test_native_group_norm_compile_mixed_dtype_forward_and_backward(
+      self, use_weight
+  ):
+    torch.manual_seed(0)
+    x_c = torch.randn(2, 4, 8, 8, dtype=torch.bfloat16, requires_grad=True)
+    w_c = (
+        torch.randn(4, dtype=torch.float32, requires_grad=True)
+        if use_weight
+        else None
+    )
+    b_proj_c = torch.randn(4, 4, dtype=torch.float32)
+    b_leaf_c = torch.randn(4, 1, dtype=torch.float32, requires_grad=True)
+
+    def fn(x, w, b_proj, b_leaf):
+      b = torch.mm(b_proj, b_leaf).squeeze(-1)
+      return torch.nn.functional.group_norm(x * 2.0, 2, w, b, 1e-5)
+
+    # Upstream PyTorch CPU crashes on bias-only backward when weight=None
+    # (PyTorch 2.11 calls empty_like(gamma) on an undefined tensor; newer
+    # PyTorch allocates dbeta in X.options() while the mixed-dtype CPU kernel
+    # expects opmath_t). Use an equivalent unit float32 weight for the CPU
+    # reference while keeping weight=None on TPU.
+    w_ref = w_c if use_weight else torch.ones(4, dtype=torch.float32)
+    y_c = fn(x_c, w_ref, b_proj_c, b_leaf_c)
+    go_c = torch.randn_like(x_c)
+    y_c.backward(go_c)
+
+    x_t = x_c.detach().to("tpu").requires_grad_(True)
+    w_t = w_c.detach().to("tpu").requires_grad_(True) if use_weight else None
+    b_proj_t = b_proj_c.to("tpu")
+    b_leaf_t = b_leaf_c.detach().to("tpu").requires_grad_(True)
+
+    compiled_fn = torch.compile(fn, backend="tpu", fullgraph=True)
+    y_t = compiled_fn(x_t, w_t, b_proj_t, b_leaf_t)
+    y_t.backward(go_c.to("tpu"))
+
+    self.assert_close(
+        golden_result=y_c.detach(),
+        torch_tpu_result=y_t.detach().cpu(),
+        atol=2e-2,
+        rtol=2e-2,
+    )
+    self.assert_close(
+        golden_result=x_c.grad,
+        torch_tpu_result=x_t.grad.cpu(),
+        atol=4e-2,
+        rtol=2e-2,
+    )
+    if use_weight:
+      self.assert_close(
+          golden_result=w_c.grad,
+          torch_tpu_result=w_t.grad.cpu(),
+          atol=5e-2,
+          rtol=2e-2,
+      )
+    self.assert_close(
+        golden_result=b_leaf_c.grad,
+        torch_tpu_result=b_leaf_t.grad.cpu(),
+        atol=5e-2,
+        rtol=2e-2,
+    )
+
+  def test_native_group_norm_compile_empty_int32_batch(self):
+    x_t = torch.empty(0, 4, 8, 8, dtype=torch.int32, device="tpu")
+
+    @torch.compile(backend="tpu", fullgraph=True)
+    def fn(x):
+      return torch.ops.aten.native_group_norm(x, None, None, 0, 4, 64, 2, 1e-5)
+
+    # PyTorch 2.11 CPU native_group_norm lacks an N == 0 guard before
+    # GroupNormKernelImpl and rejects int32, so verify expected empty shapes
+    # and dtypes directly.
+    yt, mt, rt = fn(x_t)
+    yt_cpu, mt_cpu, rt_cpu = yt.cpu(), mt.cpu(), rt.cpu()
+    self.assertEqual(
+        (yt_cpu.shape, mt_cpu.shape, rt_cpu.shape),
+        ((0, 4, 8, 8), (0, 2), (0, 2)),
+    )
+    self.assertEqual(
+        (yt_cpu.dtype, mt_cpu.dtype, rt_cpu.dtype),
+        (torch.int32, torch.int32, torch.int32),
+    )
+
+  def test_native_group_norm_mixed_dtype_backward(self):
+    torch.manual_seed(0)
+    x_c = torch.randn(2, 4, 8, 8, dtype=torch.bfloat16)
+    w_c = torch.randn(4, dtype=torch.float32)
+    b_c = torch.randn(4, dtype=torch.float32)
+    yc, mc, rc = torch.ops.aten.native_group_norm(
+        x_c, w_c, b_c, 2, 4, 64, 2, 1e-5
+    )
+    go_c = torch.randn_like(yc)
+    dx_c, dw_c, db_c = torch.ops.aten.native_group_norm_backward(
+        go_c, x_c, mc, rc, w_c, 2, 4, 64, 2, [True, True, True]
+    )
+    dx_t, dw_t, db_t = torch.ops.aten.native_group_norm_backward(
+        go_c.to("tpu"),
+        x_c.to("tpu"),
+        mc.to("tpu"),
+        rc.to("tpu"),
+        w_c.to("tpu"),
+        2,
+        4,
+        64,
+        2,
+        [True, True, True],
+    )
+    self.assert_close(
+        golden_result=dx_c, torch_tpu_result=dx_t.cpu(), atol=2e-2, rtol=2e-2
+    )
+    self.assert_close(
+        golden_result=dw_c, torch_tpu_result=dw_t.cpu(), atol=5e-2, rtol=2e-2
+    )
+    self.assert_close(
+        golden_result=db_c, torch_tpu_result=db_t.cpu(), atol=5e-2, rtol=2e-2
+    )
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32, None, None, torch.float32),
+      ("int32", torch.int32, None, None, torch.int32),
+      (
+          "mixed_bfloat16_float32",
+          torch.bfloat16,
+          torch.float32,
+          torch.float32,
+          torch.float32,
+      ),
+  )
+  def test_native_group_norm_empty_batch(
+      self, input_dtype, weight_dtype, bias_dtype, expected_stat_dtype
+  ):
+    x_c = torch.empty(0, 4, 8, 8, dtype=input_dtype)
+    w_c = torch.ones(4, dtype=weight_dtype) if weight_dtype else None
+    b_c = torch.zeros(4, dtype=bias_dtype) if bias_dtype else None
+
+    if input_dtype.is_floating_point:
+      yc, mc, rc = torch.ops.aten.native_group_norm(
+          x_c, w_c, b_c, 0, 4, 64, 2, 1e-5
+      )
+    else:
+      # PyTorch 2.11 CPU native_group_norm lacks an N == 0 guard before
+      # GroupNormKernelImpl and rejects integral inputs.
+      yc = torch.empty(0, 4, 8, 8, dtype=input_dtype)
+      mc = torch.empty(0, 2, dtype=expected_stat_dtype)
+      rc = torch.empty(0, 2, dtype=expected_stat_dtype)
+    yt, mt, rt = torch.ops.aten.native_group_norm(
+        x_c.to("tpu"),
+        w_c.to("tpu") if w_c is not None else None,
+        b_c.to("tpu") if b_c is not None else None,
+        0,
+        4,
+        64,
+        2,
+        1e-5,
+    )
+    yt_cpu, mt_cpu, rt_cpu = yt.cpu(), mt.cpu(), rt.cpu()
+    self.assertEqual(
+        (yt_cpu.shape, mt_cpu.shape, rt_cpu.shape),
+        (yc.shape, mc.shape, rc.shape),
+    )
+    self.assertEqual(
+        (yt_cpu.dtype, mt_cpu.dtype, rt_cpu.dtype),
+        (yc.dtype, mc.dtype, rc.dtype),
+    )
+    self.assertTrue(torch.equal(yt_cpu, yc))
+    self.assertTrue(torch.equal(mt_cpu, mc))
+    self.assertTrue(torch.equal(rt_cpu, rc))
+
+    out_y = torch.empty(0, dtype=yc.dtype, device="tpu")
+    out_m = torch.empty(0, dtype=mc.dtype, device="tpu")
+    out_r = torch.empty(0, dtype=rc.dtype, device="tpu")
+    torch.ops.aten.native_group_norm.out(
+        x_c.to("tpu"),
+        w_c.to("tpu") if w_c is not None else None,
+        b_c.to("tpu") if b_c is not None else None,
+        0,
+        4,
+        64,
+        2,
+        1e-5,
+        out0=out_y,
+        out1=out_m,
+        out2=out_r,
+    )
+    out_y_cpu, out_m_cpu, out_r_cpu = out_y.cpu(), out_m.cpu(), out_r.cpu()
+    self.assertEqual(
+        (out_y_cpu.shape, out_m_cpu.shape, out_r_cpu.shape),
+        (yc.shape, mc.shape, rc.shape),
+    )
+    self.assertEqual(
+        (out_y_cpu.dtype, out_m_cpu.dtype, out_r_cpu.dtype),
+        (yc.dtype, mc.dtype, rc.dtype),
+    )
+    self.assertTrue(torch.equal(out_y_cpu, yc))
+    self.assertTrue(torch.equal(out_m_cpu, mc))
+    self.assertTrue(torch.equal(out_r_cpu, rc))
+
+  def test_native_group_norm_out_fake_tensor_and_compile(self):
+    with fake_tensor.FakeTensorMode():
+      fx = torch.randn(2, 4, 8, 8, dtype=torch.bfloat16, device="tpu")
+      fw = torch.randn(4, dtype=torch.float32, device="tpu")
+      fb = torch.randn(4, dtype=torch.float32, device="tpu")
+      f_out0 = torch.empty(0, dtype=torch.bfloat16, device="tpu")
+      f_out1 = torch.empty(0, dtype=torch.float32, device="tpu")
+      f_out2 = torch.empty(0, dtype=torch.float32, device="tpu")
+      res0, res1, res2 = torch.ops.aten.native_group_norm.out(
+          fx,
+          fw,
+          fb,
+          2,
+          4,
+          64,
+          2,
+          1e-5,
+          out0=f_out0,
+          out1=f_out1,
+          out2=f_out2,
+      )
+      self.assertIs(res0, f_out0)
+      self.assertIs(res1, f_out1)
+      self.assertIs(res2, f_out2)
+      self.assertEqual(
+          (f_out0.shape, f_out1.shape, f_out2.shape),
+          ((2, 4, 8, 8), (2, 2), (2, 2)),
+      )
+      self.assertEqual(
+          (f_out0.dtype, f_out1.dtype, f_out2.dtype),
+          (torch.bfloat16, torch.float32, torch.float32),
+      )
+
+      fx_empty = torch.empty(0, 4, 8, 8, dtype=torch.int32, device="tpu")
+      f_empty0 = torch.empty(0, dtype=torch.int32, device="tpu")
+      f_empty1 = torch.empty(0, dtype=torch.int32, device="tpu")
+      f_empty2 = torch.empty(0, dtype=torch.int32, device="tpu")
+      torch.ops.aten.native_group_norm.out(
+          fx_empty,
+          None,
+          None,
+          0,
+          4,
+          64,
+          2,
+          1e-5,
+          out0=f_empty0,
+          out1=f_empty1,
+          out2=f_empty2,
+      )
+      self.assertEqual(
+          (f_empty0.shape, f_empty1.shape, f_empty2.shape),
+          ((0, 4, 8, 8), (0, 2), (0, 2)),
+      )
+      self.assertEqual(
+          (f_empty0.dtype, f_empty1.dtype, f_empty2.dtype),
+          (torch.int32, torch.int32, torch.int32),
+      )
+
+    torch.manual_seed(0)
+    x_c = torch.randn(2, 4, 8, 8, dtype=torch.bfloat16)
+    w_c = torch.randn(4, dtype=torch.float32)
+    b_c = torch.randn(4, dtype=torch.float32)
+    yc, mc, rc = torch.ops.aten.native_group_norm(
+        x_c, w_c, b_c, 2, 4, 64, 2, 1e-5
+    )
+
+    @torch.compile(backend="tpu", fullgraph=True)
+    def compiled_out(x, w, b, out0, out1, out2):
+      return torch.ops.aten.native_group_norm.out(
+          x, w, b, 2, 4, 64, 2, 1e-5, out0=out0, out1=out1, out2=out2
+      )
+
+    out_y = torch.empty(2, 4, 8, 8, dtype=torch.bfloat16, device="tpu")
+    out_m = torch.empty(2, 2, dtype=torch.float32, device="tpu")
+    out_r = torch.empty(2, 2, dtype=torch.float32, device="tpu")
+    compiled_out(
+        x_c.to("tpu"), w_c.to("tpu"), b_c.to("tpu"), out_y, out_m, out_r
+    )
+    self.assert_close(
+        golden_result=yc, torch_tpu_result=out_y.cpu(), atol=2e-2, rtol=2e-2
+    )
+    self.assert_close(
+        golden_result=mc, torch_tpu_result=out_m.cpu(), atol=1e-4, rtol=1e-4
+    )
+    self.assert_close(
+        golden_result=rc, torch_tpu_result=out_r.cpu(), atol=1e-4, rtol=1e-4
+    )
+
+  @parameterized.named_parameters(
+      ("zero_hw_with_weight", (2, 4, 0, 4), 4, 0, True),
+      ("zero_hw_without_weight", (2, 4, 0, 4), 4, 0, False),
+      ("zero_c_with_weight", (2, 0, 4, 4), 0, 16, True),
+      ("zero_c_without_weight", (2, 0, 4, 4), 0, 16, False),
+  )
+  def test_native_group_norm_backward_empty_mixed_dtype(
+      self, shape, c, h_w, use_weight
+  ):
+    go_t = torch.empty(shape, dtype=torch.bfloat16, device="tpu")
+    x_t = torch.empty(shape, dtype=torch.bfloat16, device="tpu")
+    mean_t = torch.zeros(2, 2, dtype=torch.float32, device="tpu")
+    rstd_t = torch.ones(2, 2, dtype=torch.float32, device="tpu")
+    w_t = (
+        torch.ones(c, dtype=torch.float32, device="tpu") if use_weight else None
+    )
+
+    dx_t, dw_t, db_t = torch.ops.aten.native_group_norm_backward(
+        go_t, x_t, mean_t, rstd_t, w_t, 2, c, h_w, 2, [True, True, True]
+    )
+    dx_cpu, dw_cpu, db_cpu = dx_t.cpu(), dw_t.cpu(), db_t.cpu()
+    self.assertEqual(dx_cpu.shape, shape)
+    self.assertEqual(dx_cpu.dtype, torch.bfloat16)
+    self.assertEqual(dw_cpu.shape, (c,))
+    self.assertEqual(dw_cpu.dtype, torch.float32)
+    self.assertTrue(torch.equal(dw_cpu, torch.zeros(c, dtype=torch.float32)))
+    self.assertEqual(db_cpu.shape, (c,))
+    self.assertEqual(db_cpu.dtype, torch.float32)
+    self.assertTrue(torch.equal(db_cpu, torch.zeros(c, dtype=torch.float32)))
+
+  @parameterized.named_parameters(
       ("float32", torch.float32),
       ("bfloat16", torch.bfloat16),
       ("float16", torch.float16),

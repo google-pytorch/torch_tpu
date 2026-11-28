@@ -1962,6 +1962,333 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           grad_out, inp, mean, rstd, weight, n, c, h_w, group, output_mask
       )
 
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_native_group_norm_bounded_dynamic_input(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      x = torch.ones(2, 4, 4, 4, device=et.device())
+      dynamism.mark_dynamic(x, 0, 2, 4)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""native_group_norm(): bounded dynamic shapes are not yet supported""",
+      ):
+        torch.ops.aten.native_group_norm(x, None, None, 2, 4, 16, 2, 1e-5)[
+            0
+        ].cpu()
+
+  @et.why_tpu_only(
+      "PyTorch's autogen native_group_norm.out allows cross-device out tensors"
+      " via copy_, whereas TPU requires TPU outputs."
+  )
+  def test_native_group_norm_out_non_tpu_device(self):
+    x_empty = torch.empty(0, 4, 4, 4, dtype=torch.float32, device=et.device())
+    out0 = torch.empty(0, 4, 4, 4, dtype=torch.float32, device="cpu")
+    out1 = torch.empty(0, 2, dtype=torch.float32, device="cpu")
+    out2 = torch.empty(0, 2, dtype=torch.float32, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected all output tensors to be on tpu, got cpu, cpu, and cpu""",
+    ):
+      torch.ops.aten.native_group_norm.out(
+          x_empty,
+          None,
+          None,
+          0,
+          4,
+          16,
+          2,
+          1e-5,
+          out0=out0,
+          out1=out1,
+          out2=out2,
+      )
+
+    x = torch.ones(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    out0_tpu = torch.empty(2, 4, 4, 4, dtype=torch.float32, device=et.device())
+    out1_cpu = torch.empty(2, 2, dtype=torch.float32, device="cpu")
+    out2_tpu = torch.empty(2, 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected all output tensors to be on tpu, got tpu:0, cpu, and tpu:0""",
+    ):
+      torch.ops.aten.native_group_norm.out(
+          x,
+          None,
+          None,
+          2,
+          4,
+          16,
+          2,
+          1e-5,
+          out0=out0_tpu,
+          out1=out1_cpu,
+          out2=out2_tpu,
+      )
+
+  @et.why_tpu_only(
+      "TPU explicitly rejects low-precision float dtypes via"
+      " ValidateNotLowPrecisionFloat, including on N == 0."
+  )
+  def test_native_group_norm_low_precision_float_rejected(self):
+    x_f8 = torch.empty(0, 4, 4, 4, dtype=torch.float8_e4m3fn, device="tpu")
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""native_group_norm(): not implemented for float8_e4m3fn""",
+    ):
+      torch.ops.aten.native_group_norm(x_f8, None, None, 0, 4, 16, 2, 1e-5)
+
+    x_f4 = torch.empty(0, 4, 4, 4, dtype=torch.float4_e2m1fn_x2, device="tpu")
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""native_group_norm(): not implemented for float4_e2m1fn_x2""",
+    ):
+      torch.ops.aten.native_group_norm(x_f4, None, None, 0, 4, 16, 2, 1e-5)
+
+    x_empty_f32 = torch.empty(0, 4, 4, 4, dtype=torch.float32, device="tpu")
+    w_f8 = torch.empty(4, dtype=torch.float8_e4m3fn, device="tpu")
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""native_group_norm(): not implemented for float8_e4m3fn""",
+    ):
+      torch.ops.aten.native_group_norm(
+          x_empty_f32, w_f8, None, 0, 4, 16, 2, 1e-5
+      )
+
+    b_f4 = torch.empty(4, dtype=torch.float4_e2m1fn_x2, device="tpu")
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""native_group_norm(): not implemented for float4_e2m1fn_x2""",
+    ):
+      torch.ops.aten.native_group_norm(
+          x_empty_f32, None, b_f4, 0, 4, 16, 2, 1e-5
+      )
+
+    go_bwd = torch.ones(1, 3, 1, dtype=torch.float32, device="tpu")
+    x_bwd = torch.ones(1, 3, 1, dtype=torch.float32, device="tpu")
+    mean_bwd = torch.ones(1, 1, dtype=torch.float32, device="tpu")
+    rstd_bwd = torch.ones(1, 1, dtype=torch.float32, device="tpu")
+    w_bwd_f4 = torch.empty(3, dtype=torch.float4_e2m1fn_x2, device="tpu")
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""native_group_norm_backward(): not implemented for float4_e2m1fn_x2""",
+    ):
+      torch.ops.aten.native_group_norm_backward(
+          go_bwd,
+          x_bwd,
+          mean_bwd,
+          rstd_bwd,
+          w_bwd_f4,
+          1,
+          3,
+          1,
+          1,
+          [False, False, True],
+      )
+
+  @et.why_tpu_only(
+      "PyTorch's autogen native_group_norm.out allows dtype casting via copy_,"
+      " whereas TPU requires exact output dtypes."
+  )
+  def test_native_group_norm_out_dtype_mismatch(self):
+    x_f32 = torch.ones(2, 4, 4, 4, dtype=torch.float32, device="tpu")
+    out0_bad = torch.empty(0, dtype=torch.int32, device="tpu")
+    out1_f32 = torch.empty(0, dtype=torch.float32, device="tpu")
+    out2_f32 = torch.empty(0, dtype=torch.float32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected the output dtype to be float32, got int32""",
+    ):
+      torch.ops.aten.native_group_norm.out(
+          x_f32,
+          None,
+          None,
+          2,
+          4,
+          16,
+          2,
+          1e-5,
+          out0=out0_bad,
+          out1=out1_f32,
+          out2=out2_f32,
+      )
+
+    x_bf16 = torch.ones(2, 4, 4, 4, dtype=torch.bfloat16, device="tpu")
+    w_f32 = torch.ones(4, dtype=torch.float32, device="tpu")
+    b_f32 = torch.ones(4, dtype=torch.float32, device="tpu")
+    out0_bf16 = torch.empty(0, dtype=torch.bfloat16, device="tpu")
+    out1_bad = torch.empty(0, dtype=torch.bfloat16, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected the output dtype to be float32, got bfloat16""",
+    ):
+      torch.ops.aten.native_group_norm.out(
+          x_bf16,
+          w_f32,
+          b_f32,
+          2,
+          4,
+          16,
+          2,
+          1e-5,
+          out0=out0_bf16,
+          out1=out1_bad,
+          out2=out2_f32,
+      )
+
+    out2_bad = torch.empty(0, dtype=torch.bfloat16, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm(): expected the output dtype to be float32, got bfloat16""",
+    ):
+      torch.ops.aten.native_group_norm.out(
+          x_bf16,
+          w_f32,
+          b_f32,
+          2,
+          4,
+          16,
+          2,
+          1e-5,
+          out0=out0_bf16,
+          out1=out1_f32,
+          out2=out2_bad,
+      )
+
+  @et.why_tpu_only(
+      "Testing TPU Meta native_group_norm.out device and output dtype"
+      " validation under FakeTensorMode."
+  )
+  def test_native_group_norm_out_meta_errors(self):
+    with fake_tensor.FakeTensorMode():
+      x_bf16 = torch.empty(2, 4, 4, 4, dtype=torch.bfloat16, device=et.device())
+      w_f32 = torch.empty(4, dtype=torch.float32, device=et.device())
+      b_f32 = torch.empty(4, dtype=torch.float32, device=et.device())
+      out0_tpu = torch.empty(0, dtype=torch.bfloat16, device=et.device())
+      out1_cpu = torch.empty(0, dtype=torch.float32, device="cpu")
+      out2_tpu = torch.empty(0, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""native_group_norm(): expected all output tensors to be on tpu, got tpu:0, cpu, and tpu:0""",
+      ):
+        torch.ops.aten.native_group_norm.out(
+            x_bf16,
+            w_f32,
+            b_f32,
+            2,
+            4,
+            16,
+            2,
+            1e-5,
+            out0=out0_tpu,
+            out1=out1_cpu,
+            out2=out2_tpu,
+        )
+
+      out0_bad = torch.empty(0, dtype=torch.int32, device=et.device())
+      out1_f32 = torch.empty(0, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""native_group_norm(): expected the output dtype to be bfloat16, got int32""",
+      ):
+        torch.ops.aten.native_group_norm.out(
+            x_bf16,
+            w_f32,
+            b_f32,
+            2,
+            4,
+            16,
+            2,
+            1e-5,
+            out0=out0_bad,
+            out1=out1_f32,
+            out2=out2_tpu,
+        )
+
+      out1_bad = torch.empty(0, dtype=torch.bfloat16, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""native_group_norm(): expected the output dtype to be float32, got bfloat16""",
+      ):
+        torch.ops.aten.native_group_norm.out(
+            x_bf16,
+            w_f32,
+            b_f32,
+            2,
+            4,
+            16,
+            2,
+            1e-5,
+            out0=out0_tpu,
+            out1=out1_bad,
+            out2=out2_tpu,
+        )
+
+  @et.why_tpu_only(
+      "PyTorch CUDA native_group_norm_backward does not guard group <= 0 or"
+      " C % group != 0 before integer division."
+  )
+  def test_native_group_norm_backward_invalid_groups(self):
+    go = torch.ones(2, 4, 4, dtype=torch.float32, device="tpu")
+    x = torch.ones(2, 4, 4, dtype=torch.float32, device="tpu")
+    mean_zero = torch.empty(2, 0, dtype=torch.float32, device="tpu")
+    rstd_zero = torch.empty(2, 0, dtype=torch.float32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm_backward(): expected num groups to be greater than 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm_backward(
+          go, x, mean_zero, rstd_zero, None, 2, 4, 4, 0, [True, True, True]
+      )
+
+    mean_three = torch.ones(2, 3, dtype=torch.float32, device="tpu")
+    rstd_three = torch.ones(2, 3, dtype=torch.float32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm_backward(): expected number of channels to be divisible by num_groups (3), got 4""",
+    ):
+      torch.ops.aten.native_group_norm_backward(
+          go, x, mean_three, rstd_three, None, 2, 4, 4, 3, [True, True, True]
+      )
+
+    go_small_c = torch.ones(2, 2, 4, dtype=torch.float32, device="tpu")
+    x_small_c = torch.ones(2, 2, 4, dtype=torch.float32, device="tpu")
+    mean_four = torch.ones(2, 4, dtype=torch.float32, device="tpu")
+    rstd_four = torch.ones(2, 4, dtype=torch.float32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm_backward(): expected number of channels to be divisible by num_groups (4), got 2""",
+    ):
+      torch.ops.aten.native_group_norm_backward(
+          go_small_c,
+          x_small_c,
+          mean_four,
+          rstd_four,
+          None,
+          2,
+          2,
+          4,
+          4,
+          [True, True, True],
+      )
+
+    go_zero_hw = torch.empty(2, 4, 0, dtype=torch.float32, device="tpu")
+    x_zero_hw = torch.empty(2, 4, 0, dtype=torch.float32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_group_norm_backward(): expected number of channels to be divisible by num_groups (3), got 4""",
+    ):
+      torch.ops.aten.native_group_norm_backward(
+          go_zero_hw,
+          x_zero_hw,
+          mean_three,
+          rstd_three,
+          None,
+          2,
+          4,
+          0,
+          3,
+          [True, True, True],
+      )
+
   # PyTorch implementation promotes `input` and `target` dtypes, instead of
   # raising an error.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
