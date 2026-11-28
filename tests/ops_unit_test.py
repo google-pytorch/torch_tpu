@@ -14663,6 +14663,126 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
 
   @parameterized.product(
+      dtype=[torch.float32, torch.complex64],
+      uplo=["l", "U"],
+  )
+  def test_linalg_eigh_batched(self, dtype, uplo):
+    identity = torch.eye(4, dtype=dtype)
+    direction = torch.tensor(
+        [1, 1j, -1, -1j] if dtype.is_complex else [1, -1, 1, -1],
+        dtype=dtype,
+    ) / 2
+    projector = direction[:, None] * direction.conj()
+    repeated = 4 * projector - 2 * identity
+    indefinite = torch.diag(torch.tensor([4, -3, 1, -2], dtype=dtype))
+    matrices = torch.stack([
+        torch.zeros_like(identity),
+        repeated,
+        projector,
+        indefinite + projector,
+    ])
+    mask = torch.ones((4, 4), dtype=torch.bool)
+    unused_triangle = mask.triu(1) if uplo == "l" else mask.tril(-1)
+    poisoned = matrices.masked_fill(unused_triangle, torch.nan)
+    if dtype.is_complex:
+      poisoned.diagonal(dim1=-2, dim2=-1).imag.fill_(7)
+    matrix_tpu = poisoned.mT.contiguous().to("tpu").mT
+
+    values, vectors = torch.linalg.eigh(matrix_tpu, UPLO=uplo)
+    values_only = torch.linalg.eigvalsh(matrix_tpu, UPLO=uplo)
+    self.assertEqual(values.device.type, "tpu")
+    self.assertEqual(vectors.device.type, "tpu")
+    self.assertEqual(values_only.device.type, "tpu")
+    self.assertTrue(values.is_contiguous())
+    self.assertTrue(vectors.mT.is_contiguous())
+
+    values, vectors, values_only = values.cpu(), vectors.cpu(), values_only.cpu()
+    self.assertTrue(torch.all(values.diff(dim=-1) >= 0).item())
+    expected_values = torch.linalg.eigvalsh(matrices)
+    utils.assert_close(values, expected_values, atol=1e-4, rtol=1e-4)
+    utils.assert_close(values_only, expected_values, atol=1e-4, rtol=1e-4)
+    utils.assert_close(
+        vectors.mH @ vectors, identity.expand_as(matrices), atol=1e-4, rtol=1e-4
+    )
+    utils.assert_close(
+        matrices @ vectors, vectors * values.unsqueeze(-2), atol=1e-4, rtol=1e-4
+    )
+    repeated_basis = vectors[1, :, :3]
+    utils.assert_close(
+        repeated_basis @ repeated_basis.mH,
+        identity - projector,
+        atol=1e-4,
+        rtol=1e-4,
+    )
+
+  @parameterized.product(shape=[(0, 0), (2, 0, 0), (0, 3, 3)])
+  def test_linalg_eigh_empty(self, shape):
+    matrix = torch.empty(shape, dtype=torch.complex64, device="tpu")
+    values, vectors = torch.linalg.eigh(matrix)
+    values_only = torch.linalg.eigvalsh(matrix)
+    self.assertEqual(values.shape, shape[:-1])
+    self.assertEqual(values_only.shape, shape[:-1])
+    self.assertEqual(vectors.shape, shape)
+    self.assertEqual(values.dtype, torch.float32)
+    self.assertEqual(values_only.dtype, torch.float32)
+    self.assertEqual(vectors.dtype, torch.complex64)
+
+  def test_linalg_eigh_out_views(self):
+    matrix = torch.tensor([[3.0, 1.0], [1.0, 2.0]])
+    matrix_tpu = matrix.to("tpu")
+    values_storage = torch.full((2, 4), -1.0, device="tpu")
+    vectors_storage = torch.full((2, 2, 4), -1.0, device="tpu")
+    values = values_storage[1, ::2]
+    vectors = vectors_storage[1, :, ::2]
+
+    returned = torch.linalg.eigh(matrix_tpu, out=(values, vectors))
+    self.assertIs(returned.eigenvalues, values)
+    self.assertIs(returned.eigenvectors, vectors)
+    self.assertEqual(values.stride(), (2,))
+    self.assertEqual(vectors.stride(), (4, 2))
+    self.assertEqual(values.storage_offset(), 4)
+    self.assertEqual(vectors.storage_offset(), 8)
+    expected_values = torch.linalg.eigvalsh(matrix)
+    utils.assert_close(values.cpu(), expected_values, atol=1e-4, rtol=1e-4)
+    vectors_cpu = vectors.cpu()
+    utils.assert_close(
+        (vectors_cpu * values.cpu()) @ vectors_cpu.mT,
+        matrix,
+        atol=1e-4,
+        rtol=1e-4,
+    )
+    utils.assert_close(values_storage[0].cpu(), torch.full((4,), -1.0))
+    utils.assert_close(vectors_storage[0].cpu(), torch.full((2, 4), -1.0))
+    utils.assert_close(
+        values_storage[1, 1::2].cpu(), torch.full((2,), -1.0)
+    )
+    utils.assert_close(
+        vectors_storage[1, :, 1::2].cpu(), torch.full((2, 2), -1.0)
+    )
+
+    values_only = torch.empty((0,), device="tpu")
+    self.assertIs(torch.linalg.eigvalsh(matrix_tpu, out=values_only), values_only)
+    utils.assert_close(
+        values_only.cpu(), expected_values, atol=1e-4, rtol=1e-4
+    )
+
+  @parameterized.product(compiled=[False, True])
+  def test_linalg_eigh_compute_v_false(self, compiled):
+    matrix = torch.tensor([[3.0, 1.0], [1.0, 2.0]])
+
+    def run(a):
+      return torch.ops.aten._linalg_eigh.default(a, compute_v=False)
+
+    fn = torch.compile(run, backend="tpu", fullgraph=True) if compiled else run
+    values, vectors = fn(matrix.to("tpu"))
+    self.assertEqual(vectors.shape, (0,))
+    self.assertEqual(vectors.dtype, matrix.dtype)
+    self.assertEqual(vectors.device.type, "tpu")
+    utils.assert_close(
+        values.cpu(), torch.linalg.eigvalsh(matrix), atol=1e-4, rtol=1e-4
+    )
+
+  @parameterized.product(
       shape_and_dim=[
           ((3,), -1),
           ((3,), 0),
@@ -21319,6 +21439,40 @@ module {{
 
 class OpsGradUnitTest(TorchTpuVsCpuTestBase):
   """Tests for backward ops."""
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.complex64],
+      compiled=[False, True],
+      compute_v=[False, True],
+  )
+  def test_linalg_eigh_backward(self, dtype, compiled, compute_v):
+    off_diagonal = 1 + 0.25j if dtype.is_complex else 1.0
+    matrix = torch.tensor(
+        [[3, off_diagonal], [off_diagonal.conjugate(), 2]], dtype=dtype
+    )
+
+    def loss(a):
+      if compute_v:
+        _, vectors = torch.linalg.eigh(a)
+        return vectors[0, 0].abs().square()
+      return torch.linalg.eigvalsh(a).square().sum()
+
+    matrix_cpu = matrix.clone().requires_grad_()
+    (expected,) = torch.autograd.grad(loss(matrix_cpu), matrix_cpu)
+    matrix_tpu = matrix.to("tpu").requires_grad_()
+    previous_precision = torch.get_float32_matmul_precision()
+    try:
+      run = loss
+      if compiled:
+        # Compare the compiled backward at full float32 matmul precision.
+        torch.set_float32_matmul_precision("highest")
+        run = torch.compile(loss, backend="tpu", fullgraph=True)
+      (actual,) = torch.autograd.grad(run(matrix_tpu), matrix_tpu)
+      self.assertEqual(actual.device.type, "tpu")
+      utils.assert_close(actual.cpu(), expected, atol=1e-4, rtol=1e-4)
+    finally:
+      if compiled:
+        torch.set_float32_matmul_precision(previous_precision)
 
   def _nll_loss_grad(self, device, reduction, use_weight):
     # Prepare the data.

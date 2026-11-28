@@ -228,6 +228,20 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
       t = torch.empty((2, 2), dtype=torch.complex128, device=et.device())
       t.fill_(1.0)
 
+  @parameterized.named_parameters(
+      ("float64", torch.float64, "float64"),
+      ("complex128", torch.complex128, "complex128"),
+  )
+  @et.why_tpu_only("The TPU Eigh solver is limited to single precision.")
+  def test_linalg_eigh_double_precision(self, dtype, dtype_name):
+    matrix = torch.empty((2, 2), dtype=dtype, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""linalg_eigh(): expected the input dtype to be float32 or complex64, got {dtype_name}""",
+    ):
+      torch.linalg.eigh(matrix)
+
   @et.why_tpu_only(
       "TPU masked_scatter uses int32 source offsets. GPU supports larger"
       " offsets."

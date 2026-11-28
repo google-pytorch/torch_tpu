@@ -8141,7 +8141,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       golden_result: Any,
       torch_tpu_result: Any,
       torch_tpu_printable_input: OpInput,
-      check_value: CheckValueMode | Iterable[CheckValueMode] | None,
+      check_value: CheckValueMode | Iterable[CheckValueMode | None] | None,
       check_dtype: bool,
       skip_output_indices: Sequence[int],
       accuracy_override: Mapping[str, Tolerance],
@@ -8228,7 +8228,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       *,
       golden_input: OpInput,
       golden_result: Any,
-      check_value: CheckValueMode | Iterable[CheckValueMode] | None,
+      check_value: CheckValueMode | Iterable[CheckValueMode | None] | None,
       check_dtype: bool,
       skip_output_indices: Sequence[int],
       compute_grad: bool,
@@ -8413,7 +8413,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       *,
       compute_grad: bool,
       use_compiled: bool,
-      check_value: CheckValueMode | Iterable[CheckValueMode] | None,
+      check_value: CheckValueMode | Iterable[CheckValueMode | None] | None,
       check_dtype: bool,
       check_device: bool,
       check_op_failures: bool,
@@ -8816,7 +8816,7 @@ class OpInfoTestBase(TorchTpuTestBase):
       check_out_variant: bool = True,
       check_grad: bool = True,
       check_device: bool = True,
-      check_value: CheckValueMode | Iterable[CheckValueMode] | None = None,
+      check_value: CheckValueMode | Iterable[CheckValueMode | None] | None = None,
       check_dtype: bool = True,
       check_op_failures: bool = True,
       check_inplace_op_failures: bool = True,
@@ -8841,7 +8841,8 @@ class OpInfoTestBase(TorchTpuTestBase):
         dtype and shape will be checked. If an iterable is provided, it must
         have the same length as the op's output list, and the i-th element will
         determine whether to check the i-th output's values (this is useful for
-        ops that return multiple outputs). None (default) means LOOSE.
+        ops that return multiple outputs). None means LOOSE for an individual
+        output or for all outputs when passed as the top-level value.
       check_dtype: Check if the dtypes are the same.
       check_op_failures: If True, check that the op fails on TorchTPU when it
         fails on the golden device. If False, the op will be skipped on TorchTPU

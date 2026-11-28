@@ -5369,17 +5369,27 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_linalg_eig(self):
     self.do_test_op("linalg.eig")
 
-  @op_testing.unimplemented_on_tpu
   def test_linalg_eigh(self):
-    self.do_test_op("linalg.eigh")
+    self.do_test_op(
+        "linalg.eigh",
+        # EXCLUDE_DTYPES_OK=Nonempty TPU Eigh supports float32 and complex64.
+        exclude_dtypes=(torch.float64, torch.complex128),
+        # Eigenvectors have sign/phase ambiguity. Check their shape and dtype
+        # here and the eigendecomposition in OpsUnitTest.
+        check_value=[None, CheckValueMode.SKIP],
+        check_grad=False,
+    )
 
   @op_testing.unimplemented_on_tpu
   def test_linalg_eigvals(self):
     self.do_test_op("linalg.eigvals")
 
-  @op_testing.unimplemented_on_tpu
   def test_linalg_eigvalsh(self):
-    self.do_test_op("linalg.eigvalsh")
+    self.do_test_op(
+        "linalg.eigvalsh",
+        # EXCLUDE_DTYPES_OK=Nonempty TPU Eigh supports float32 and complex64.
+        exclude_dtypes=(torch.float64, torch.complex128),
+    )
 
   @op_testing.unimplemented_on_tpu
   def test_linalg_householder_product(self):
