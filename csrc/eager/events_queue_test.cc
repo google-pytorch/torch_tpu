@@ -1437,6 +1437,40 @@ TEST(StreamGraphCaptureTest, StreamsReportCapture) {
 }
 #endif  // TT_TORCH_VERSION_GE(2, 12)
 
+TEST_F(EventsQueueTest,
+       HasPendingUnmaterializedWorkTracksLiveAndSideEffectOps) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  const Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  EXPECT_FALSE(HasPendingUnmaterializedWork(device_index, stream_id));
+  {
+    TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+    RecordDeferredOpCreated(refs[0].device_buffer_list());
+    EXPECT_TRUE(HasPendingUnmaterializedWork(device_index, stream_id));
+  }
+  EXPECT_FALSE(HasPendingUnmaterializedWork(device_index, stream_id));
+
+  {
+    TT_ASSERT_OK_AND_ASSIGN(auto side_effect_refs,
+                            DeviceBufferList::CreateDeferred(
+                                OpName::kDistributedAllReduce, DummyBuilder, {},
+                                OpParamCacheKeys::Empty(), {shape}));
+    RecordDeferredOpCreated(side_effect_refs[0].device_buffer_list());
+    EXPECT_TRUE(HasPendingUnmaterializedWork(device_index, stream_id));
+  }
+  EXPECT_TRUE(HasPendingUnmaterializedWork(device_index, stream_id));
+
+  ASSERT_TRUE(InsertGraphBreak(device_index, stream_id, {},
+                               MaterializationReason::kUnknown,
+                               GraphSplitMode::kSplitGraph)
+                  .ok());
+  EXPECT_EQ(GetReadyWork(device_index, stream_id).size(), 1);
+  EXPECT_FALSE(HasPendingUnmaterializedWork(device_index, stream_id));
+}
 }  // namespace
 
 }  // namespace torch_tpu
