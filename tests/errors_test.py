@@ -6086,6 +6086,28 @@ Supported combinations for non-constant padding:
     ):
       torch.nn.functional.adaptive_max_pool2d(t_int64, output_size=2)
 
+    # Non-empty inputs with 0-sized output still reject unsupported dtypes.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): bool dtype is not supported""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Bool'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_bool, output_size=(0, 0))
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for complex64""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_complex, output_size=(0, 0))
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for int64""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Long'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_int64, output_size=(0, 0))
+
   def test_adaptive_max_pool2d_invalid_rank(self):
     inp_2d = torch.ones(10, 10, device=et.device())
     inp_5d = torch.ones(1, 1, 1, 10, 10, device=et.device())
@@ -6190,6 +6212,45 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten.adaptive_max_pool2d.out(
           inp, [2, 2], out=out, indices=indices
+      )
+
+  def test_adaptive_max_pool2d_empty_batch_validation(self):
+    empty_c64 = torch.empty(
+        (0, 2, 4, 4), device=et.device(), dtype=torch.complex64
+    )
+    out_f32 = torch.empty(0, device=et.device(), dtype=torch.float32)
+    out_c64 = torch.empty(0, device=et.device(), dtype=torch.complex64)
+    indices_i64 = torch.empty(0, device=et.device(), dtype=torch.int64)
+    indices_i32 = torch.empty(0, device=et.device(), dtype=torch.int32)
+    empty_ch_c64 = torch.empty(
+        (0, 0, 4, 4), device=et.device(), dtype=torch.complex64
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected out tensor to have dtype complex64, got float32""",
+        gpu="""Expected out tensor to have dtype c10::complex<float>, but got float instead""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          empty_c64, [2, 2], out=out_f32, indices=indices_i64
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected indices tensor to have dtype int64, got int32""",
+        gpu="""Expected out tensor to have dtype long, but got int instead""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          empty_c64, [2, 2], out=out_c64, indices=indices_i32
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected input to have non-zero size for non-batch dimensions, got [0, 0, 4, 4] with dimension 1 being empty""",
+        gpu="""adaptive_max_pool2d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [0, 0, 4, 4] with dimension 1 being empty""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          empty_ch_c64, [2, 2], out=out_c64, indices=indices_i64
       )
 
   def test_adaptive_avg_pool3d_unsupported_dtypes(self):

@@ -613,9 +613,6 @@ DYNAMISM_DENY_LISTS: DenyList = {
         # Allocates a zero-sized shape with no zero dimension. Aborts the test
         # process.
         "nn.functional.adaptive_avg_pool3d": ALL_MODES,
-        # Queries static dim size (slice size -9223372036854775808). Aborts the
-        # test process.
-        "nn.functional.adaptive_max_pool2d": {EAGER, COMPILE},
         # Fails to inline MLIR functions.
         "nn.functional.avg_pool1d": {COMPILE},
         # PropagateBoundedDynamism fails MarkDynamic when pooling reduces a
@@ -1040,6 +1037,7 @@ class DynamicOpInfo:
         EinsumDynamicOpInfo,
         SdpaDynamicOpInfo,
         ConvolutionDynamicOpInfo,
+        AdaptiveMaxPool2dDynamicOpInfo,
         GluDynamicOpInfo,
         WeightNormBackwardDynamicOpInfo,
         FusedMovingAvgObsFqHelperDynamicOpInfo,
@@ -1685,6 +1683,28 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
         dim
         for dim in super().dynamic_dimension_candidates(input_value, args)
         if dim != channel_dim
+    ]
+
+
+class AdaptiveMaxPool2dDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around adaptive_max_pool2d that keeps spatial dims static."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "nn.functional.adaptive_max_pool2d"
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns batch/channel dims, keeping the last 2 spatial dims static."""
+    if input_value.ndim < 3:
+      return ()
+    spatial_start = input_value.ndim - 2
+    return [
+        dim
+        for dim in super().dynamic_dimension_candidates(input_value, args)
+        if dim < spatial_start
     ]
 
 

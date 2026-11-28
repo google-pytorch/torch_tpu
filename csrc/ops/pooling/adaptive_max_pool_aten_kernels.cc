@@ -242,9 +242,38 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
   mlir::MlirOp batch_input = batch_input_info.batch_input;
   mlir::MlirBuilder& builder = batch_input.getBuilder();
 
+  const mlir::RankedTensorType batch_input_type =
+      GetTensorTypeOrDie(batch_input);
+  TT_RET_CHECK(
+      !batch_input_type.isDynamicDim(2) && !batch_input_type.isDynamicDim(3),
+      error::kPythonNotImplementedError)
+      << "expected spatial dimensions of input to have static sizes, got "
+         "dynamic size";
+
+  // Make batch/channel dimensions static at their upper bounds so both the
+  // ReduceWindow fast path and the Gather + Mask + Variadic Reduce general
+  // path operate on static shapes (slice_sizes, broadcasts, iota), then
+  // restore their runtime sizes on the outputs. This is a no-op for static
+  // shapes.
+  const StaticAtBounds static_batch_input = MakeStaticAtBounds(batch_input);
+  batch_input = static_batch_input.op;
+
   const mlir::RankedTensorType input_shape = GetTensorTypeOrDie(batch_input);
   const mlir::Type element_type = input_shape.getElementType();
   const mlir::Type index_type = builder.getOpBuilder().getI32Type();
+
+  // Create global flattened spatial indices.
+  const int64_t spatial_input_elements = in_h * in_w;
+  const auto flat_iota_type =
+      mlir::RankedTensorType::get({spatial_input_elements}, index_type);
+  mlir::MlirOp iota_flat = mlir::stablehlo::Iota(builder, flat_iota_type, 0);
+  mlir::MlirOp iota_2d = mlir::stablehlo::Reshape(iota_flat, {in_h, in_w});
+
+  const Dimensions target_shape = CopyIntVector(input_shape.getShape());
+  const mlir::RankedTensorType target_tensor_type =
+      mlir::RankedTensorType::get(target_shape, index_type);
+  mlir::MlirOp iota_broadcast =
+      mlir::stablehlo::BroadcastInDim(target_tensor_type, iota_2d, {2, 3});
 
   mlir::MlirOp batch_val_result;
   mlir::MlirOp batch_idx_result;
@@ -273,20 +302,6 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
         GetReduceWindowAttributes(builder, kernel_size, stride, dilation,
                                   ceil_padding_pairs, spatial_dim_count,
                                   /*total_num_dims=*/4);
-
-    // Create global flattened indices
-    const int64_t spatial_input_elements = in_h * in_w;
-    const auto flat_iota_type =
-        mlir::RankedTensorType::get({spatial_input_elements}, index_type);
-    const mlir::MlirOp iota_flat =
-        mlir::stablehlo::Iota(builder, flat_iota_type, 0);
-    mlir::MlirOp iota_2d = mlir::stablehlo::Reshape(iota_flat, {in_h, in_w});
-
-    const Dimensions target_shape = CopyIntVector(input_shape.getShape());
-    const mlir::RankedTensorType target_tensor_type =
-        mlir::RankedTensorType::get(target_shape, index_type);
-    const mlir::MlirOp iota_broadcast =
-        mlir::stablehlo::BroadcastInDim(target_tensor_type, iota_2d, {2, 3});
 
     const mlir::Attribute val_attr =
         GetMaxReductionIdentityAttr(element_type, builder.getOpBuilder());
@@ -319,19 +334,6 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
     batch_idx_result = reduce_results[1];
   } else {
     // General path: 2-stage Gather + Mask + Variadic Reduce
-    const int64_t spatial_input_elements = in_h * in_w;
-    const auto flat_iota_type =
-        mlir::RankedTensorType::get({spatial_input_elements}, index_type);
-    const mlir::MlirOp iota_flat =
-        mlir::stablehlo::Iota(builder, flat_iota_type, 0);
-    mlir::MlirOp iota_2d = mlir::stablehlo::Reshape(iota_flat, {in_h, in_w});
-
-    const Dimensions target_shape = CopyIntVector(input_shape.getShape());
-    const mlir::RankedTensorType target_tensor_type =
-        mlir::RankedTensorType::get(target_shape, index_type);
-    const mlir::MlirOp iota_broadcast =
-        mlir::stablehlo::BroadcastInDim(target_tensor_type, iota_2d, {2, 3});
-
     // Stage 1: Width-dim pooling (dim = 3)
     TT_ASSIGN_OR_RETURN(
         (auto [val_w, idx_w]),
@@ -346,6 +348,11 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
     batch_val_result = val_h;
     batch_idx_result = idx_h;
   }
+
+  batch_val_result = RestoreDynamicDimSizes(batch_val_result,
+                                            static_batch_input.runtime_sizes);
+  batch_idx_result = RestoreDynamicDimSizes(batch_idx_result,
+                                            static_batch_input.runtime_sizes);
 
   const mlir::MlirOp final_output = RemoveTrivialBatch(
       batch_val_result, batch_input_info.original_dim_size, spatial_dim_count);
@@ -362,18 +369,23 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
 }
 
 void CheckAdaptiveMaxPoolDtypes(const at::Tensor& self) {
+  // Match CUDA (aten/src/ATen/native/cuda/AdaptiveMaxPooling2d.cu), which
+  // short-circuits empty inputs before dispatching on input dtype.
+  if (self.numel() == 0) {
+    return;
+  }
+
   TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
                  error::kInvalidArgument)
       << "bool dtype is not supported";
 
-  TT_CHECK_THROW(self.numel() == 0 ||
-                     (self.scalar_type() != at::ScalarType::Byte &&
-                      self.scalar_type() != at::ScalarType::Char &&
-                      self.scalar_type() != at::ScalarType::Short &&
-                      self.scalar_type() != at::ScalarType::Int &&
-                      self.scalar_type() != at::ScalarType::Long &&
-                      self.scalar_type() != at::ScalarType::ComplexFloat &&
-                      self.scalar_type() != at::ScalarType::ComplexDouble),
+  TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Byte &&
+                     self.scalar_type() != at::ScalarType::Char &&
+                     self.scalar_type() != at::ScalarType::Short &&
+                     self.scalar_type() != at::ScalarType::Int &&
+                     self.scalar_type() != at::ScalarType::Long &&
+                     self.scalar_type() != at::ScalarType::ComplexFloat &&
+                     self.scalar_type() != at::ScalarType::ComplexDouble,
                  error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
 }
@@ -412,7 +424,7 @@ absl::StatusOr<AdaptiveMaxPoolBuffers> AdaptiveMaxPool2dHelper(
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   const auto indices_type = mlir::ElementType::I64;
 
-  if (out_h == 0 || out_w == 0) {
+  if (out_h == 0 || out_w == 0 || self.numel() == 0) {
     TT_ASSIGN_OR_RETURN(DeviceBufferRef val_buf,
                         CreateZeroSizeDeviceBufferRef(out_dims, element_type));
     TT_ASSIGN_OR_RETURN(DeviceBufferRef idx_buf,
